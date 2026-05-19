@@ -13,17 +13,20 @@ log() {
   printf '[fultons-deploy] %s\n' "$*"
 }
 
-if [ ! -d "${SRC_DIR}/.git" ]; then
+if [ -d "${SRC_DIR}/.git" ]; then
+  log "Fetching latest git refs"
+  git -C "${SRC_DIR}" fetch --tags --prune origin
+  git -C "${SRC_DIR}" checkout --detach "${APP_COMMIT}"
+  git -C "${SRC_DIR}" reset --hard "${APP_COMMIT}"
+  git -C "${SRC_DIR}" clean -fdx
+elif [ -f "${SRC_DIR}/deploy/compose.yaml" ]; then
+  log "Using unpacked source at ${SRC_DIR}"
+else
   log "Cloning ${APP_REPO_URL} into ${SRC_DIR}"
   rm -rf "${SRC_DIR}"
   git clone "${APP_REPO_URL}" "${SRC_DIR}"
+  git -C "${SRC_DIR}" checkout --detach "${APP_COMMIT}"
 fi
-
-log "Fetching latest git refs"
-git -C "${SRC_DIR}" fetch --tags --prune origin
-git -C "${SRC_DIR}" checkout --detach "${APP_COMMIT}"
-git -C "${SRC_DIR}" reset --hard "${APP_COMMIT}"
-git -C "${SRC_DIR}" clean -fdx
 
 mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}"
 
