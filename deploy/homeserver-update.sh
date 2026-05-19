@@ -39,6 +39,9 @@ fi
 
 cp "${SRC_DIR}/deploy/compose.yaml" "${COMPOSE_FILE}"
 
+log "Normalizing data ownership"
+docker run --rm -v "${DATA_DIR}:/data" alpine:3.22 sh -c 'chown -R 1000:1000 /data'
+
 if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
   log "Removing existing fultons-quiz container"
   docker rm -f fultons-quiz

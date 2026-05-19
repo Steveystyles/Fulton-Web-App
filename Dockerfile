@@ -13,10 +13,11 @@ FROM python:3.14-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache tzdata \
+  && adduser -D -u 1000 appuser
 
-COPY server.py wordle_game.py ./
-COPY --from=frontend /app/dist ./dist
+COPY --chown=appuser:appuser server.py wordle_game.py ./
+COPY --chown=appuser:appuser --from=frontend /app/dist ./dist
 
 ENV FULTONS_HOST=0.0.0.0
 ENV FULTONS_PORT=3000
@@ -25,5 +26,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 EXPOSE 3000
 VOLUME ["/app/data"]
+
+USER appuser
 
 CMD ["python", "-u", "server.py"]
