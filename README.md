@@ -27,6 +27,12 @@ npm start
 
 The Python server serves the built `dist` app and the API.
 
+## Homeserver Deployment
+
+The production container is built with `Dockerfile` and served through the
+Traefik-facing compose file at `deploy/compose.yaml`. Runtime data is mounted at
+`/srv/storage/appdata/fultons-quiz`.
+
 ## Test Accounts
 
 - `admin` / `admin`
