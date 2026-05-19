@@ -42,6 +42,7 @@ from wordle_game import (  # noqa: E402
     choose_secret,
     compute_feedback,
     load_word_list,
+    reset_used_words,
     serialize_feedback,
     valid_guess,
 )
@@ -160,6 +161,7 @@ def initialize_database() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_date TEXT NOT NULL UNIQUE,
                 secret_word TEXT NOT NULL,
+                cycle INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
             );
 
@@ -199,11 +201,27 @@ def initialize_database() -> None:
             );
             """
         )
+        ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
         user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
         if user_count == 0:
             seed_user(conn, "admin", "admin", "admin")
             seed_user(conn, "user1", "user1", "user")
             seed_user(conn, "user2", "user2", "user")
+
+
+def ensure_column(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+    definition: str,
+) -> None:
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})")
+    }
+    if column_name in columns:
+        return
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def seed_user(conn: sqlite3.Connection, username: str, password: str, role: str) -> None:
@@ -303,20 +321,32 @@ def ensure_daily_game(conn: sqlite3.Connection) -> sqlite3.Row:
     if game is not None:
         return game
 
+    words = load_word_list()
+    cycle = conn.execute(
+        "SELECT COALESCE(MAX(cycle), 1) AS cycle FROM daily_wordle_games"
+    ).fetchone()["cycle"]
     used_words = {
         row["secret_word"]
-        for row in conn.execute("SELECT secret_word FROM daily_wordle_games")
+        for row in conn.execute(
+            "SELECT secret_word FROM daily_wordle_games WHERE cycle = ?",
+            (cycle,),
+        )
     }
-    secret_word = choose_secret(load_word_list(), used_words)
+    if len(used_words) >= len(words):
+        cycle += 1
+        used_words = set()
+        reset_used_words()
+
+    secret_word = choose_secret(words, used_words, include_local_used=False)
     now = utc_now()
 
     try:
         cursor = conn.execute(
             """
-            INSERT INTO daily_wordle_games (game_date, secret_word, created_at)
-            VALUES (?, ?, ?)
+            INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+            VALUES (?, ?, ?, ?)
             """,
-            (game_date, secret_word, now),
+            (game_date, secret_word, cycle, now),
         )
         game_id = cursor.lastrowid
         conn.execute(
@@ -548,6 +578,12 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     HTTPStatus.OK,
                     serialize_wordle_state(conn, user["id"], game),
                 )
+                return
+
+            validate_match = re.fullmatch(r"/api/wordle/validate/([A-Za-z]+)", path)
+            if validate_match is not None and method == "GET":
+                guess = validate_match.group(1).lower()
+                self.send_json(HTTPStatus.OK, {"valid": valid_guess(guess)})
                 return
 
             if path == "/api/wordle/guess" and method == "POST":

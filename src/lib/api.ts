@@ -117,6 +117,10 @@ export const api = {
     return request<WordleState>("/api/wordle/today");
   },
 
+  validateWordleGuess(guess: string) {
+    return request<{ valid: boolean }>(`/api/wordle/validate/${guess}`);
+  },
+
   submitWordleGuess(guess: string) {
     return request<WordleState>("/api/wordle/guess", {
       method: "POST",

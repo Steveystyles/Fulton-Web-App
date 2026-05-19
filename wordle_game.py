@@ -5,39 +5,27 @@ WORD_LENGTH = 5
 MAX_ATTEMPTS = 6
 WORDLE_DIR = Path(__file__).resolve().parent
 USED_WORDS_FILE = WORDLE_DIR / "used_words.txt"
+WORD_LIST_FILE = WORDLE_DIR / "wordle_words.txt"
 
 
 def load_word_list() -> list[str]:
     """Return the valid five-letter words used by the daily game."""
-    return [
-        "about", "abide", "acute", "adapt", "adopt", "after", "again", "agent",
-        "ahead", "alter", "among", "anger", "apple", "apply", "argue", "arise",
-        "aside", "asset", "audio", "audit", "baker", "basic", "basis", "begin",
-        "black", "blade", "blame", "bland", "blast", "blend", "bless", "blind",
-        "block", "blood", "board", "bound", "brain", "brand", "bread", "break",
-        "brown", "cause", "cease", "chain", "chair", "chart", "check", "clean",
-        "clear", "climb", "clock", "close", "coach", "coast", "could", "count",
-        "dance", "death", "debut", "delay", "depth", "doubt", "draft", "drama",
-        "dream", "dress", "drink", "drive", "earth", "eight", "enter", "equal",
-        "faith", "false", "fault", "field", "final", "first", "focus", "force",
-        "front", "fruit", "globe", "green", "grief", "group", "guard", "guess",
-        "habit", "happy", "heart", "house", "image", "issue", "judge", "joint",
-        "knife", "knock", "known", "large", "learn", "light", "limit", "local",
-        "logic", "lunch", "major", "match", "metal", "model", "money", "mount",
-        "north", "novel", "nurse", "ocean", "offer", "order", "other", "paper",
-        "peace", "phase", "phone", "piece", "pilot", "place", "plane", "plant",
-        "point", "power", "press", "price", "prime", "print", "prize", "queen",
-        "quick", "quiet", "radio", "range", "reach", "ready", "reply", "right",
-        "river", "rough", "round", "route", "score", "sense", "shape", "share",
-        "shift", "shock", "short", "sight", "since", "skill", "sleep", "small",
-        "smile", "solid", "sound", "south", "space", "spare", "speak", "speed",
-        "spend", "split", "sport", "staff", "stand", "start", "state", "steel",
-        "stick", "stone", "store", "story", "study", "style", "sugar", "table",
-        "teach", "thank", "their", "think", "throw", "tight", "today", "trade",
-        "train", "treat", "trend", "trial", "trust", "truth", "voice", "waits",
-        "watch", "water", "whole", "whose", "world", "write", "wrong", "yield",
-        "young", "youth", "zebra", "zonal",
-    ]
+    try:
+        words = [
+            line.strip().lower()
+            for line in WORD_LIST_FILE.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except OSError as error:
+        raise RuntimeError(f"Word list file not found: {WORD_LIST_FILE}") from error
+
+    return sorted(
+        {
+            word
+            for word in words
+            if len(word) == WORD_LENGTH and word.isalpha() and word.isascii()
+        }
+    )
 
 
 def load_used_words() -> set[str]:
@@ -75,10 +63,11 @@ def save_used_word(word: str) -> None:
 def choose_secret(
     words: list[str] | None = None,
     extra_used_words: set[str] | None = None,
+    include_local_used: bool = True,
 ) -> str:
     """Choose a secret word that has not already been used in the current cycle."""
     word_list = words if words is not None else load_word_list()
-    local_used_words = load_used_words()
+    local_used_words = load_used_words() if include_local_used else set()
     used_words = local_used_words | {word.lower() for word in extra_used_words or set()}
     unused_words = [word for word in word_list if word not in used_words]
 

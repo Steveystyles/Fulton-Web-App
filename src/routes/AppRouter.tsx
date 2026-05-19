@@ -36,8 +36,11 @@ export function AppRouter() {
     <BrowserRouter>
       <div className="min-h-dvh overflow-x-hidden bg-slate-950 text-slate-950 sm:bg-[linear-gradient(90deg,#0b0b10_0%,#17181f_50%,#0b0b10_100%)]">
         <div className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl">
-          <Header />
-          <NewsTicker />
+          <div className="top-shell">
+            <Header />
+            <NewsTicker />
+          </div>
+          <div className="h-[6.5rem] shrink-0" aria-hidden="true" />
           <main
             id="main-content"
             className="flex-1 overflow-x-hidden px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-4"

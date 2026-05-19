@@ -35,6 +35,15 @@ a {
   -webkit-tap-highlight-color: transparent;
 }
 
+.top-shell {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  z-index: 50;
+  width: min(100vw, 430px);
+  transform: translateX(-50%);
+}
+
 .bottom-nav {
   position: fixed;
   right: 0;
