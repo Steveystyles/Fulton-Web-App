@@ -1,8 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Delete } from "lucide-react";
-import { Card } from "../components/Card";
-import { PageContainer } from "../components/PageContainer";
-import { StatCard } from "../components/StatCard";
 import { api, type FeedbackColor, type WordleState } from "../lib/api";
 
 type GuessValidity = "empty" | "short" | "checking" | "valid" | "invalid";
@@ -138,37 +135,6 @@ export function Wordle() {
     return "";
   }, [loading, state]);
 
-  useEffect(() => {
-    function handlePhysicalKeyboard(event: KeyboardEvent) {
-      if (isComplete || submitting) {
-        return;
-      }
-
-      if (event.key === "Enter") {
-        event.preventDefault();
-        void submitGuess();
-        return;
-      }
-
-      if (event.key === "Backspace") {
-        event.preventDefault();
-        removeLetter();
-        return;
-      }
-
-      if (/^[a-zA-Z]$/.test(event.key)) {
-        event.preventDefault();
-        addLetter(event.key);
-      }
-    }
-
-    window.addEventListener("keydown", handlePhysicalKeyboard);
-
-    return () => {
-      window.removeEventListener("keydown", handlePhysicalKeyboard);
-    };
-  });
-
   function addLetter(letter: string) {
     setError("");
     setGuess((currentGuess) => {
@@ -212,14 +178,14 @@ export function Wordle() {
   }
 
   return (
-    <PageContainer title="WORDLE" number="1">
-      <Card>
-        <form className="space-y-4 pb-20" onSubmit={handleSubmit}>
+    <section className="page-fade space-y-3" aria-label="Wordle game">
+      <section className="max-w-full overflow-hidden rounded-3xl border border-slate-200 bg-white p-3 shadow-soft">
+        <form className="space-y-3 pb-2" onSubmit={handleSubmit}>
           {statusText ? (
             <p className="text-center text-base font-black text-slate-700">{statusText}</p>
           ) : null}
 
-          <div className="grid gap-2" aria-label="Wordle board">
+          <div className="mx-auto grid max-w-[17rem] gap-1.5" aria-label="Wordle board">
             {Array.from({ length: maxAttempts }, (_, rowIndex) => {
               const submittedGuess = guesses[rowIndex];
               const isDraftRow = submittedGuess === undefined && rowIndex === guesses.length;
@@ -243,7 +209,7 @@ export function Wordle() {
                       <div
                         key={letterIndex}
                         className={[
-                          "flex aspect-square min-h-11 items-center justify-center rounded-xl border-2 text-xl font-black uppercase shadow-sm",
+                          "flex aspect-square min-h-10 items-center justify-center rounded-lg border-2 text-3xl font-black uppercase leading-none shadow-sm",
                           colorClass,
                         ].join(" ")}
                       >
@@ -284,7 +250,7 @@ export function Wordle() {
                     type="button"
                     onClick={() => void submitGuess()}
                     disabled={!canSubmit}
-                    className="flex min-h-11 items-center justify-center rounded-xl bg-saints-red px-1 text-xs font-black uppercase text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+                    className="flex min-h-10 items-center justify-center rounded-lg bg-saints-red px-1 text-xs font-black uppercase text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
                   >
                     Enter
                   </button>
@@ -304,7 +270,7 @@ export function Wordle() {
                       onClick={() => addLetter(letter)}
                       disabled={isComplete || submitting}
                       className={[
-                        "flex min-h-11 items-center justify-center rounded-xl text-sm font-black uppercase shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed",
+                        "flex min-h-10 items-center justify-center rounded-lg text-sm font-black uppercase shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed",
                         colorClass,
                       ].join(" ")}
                     >
@@ -319,7 +285,7 @@ export function Wordle() {
                     aria-label="Delete letter"
                     onClick={removeLetter}
                     disabled={isComplete || submitting || guess.length === 0}
-                    className="flex min-h-11 items-center justify-center rounded-xl bg-slate-100 text-slate-950 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    className="flex min-h-10 items-center justify-center rounded-lg bg-slate-100 text-slate-950 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                   >
                     <Delete aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
                   </button>
@@ -334,13 +300,7 @@ export function Wordle() {
             </p>
           ) : null}
         </form>
-      </Card>
-
-      <section aria-label="Wordle stats" className="grid grid-cols-3 gap-2">
-        <StatCard label="Played" value={String(state?.stats.played ?? 0)} detail="Games" />
-        <StatCard label="Wins" value={String(state?.stats.wins ?? 0)} detail="Solved" />
-        <StatCard label="Losses" value={String(state?.stats.losses ?? 0)} detail="Missed" />
       </section>
-    </PageContainer>
+    </section>
   );
 }
