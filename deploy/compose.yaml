@@ -1,7 +1,7 @@
 services:
   quiz-app:
     build:
-      context: /opt/src/fulton-web-app
+      context: ${FULTONS_SRC_DIR:-/opt/src/fulton-web-app}
     image: local/fulton-web-app:latest
     container_name: fultons-quiz
     restart: unless-stopped

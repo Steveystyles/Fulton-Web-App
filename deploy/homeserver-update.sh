@@ -45,6 +45,7 @@ if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
 fi
 
 log "Building and starting fultons-quiz"
+export FULTONS_SRC_DIR="${SRC_DIR}"
 docker compose -f "${COMPOSE_FILE}" up -d --build
 
 log "Waiting for health endpoint"
