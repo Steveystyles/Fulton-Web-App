@@ -45,7 +45,41 @@ export type AdminUser = User & {
   losses: number;
 };
 
+export type QuizDifficulty = "easy" | "medium" | "hard";
+
+export type DailyQuizQuestion = {
+  difficulty: QuizDifficulty;
+  question: string;
+  answers: string[];
+  correct_answer: string;
+  explanation: string;
+};
+
+export type DailyQuestionsResponse = {
+  date: string;
+  football: DailyQuizQuestion[];
+  general: DailyQuizQuestion[];
+};
+
+export type NewsItem = {
+  id: number;
+  sourceKey: string;
+  kind: string;
+  title: string;
+  url: string;
+  source: string;
+  summary: string;
+  publishedAt: string;
+  host: string;
+  priority: string;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 type JsonBody = Record<string, unknown>;
+
+let dailyQuestionsPromise: Promise<DailyQuestionsResponse> | undefined;
 
 export class ApiError extends Error {
   status: number;
@@ -126,6 +160,24 @@ export const api = {
       method: "POST",
       body: jsonBody({ guess }),
     });
+  },
+
+  dailyQuestions() {
+    if (dailyQuestionsPromise === undefined) {
+      dailyQuestionsPromise = request<DailyQuestionsResponse>("/api/daily-questions").catch(
+        (error) => {
+          dailyQuestionsPromise = undefined;
+          throw error;
+        },
+      );
+    }
+
+    return dailyQuestionsPromise;
+  },
+
+  news(limit = 50) {
+    const boundedLimit = Math.max(1, Math.min(100, limit));
+    return request<{ items: NewsItem[] }>(`/api/news?limit=${boundedLimit}`);
   },
 
   adminUsers() {

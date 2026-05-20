@@ -5,17 +5,19 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import re
 import secrets
 import sqlite3
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 try:
     from zoneinfo import ZoneInfo
@@ -27,11 +29,19 @@ PROJECT_DIR = APP_DIR.parent
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "fultons.db"
 DIST_DIR = APP_DIR / "dist"
+QUIZ_DATA_DIR = DATA_DIR / "quizzes"
 SESSION_COOKIE = "fultons_session"
 SESSION_DAYS = 14
 PASSWORD_ITERATIONS = 260_000
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
 SERVER_TZ_NAME = os.environ.get("FULTONS_TIMEZONE", "Europe/London")
+NEWS_MONITOR_KEY = os.environ.get("FULTONS_NEWS_MONITOR_KEY", "")
+NEWS_LIMIT_DEFAULT = 50
+NEWS_LIMIT_MAX = 100
+DIFFICULTIES = ("easy", "medium", "hard")
+
+NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
+NEWS_STREAMS_LOCK = threading.Lock()
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -127,7 +137,7 @@ def validate_password(password: str) -> str | None:
 
 def connect_db() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -199,6 +209,25 @@ def initialize_database() -> None:
                 FOREIGN KEY (result_id) REFERENCES wordle_results(id) ON DELETE CASCADE,
                 UNIQUE (result_id, attempt_number)
             );
+
+            CREATE TABLE IF NOT EXISTS news_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_key TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL DEFAULT 'article',
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                source TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                published_at TEXT NOT NULL,
+                host TEXT NOT NULL DEFAULT '',
+                priority TEXT NOT NULL DEFAULT 'media',
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_news_items_published_at
+            ON news_items (published_at DESC);
             """
         )
         ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
@@ -457,6 +486,282 @@ def serialize_wordle_state(
     }
 
 
+def default_daily_questions(game_date: str) -> dict[str, Any]:
+    return {
+        "date": game_date,
+        "football": [
+            {
+                "difficulty": "easy",
+                "question": "Which club plays its home matches at Anfield?",
+                "answers": ["Liverpool", "Everton", "Celtic", "Leeds United"],
+                "correct_answer": "Liverpool",
+                "explanation": "Anfield is the home stadium of Liverpool FC.",
+            },
+            {
+                "difficulty": "medium",
+                "question": "Which nation won UEFA Euro 2016?",
+                "answers": ["France", "Portugal", "Germany", "Spain"],
+                "correct_answer": "Portugal",
+                "explanation": "Portugal beat France 1-0 after extra time in the final.",
+            },
+            {
+                "difficulty": "hard",
+                "question": (
+                    "Who scored the winning goal for Manchester United in the "
+                    "1999 UEFA Champions League final?"
+                ),
+                "answers": [
+                    "Teddy Sheringham",
+                    "Ole Gunnar Solskjaer",
+                    "David Beckham",
+                    "Ryan Giggs",
+                ],
+                "correct_answer": "Ole Gunnar Solskjaer",
+                "explanation": "Solskjaer scored in stoppage time to complete the comeback.",
+            },
+        ],
+        "general": [
+            {
+                "difficulty": "easy",
+                "question": "What is the capital city of France?",
+                "answers": ["Paris", "Lyon", "Marseille", "Nice"],
+                "correct_answer": "Paris",
+                "explanation": "Paris is the capital of France.",
+            },
+            {
+                "difficulty": "medium",
+                "question": "Which element has the chemical symbol Au?",
+                "answers": ["Silver", "Iron", "Gold", "Argon"],
+                "correct_answer": "Gold",
+                "explanation": "Au comes from the Latin word aurum.",
+            },
+            {
+                "difficulty": "hard",
+                "question": (
+                    "In which year was the first successful human heart "
+                    "transplant performed?"
+                ),
+                "answers": ["1958", "1967", "1974", "1981"],
+                "correct_answer": "1967",
+                "explanation": (
+                    "The first successful human heart transplant was performed in 1967."
+                ),
+            },
+        ],
+    }
+
+
+def validate_daily_questions(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload.get("date"), str):
+        return False
+
+    for category in ("football", "general"):
+        questions = payload.get(category)
+        if not isinstance(questions, list) or len(questions) != 3:
+            return False
+
+        seen_difficulties = set()
+        for question in questions:
+            if not isinstance(question, dict):
+                return False
+            difficulty = question.get("difficulty")
+            if difficulty not in DIFFICULTIES:
+                return False
+            seen_difficulties.add(difficulty)
+            answers = question.get("answers")
+            correct_answer = question.get("correct_answer")
+            if not isinstance(question.get("question"), str) or not question["question"].strip():
+                return False
+            if not isinstance(answers, list) or len(answers) != 4:
+                return False
+            if not all(isinstance(answer, str) and answer.strip() for answer in answers):
+                return False
+            if correct_answer not in answers:
+                return False
+            if not isinstance(question.get("explanation"), str):
+                return False
+        if seen_difficulties != set(DIFFICULTIES):
+            return False
+
+    return True
+
+
+def daily_questions_path(game_date: str) -> Path:
+    return QUIZ_DATA_DIR / f"daily-questions-{game_date}.json"
+
+
+def ensure_daily_questions() -> dict[str, Any]:
+    game_date = today_game_date()
+    QUIZ_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = daily_questions_path(game_date)
+
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict) and validate_daily_questions(payload):
+                return payload
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    payload = default_daily_questions(game_date)
+    temp_path = path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    temp_path.replace(path)
+    return payload
+
+
+def serialize_news_item(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "sourceKey": row["source_key"],
+        "kind": row["kind"],
+        "title": row["title"],
+        "url": row["url"],
+        "source": row["source"],
+        "summary": row["summary"],
+        "publishedAt": row["published_at"],
+        "host": row["host"],
+        "priority": row["priority"],
+        "tags": json.loads(row["tags_json"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def bounded_text(value: Any, max_length: int) -> str:
+    text = str(value or "").strip()
+    return text[:max_length]
+
+
+def validate_news_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    source_key = bounded_text(payload.get("sourceKey"), 160)
+    title = bounded_text(payload.get("title"), 220)
+    url = bounded_text(payload.get("url"), 600)
+    source = bounded_text(payload.get("source"), 120) or "Unknown source"
+    summary = bounded_text(payload.get("summary"), 500)
+    host = bounded_text(payload.get("host"), 160)
+    kind = bounded_text(payload.get("kind"), 40) or "article"
+    priority = bounded_text(payload.get("priority"), 40) or "media"
+    published_at = bounded_text(payload.get("publishedAt"), 80) or utc_now()
+
+    if not source_key:
+        source_key = hashlib.sha256(url.encode("utf-8")).hexdigest() if url else ""
+    if not source_key:
+        raise ValueError("News item requires sourceKey or url.")
+    if not title:
+        raise ValueError("News item requires title.")
+    if not url.startswith(("http://", "https://")):
+        raise ValueError("News item requires an http or https url.")
+
+    raw_tags = payload.get("tags", [])
+    tags = raw_tags if isinstance(raw_tags, list) else []
+    clean_tags = [bounded_text(tag, 40) for tag in tags if bounded_text(tag, 40)]
+
+    return {
+        "source_key": source_key,
+        "kind": kind,
+        "title": title,
+        "url": url,
+        "source": source,
+        "summary": summary,
+        "published_at": published_at,
+        "host": host,
+        "priority": priority,
+        "tags_json": json.dumps(clean_tags[:8]),
+    }
+
+
+def upsert_news_item(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    item = validate_news_payload(payload)
+    now = utc_now()
+    existing = conn.execute(
+        "SELECT id FROM news_items WHERE source_key = ?",
+        (item["source_key"],),
+    ).fetchone()
+
+    if existing is None:
+        cursor = conn.execute(
+            """
+            INSERT INTO news_items (
+                source_key, kind, title, url, source, summary, published_at,
+                host, priority, tags_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["source_key"],
+                item["kind"],
+                item["title"],
+                item["url"],
+                item["source"],
+                item["summary"],
+                item["published_at"],
+                item["host"],
+                item["priority"],
+                item["tags_json"],
+                now,
+                now,
+            ),
+        )
+        row_id = cursor.lastrowid
+        inserted = True
+    else:
+        row_id = existing["id"]
+        conn.execute(
+            """
+            UPDATE news_items
+            SET kind = ?, title = ?, url = ?, source = ?, summary = ?,
+                published_at = ?, host = ?, priority = ?, tags_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                item["kind"],
+                item["title"],
+                item["url"],
+                item["source"],
+                item["summary"],
+                item["published_at"],
+                item["host"],
+                item["priority"],
+                item["tags_json"],
+                now,
+                row_id,
+            ),
+        )
+        inserted = False
+
+    row = conn.execute("SELECT * FROM news_items WHERE id = ?", (row_id,)).fetchone()
+    return serialize_news_item(row), inserted
+
+
+def list_news_items(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM news_items
+        ORDER BY published_at DESC, created_at DESC, id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [serialize_news_item(row) for row in rows]
+
+
+def broadcast_news_item(item: dict[str, Any]) -> None:
+    with NEWS_STREAMS_LOCK:
+        streams = list(NEWS_STREAMS)
+
+    for stream in streams:
+        try:
+            stream.put_nowait(item)
+        except queue.Full:
+            pass
+
+
 class FultonsHandler(SimpleHTTPRequestHandler):
     server_version = "FultonsQuiz/0.1"
 
@@ -464,29 +769,29 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", "*"))
         self.send_header("Access-Control-Allow-Credentials", "true")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-News-Monitor-Key")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.end_headers()
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/"):
-            self.handle_api("GET", parsed.path)
+            self.handle_api("GET", parsed.path, parsed.query)
             return
 
         self.serve_static()
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
-        self.handle_api("POST", parsed.path)
+        self.handle_api("POST", parsed.path, parsed.query)
 
     def do_PATCH(self) -> None:
         parsed = urlparse(self.path)
-        self.handle_api("PATCH", parsed.path)
+        self.handle_api("PATCH", parsed.path, parsed.query)
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
-        self.handle_api("DELETE", parsed.path)
+        self.handle_api("DELETE", parsed.path, parsed.query)
 
     def send_json(
         self,
@@ -507,6 +812,18 @@ class FultonsHandler(SimpleHTTPRequestHandler):
     def send_error_json(self, status: int, message: str) -> None:
         self.send_json(status, {"error": message})
 
+    def send_sse_headers(self) -> None:
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+    def write_sse(self, event: str, payload: dict[str, Any]) -> None:
+        message = f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+        self.wfile.write(message.encode("utf-8"))
+        self.wfile.flush()
+
     def read_json(self) -> dict[str, Any]:
         content_length = int(self.headers.get("Content-Length", "0"))
         if content_length == 0:
@@ -523,18 +840,32 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             raise ValueError("Expected a JSON object.")
         return decoded
 
-    def handle_api(self, method: str, path: str) -> None:
+    def handle_api(self, method: str, path: str, query: str = "") -> None:
         try:
-            self.route_api(method, path.rstrip("/") or "/")
+            self.route_api(method, path.rstrip("/") or "/", query)
         except json.JSONDecodeError:
             self.send_error_json(HTTPStatus.BAD_REQUEST, "Invalid JSON body.")
         except ValueError as error:
             self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception as error:
             safe_log(f"API error: {error}")
             self.send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, "Server error.")
 
-    def route_api(self, method: str, path: str) -> None:
+    def route_api(self, method: str, path: str, query: str = "") -> None:
+        params = parse_qs(query)
+
+        if path == "/api/news/stream" and method == "GET":
+            with connect_db() as conn:
+                token = get_cookie_value(self.headers, SESSION_COOKIE)
+                user = current_user(conn, token)
+                if user is None:
+                    self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
+                    return
+            self.handle_news_stream()
+            return
+
         with connect_db() as conn:
             token = get_cookie_value(self.headers, SESSION_COOKIE)
             user = current_user(conn, token)
@@ -564,6 +895,10 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, {"user": user_payload(user)})
                 return
 
+            if path == "/api/news/add" and method == "POST":
+                self.handle_news_add(conn)
+                return
+
             if user is None:
                 self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
                 return
@@ -578,6 +913,25 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     HTTPStatus.OK,
                     serialize_wordle_state(conn, user["id"], game),
                 )
+                return
+
+            if path == "/api/daily-questions" and method == "GET":
+                self.send_json(HTTPStatus.OK, ensure_daily_questions())
+                return
+
+            category_match = re.fullmatch(r"/api/daily-questions/(football|general)", path)
+            if category_match is not None and method == "GET":
+                payload = ensure_daily_questions()
+                category = category_match.group(1)
+                self.send_json(
+                    HTTPStatus.OK,
+                    {"date": payload["date"], "questions": payload[category]},
+                )
+                return
+
+            if path == "/api/news" and method == "GET":
+                limit = self.query_int(params, "limit", NEWS_LIMIT_DEFAULT, 1, NEWS_LIMIT_MAX)
+                self.send_json(HTTPStatus.OK, {"items": list_news_items(conn, limit)})
                 return
 
             validate_match = re.fullmatch(r"/api/wordle/validate/([A-Za-z]+)", path)
@@ -598,6 +952,61 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
 
             self.send_error_json(HTTPStatus.NOT_FOUND, "API route not found.")
+
+    def query_int(
+        self,
+        params: dict[str, list[str]],
+        name: str,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        raw_value = params.get(name, [str(default)])[0]
+        try:
+            value = int(raw_value)
+        except ValueError:
+            return default
+        return max(minimum, min(maximum, value))
+
+    def handle_news_add(self, conn: sqlite3.Connection) -> None:
+        if not NEWS_MONITOR_KEY:
+            self.send_error_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "News monitor key is not configured.",
+            )
+            return
+
+        submitted_key = self.headers.get("X-News-Monitor-Key", "")
+        if not hmac.compare_digest(submitted_key, NEWS_MONITOR_KEY):
+            self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid news monitor key.")
+            return
+
+        item, inserted = upsert_news_item(conn, self.read_json())
+        if inserted:
+            broadcast_news_item(item)
+        self.send_json(
+            HTTPStatus.CREATED if inserted else HTTPStatus.OK,
+            {"item": item, "inserted": inserted},
+        )
+
+    def handle_news_stream(self) -> None:
+        stream: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=25)
+        with NEWS_STREAMS_LOCK:
+            NEWS_STREAMS.add(stream)
+
+        try:
+            self.send_sse_headers()
+            self.write_sse("ready", {"ok": True, "date": today_game_date()})
+
+            while True:
+                try:
+                    item = stream.get(timeout=20)
+                    self.write_sse("news", item)
+                except queue.Empty:
+                    self.write_sse("ping", {"date": utc_now()})
+        finally:
+            with NEWS_STREAMS_LOCK:
+                NEWS_STREAMS.discard(stream)
 
     def handle_login(self, conn: sqlite3.Connection) -> None:
         payload = self.read_json()

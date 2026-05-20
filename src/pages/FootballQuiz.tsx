@@ -1,16 +1,29 @@
-import { CircleHelp } from "lucide-react";
-import { PlaceholderPage } from "../components/PlaceholderPage";
+import { DailyQuiz } from "../components/DailyQuiz";
+import { PageContainer } from "../components/PageContainer";
+import type { DailyQuizQuestion } from "../lib/api";
 
-export function FootballQuiz() {
+type FootballQuizProps = {
+  quizDate?: string;
+  questions: DailyQuizQuestion[];
+  loading: boolean;
+  error: Error | null;
+};
+
+export function FootballQuiz({
+  quizDate,
+  questions,
+  loading,
+  error,
+}: FootballQuizProps) {
   return (
-    <PlaceholderPage
-      title="FOOTBALL QUIZ"
-      number="2"
-      message="Football quiz placeholder."
-    >
-      <div className="mt-5 flex min-h-20 items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 text-slate-400">
-        <CircleHelp aria-hidden="true" className="h-8 w-8" strokeWidth={2.4} />
-      </div>
-    </PlaceholderPage>
+    <PageContainer title="FOOTBALL QUIZ" number="2">
+      <DailyQuiz
+        quizDate={quizDate}
+        questions={questions}
+        loading={loading}
+        error={error}
+        emptyMessage="Today's football quiz is not available yet."
+      />
+    </PageContainer>
   );
 }

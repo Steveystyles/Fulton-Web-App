@@ -1,9 +1,10 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
 import { NewsTicker } from "../components/NewsTicker";
 import { useAuth } from "../context/AuthContext";
+import { api, type DailyQuestionsResponse } from "../lib/api";
 import { Account } from "../pages/Account";
 import { Admin } from "../pages/Admin";
 import { FootballQuiz } from "../pages/FootballQuiz";
@@ -37,6 +38,50 @@ function AppFrame({ children, compact = false }: { children: ReactNode; compact?
 
 export function AppRouter() {
   const { loading, user } = useAuth();
+  const [dailyQuestions, setDailyQuestions] = useState<DailyQuestionsResponse | null>(null);
+  const [quizLoading, setQuizLoading] = useState(false);
+  const [quizError, setQuizError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    if (user === null) {
+      setDailyQuestions(null);
+      setQuizError(null);
+      setQuizLoading(false);
+      return;
+    }
+
+    setQuizLoading(true);
+    setQuizError(null);
+
+    async function loadDailyQuestions() {
+      try {
+        const response = await api.dailyQuestions();
+        if (active) {
+          setDailyQuestions(response);
+        }
+      } catch (caughtError) {
+        if (active) {
+          setQuizError(
+            caughtError instanceof Error
+              ? caughtError
+              : new Error("Daily quiz failed to load."),
+          );
+        }
+      } finally {
+        if (active) {
+          setQuizLoading(false);
+        }
+      }
+    }
+
+    void loadDailyQuestions();
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   if (loading) {
     return (
@@ -71,7 +116,12 @@ export function AppRouter() {
             path="/football"
             element={
               <AppFrame>
-                <FootballQuiz />
+                <FootballQuiz
+                  quizDate={dailyQuestions?.date}
+                  questions={dailyQuestions?.football ?? []}
+                  loading={quizLoading}
+                  error={quizError}
+                />
               </AppFrame>
             }
           />
@@ -79,7 +129,12 @@ export function AppRouter() {
             path="/general"
             element={
               <AppFrame>
-                <GeneralQuiz />
+                <GeneralQuiz
+                  quizDate={dailyQuestions?.date}
+                  questions={dailyQuestions?.general ?? []}
+                  loading={quizLoading}
+                  error={quizError}
+                />
               </AppFrame>
             }
           />

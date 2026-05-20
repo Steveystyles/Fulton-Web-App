@@ -1,11 +1,43 @@
-const headline = "St Mirren defeat Rangers 2-1 at home...";
+import { useEffect, useMemo, useState } from "react";
+import { api, type NewsItem } from "../lib/api";
+
+const emptyHeadline = "No breaking Saints stories yet. The live feed is ready.";
 
 export function NewsTicker() {
+  const [items, setItems] = useState<NewsItem[]>([]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadHeadlines() {
+      try {
+        const response = await api.news(5);
+        if (active) {
+          setItems(response.items);
+        }
+      } catch {
+        if (active) {
+          setItems([]);
+        }
+      }
+    }
+
+    void loadHeadlines();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const headline = useMemo(() => {
+    if (items.length === 0) {
+      return emptyHeadline;
+    }
+    return items.map((item) => item.title).join("   |   ");
+  }, [items]);
+
   return (
-    <section
-      className="border-y border-white/10 bg-saints-deep text-white"
-      aria-label="Breaking news placeholder ticker"
-    >
+    <section className="border-y border-white/10 bg-saints-deep text-white" aria-label="News ticker">
       <div className="flex min-h-10 items-center gap-3 overflow-hidden pl-4">
         <span className="rounded-sm bg-saints-red px-2.5 py-1 text-xs font-black uppercase leading-none text-white">
           Breaking
