@@ -100,7 +100,7 @@ export function Account() {
             <div className="min-w-0">
               <p className="text-xl font-black leading-tight text-slate-950">Password</p>
               <p className="mt-1 text-sm font-semibold text-slate-600">
-                Change your login password.
+                Change your login password. Use at least 12 characters.
               </p>
             </div>
           </div>

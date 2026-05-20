@@ -15,6 +15,7 @@ import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
@@ -59,6 +60,25 @@ HISTORY_USER_AGENT = os.environ.get(
     "FultonHistory/1.0 (+https://fultons-quiz.co.uk)",
 )
 HISTORY_CACHE_TTL_SEC = int(os.environ.get("HISTORY_CACHE_TTL_SEC", "86400"))
+COOKIE_SECURE = os.environ.get("FULTONS_COOKIE_SECURE", "0") == "1"
+SEED_DEMO_USERS = os.environ.get("FULTONS_SEED_DEMO_USERS", "0") == "1"
+BOOTSTRAP_ADMIN_USERNAME = os.environ.get("FULTONS_BOOTSTRAP_ADMIN_USERNAME", "").strip()
+BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("FULTONS_BOOTSTRAP_ADMIN_PASSWORD", "")
+MIN_PASSWORD_LENGTH = int(os.environ.get("FULTONS_MIN_PASSWORD_LENGTH", "12"))
+LOGIN_MAX_FAILURES = int(
+    os.environ.get("FULTONS_LOGIN_MAX_FAILURES", os.environ.get("FULTONS_LOGIN_MAX_ATTEMPTS", "5"))
+)
+LOGIN_LOCKOUT_SECONDS = int(
+    os.environ.get(
+        "FULTONS_LOGIN_LOCKOUT_SECONDS",
+        os.environ.get("FULTONS_LOGIN_BACKOFF_SECONDS", "300"),
+    )
+)
+CORS_ALLOWED_ORIGINS = {
+    origin.strip()
+    for origin in os.environ.get("FULTONS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+}
 DIFFICULTIES = ("easy", "medium", "hard")
 NEWS_QUERIES = (
     '"St Mirren"',
@@ -73,6 +93,8 @@ SUPPORTED_HISTORY_LANGS = {"en", "fr", "de", "es", "it"}
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
 HISTORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+LOGIN_ATTEMPTS: dict[str, tuple[int, float]] = {}
+LOGIN_ATTEMPTS_LOCK = threading.Lock()
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -161,8 +183,8 @@ def validate_username(username: str) -> str | None:
 
 
 def validate_password(password: str) -> str | None:
-    if len(password) < 4:
-        return "Use at least 4 characters."
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return f"Use at least {MIN_PASSWORD_LENGTH} characters."
     return None
 
 
@@ -175,10 +197,11 @@ def connect_db() -> sqlite3.Connection:
 
 
 def initialize_database() -> None:
-    with connect_db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS users (
+    with closing(connect_db()) as conn:
+        with conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
@@ -260,14 +283,24 @@ def initialize_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_news_items_published_at
             ON news_items (published_at DESC);
             """
-        )
-        ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
-        user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
-        if user_count == 0:
-            seed_user(conn, "admin", "admin", "admin")
-            seed_user(conn, "user1", "user1", "user")
-            seed_user(conn, "user2", "user2", "user")
-        backfill_news_categories(conn)
+            )
+            ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
+            user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
+            if user_count == 0:
+                bootstrap_error = validate_bootstrap_admin()
+                if bootstrap_error is None and BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD:
+                    seed_user(conn, BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_PASSWORD, "admin")
+                    safe_log(f"Bootstrapped admin user {BOOTSTRAP_ADMIN_USERNAME!r}")
+                elif SEED_DEMO_USERS:
+                    seed_user(conn, "admin", "adminadmin123", "admin")
+                    seed_user(conn, "user1", "user1user1234", "user")
+                    seed_user(conn, "user2", "user2user1234", "user")
+                    safe_log("Seeded demo users because FULTONS_SEED_DEMO_USERS=1")
+                else:
+                    if bootstrap_error is not None:
+                        safe_log(f"Admin bootstrap skipped: {bootstrap_error}")
+                    safe_log("No users exist and demo seeding is disabled.")
+            backfill_news_categories(conn)
 
 
 def ensure_column(
@@ -301,6 +334,23 @@ def seed_user(conn: sqlite3.Connection, username: str, password: str, role: str)
         """,
         (username, hash_password(password), role, now, now),
     )
+
+
+def validate_bootstrap_admin() -> str | None:
+    if not BOOTSTRAP_ADMIN_USERNAME and not BOOTSTRAP_ADMIN_PASSWORD:
+        return None
+    if not BOOTSTRAP_ADMIN_USERNAME or not BOOTSTRAP_ADMIN_PASSWORD:
+        return "set both FULTONS_BOOTSTRAP_ADMIN_USERNAME and FULTONS_BOOTSTRAP_ADMIN_PASSWORD"
+
+    username_error = validate_username(BOOTSTRAP_ADMIN_USERNAME)
+    if username_error is not None:
+        return f"bootstrap username invalid: {username_error}"
+
+    password_error = validate_password(BOOTSTRAP_ADMIN_PASSWORD)
+    if password_error is not None:
+        return f"bootstrap password invalid: {password_error}"
+
+    return None
 
 
 def user_payload(row: sqlite3.Row) -> dict[str, Any]:
@@ -344,16 +394,20 @@ def get_cookie_value(headers: Any, name: str) -> str | None:
     return morsel.value if morsel is not None else None
 
 
+def cookie_attributes(max_age: int) -> str:
+    attributes = [f"Path=/", "HttpOnly", "SameSite=Lax", f"Max-Age={max_age}"]
+    if COOKIE_SECURE:
+        attributes.append("Secure")
+    return "; ".join(attributes)
+
+
 def session_header(token: str) -> str:
     max_age = SESSION_DAYS * 24 * 60 * 60
-    return (
-        f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; "
-        f"Max-Age={max_age}"
-    )
+    return f"{SESSION_COOKIE}={token}; {cookie_attributes(max_age)}"
 
 
 def clear_session_header() -> str:
-    return f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    return f"{SESSION_COOKIE}=; {cookie_attributes(0)}"
 
 
 def current_user(conn: sqlite3.Connection, token: str | None) -> sqlite3.Row | None:
@@ -371,6 +425,47 @@ def current_user(conn: sqlite3.Connection, token: str | None) -> sqlite3.Row | N
         """,
         (token, now),
     ).fetchone()
+
+
+def login_attempt_key(username: str, client_ip: str) -> str:
+    return f"{username.lower()}|{client_ip}"
+
+
+def is_login_locked(username: str, client_ip: str) -> bool:
+    key = login_attempt_key(username, client_ip)
+    now = time.time()
+
+    with LOGIN_ATTEMPTS_LOCK:
+        attempts = LOGIN_ATTEMPTS.get(key)
+        if attempts is None:
+            return False
+
+        failure_count, locked_until = attempts
+        if locked_until > 0 and locked_until <= now:
+            LOGIN_ATTEMPTS.pop(key, None)
+            return False
+
+        return locked_until > now and failure_count >= LOGIN_MAX_FAILURES
+
+
+def record_login_failure(username: str, client_ip: str) -> None:
+    key = login_attempt_key(username, client_ip)
+    now = time.time()
+
+    with LOGIN_ATTEMPTS_LOCK:
+        failure_count, locked_until = LOGIN_ATTEMPTS.get(key, (0, 0.0))
+        if locked_until > 0 and locked_until <= now:
+            failure_count = 0
+        failure_count += 1
+        next_locked_until = (
+            now + LOGIN_LOCKOUT_SECONDS if failure_count >= LOGIN_MAX_FAILURES else locked_until
+        )
+        LOGIN_ATTEMPTS[key] = (failure_count, next_locked_until)
+
+
+def clear_login_failures(username: str, client_ip: str) -> None:
+    with LOGIN_ATTEMPTS_LOCK:
+        LOGIN_ATTEMPTS.pop(login_attempt_key(username, client_ip), None)
 
 
 def ensure_daily_game(conn: sqlite3.Connection) -> sqlite3.Row:
@@ -1178,12 +1273,65 @@ class FultonsHandler(SimpleHTTPRequestHandler):
     server_version = "FultonsQuiz/0.1"
 
     def do_OPTIONS(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and not self.request_origin_allowed():
+            self.send_error_json(HTTPStatus.FORBIDDEN, "Origin is not allowed.")
+            return
+
         self.send_response(HTTPStatus.NO_CONTENT)
-        self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin", "*"))
-        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-News-Monitor-Key")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
         self.end_headers()
+
+    def end_headers(self) -> None:
+        self.send_security_headers()
+        self.send_cors_headers()
+        super().end_headers()
+
+    def send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        if COOKIE_SECURE:
+            self.send_header(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains",
+            )
+
+    def cors_allowed_origin(self) -> str | None:
+        origin = self.headers.get("Origin")
+        if origin and origin in CORS_ALLOWED_ORIGINS:
+            return origin
+        return None
+
+    def send_cors_headers(self) -> None:
+        origin = self.cors_allowed_origin()
+        if origin is None:
+            return
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Credentials", "true")
+        self.send_header("Vary", "Origin")
+
+    def client_ip(self) -> str:
+        return self.client_address[0] if self.client_address else "unknown"
+
+    def request_origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        if origin in CORS_ALLOWED_ORIGINS:
+            return True
+
+        host = self.headers.get("Host", "")
+        parsed_origin = urlparse(origin)
+        if parsed_origin.netloc == host:
+            return True
+
+        if not COOKIE_SECURE and parsed_origin.hostname in {"127.0.0.1", "localhost"}:
+            return True
+
+        return False
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -1254,6 +1402,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
     def handle_api(self, method: str, path: str, query: str = "") -> None:
         try:
+            if method in {"POST", "PATCH", "DELETE"} and not self.request_origin_allowed():
+                self.send_error_json(HTTPStatus.FORBIDDEN, "Origin is not allowed.")
+                return
             self.route_api(method, path.rstrip("/") or "/", query)
         except json.JSONDecodeError:
             self.send_error_json(HTTPStatus.BAD_REQUEST, "Invalid JSON body.")
@@ -1446,15 +1597,25 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         payload = self.read_json()
         username = str(payload.get("username", "")).strip()
         password = str(payload.get("password", ""))
+        client_ip = self.client_ip()
+
+        if is_login_locked(username, client_ip):
+            self.send_error_json(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "Too many login attempts. Try again later.",
+            )
+            return
 
         user = conn.execute(
             "SELECT * FROM users WHERE LOWER(username) = LOWER(?)",
             (username,),
         ).fetchone()
         if user is None or not verify_password(password, user["password_hash"]):
+            record_login_failure(username, client_ip)
             self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid username or password.")
             return
 
+        clear_login_failures(username, client_ip)
         token = create_session(conn, user["id"])
         self.send_json(
             HTTPStatus.OK,

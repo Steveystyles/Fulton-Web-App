@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -39,7 +40,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.QUIZ_DATA_DIR = data_dir / "quizzes"
             production_server.initialize_database()
 
-            with server.connect_db() as conn:
+            with closing(server.connect_db()) as conn:
                 count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
             self.assertEqual(count, 0)
         finally:

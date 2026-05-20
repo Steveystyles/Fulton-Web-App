@@ -37,9 +37,32 @@ if [ ! -f "${ENV_FILE}" ]; then
 # Private container environment for Fulton Web App.
 # Keep this file out of Git.
 FULTONS_NEWS_MONITOR_KEY=
+FULTONS_COOKIE_SECURE=1
+FULTONS_SEED_DEMO_USERS=0
+FULTONS_ALLOWED_ORIGINS=https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk
+FULTONS_MIN_PASSWORD_LENGTH=12
+FULTONS_LOGIN_MAX_ATTEMPTS=5
+FULTONS_LOGIN_WINDOW_SECONDS=300
+FULTONS_LOGIN_BACKOFF_SECONDS=60
 EOF
 fi
 chmod 600 "${ENV_FILE}"
+
+ensure_env_var() {
+  local key="${1:?key required}"
+  local value="${2:-}"
+  if ! grep -q "^${key}=" "${ENV_FILE}"; then
+    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_FILE}"
+  fi
+}
+
+ensure_env_var "FULTONS_COOKIE_SECURE" "1"
+ensure_env_var "FULTONS_SEED_DEMO_USERS" "0"
+ensure_env_var "FULTONS_ALLOWED_ORIGINS" "https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk"
+ensure_env_var "FULTONS_MIN_PASSWORD_LENGTH" "12"
+ensure_env_var "FULTONS_LOGIN_MAX_ATTEMPTS" "5"
+ensure_env_var "FULTONS_LOGIN_WINDOW_SECONDS" "300"
+ensure_env_var "FULTONS_LOGIN_BACKOFF_SECONDS" "60"
 
 if [ -d "${DATA_DIR}" ]; then
   backup_dir="${BACKUP_ROOT}/fultons-quiz-$(date -u +%Y%m%d%H%M%S)"

@@ -113,7 +113,7 @@ export function Admin() {
             <div className="min-w-0">
               <p className="text-xl font-black leading-tight text-slate-950">Add player</p>
               <p className="mt-1 text-sm font-semibold text-slate-600">
-                Create player or admin accounts.
+                Create player or admin accounts with 12+ character passwords.
               </p>
             </div>
           </div>
@@ -212,7 +212,7 @@ export function Admin() {
                       }))
                     }
                     className="h-11 min-w-0 flex-1 rounded-2xl border border-slate-300 bg-white px-3 text-sm font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
-                    placeholder="New password"
+                    placeholder="New password (12+ chars)"
                     type="password"
                     autoComplete="new-password"
                   />
