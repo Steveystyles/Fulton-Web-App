@@ -1,6 +1,5 @@
 import { Medal } from "lucide-react";
 import { Card } from "../components/Card";
-import { PageContainer } from "../components/PageContainer";
 
 const rows = [
   { rank: "1", name: "Dad", points: "120 pts" },
@@ -10,14 +9,14 @@ const rows = [
 
 export function Leaderboard() {
   return (
-    <PageContainer title="LEADERBOARD" number="4">
+    <section className="page-fade space-y-3" aria-label="Scores">
       <Card>
         <div className="flex items-center gap-3">
           <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-saints-red text-white">
             <Medal aria-hidden="true" className="h-6 w-6" strokeWidth={2.4} />
           </div>
           <div>
-            <p className="text-xl font-black text-slate-950">Friend rankings</p>
+            <p className="text-xl font-black text-slate-950">Scores</p>
             <p className="mt-1 text-sm font-semibold text-slate-600">
               Placeholder table for future scoring.
             </p>
@@ -45,6 +44,6 @@ export function Leaderboard() {
           ))}
         </div>
       </Card>
-    </PageContainer>
+    </section>
   );
 }

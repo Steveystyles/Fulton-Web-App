@@ -13,6 +13,8 @@ import sqlite3
 import sys
 import threading
 import time
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
@@ -52,16 +54,25 @@ NEWS_USER_AGENT = os.environ.get(
     "FULTONS_NEWS_USER_AGENT",
     "FultonsQuiz/0.1 (+https://fultons-quiz.co.uk)",
 )
+HISTORY_USER_AGENT = os.environ.get(
+    "UPSTREAM_USER_AGENT",
+    "FultonHistory/1.0 (+https://fultons-quiz.co.uk)",
+)
+HISTORY_CACHE_TTL_SEC = int(os.environ.get("HISTORY_CACHE_TTL_SEC", "86400"))
 DIFFICULTIES = ("easy", "medium", "hard")
 NEWS_QUERIES = (
     '"St Mirren"',
     '"St Mirren" football',
     '"St Mirren" transfer',
     '"St Mirren" Scottish Premiership',
+    '"St Mirren" live score',
+    '"Scottish Premiership" live scores',
 )
+SUPPORTED_HISTORY_LANGS = {"en", "fr", "de", "es", "it"}
 
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
+HISTORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -256,6 +267,7 @@ def initialize_database() -> None:
             seed_user(conn, "admin", "admin", "admin")
             seed_user(conn, "user1", "user1", "user")
             seed_user(conn, "user2", "user2", "user")
+        backfill_news_categories(conn)
 
 
 def ensure_column(
@@ -661,7 +673,6 @@ def validate_news_payload(payload: dict[str, Any]) -> dict[str, Any]:
     summary = bounded_text(payload.get("summary"), 500)
     host = bounded_text(payload.get("host"), 160)
     kind = bounded_text(payload.get("kind"), 40) or "article"
-    priority = bounded_text(payload.get("priority"), 40) or "media"
     published_at = bounded_text(payload.get("publishedAt"), 80) or utc_now()
 
     if not source_key:
@@ -676,6 +687,7 @@ def validate_news_payload(payload: dict[str, Any]) -> dict[str, Any]:
     raw_tags = payload.get("tags", [])
     tags = raw_tags if isinstance(raw_tags, list) else []
     clean_tags = [bounded_text(tag, 40) for tag in tags if bounded_text(tag, 40)]
+    priority, clean_tags = classify_news_item(title, summary, clean_tags)
 
     return {
         "source_key": source_key,
@@ -758,11 +770,22 @@ def upsert_news_item(
     return serialize_news_item(row), inserted
 
 
-def list_news_items(conn: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+def list_news_items(
+    conn: sqlite3.Connection,
+    limit: int,
+    category: str = "all",
+) -> list[dict[str, Any]]:
+    filters = {
+        "breaking": "priority = 'breaking'",
+        "live-scores": "priority = 'live-scores'",
+        "news": "priority = 'news'",
+    }
+    where_clause = f"WHERE {filters[category]}" if category in filters else ""
     rows = conn.execute(
-        """
+        f"""
         SELECT *
         FROM news_items
+        {where_clause}
         ORDER BY published_at DESC, created_at DESC, id DESC
         LIMIT ?
         """,
@@ -780,6 +803,79 @@ def broadcast_news_item(item: dict[str, Any]) -> None:
             stream.put_nowait(item)
         except queue.Full:
             pass
+
+
+def classify_news_item(
+    title: str,
+    summary: str,
+    tags: list[str],
+) -> tuple[str, list[str]]:
+    haystack = f"{title} {summary}".lower()
+    clean_tags = list(dict.fromkeys(tags))
+
+    live_score_terms = (
+        "live score",
+        "livescore",
+        "live scores",
+        "match centre",
+        "match center",
+        "fixtures",
+        "results",
+        "full-time",
+        "half-time",
+        "kick-off",
+    )
+    breaking_terms = (
+        "breaking",
+        "confirmed",
+        "signs",
+        "signing",
+        "transfer",
+        "injury",
+        "sacked",
+        "appointed",
+        "contract",
+        "deal",
+        "exclusive",
+        "urgent",
+    )
+
+    if any(term in haystack for term in live_score_terms):
+        clean_tags.append("live-scores")
+        return "live-scores", list(dict.fromkeys(clean_tags))
+
+    if any(term in haystack for term in breaking_terms):
+        clean_tags.append("breaking")
+        return "breaking", list(dict.fromkeys(clean_tags))
+
+    clean_tags.append("news")
+    return "news", list(dict.fromkeys(clean_tags))
+
+
+def backfill_news_categories(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, title, summary, tags_json
+        FROM news_items
+        WHERE priority NOT IN ('breaking', 'news', 'live-scores')
+        """
+    ).fetchall()
+
+    for row in rows:
+        try:
+            tags = json.loads(row["tags_json"])
+        except json.JSONDecodeError:
+            tags = []
+        clean_tags = tags if isinstance(tags, list) else []
+        priority, next_tags = classify_news_item(row["title"], row["summary"], clean_tags)
+        conn.execute(
+            """
+            UPDATE news_items
+            SET priority = ?, tags_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (priority, json.dumps(next_tags[:8]), utc_now(), row["id"]),
+        )
 
 
 def strip_html(value: str) -> str:
@@ -895,6 +991,187 @@ def start_news_monitor() -> None:
 
     thread = threading.Thread(target=news_monitor_loop, daemon=True)
     thread.start()
+
+
+def normalise_history_lang(value: str) -> str:
+    lang = str(value or "en").lower().split("-")[0]
+    return lang if lang in SUPPORTED_HISTORY_LANGS else "en"
+
+
+def normalise_history_location(value: str) -> str:
+    location = unicodedata.normalize("NFC", str(value or "")).strip()
+    if len(location) > 120:
+        raise ValueError("Location must be 120 characters or fewer.")
+    if any(ord(character) < 32 for character in location):
+        raise ValueError("Location contains invalid characters.")
+    return location
+
+
+def parse_history_date(value: str) -> tuple[str, int, int] | None:
+    raw = str(value or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return None
+
+    try:
+        parsed = datetime.strptime(raw, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+    return raw, parsed.month, parsed.day
+
+
+def history_cache_get(key: str) -> dict[str, Any] | None:
+    cached = HISTORY_CACHE.get(key)
+    if cached is None:
+        return None
+
+    stored_at, payload = cached
+    if time.time() - stored_at > HISTORY_CACHE_TTL_SEC:
+        HISTORY_CACHE.pop(key, None)
+        return None
+
+    result = dict(payload)
+    result["meta"] = {**payload.get("meta", {}), "cached": True}
+    return result
+
+
+def history_cache_set(key: str, payload: dict[str, Any]) -> None:
+    HISTORY_CACHE[key] = (time.time(), payload)
+
+
+def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
+    request = Request(url, headers={"User-Agent": HISTORY_USER_AGENT})
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def wikipedia_summary_url(lang: str, title: str) -> str:
+    safe_title = quote_plus(title.replace(" ", "_"), safe=",")
+    return f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{safe_title}"
+
+
+def fetch_wikipedia_summary(location: str, lang: str) -> dict[str, Any]:
+    try:
+        return fetch_json_url(wikipedia_summary_url(lang, location))
+    except Exception:
+        search_url = (
+            f"https://{lang}.wikipedia.org/w/rest.php/v1/search/page"
+            f"?q={quote_plus(location)}&limit=1"
+        )
+        search = fetch_json_url(search_url)
+        pages = search.get("pages")
+        if not isinstance(pages, list) or not pages:
+            raise LookupError("Location not found.")
+
+        title = pages[0].get("title")
+        if not title:
+            raise LookupError("Location not found.")
+        return fetch_json_url(wikipedia_summary_url(lang, str(title)))
+
+
+def text_facts_from_extract(extract: str, limit: int) -> list[str]:
+    sentences = re.split(r"(?<=[.!?])\s+", str(extract or ""))
+    return [sentence.strip() for sentence in sentences if sentence.strip()][:limit]
+
+
+def fetch_history_events(month: int, day: int, limit: int) -> list[dict[str, Any]]:
+    payload = fetch_json_url(f"https://history.muffinlabs.com/date/{month}/{day}")
+    events = payload.get("data", {}).get("Events", [])
+    if not isinstance(events, list):
+        return []
+
+    return [
+        {
+            "year": str(item.get("year", "")),
+            "text": str(item.get("text", "")),
+            "links": item.get("links", []) if isinstance(item.get("links"), list) else [],
+        }
+        for item in events[:limit]
+        if isinstance(item, dict) and item.get("text")
+    ]
+
+
+def history_payload(
+    location: str,
+    date_value: str,
+    lang: str,
+    limit_facts: int,
+    limit_events: int,
+) -> tuple[dict[str, Any], int]:
+    location = normalise_history_location(location)
+    parsed_date = parse_history_date(date_value)
+    if not location:
+        return {"error": "Location is required."}, HTTPStatus.BAD_REQUEST
+    if parsed_date is None:
+        return {"error": "Date must be a valid YYYY-MM-DD date."}, HTTPStatus.BAD_REQUEST
+
+    iso_date, month, day = parsed_date
+    cache_key = f"{lang}:{location.lower()}:{iso_date}:{limit_facts}:{limit_events}"
+    cached = history_cache_get(cache_key)
+    if cached is not None:
+        return cached, HTTPStatus.OK
+
+    warnings: list[dict[str, str]] = []
+    location_payload: dict[str, Any] | None = None
+    global_events: list[dict[str, Any]] = []
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        wiki_future = executor.submit(fetch_wikipedia_summary, location, lang)
+        events_future = executor.submit(fetch_history_events, month, day, limit_events)
+
+        try:
+            wiki = wiki_future.result()
+            content_urls = wiki.get("content_urls", {})
+            desktop_urls = content_urls.get("desktop", {}) if isinstance(content_urls, dict) else {}
+            thumbnail = wiki.get("thumbnail", {})
+            location_payload = {
+                "title": wiki.get("title") or location,
+                "description": wiki.get("description"),
+                "facts": text_facts_from_extract(str(wiki.get("extract", "")), limit_facts),
+                "articleUrl": desktop_urls.get("page"),
+                "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
+            }
+        except LookupError:
+            return {"error": f"No location facts found for {location}."}, HTTPStatus.NOT_FOUND
+        except Exception as error:
+            safe_log(f"History Wikipedia fetch failed: {error}")
+            warnings.append(
+                {
+                    "source": "wikipedia",
+                    "code": "upstream_unavailable",
+                    "detail": "Location facts are currently unavailable.",
+                }
+            )
+
+        try:
+            global_events = events_future.result()
+        except Exception as error:
+            safe_log(f"History events fetch failed: {error}")
+            warnings.append(
+                {
+                    "source": "history-muffinlabs",
+                    "code": "upstream_unavailable",
+                    "detail": "This day in history is currently unavailable.",
+                }
+            )
+
+    if location_payload is None and not global_events:
+        return {"error": "History sources are currently unavailable."}, HTTPStatus.SERVICE_UNAVAILABLE
+
+    payload = {
+        "request": {"location": location, "date": iso_date, "lang": lang},
+        "location": location_payload,
+        "globalEvents": global_events,
+        "partial": bool(warnings),
+        "warnings": warnings,
+        "meta": {
+            "cached": False,
+            "eventsLanguage": "en",
+            "generatedAt": utc_now(),
+        },
+    }
+    history_cache_set(cache_key, payload)
+    return payload, HTTPStatus.OK
 
 
 class FultonsHandler(SimpleHTTPRequestHandler):
@@ -1054,6 +1331,22 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, ensure_daily_questions())
                 return
 
+            if path == "/api/history" and method == "GET":
+                location = str(params.get("location", [""])[0]).strip()
+                date_value = str(params.get("date", [today_game_date()])[0]).strip()
+                lang = normalise_history_lang(params.get("lang", ["en"])[0])
+                limit_facts = self.query_int(params, "limitFacts", 3, 1, 5)
+                limit_events = self.query_int(params, "limitEvents", 5, 1, 10)
+                payload, status = history_payload(
+                    location,
+                    date_value,
+                    lang,
+                    limit_facts,
+                    limit_events,
+                )
+                self.send_json(status, payload)
+                return
+
             category_match = re.fullmatch(r"/api/daily-questions/(football|general)", path)
             if category_match is not None and method == "GET":
                 payload = ensure_daily_questions()
@@ -1066,7 +1359,13 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/news" and method == "GET":
                 limit = self.query_int(params, "limit", NEWS_LIMIT_DEFAULT, 1, NEWS_LIMIT_MAX)
-                self.send_json(HTTPStatus.OK, {"items": list_news_items(conn, limit)})
+                category = params.get("category", ["all"])[0]
+                if category not in {"all", "breaking", "news", "live-scores"}:
+                    category = "all"
+                self.send_json(
+                    HTTPStatus.OK,
+                    {"items": list_news_items(conn, limit, category), "category": category},
+                )
                 return
 
             validate_match = re.fullmatch(r"/api/wordle/validate/([A-Za-z]+)", path)

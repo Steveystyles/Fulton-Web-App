@@ -77,9 +77,46 @@ export type NewsItem = {
   updatedAt: string;
 };
 
+export type NewsCategory = "all" | "breaking" | "news" | "live-scores";
+
+export type NewsResponse = {
+  items: NewsItem[];
+  category: NewsCategory;
+};
+
+export type HistoryEvent = {
+  year: string;
+  text: string;
+  links: Array<{ title?: string; link?: string }>;
+};
+
+export type HistoryResponse = {
+  request: {
+    location: string;
+    date: string;
+    lang: string;
+  };
+  location: {
+    title: string;
+    description: string | null;
+    facts: string[];
+    articleUrl: string | null;
+    thumbnailUrl: string | null;
+  } | null;
+  globalEvents: HistoryEvent[];
+  partial: boolean;
+  warnings: Array<{ source: string; code: string; detail: string }>;
+  meta: {
+    cached: boolean;
+    eventsLanguage: string;
+    generatedAt: string;
+  };
+};
+
 type JsonBody = Record<string, unknown>;
 
 let dailyQuestionsPromise: Promise<DailyQuestionsResponse> | undefined;
+const newsPromises = new Map<string, Promise<NewsResponse>>();
 
 export class ApiError extends Error {
   status: number;
@@ -118,6 +155,33 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 function jsonBody(body: JsonBody): string {
   return JSON.stringify(body);
+}
+
+function newsCacheKey(limit: number, category: NewsCategory) {
+  return `${category}:${limit}`;
+}
+
+function fetchNews(
+  limit = 50,
+  category: NewsCategory = "all",
+  options: { force?: boolean } = {},
+) {
+  const boundedLimit = Math.max(1, Math.min(100, limit));
+  const cacheKey = newsCacheKey(boundedLimit, category);
+  const existingPromise = newsPromises.get(cacheKey);
+
+  if (!options.force && existingPromise !== undefined) {
+    return existingPromise;
+  }
+
+  const promise = request<NewsResponse>(
+    `/api/news?limit=${boundedLimit}&category=${category}`,
+  ).catch((error) => {
+    newsPromises.delete(cacheKey);
+    throw error;
+  });
+  newsPromises.set(cacheKey, promise);
+  return promise;
 }
 
 export const api = {
@@ -175,9 +239,24 @@ export const api = {
     return dailyQuestionsPromise;
   },
 
-  news(limit = 50) {
-    const boundedLimit = Math.max(1, Math.min(100, limit));
-    return request<{ items: NewsItem[] }>(`/api/news?limit=${boundedLimit}`);
+  news(limit = 50, category: NewsCategory = "all", options?: { force?: boolean }) {
+    return fetchNews(limit, category, options);
+  },
+
+  warmNews() {
+    void fetchNews(50, "all").catch(() => undefined);
+    void fetchNews(50, "breaking").catch(() => undefined);
+    void fetchNews(50, "live-scores").catch(() => undefined);
+    void fetchNews(5, "breaking").catch(() => undefined);
+  },
+
+  history(params: { location: string; date: string; lang?: string }) {
+    const searchParams = new URLSearchParams({
+      location: params.location,
+      date: params.date,
+      lang: params.lang ?? "en",
+    });
+    return request<HistoryResponse>(`/api/history?${searchParams.toString()}`);
   },
 
   adminUsers() {

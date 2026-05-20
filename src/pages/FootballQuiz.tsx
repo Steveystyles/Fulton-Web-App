@@ -1,5 +1,4 @@
 import { DailyQuiz } from "../components/DailyQuiz";
-import { PageContainer } from "../components/PageContainer";
 import type { DailyQuizQuestion } from "../lib/api";
 
 type FootballQuizProps = {
@@ -16,7 +15,7 @@ export function FootballQuiz({
   error,
 }: FootballQuizProps) {
   return (
-    <PageContainer title="FOOTBALL QUIZ" number="2">
+    <section className="page-fade space-y-3" aria-label="Football quiz">
       <DailyQuiz
         quizDate={quizDate}
         questions={questions}
@@ -24,6 +23,6 @@ export function FootballQuiz({
         error={error}
         emptyMessage="Today's football quiz is not available yet."
       />
-    </PageContainer>
+    </section>
   );
 }

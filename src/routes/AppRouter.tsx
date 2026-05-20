@@ -77,6 +77,7 @@ export function AppRouter() {
     }
 
     void loadDailyQuestions();
+    api.warmNews();
 
     return () => {
       active = false;
@@ -106,6 +107,18 @@ export function AppRouter() {
         <Routes>
           <Route
             path="/"
+            element={<Navigate to="/scores" replace />}
+          />
+          <Route
+            path="/scores"
+            element={
+              <AppFrame compact>
+                <Leaderboard />
+              </AppFrame>
+            }
+          />
+          <Route
+            path="/wordle"
             element={
               <AppFrame compact>
                 <Wordle />
@@ -140,11 +153,7 @@ export function AppRouter() {
           />
           <Route
             path="/leaderboard"
-            element={
-              <AppFrame>
-                <Leaderboard />
-              </AppFrame>
-            }
+            element={<Navigate to="/scores" replace />}
           />
           <Route
             path="/news"
@@ -174,7 +183,7 @@ export function AppRouter() {
               )
             }
           />
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/scores" replace />} />
         </Routes>
       </div>
     </BrowserRouter>

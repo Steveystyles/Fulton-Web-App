@@ -1,10 +1,23 @@
-import { ExternalLink, LoaderCircle, Newspaper, Radio } from "lucide-react";
+import {
+  ExternalLink,
+  LoaderCircle,
+  Newspaper,
+  Radio,
+  Trophy,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../components/Card";
-import { PageContainer } from "../components/PageContainer";
-import { api, type NewsItem } from "../lib/api";
+import { HistoryKnowledge } from "../components/HistoryKnowledge";
+import { api, type NewsCategory, type NewsItem } from "../lib/api";
 
 type FeedStatus = "loading" | "live" | "polling" | "offline";
+
+const categoryOptions: Array<{ value: NewsCategory; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "breaking", label: "Breaking" },
+  { value: "live-scores", label: "Live scores" },
+  { value: "news", label: "News" },
+];
 
 function mergeItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
   const itemsByKey = new Map<string, NewsItem>();
@@ -32,8 +45,23 @@ function formatPublishedAt(value: string) {
   }).format(date);
 }
 
+function formatPriority(priority: string) {
+  if (priority === "live-scores") {
+    return "Live scores";
+  }
+  if (priority === "breaking") {
+    return "Breaking";
+  }
+  return "News";
+}
+
+function shouldShowItem(item: NewsItem, category: NewsCategory) {
+  return category === "all" || item.priority === category;
+}
+
 export function News() {
   const [items, setItems] = useState<NewsItem[]>([]);
+  const [category, setCategory] = useState<NewsCategory>("all");
   const [status, setStatus] = useState<FeedStatus>("loading");
   const [error, setError] = useState("");
 
@@ -42,9 +70,13 @@ export function News() {
     let stream: EventSource | null = null;
     let pollTimer: number | undefined;
 
-    async function loadLatest(nextStatus: FeedStatus) {
+    setItems([]);
+    setStatus("loading");
+    setError("");
+
+    async function loadLatest(nextStatus: FeedStatus, force = false) {
       try {
-        const response = await api.news(50);
+        const response = await api.news(50, category, { force });
         if (active) {
           setItems((currentItems) => mergeItems(currentItems, response.items));
           setStatus(nextStatus);
@@ -72,7 +104,9 @@ export function News() {
           return;
         }
         const item = JSON.parse((event as MessageEvent<string>).data) as NewsItem;
-        setItems((currentItems) => mergeItems(currentItems, [item]));
+        if (shouldShowItem(item, category)) {
+          setItems((currentItems) => mergeItems(currentItems, [item]));
+        }
         setStatus("live");
       });
       stream.onerror = () => {
@@ -80,12 +114,12 @@ export function News() {
         stream = null;
         if (active) {
           setStatus("polling");
-          pollTimer = window.setInterval(() => void loadLatest("polling"), 60_000);
+          pollTimer = window.setInterval(() => void loadLatest("polling", true), 60_000);
         }
       };
     } catch {
       setStatus("polling");
-      pollTimer = window.setInterval(() => void loadLatest("polling"), 60_000);
+      pollTimer = window.setInterval(() => void loadLatest("polling", true), 60_000);
     }
 
     return () => {
@@ -95,7 +129,7 @@ export function News() {
         window.clearInterval(pollTimer);
       }
     };
-  }, []);
+  }, [category]);
 
   const statusLabel = useMemo(() => {
     if (status === "loading") {
@@ -110,30 +144,72 @@ export function News() {
     return "Offline";
   }, [status]);
 
+  const selectedCategoryLabel = useMemo(() => {
+    return categoryOptions.find((option) => option.value === category)?.label ?? "All";
+  }, [category]);
+  const emptyStoryLabel =
+    category === "all" ? "stories" : `${selectedCategoryLabel.toLowerCase()} stories`;
+
   return (
-    <PageContainer title="NEWS" number="5">
-      <Card>
-        <div className="flex items-start gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-saints-black text-white">
-            {status === "loading" ? (
-              <LoaderCircle aria-hidden="true" className="h-6 w-6 animate-spin" />
-            ) : (
-              <Radio aria-hidden="true" className="h-6 w-6" strokeWidth={2.4} />
-            )}
-          </div>
-          <div className="min-w-0">
-            <p className="text-xl font-black leading-tight text-slate-950">
-              St Mirren news feed
-            </p>
-            <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-600">
-              {statusLabel} delivery from the app news API.
-            </p>
-            {error ? (
-              <p className="mt-2 rounded-2xl bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
-                {error}
+    <section className="page-fade space-y-3" aria-label="News and local knowledge">
+      <Card className="p-3">
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-saints-black text-white">
+              {status === "loading" ? (
+                <LoaderCircle aria-hidden="true" className="h-5 w-5 animate-spin" />
+              ) : (
+                <Radio aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+              )}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-lg font-black leading-tight text-slate-950">
+                St Mirren feed
               </p>
-            ) : null}
+              <p className="mt-1 text-sm font-semibold text-slate-600">
+                {selectedCategoryLabel} - {statusLabel}
+              </p>
+            </div>
+            <span
+              className={[
+                "rounded-full px-3 py-1 text-xs font-black uppercase",
+                status === "live"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : status === "offline"
+                    ? "bg-red-50 text-saints-red"
+                    : "bg-slate-100 text-slate-600",
+              ].join(" ")}
+            >
+              {statusLabel}
+            </span>
           </div>
+
+          <div className="grid grid-cols-2 gap-2" aria-label="News filters">
+            {categoryOptions.map((option) => {
+              const active = option.value === category;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setCategory(option.value)}
+                  className={[
+                    "flex min-h-11 items-center justify-center rounded-xl border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
+                    active
+                      ? "border-saints-red bg-saints-red text-white"
+                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-saints-red/40 hover:bg-white",
+                  ].join(" ")}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {error ? (
+            <p className="rounded-2xl bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
+              {error}
+            </p>
+          ) : null}
         </div>
       </Card>
 
@@ -146,9 +222,11 @@ export function News() {
               strokeWidth={2.4}
             />
             <div>
-              <p className="text-lg font-black text-slate-950">No breaking stories yet</p>
+              <p className="text-lg font-black text-slate-950">
+                No {emptyStoryLabel} yet
+              </p>
               <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-600">
-                New stories will appear here when the monitor posts them into the app.
+                New stories will appear here as the app news monitor finds them.
               </p>
             </div>
           </div>
@@ -161,7 +239,7 @@ export function News() {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                  {item.source} · {formatPublishedAt(item.publishedAt)}
+                  {item.source} - {formatPublishedAt(item.publishedAt)}
                 </p>
                 <h3 className="mt-2 text-lg font-black leading-tight text-slate-950">
                   {item.title}
@@ -184,21 +262,27 @@ export function News() {
               </p>
             ) : null}
 
-            {item.tags.length > 0 ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {item.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black uppercase text-slate-600"
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            ) : null}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-black uppercase text-saints-red">
+                {item.priority === "live-scores" ? (
+                  <Trophy aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+                ) : null}
+                {formatPriority(item.priority)}
+              </span>
+              {item.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black uppercase text-slate-600"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
           </Card>
         ))}
       </section>
-    </PageContainer>
+
+      <HistoryKnowledge />
+    </section>
   );
 }

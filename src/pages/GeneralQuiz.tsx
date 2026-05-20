@@ -1,5 +1,4 @@
 import { DailyQuiz } from "../components/DailyQuiz";
-import { PageContainer } from "../components/PageContainer";
 import type { DailyQuizQuestion } from "../lib/api";
 
 type GeneralQuizProps = {
@@ -16,7 +15,7 @@ export function GeneralQuiz({
   error,
 }: GeneralQuizProps) {
   return (
-    <PageContainer title="GENERAL QUIZ" number="3">
+    <section className="page-fade space-y-3" aria-label="General knowledge quiz">
       <DailyQuiz
         quizDate={quizDate}
         questions={questions}
@@ -24,6 +23,6 @@ export function GeneralQuiz({
         error={error}
         emptyMessage="Today's general knowledge quiz is not available yet."
       />
-    </PageContainer>
+    </section>
   );
 }

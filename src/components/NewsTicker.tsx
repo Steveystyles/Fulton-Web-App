@@ -11,9 +11,11 @@ export function NewsTicker() {
 
     async function loadHeadlines() {
       try {
-        const response = await api.news(5);
+        const response = await api.news(5, "breaking");
+        const fallbackResponse =
+          response.items.length === 0 ? await api.news(5, "all") : response;
         if (active) {
-          setItems(response.items);
+          setItems(fallbackResponse.items);
         }
       } catch {
         if (active) {

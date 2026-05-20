@@ -2,10 +2,10 @@ import { CircleHelp, Hash, Newspaper, Trophy, UsersRound } from "lucide-react";
 import { NavItem } from "./NavItem";
 
 const navItems = [
-  { to: "/", label: "Wordle", icon: Hash, end: true },
+  { to: "/scores", label: "Scores", icon: Trophy, end: true },
+  { to: "/wordle", label: "Wordle", icon: Hash },
   { to: "/football", label: "Football", icon: CircleHelp },
   { to: "/general", label: "General", icon: UsersRound },
-  { to: "/leaderboard", label: "Leaders", icon: Trophy },
   { to: "/news", label: "News", icon: Newspaper },
 ];
 

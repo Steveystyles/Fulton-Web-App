@@ -55,7 +55,7 @@ a {
 }
 
 .ticker-track {
-  animation: ticker 24s linear infinite;
+  animation: ticker 52s linear infinite;
 }
 
 .ticker-frame:hover .ticker-track,
