@@ -5,8 +5,8 @@ import { useAuth } from "../context/AuthContext";
 
 export function Login() {
   const { login } = useAuth();
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -96,7 +96,7 @@ export function Login() {
               strokeWidth={2.4}
             />
             <p className="min-w-0">
-              Test accounts: admin/admin, user1/user1, user2/user2.
+              Sign in with the account created for you by an administrator.
             </p>
           </div>
         </section>
