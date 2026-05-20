@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import hmac
 import json
 import os
@@ -11,13 +12,17 @@ import secrets
 import sqlite3
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.request import Request, urlopen
+from xml.etree import ElementTree
 
 try:
     from zoneinfo import ZoneInfo
@@ -38,7 +43,22 @@ SERVER_TZ_NAME = os.environ.get("FULTONS_TIMEZONE", "Europe/London")
 NEWS_MONITOR_KEY = os.environ.get("FULTONS_NEWS_MONITOR_KEY", "")
 NEWS_LIMIT_DEFAULT = 50
 NEWS_LIMIT_MAX = 100
+NEWS_MONITOR_ENABLED = os.environ.get("FULTONS_NEWS_MONITOR_ENABLED", "1") != "0"
+NEWS_MONITOR_INTERVAL_SEC = max(
+    300,
+    int(os.environ.get("FULTONS_NEWS_MONITOR_INTERVAL_SEC", "900")),
+)
+NEWS_USER_AGENT = os.environ.get(
+    "FULTONS_NEWS_USER_AGENT",
+    "FultonsQuiz/0.1 (+https://fultons-quiz.co.uk)",
+)
 DIFFICULTIES = ("easy", "medium", "hard")
+NEWS_QUERIES = (
+    '"St Mirren"',
+    '"St Mirren" football',
+    '"St Mirren" transfer',
+    '"St Mirren" Scottish Premiership',
+)
 
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
@@ -762,6 +782,121 @@ def broadcast_news_item(item: dict[str, Any]) -> None:
             pass
 
 
+def strip_html(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html.unescape(value))).strip()
+
+
+def parse_news_datetime(value: str) -> str:
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+    except Exception:
+        return utc_now()
+
+
+def google_news_rss_url(query: str) -> str:
+    return (
+        "https://news.google.com/rss/search"
+        f"?q={quote_plus(query)}&hl=en-GB&gl=GB&ceid=GB:en"
+    )
+
+
+def fetch_news_feed(query: str) -> list[dict[str, Any]]:
+    request = Request(
+        google_news_rss_url(query),
+        headers={"User-Agent": NEWS_USER_AGENT},
+    )
+    with urlopen(request, timeout=10) as response:
+        raw_xml = response.read()
+
+    root = ElementTree.fromstring(raw_xml)
+    items: list[dict[str, Any]] = []
+
+    for entry in root.findall("./channel/item")[:10]:
+        title = strip_html(entry.findtext("title") or "")
+        url = (entry.findtext("link") or "").strip()
+        summary = strip_html(entry.findtext("description") or "")
+        published_at = parse_news_datetime(entry.findtext("pubDate") or "")
+        source = strip_html(entry.findtext("source") or "Google News")
+        host = urlparse(url).netloc
+
+        if not title or not url.startswith(("http://", "https://")):
+            continue
+
+        source_key = hashlib.sha256(f"{title}|{url}".encode("utf-8")).hexdigest()
+        items.append(
+            {
+                "sourceKey": source_key,
+                "kind": "article",
+                "title": title,
+                "url": url,
+                "source": source,
+                "summary": summary,
+                "publishedAt": published_at,
+                "host": host,
+                "priority": "media",
+                "tags": ["st-mirren", "scottish-football"],
+            }
+        )
+
+    return items
+
+
+def ingest_news_once() -> int:
+    inserted_count = 0
+    seen_keys: set[str] = set()
+
+    with connect_db() as conn:
+        for query in NEWS_QUERIES:
+            try:
+                items = fetch_news_feed(query)
+            except Exception as error:
+                safe_log(f"News monitor fetch failed for {query}: {error}")
+                continue
+
+            for payload in items:
+                source_key = str(payload.get("sourceKey", ""))
+                if source_key in seen_keys:
+                    continue
+                seen_keys.add(source_key)
+
+                try:
+                    item, inserted = upsert_news_item(conn, payload)
+                except ValueError as error:
+                    safe_log(f"News monitor skipped item: {error}")
+                    continue
+
+                if inserted:
+                    inserted_count += 1
+                    broadcast_news_item(item)
+
+    return inserted_count
+
+
+def news_monitor_loop() -> None:
+    safe_log("News monitor started")
+
+    while True:
+        try:
+            inserted_count = ingest_news_once()
+            if inserted_count:
+                safe_log(f"News monitor inserted {inserted_count} item(s)")
+        except Exception as error:
+            safe_log(f"News monitor error: {error}")
+        time.sleep(NEWS_MONITOR_INTERVAL_SEC)
+
+
+def start_news_monitor() -> None:
+    if not NEWS_MONITOR_ENABLED:
+        safe_log("News monitor disabled")
+        return
+
+    thread = threading.Thread(target=news_monitor_loop, daemon=True)
+    thread.start()
+
+
 class FultonsHandler(SimpleHTTPRequestHandler):
     server_version = "FultonsQuiz/0.1"
 
@@ -1247,6 +1382,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
 def run() -> None:
     initialize_database()
+    start_news_monitor()
     host = os.environ.get("FULTONS_HOST", "127.0.0.1")
     port = int(os.environ.get("FULTONS_PORT", "8000"))
     server = ThreadingHTTPServer((host, port), FultonsHandler)
