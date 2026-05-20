@@ -8,6 +8,7 @@ COMPOSE_DIR="${COMPOSE_DIR:-${HOME}/fulton-web-app-deploy}"
 DATA_DIR="${DATA_DIR:-/srv/storage/appdata/fultons-quiz}"
 BACKUP_ROOT="${BACKUP_ROOT:-/srv/storage/backups}"
 COMPOSE_FILE="${COMPOSE_DIR}/compose.yaml"
+ENV_FILE="${ENV_FILE:-${DATA_DIR}/app.env}"
 
 log() {
   printf '[fultons-deploy] %s\n' "$*"
@@ -30,6 +31,16 @@ fi
 
 mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}"
 
+if [ ! -f "${ENV_FILE}" ]; then
+  log "Creating private app env file at ${ENV_FILE}"
+  cat > "${ENV_FILE}" <<'EOF'
+# Private container environment for Fulton Web App.
+# Keep this file out of Git.
+FULTONS_NEWS_MONITOR_KEY=
+EOF
+fi
+chmod 600 "${ENV_FILE}"
+
 if [ -d "${DATA_DIR}" ]; then
   backup_dir="${BACKUP_ROOT}/fultons-quiz-$(date -u +%Y%m%d%H%M%S)"
   log "Backing up ${DATA_DIR} to ${backup_dir}"
@@ -49,6 +60,7 @@ fi
 
 log "Building and starting fultons-quiz"
 export FULTONS_SRC_DIR="${SRC_DIR}"
+export FULTONS_ENV_FILE="${ENV_FILE}"
 docker compose -f "${COMPOSE_FILE}" up -d --build
 
 log "Waiting for health endpoint"

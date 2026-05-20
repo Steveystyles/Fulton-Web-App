@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     expose:
       - "3000"
+    env_file:
+      - ${FULTONS_ENV_FILE:-/srv/storage/appdata/fultons-quiz/app.env}
     environment:
       FULTONS_HOST: 0.0.0.0
       FULTONS_PORT: 3000
