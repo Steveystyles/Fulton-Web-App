@@ -263,7 +263,7 @@ FACT_THEME_KEYWORDS = {
         "singer",
         "footballer",
         "politician",
-        "notable",
+        "notable people",
         "people",
     ),
     "date": (
