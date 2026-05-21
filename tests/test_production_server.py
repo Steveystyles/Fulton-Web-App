@@ -176,6 +176,8 @@ class ProductionServerHardeningTests(unittest.TestCase):
             "8 emerging transfer headlines as Hibs and Aberdeen eye centre backs",
             "Craig McLeish on St Mirren injury news and contract talks",
             "Premier Sports Cup group stage draw date and time confirmed",
+            "Lack of goals could be Buddies' downfall in play-off clash",
+            "St Mirren warm-up for their relegation play-off",
         ]
 
         for title in routine_titles:

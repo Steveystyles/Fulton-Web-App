@@ -1416,6 +1416,14 @@ def broadcast_news_item(item: dict[str, Any]) -> None:
             pass
 
 
+def contains_news_term(text: str, terms: tuple[str, ...]) -> bool:
+    for term in terms:
+        pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
+        if re.search(pattern, text):
+            return True
+    return False
+
+
 def classify_news_item(
     title: str,
     summary: str,
@@ -1461,12 +1469,13 @@ def classify_news_item(
         "called off",
     )
 
-    if any(term in haystack for term in live_score_terms):
+    if contains_news_term(haystack, live_score_terms):
         clean_tags.append("live-scores")
         return "live-scores", list(dict.fromkeys(clean_tags))
 
-    if any(term in haystack for term in explicit_breaking_terms) or any(
-        term in haystack for term in high_impact_breaking_terms
+    if contains_news_term(haystack, explicit_breaking_terms) or contains_news_term(
+        haystack,
+        high_impact_breaking_terms,
     ):
         clean_tags.append("breaking")
         return "breaking", list(dict.fromkeys(clean_tags))
