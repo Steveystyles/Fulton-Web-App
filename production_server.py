@@ -237,12 +237,6 @@ _original_end_headers = server.FultonsHandler.end_headers
 
 
 def end_headers(self: server.FultonsHandler) -> None:
-    self.send_header("X-Content-Type-Options", "nosniff")
-    self.send_header("X-Frame-Options", "DENY")
-    self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
-    self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-    if COOKIE_SECURE:
-        self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     _original_end_headers(self)
 
 
@@ -260,6 +254,7 @@ def do_OPTIONS(self: server.FultonsHandler) -> None:
 
 
 def apply_hardening() -> None:
+    server.COOKIE_SECURE = COOKIE_SECURE
     server.validate_password = validate_password
     server.session_header = session_header
     server.clear_session_header = clear_session_header

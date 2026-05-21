@@ -27,6 +27,29 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn("SameSite=Lax", header)
         self.assertIn("Secure", header)
 
+    def test_production_permissions_policy_allows_geolocation(self) -> None:
+        import production_server
+
+        sent_headers: list[tuple[str, str]] = []
+
+        class DummyHandler:
+            def send_header(self, name: str, value: str) -> None:
+                sent_headers.append((name, value))
+
+        def original_end_headers(handler: DummyHandler) -> None:
+            handler.send_header(
+                "Permissions-Policy",
+                "camera=(), microphone=(), geolocation=(self)",
+            )
+
+        with patch.object(production_server, "_original_end_headers", original_end_headers):
+            production_server.end_headers(DummyHandler())  # type: ignore[arg-type]
+
+        policy_headers = [
+            value for name, value in sent_headers if name.lower() == "permissions-policy"
+        ]
+        self.assertEqual(policy_headers, ["camera=(), microphone=(), geolocation=(self)"])
+
     def test_production_database_does_not_seed_demo_users_by_default(self) -> None:
         import production_server
         import server
