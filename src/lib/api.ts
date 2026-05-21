@@ -184,6 +184,23 @@ function fetchNews(
   return promise;
 }
 
+function fetchDailyQuestions(options: { force?: boolean } = {}) {
+  if (options.force) {
+    dailyQuestionsPromise = undefined;
+  }
+
+  if (dailyQuestionsPromise === undefined) {
+    dailyQuestionsPromise = request<DailyQuestionsResponse>("/api/daily-questions").catch(
+      (error) => {
+        dailyQuestionsPromise = undefined;
+        throw error;
+      },
+    );
+  }
+
+  return dailyQuestionsPromise;
+}
+
 export const api = {
   me() {
     return request<{ user: User }>("/api/auth/me");
@@ -226,17 +243,8 @@ export const api = {
     });
   },
 
-  dailyQuestions() {
-    if (dailyQuestionsPromise === undefined) {
-      dailyQuestionsPromise = request<DailyQuestionsResponse>("/api/daily-questions").catch(
-        (error) => {
-          dailyQuestionsPromise = undefined;
-          throw error;
-        },
-      );
-    }
-
-    return dailyQuestionsPromise;
+  dailyQuestions(options?: { force?: boolean }) {
+    return fetchDailyQuestions(options);
   },
 
   news(limit = 50, category: NewsCategory = "all", options?: { force?: boolean }) {

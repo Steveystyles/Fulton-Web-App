@@ -1,14 +1,34 @@
-import { ArrowRight, Check, CircleAlert, LoaderCircle, RotateCcw, X } from "lucide-react";
+import { ArrowRight, Check, CircleAlert, LoaderCircle, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { DailyQuizQuestion, QuizDifficulty } from "../lib/api";
 import { Card } from "./Card";
 
 type DailyQuizProps = {
+  quizId: "football" | "general";
+  storageScope: string | number;
   quizDate?: string;
   questions: DailyQuizQuestion[];
   loading: boolean;
   error: Error | null;
   emptyMessage: string;
+};
+
+type StoredQuizState = {
+  version: 1;
+  currentIndex: number;
+  answers: string[];
+};
+
+type QuizRuntimeState = StoredQuizState & {
+  storageKey: string;
+};
+
+const storageVersion = 1;
+const emptyRuntimeState: QuizRuntimeState = {
+  storageKey: "",
+  version: storageVersion,
+  currentIndex: 0,
+  answers: [],
 };
 
 const difficultyClasses: Record<QuizDifficulty, string> = {
@@ -30,29 +50,108 @@ function formatQuizDate(quizDate?: string) {
   }).format(new Date(year, month - 1, day));
 }
 
+function quizStorageKey(
+  quizId: DailyQuizProps["quizId"],
+  storageScope: DailyQuizProps["storageScope"],
+  quizDate: string,
+) {
+  return `fultons:daily-quiz:${storageScope}:${quizId}:${quizDate}`;
+}
+
+function normaliseStoredState(value: unknown, questionCount: number): StoredQuizState {
+  if (value === null || typeof value !== "object") {
+    return { version: storageVersion, currentIndex: 0, answers: [] };
+  }
+
+  const payload = value as Partial<StoredQuizState>;
+  const answers = Array.isArray(payload.answers)
+    ? payload.answers
+        .filter((answer): answer is string => typeof answer === "string")
+        .slice(0, questionCount)
+    : [];
+  const rawIndex = Number(payload.currentIndex ?? 0);
+  const currentIndex = Number.isFinite(rawIndex)
+    ? Math.max(0, Math.min(questionCount, Math.floor(rawIndex)))
+    : 0;
+
+  return {
+    version: storageVersion,
+    currentIndex: Math.min(currentIndex, answers.length === questionCount ? questionCount : answers.length),
+    answers,
+  };
+}
+
+function readStoredQuizState(storageKey: string, questionCount: number): StoredQuizState {
+  try {
+    const rawValue = window.localStorage.getItem(storageKey);
+    return normaliseStoredState(rawValue ? JSON.parse(rawValue) : null, questionCount);
+  } catch {
+    return { version: storageVersion, currentIndex: 0, answers: [] };
+  }
+}
+
+function writeStoredQuizState(storageKey: string, state: StoredQuizState) {
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(state));
+  } catch {
+    // Ignore storage failures; the in-memory quiz state still works.
+  }
+}
+
 export function DailyQuiz({
+  quizId,
+  storageScope,
   quizDate,
   questions,
   loading,
   error,
   emptyMessage,
 }: DailyQuizProps) {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [selectedAnswer, setSelectedAnswer] = useState("");
-  const [locked, setLocked] = useState(false);
-  const [score, setScore] = useState(0);
+  const [quizState, setQuizState] = useState<QuizRuntimeState>(emptyRuntimeState);
+  const storageKey = useMemo(() => {
+    return quizDate && questions.length > 0
+      ? quizStorageKey(quizId, storageScope, quizDate)
+      : "";
+  }, [quizDate, questions.length, quizId, storageScope]);
 
   useEffect(() => {
-    setCurrentIndex(0);
-    setSelectedAnswer("");
-    setLocked(false);
-    setScore(0);
-  }, [quizDate, questions]);
+    if (!storageKey) {
+      setQuizState(emptyRuntimeState);
+      return;
+    }
 
+    const restoredState = readStoredQuizState(storageKey, questions.length);
+    setQuizState({ ...restoredState, storageKey });
+  }, [questions.length, storageKey]);
+
+  useEffect(() => {
+    if (!storageKey || quizState.storageKey !== storageKey || questions.length === 0) {
+      return;
+    }
+
+    writeStoredQuizState(storageKey, {
+      version: storageVersion,
+      currentIndex: quizState.currentIndex,
+      answers: quizState.answers.slice(0, questions.length),
+    });
+  }, [questions.length, quizState, storageKey]);
+
+  const answers = quizState.storageKey === storageKey ? quizState.answers : [];
+  const currentIndex =
+    quizState.storageKey === storageKey
+      ? Math.min(quizState.currentIndex, questions.length)
+      : 0;
   const currentQuestion = questions[currentIndex];
+  const currentAnswer = currentQuestion === undefined ? "" : answers[currentIndex] ?? "";
+  const locked = currentAnswer !== "";
   const isComplete = questions.length > 0 && currentIndex >= questions.length;
   const progressLabel = `${Math.min(currentIndex + 1, questions.length)} / ${questions.length}`;
   const formattedDate = formatQuizDate(quizDate);
+  const score = useMemo(() => {
+    return questions.reduce((total, question, index) => {
+      return total + (answers[index] === question.correct_answer ? 1 : 0);
+    }, 0);
+  }, [answers, questions]);
 
   const answerState = useMemo(() => {
     if (!locked || currentQuestion === undefined) {
@@ -64,37 +163,45 @@ export function DailyQuiz({
         if (answer === currentQuestion.correct_answer) {
           return [answer, "correct" as const];
         }
-        if (answer === selectedAnswer) {
+        if (answer === currentAnswer) {
           return [answer, "incorrect" as const];
         }
         return [answer, "muted" as const];
       }),
     );
-  }, [currentQuestion, locked, selectedAnswer]);
+  }, [currentAnswer, currentQuestion, locked]);
 
   function chooseAnswer(answer: string) {
-    if (locked || currentQuestion === undefined) {
+    if (locked || currentQuestion === undefined || !storageKey) {
       return;
     }
 
-    setSelectedAnswer(answer);
-    setLocked(true);
-    if (answer === currentQuestion.correct_answer) {
-      setScore((currentScore) => currentScore + 1);
-    }
+    setQuizState((currentState) => {
+      const baseState =
+        currentState.storageKey === storageKey
+          ? currentState
+          : { ...emptyRuntimeState, storageKey };
+      const nextAnswers = baseState.answers.slice(0, questions.length);
+      nextAnswers[currentIndex] = answer;
+      return {
+        ...baseState,
+        currentIndex,
+        answers: nextAnswers,
+      };
+    });
   }
 
   function goNext() {
-    setSelectedAnswer("");
-    setLocked(false);
-    setCurrentIndex((index) => index + 1);
-  }
-
-  function restart() {
-    setCurrentIndex(0);
-    setSelectedAnswer("");
-    setLocked(false);
-    setScore(0);
+    setQuizState((currentState) => {
+      const baseState =
+        currentState.storageKey === storageKey
+          ? currentState
+          : { ...emptyRuntimeState, storageKey };
+      return {
+        ...baseState,
+        currentIndex: Math.min(currentIndex + 1, questions.length),
+      };
+    });
   }
 
   if (loading) {
@@ -134,29 +241,81 @@ export function DailyQuiz({
 
   if (isComplete) {
     return (
-      <Card>
-        <div className="space-y-4 text-center">
-          <div>
-            <p className="text-sm font-black uppercase tracking-normal text-saints-red">
-              {formattedDate}
-            </p>
-            <h3 className="mt-2 text-3xl font-black leading-none text-slate-950">
-              Final score
-            </h3>
-            <p className="mt-3 text-5xl font-black leading-none text-saints-black">
-              {score} / {questions.length}
+      <div className="space-y-3">
+        <Card>
+          <div className="space-y-3 text-center">
+            <div>
+              <p className="text-sm font-black uppercase tracking-normal text-saints-red">
+                {formattedDate}
+              </p>
+              <h3 className="mt-2 text-3xl font-black leading-none text-slate-950">
+                Final score
+              </h3>
+              <p className="mt-3 text-5xl font-black leading-none text-saints-black">
+                {score} / {questions.length}
+              </p>
+            </div>
+            <p className="text-sm font-semibold leading-relaxed text-slate-600">
+              Today's quiz is complete. A fresh quiz will unlock after the daily refresh.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={restart}
-            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-saints-red px-5 py-3 text-sm font-black text-white shadow-soft transition hover:bg-red-700 focus:outline-none focus:ring-4 focus:ring-saints-red/30"
-          >
-            <RotateCcw aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-            Play again
-          </button>
-        </div>
-      </Card>
+        </Card>
+
+        <section className="space-y-3" aria-label="Completed quiz answer summary">
+          {questions.map((question, index) => {
+            const userAnswer = answers[index] ?? "No answer";
+            const isCorrect = userAnswer === question.correct_answer;
+
+            return (
+              <Card key={`${question.question}-${index}`} className="p-4">
+                <div className="flex items-start gap-3">
+                  <span
+                    className={[
+                      "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-white",
+                      isCorrect ? "bg-emerald-600" : "bg-saints-red",
+                    ].join(" ")}
+                  >
+                    {isCorrect ? (
+                      <Check aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
+                    ) : (
+                      <X aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
+                    )}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-black uppercase tracking-normal text-saints-red">
+                      Question {index + 1}
+                    </p>
+                    <h3 className="mt-1 text-base font-black leading-tight text-slate-950">
+                      {question.question}
+                    </h3>
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-2">
+                  <div className="rounded-2xl bg-slate-50 p-3">
+                    <p className="text-xs font-black uppercase tracking-normal text-slate-500">
+                      Your answer
+                    </p>
+                    <p className="mt-1 text-sm font-black text-slate-950">{userAnswer}</p>
+                  </div>
+                  <div className="rounded-2xl bg-emerald-50 p-3">
+                    <p className="text-xs font-black uppercase tracking-normal text-emerald-700">
+                      Correct answer
+                    </p>
+                    <p className="mt-1 text-sm font-black text-slate-950">
+                      {question.correct_answer}
+                    </p>
+                  </div>
+                </div>
+
+                <p className="mt-3 text-sm font-semibold leading-relaxed text-slate-600">
+                  {question.explanation}
+                </p>
+              </Card>
+            );
+          })}
+        </section>
+      </div>
     );
   }
 
@@ -221,7 +380,7 @@ export function DailyQuiz({
         {locked ? (
           <div className="rounded-2xl bg-slate-50 p-3">
             <p className="text-base font-black text-slate-950">
-              {selectedAnswer === currentQuestion.correct_answer ? "Correct" : "Not this time"}
+              {currentAnswer === currentQuestion.correct_answer ? "Correct" : "Not this time"}
             </p>
             <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-600">
               {currentQuestion.explanation}

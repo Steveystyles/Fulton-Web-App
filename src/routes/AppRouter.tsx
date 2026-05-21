@@ -7,12 +7,20 @@ import { useAuth } from "../context/AuthContext";
 import { api, type DailyQuestionsResponse } from "../lib/api";
 import { Account } from "../pages/Account";
 import { Admin } from "../pages/Admin";
+import { Facts } from "../pages/Facts";
 import { FootballQuiz } from "../pages/FootballQuiz";
 import { GeneralQuiz } from "../pages/GeneralQuiz";
 import { Leaderboard } from "../pages/Leaderboard";
 import { Login } from "../pages/Login";
 import { News } from "../pages/News";
 import { Wordle } from "../pages/Wordle";
+
+function millisecondsUntilTomorrow() {
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setHours(24, 0, 5, 0);
+  return Math.max(60_000, tomorrow.getTime() - now.getTime());
+}
 
 function AppFrame({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
   return (
@@ -44,6 +52,7 @@ export function AppRouter() {
 
   useEffect(() => {
     let active = true;
+    let refreshTimer: number | undefined;
 
     if (user === null) {
       setDailyQuestions(null);
@@ -55,9 +64,9 @@ export function AppRouter() {
     setQuizLoading(true);
     setQuizError(null);
 
-    async function loadDailyQuestions() {
+    async function loadDailyQuestions(force = false) {
       try {
-        const response = await api.dailyQuestions();
+        const response = await api.dailyQuestions({ force });
         if (active) {
           setDailyQuestions(response);
         }
@@ -76,11 +85,33 @@ export function AppRouter() {
       }
     }
 
+    function scheduleNextDailyRefresh() {
+      refreshTimer = window.setTimeout(() => {
+        void loadDailyQuestions(true).finally(() => {
+          if (active) {
+            scheduleNextDailyRefresh();
+          }
+        });
+      }, millisecondsUntilTomorrow());
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        void loadDailyQuestions(true);
+      }
+    }
+
     void loadDailyQuestions();
+    scheduleNextDailyRefresh();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     api.warmNews();
 
     return () => {
       active = false;
+      if (refreshTimer !== undefined) {
+        window.clearTimeout(refreshTimer);
+      }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [user]);
 
@@ -130,6 +161,7 @@ export function AppRouter() {
             element={
               <AppFrame>
                 <FootballQuiz
+                  storageScope={user.id}
                   quizDate={dailyQuestions?.date}
                   questions={dailyQuestions?.football ?? []}
                   loading={quizLoading}
@@ -143,6 +175,7 @@ export function AppRouter() {
             element={
               <AppFrame>
                 <GeneralQuiz
+                  storageScope={user.id}
                   quizDate={dailyQuestions?.date}
                   questions={dailyQuestions?.general ?? []}
                   loading={quizLoading}
@@ -160,6 +193,14 @@ export function AppRouter() {
             element={
               <AppFrame>
                 <News />
+              </AppFrame>
+            }
+          />
+          <Route
+            path="/facts"
+            element={
+              <AppFrame>
+                <Facts />
               </AppFrame>
             }
           />

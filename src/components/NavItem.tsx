@@ -15,7 +15,7 @@ export function NavItem({ to, label, icon: Icon, end = false }: NavItemProps) {
       end={end}
       className={({ isActive }) =>
         [
-          "group flex min-h-16 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-xs font-bold transition",
+          "group flex min-h-16 flex-1 flex-col items-center justify-center gap-1 rounded-xl px-0.5 text-[0.68rem] font-bold transition",
           isActive
             ? "bg-red-50 text-saints-red"
             : "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
@@ -26,7 +26,7 @@ export function NavItem({ to, label, icon: Icon, end = false }: NavItemProps) {
         <>
           <Icon
             aria-hidden="true"
-            className="h-5 w-5"
+            className="h-4 w-4"
             strokeWidth={isActive ? 2.8 : 2.2}
           />
           <span className="leading-none">{label}</span>

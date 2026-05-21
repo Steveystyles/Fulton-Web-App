@@ -2,6 +2,7 @@ import { DailyQuiz } from "../components/DailyQuiz";
 import type { DailyQuizQuestion } from "../lib/api";
 
 type GeneralQuizProps = {
+  storageScope: string | number;
   quizDate?: string;
   questions: DailyQuizQuestion[];
   loading: boolean;
@@ -9,6 +10,7 @@ type GeneralQuizProps = {
 };
 
 export function GeneralQuiz({
+  storageScope,
   quizDate,
   questions,
   loading,
@@ -17,6 +19,8 @@ export function GeneralQuiz({
   return (
     <section className="page-fade space-y-3" aria-label="General knowledge quiz">
       <DailyQuiz
+        quizId="general"
+        storageScope={storageScope}
         quizDate={quizDate}
         questions={questions}
         loading={loading}

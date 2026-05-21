@@ -7,7 +7,6 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../components/Card";
-import { HistoryKnowledge } from "../components/HistoryKnowledge";
 import { api, type NewsCategory, type NewsItem } from "../lib/api";
 
 type FeedStatus = "loading" | "live" | "polling" | "offline";
@@ -151,7 +150,7 @@ export function News() {
     category === "all" ? "stories" : `${selectedCategoryLabel.toLowerCase()} stories`;
 
   return (
-    <section className="page-fade space-y-3" aria-label="News and local knowledge">
+    <section className="page-fade space-y-3" aria-label="News">
       <Card className="p-3">
         <div className="space-y-3">
           <div className="flex items-center gap-3">
@@ -281,8 +280,6 @@ export function News() {
           </Card>
         ))}
       </section>
-
-      <HistoryKnowledge />
     </section>
   );
 }
