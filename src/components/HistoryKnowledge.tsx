@@ -1,20 +1,63 @@
 import {
+  BadgeCheck,
   BookOpen,
   Cake,
   CalendarDays,
   ExternalLink,
+  Factory,
+  Landmark,
   LoaderCircle,
   MapPin,
   Navigation,
   Search,
   Sparkles,
   Trophy,
+  Users,
+  type LucideIcon,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api, type HistoryEvent, type HistoryFact, type HistoryResponse } from "../lib/api";
 import { Card } from "./Card";
 
 const defaultLocation = "Paisley";
+
+const themeMeta: Record<HistoryFact["theme"], { label: string; icon: LucideIcon; className: string }> = {
+  history: {
+    label: "History",
+    icon: BookOpen,
+    className: "bg-red-50 text-saints-red",
+  },
+  landmark: {
+    label: "Landmark",
+    icon: Landmark,
+    className: "bg-amber-50 text-amber-700",
+  },
+  industry: {
+    label: "Industry",
+    icon: Factory,
+    className: "bg-slate-100 text-slate-800",
+  },
+  culture: {
+    label: "Culture",
+    icon: Sparkles,
+    className: "bg-purple-50 text-purple-700",
+  },
+  people: {
+    label: "People",
+    icon: Users,
+    className: "bg-blue-50 text-blue-700",
+  },
+  date: {
+    label: "Anniversary",
+    icon: CalendarDays,
+    className: "bg-emerald-50 text-emerald-700",
+  },
+  general: {
+    label: "Local fact",
+    icon: BadgeCheck,
+    className: "bg-slate-100 text-slate-800",
+  },
+};
 
 type HistoryLocationQuery = {
   location: string;
@@ -273,6 +316,7 @@ export function HistoryKnowledge() {
               <input
                 value={location}
                 onChange={(event) => setLocation(event.target.value)}
+                placeholder="Town or city"
                 className="mt-1 h-12 w-full rounded-2xl border border-slate-300 bg-white px-3 text-base font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
               />
             </label>
@@ -311,6 +355,10 @@ export function HistoryKnowledge() {
               Near me
             </button>
           </div>
+
+          <p className="text-xs font-semibold leading-relaxed text-slate-500">
+            Location is sent only to fetch public facts for this page and is not saved to your account.
+          </p>
         </form>
       </Card>
 
@@ -375,43 +423,61 @@ export function HistoryKnowledge() {
 
           {facts.length > 0 ? (
             <section className="grid gap-2" aria-label="Location facts">
-              {facts.map((fact, index) => (
-                <div
-                  key={`${index}-${fact.title}`}
-                  className="rounded-2xl border border-slate-200 bg-white p-3 shadow-soft"
-                >
-                  <div className="flex items-start gap-3">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-red-50 text-saints-red">
-                      <Sparkles aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                        {fact.title}
-                      </p>
-                      <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
-                        {fact.text}
-                      </p>
-                      {fact.sourceUrl ? (
-                        <a
-                          href={fact.sourceUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="mt-2 inline-flex items-center gap-1 text-xs font-black uppercase tracking-normal text-saints-red"
-                        >
-                          <BookOpen aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
-                          {fact.sourceName}
-                        </a>
-                      ) : (
-                        <p className="mt-2 text-xs font-black uppercase tracking-normal text-slate-400">
-                          Source: {fact.sourceName}
+              {facts.map((fact, index) => {
+                const meta = themeMeta[fact.theme] ?? themeMeta.general;
+                const Icon = meta.icon;
+                return (
+                  <div
+                    key={`${index}-${fact.title}`}
+                    className="rounded-2xl border border-slate-200 bg-white p-3 shadow-soft"
+                  >
+                    <div className="flex items-start gap-3">
+                      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${meta.className}`}>
+                        <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`rounded-full px-2.5 py-1 text-[0.7rem] font-black uppercase tracking-normal ${meta.className}`}>
+                            {meta.label}
+                          </span>
+                          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[0.7rem] font-black uppercase tracking-normal text-slate-500">
+                            {fact.confidence} confidence
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm font-black leading-snug text-slate-950">
+                          {fact.title}
                         </p>
-                      )}
+                        <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
+                          {fact.text}
+                        </p>
+                        {fact.sourceUrl ? (
+                          <a
+                            href={fact.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-flex items-center gap-1 text-xs font-black uppercase tracking-normal text-saints-red"
+                          >
+                            <BookOpen aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
+                            {fact.sourceName}
+                          </a>
+                        ) : (
+                          <p className="mt-2 text-xs font-black uppercase tracking-normal text-slate-400">
+                            Source: {fact.sourceName}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </section>
-          ) : null}
+          ) : (
+            <Card>
+              <p className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600">
+                No local facts are available for this place just now. Try a nearby town or city.
+              </p>
+            </Card>
+          )}
 
           <Card className="p-4">
             <div className="mb-4 flex items-center gap-2 text-saints-red">

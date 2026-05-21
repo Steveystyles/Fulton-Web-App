@@ -80,6 +80,72 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.QUIZ_DATA_DIR = original_quiz_data_dir
             server.QUIZ_OPENAI_API_KEY = original_api_key
 
+    def test_wikipedia_summary_prefers_paisley_town_alias(self) -> None:
+        import server
+
+        with patch("server.fetch_json_url", return_value={"title": "Paisley, Renfrewshire"}) as fetch:
+            payload = server.fetch_wikipedia_summary("Paisley", "en")
+
+        self.assertEqual(payload["title"], "Paisley, Renfrewshire")
+        self.assertIn("Paisley,_Renfrewshire", fetch.call_args[0][0])
+
+    def test_location_facts_are_themed_sourced_and_structured(self) -> None:
+        import server
+
+        summary = {
+            "title": "Paisley, Renfrewshire",
+            "extract": (
+                "Paisley is a town in Renfrewshire, Scotland. "
+                "Paisley Abbey is a medieval landmark in the town."
+            ),
+        }
+        extract = (
+            "Paisley became known for its textile industry and the Paisley pattern. "
+            "The town has hosted cultural events and arts activity. "
+            "Notable people from Paisley include writers, musicians and footballers. "
+            "The historic centre contains important public buildings and churches."
+        )
+        entity = {
+            "id": "Q123",
+            "labels": {"en": {"value": "Paisley"}},
+            "claims": {
+                "P31": [
+                    {"mainsnak": {"datavalue": {"value": {"numeric-id": 486972}}}},
+                ],
+                "P1082": [
+                    {"mainsnak": {"datavalue": {"value": {"amount": "+77220"}}}},
+                ],
+                "P571": [
+                    {"mainsnak": {"datavalue": {"value": {"time": "+1157-01-01T00:00:00Z"}}}},
+                ],
+                "P131": [
+                    {"mainsnak": {"datavalue": {"value": {"numeric-id": 211091}}}},
+                ],
+            },
+        }
+
+        with patch(
+            "server.fetch_wikidata_labels",
+            return_value={"Q486972": "human settlement", "Q211091": "Renfrewshire"},
+        ):
+            facts = server.build_location_facts(
+                summary,
+                extract,
+                entity,
+                "en",
+                8,
+                "https://en.wikipedia.org/wiki/Paisley,_Renfrewshire",
+            )
+
+        self.assertGreaterEqual(len(facts), 6)
+        self.assertTrue(all(isinstance(fact, dict) for fact in facts))
+        self.assertTrue(all(fact["sourceName"] and fact["sourceUrl"] for fact in facts))
+        self.assertTrue(all(fact["confidence"] in {"high", "medium", "low"} for fact in facts))
+        self.assertIn("Wikidata", {fact["sourceName"] for fact in facts})
+        self.assertTrue({"history", "landmark", "industry", "culture"}.intersection(
+            {fact["theme"] for fact in facts}
+        ))
+
     def test_history_events_prefer_recent_sport_and_birth_highlights(self) -> None:
         import server
 

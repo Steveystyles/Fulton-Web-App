@@ -284,7 +284,7 @@ export const api = {
       date: params.date,
       lang: params.lang ?? "en",
     });
-    return request<HistoryResponse>(`/api/history?${searchParams.toString()}`);
+    return request<HistoryResponse>(`/api/facts?${searchParams.toString()}`);
   },
 
   adminUsers() {

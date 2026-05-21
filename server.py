@@ -167,6 +167,120 @@ HISTORY_FAMOUS_BIRTH_KEYWORDS = (
     "journalist",
     "broadcaster",
 )
+PLACE_ALIASES = {
+    "paisley": "Paisley, Renfrewshire",
+    "paisley, scotland": "Paisley, Renfrewshire",
+    "paisley, renfrewshire": "Paisley, Renfrewshire",
+}
+PLACE_CANDIDATE_POSITIVE_KEYWORDS = (
+    "town",
+    "city",
+    "village",
+    "settlement",
+    "burgh",
+    "suburb",
+    "municipality",
+    "locality",
+    "council area",
+    "renfrewshire",
+    "scotland",
+    "england",
+    "wales",
+    "ireland",
+)
+PLACE_CANDIDATE_NEGATIVE_KEYWORDS = (
+    "pattern",
+    "design",
+    "fabric",
+    "surname",
+    "album",
+    "song",
+    "film",
+    "novel",
+    "company",
+    "school",
+    "ship",
+    "disambiguation",
+)
+FACT_THEME_KEYWORDS = {
+    "history": (
+        "abbey",
+        "founded",
+        "historic",
+        "history",
+        "century",
+        "medieval",
+        "royal",
+        "war",
+        "built",
+        "opened",
+    ),
+    "landmark": (
+        "abbey",
+        "church",
+        "cathedral",
+        "castle",
+        "museum",
+        "park",
+        "hall",
+        "memorial",
+        "station",
+        "theatre",
+        "landmark",
+    ),
+    "industry": (
+        "industry",
+        "industrial",
+        "weaving",
+        "woven",
+        "textile",
+        "mill",
+        "mills",
+        "manufacturing",
+        "shipbuilding",
+        "pattern",
+    ),
+    "culture": (
+        "festival",
+        "culture",
+        "cultural",
+        "music",
+        "art",
+        "arts",
+        "theatre",
+        "museum",
+        "event",
+        "events",
+    ),
+    "people": (
+        "born",
+        "writer",
+        "poet",
+        "artist",
+        "actor",
+        "singer",
+        "footballer",
+        "politician",
+        "notable",
+        "people",
+    ),
+    "date": (
+        "anniversary",
+        "annual",
+        "today",
+        "date",
+        "commemorated",
+    ),
+}
+FACT_THEME_LABELS = {
+    "history": "History",
+    "landmark": "Landmark",
+    "industry": "Industry",
+    "culture": "Culture",
+    "people": "People",
+    "date": "Anniversary",
+    "general": "Local fact",
+}
 
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
@@ -1542,20 +1656,100 @@ def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
+def normalise_place_alias_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def resolve_place_alias(location: str) -> str:
+    return PLACE_ALIASES.get(normalise_place_alias_key(location), location)
+
+
 def wikipedia_summary_url(lang: str, title: str) -> str:
     safe_title = quote_plus(title.replace(" ", "_"), safe=",")
     return f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{safe_title}"
 
 
-def fetch_wikipedia_summary(location: str, lang: str) -> dict[str, Any]:
+def wikipedia_search_url(lang: str, query: str, limit: int = 8) -> str:
+    return (
+        f"https://{lang}.wikipedia.org/w/rest.php/v1/search/page"
+        f"?q={quote_plus(query)}&limit={limit}"
+    )
+
+
+def wikipedia_plain_extract_url(lang: str, title: str) -> str:
+    return (
+        f"https://{lang}.wikipedia.org/w/api.php?action=query&format=json"
+        f"&prop=extracts&explaintext=1&exlimit=1&redirects=1&titles={quote_plus(title)}"
+    )
+
+
+def wikidata_entity_url(qid: str) -> str:
+    return f"https://www.wikidata.org/wiki/Special:EntityData/{quote_plus(qid)}.json"
+
+
+def wikidata_labels_url(qids: list[str], lang: str) -> str:
+    return (
+        "https://www.wikidata.org/w/api.php?action=wbgetentities&format=json"
+        f"&ids={quote_plus('|'.join(qids), safe='|')}&props=labels&languages={quote_plus(lang)}|en"
+    )
+
+
+def wikipedia_candidate_score(query: str, page: dict[str, Any]) -> int:
+    title = strip_html(str(page.get("title", "")))
+    description = strip_html(str(page.get("description", "")))
+    excerpt = strip_html(str(page.get("excerpt", "")))
+    title_lower = title.lower()
+    query_lower = normalise_place_alias_key(query)
+    combined = f"{title} {description} {excerpt}".lower()
+    score = 0
+
+    if title_lower == query_lower:
+        score += 20
+    if title_lower.startswith(f"{query_lower},"):
+        score += 30
+    if query_lower and query_lower in title_lower:
+        score += 20
+    if "," in title:
+        score += 8
+    score += history_keyword_score(combined, PLACE_CANDIDATE_POSITIVE_KEYWORDS, 18)
+    score -= history_keyword_score(combined, PLACE_CANDIDATE_NEGATIVE_KEYWORDS, 40)
+    return score
+
+
+def resolve_wikipedia_place_title(location: str, lang: str) -> str:
+    aliased = resolve_place_alias(location)
+    if aliased != location:
+        return aliased
+
     try:
-        return fetch_json_url(wikipedia_summary_url(lang, location))
+        search = fetch_json_url(wikipedia_search_url(lang, location))
     except Exception:
-        search_url = (
-            f"https://{lang}.wikipedia.org/w/rest.php/v1/search/page"
-            f"?q={quote_plus(location)}&limit=1"
-        )
-        search = fetch_json_url(search_url)
+        return location
+
+    pages = search.get("pages")
+    if not isinstance(pages, list) or not pages:
+        return location
+
+    candidates: list[tuple[int, str]] = []
+    for page in pages:
+        if not isinstance(page, dict) or not page.get("title"):
+            continue
+        candidates.append((wikipedia_candidate_score(location, page), str(page["title"])))
+
+    if not candidates:
+        return location
+
+    candidates.sort(reverse=True)
+    best_score, best_title = candidates[0]
+    return best_title if best_score > 0 else location
+
+
+def fetch_wikipedia_summary(location: str, lang: str) -> dict[str, Any]:
+    title = resolve_wikipedia_place_title(location, lang)
+    try:
+        return fetch_json_url(wikipedia_summary_url(lang, title))
+    except Exception:
+        search = fetch_json_url(wikipedia_search_url(lang, location, 1))
         pages = search.get("pages")
         if not isinstance(pages, list) or not pages:
             raise LookupError("Location not found.")
@@ -1566,9 +1760,329 @@ def fetch_wikipedia_summary(location: str, lang: str) -> dict[str, Any]:
         return fetch_json_url(wikipedia_summary_url(lang, str(title)))
 
 
-def text_facts_from_extract(extract: str, limit: int) -> list[str]:
-    sentences = re.split(r"(?<=[.!?])\s+", str(extract or ""))
-    return [sentence.strip() for sentence in sentences if sentence.strip()][:limit]
+def fetch_wikipedia_plain_extract(title: str, lang: str) -> str:
+    payload = fetch_json_url(wikipedia_plain_extract_url(lang, title))
+    pages = payload.get("query", {}).get("pages", {}) if isinstance(payload, dict) else {}
+    if not isinstance(pages, dict):
+        return ""
+
+    for page in pages.values():
+        if isinstance(page, dict) and isinstance(page.get("extract"), str):
+            return page["extract"]
+    return ""
+
+
+def fetch_wikidata_entity(qid: str) -> dict[str, Any] | None:
+    if not re.fullmatch(r"Q\d+", str(qid or "")):
+        return None
+
+    payload = fetch_json_url(wikidata_entity_url(qid))
+    entity = payload.get("entities", {}).get(qid)
+    return entity if isinstance(entity, dict) else None
+
+
+def fetch_wikidata_labels(qids: list[str], lang: str) -> dict[str, str]:
+    clean_qids = sorted({qid for qid in qids if re.fullmatch(r"Q\d+", qid)})
+    if not clean_qids:
+        return {}
+
+    try:
+        payload = fetch_json_url(wikidata_labels_url(clean_qids, lang))
+    except Exception:
+        return {}
+
+    entities = payload.get("entities", {})
+    if not isinstance(entities, dict):
+        return {}
+
+    labels: dict[str, str] = {}
+    for qid, entity in entities.items():
+        if not isinstance(entity, dict):
+            continue
+        label_map = entity.get("labels", {})
+        if not isinstance(label_map, dict):
+            continue
+        label = label_map.get(lang) or label_map.get("en")
+        if isinstance(label, dict) and isinstance(label.get("value"), str):
+            labels[str(qid)] = label["value"]
+    return labels
+
+
+def split_fact_sentences(text: str) -> list[str]:
+    cleaned = re.sub(r"\[[^\]]+\]", "", str(text or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def clean_fact_sentence(sentence: str) -> str | None:
+    cleaned = re.sub(r"\s+", " ", str(sentence or "")).strip()
+    if len(cleaned) < 38 or len(cleaned) > 260:
+        return None
+    if " may refer to:" in cleaned.lower() or " may refer to " in cleaned.lower():
+        return None
+    if cleaned.count(",") > 8:
+        return None
+    return cleaned
+
+
+def classify_fact_theme(sentence: str) -> str:
+    scored = [
+        (history_keyword_score(sentence, keywords, 1), theme)
+        for theme, keywords in FACT_THEME_KEYWORDS.items()
+    ]
+    scored.sort(reverse=True)
+    return scored[0][1] if scored and scored[0][0] > 0 else "general"
+
+
+def fact_candidate_score(sentence: str, theme: str) -> int:
+    score = 0 if theme == "general" else 30
+    score += history_keyword_score(sentence, FACT_THEME_KEYWORDS.get(theme, ()), 5)
+    if re.search(r"\b(1[0-9]{3}|20[0-9]{2}|[0-9]{1,2}(st|nd|rd|th) century)\b", sentence):
+        score += 12
+    if 70 <= len(sentence) <= 190:
+        score += 8
+    return score
+
+
+def make_history_fact(
+    *,
+    title: str,
+    text: str,
+    theme: str,
+    source_name: str,
+    source_url: str | None,
+    confidence: str,
+) -> dict[str, Any]:
+    return {
+        "title": title,
+        "text": text,
+        "theme": theme,
+        "sourceName": source_name,
+        "sourceUrl": source_url,
+        "confidence": confidence,
+    }
+
+
+def wikipedia_facts(
+    summary: dict[str, Any],
+    plain_extract: str,
+    limit: int,
+    article_url: str | None,
+) -> list[dict[str, Any]]:
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    seen_sentences: set[str] = set()
+    source_texts = [
+        (str(summary.get("extract", "")), "medium"),
+        (plain_extract, "medium"),
+    ]
+
+    for text, confidence in source_texts:
+        for sentence in split_fact_sentences(text):
+            cleaned = clean_fact_sentence(sentence)
+            if cleaned is None:
+                continue
+            sentence_key = re.sub(r"\W+", "", cleaned.lower())[:120]
+            if sentence_key in seen_sentences:
+                continue
+            seen_sentences.add(sentence_key)
+            theme = classify_fact_theme(cleaned)
+            fact = make_history_fact(
+                title=FACT_THEME_LABELS.get(theme, "Local fact"),
+                text=cleaned,
+                theme=theme,
+                source_name="Wikipedia",
+                source_url=article_url,
+                confidence=confidence,
+            )
+            candidates.append((fact_candidate_score(cleaned, theme), fact))
+
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    selected: list[dict[str, Any]] = []
+    selected_themes: set[str] = set()
+
+    for _, fact in candidates:
+        theme = str(fact.get("theme", "general"))
+        if theme == "general" or theme in selected_themes:
+            continue
+        selected.append(fact)
+        selected_themes.add(theme)
+        if len(selected) >= limit:
+            return selected
+
+    for _, fact in candidates:
+        if fact in selected:
+            continue
+        selected.append(fact)
+        if len(selected) >= limit:
+            break
+
+    return selected
+
+
+def wikidata_claims(entity: dict[str, Any], property_id: str) -> list[dict[str, Any]]:
+    claims = entity.get("claims", {})
+    values = claims.get(property_id, []) if isinstance(claims, dict) else []
+    return values if isinstance(values, list) else []
+
+
+def wikidata_claim_value(claim: dict[str, Any]) -> Any:
+    mainsnak = claim.get("mainsnak", {}) if isinstance(claim, dict) else {}
+    datavalue = mainsnak.get("datavalue", {}) if isinstance(mainsnak, dict) else {}
+    return datavalue.get("value") if isinstance(datavalue, dict) else None
+
+
+def wikidata_time_text(value: Any) -> str | None:
+    if not isinstance(value, dict) or not isinstance(value.get("time"), str):
+        return None
+    match = re.search(r"([+-]\d{4,})-(\d{2})-(\d{2})", value["time"])
+    if match is None:
+        return None
+    year = int(match.group(1))
+    month = int(match.group(2))
+    day = int(match.group(3))
+    if month == 1 and day == 1:
+        return str(year)
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
+def wikidata_quantity_text(value: Any) -> str | None:
+    if not isinstance(value, dict) or not isinstance(value.get("amount"), str):
+        return None
+    try:
+        number = float(value["amount"])
+    except ValueError:
+        return None
+    return f"{number:,.0f}" if number.is_integer() else f"{number:,.2f}"
+
+
+def wikidata_entity_id(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    numeric_id = value.get("numeric-id")
+    return f"Q{numeric_id}" if isinstance(numeric_id, int) else None
+
+
+def wikidata_entity_label(entity: dict[str, Any], lang: str, fallback: str) -> str:
+    labels = entity.get("labels", {})
+    if isinstance(labels, dict):
+        label = labels.get(lang) or labels.get("en")
+        if isinstance(label, dict) and isinstance(label.get("value"), str):
+            return label["value"]
+    return fallback
+
+
+def wikidata_facts(
+    entity: dict[str, Any] | None,
+    lang: str,
+    fallback_title: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if entity is None:
+        return []
+
+    qid = str(entity.get("id", ""))
+    source_url = f"https://www.wikidata.org/wiki/{qid}" if qid else None
+    title = wikidata_entity_label(entity, lang, fallback_title)
+    related_ids: list[str] = []
+
+    for property_id in ("P31", "P131", "P17"):
+        for claim in wikidata_claims(entity, property_id)[:3]:
+            entity_id = wikidata_entity_id(wikidata_claim_value(claim))
+            if entity_id:
+                related_ids.append(entity_id)
+
+    related_labels = fetch_wikidata_labels(related_ids, lang)
+    facts: list[dict[str, Any]] = []
+
+    instance_labels = [
+        related_labels[entity_id]
+        for claim in wikidata_claims(entity, "P31")[:3]
+        if (entity_id := wikidata_entity_id(wikidata_claim_value(claim))) in related_labels
+    ]
+    if instance_labels:
+        facts.append(
+            make_history_fact(
+                title="Place identity",
+                text=f"Wikidata identifies {title} as {', '.join(instance_labels)}.",
+                theme="general",
+                source_name="Wikidata",
+                source_url=source_url,
+                confidence="high",
+            )
+        )
+
+    population = None
+    for claim in wikidata_claims(entity, "P1082")[:1]:
+        population = wikidata_quantity_text(wikidata_claim_value(claim))
+    if population:
+        facts.append(
+            make_history_fact(
+                title="Population",
+                text=f"Wikidata records {title}'s population as {population}.",
+                theme="people",
+                source_name="Wikidata",
+                source_url=source_url,
+                confidence="high",
+            )
+        )
+
+    for claim in wikidata_claims(entity, "P571")[:1]:
+        inception = wikidata_time_text(wikidata_claim_value(claim))
+        if inception:
+            facts.append(
+                make_history_fact(
+                    title="Founded",
+                    text=f"Wikidata records {title}'s inception date as {inception}.",
+                    theme="history",
+                    source_name="Wikidata",
+                    source_url=source_url,
+                    confidence="high",
+                )
+            )
+
+    containing_places = [
+        related_labels[entity_id]
+        for claim in wikidata_claims(entity, "P131")[:2]
+        if (entity_id := wikidata_entity_id(wikidata_claim_value(claim))) in related_labels
+    ]
+    if containing_places:
+        facts.append(
+            make_history_fact(
+                title="Area",
+                text=f"Wikidata places {title} within {', '.join(containing_places)}.",
+                theme="general",
+                source_name="Wikidata",
+                source_url=source_url,
+                confidence="high",
+            )
+        )
+
+    return facts[:limit]
+
+
+def build_location_facts(
+    summary: dict[str, Any],
+    plain_extract: str,
+    wikidata_entity: dict[str, Any] | None,
+    lang: str,
+    limit: int,
+    article_url: str | None,
+) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    facts.extend(wikidata_facts(wikidata_entity, lang, str(summary.get("title") or ""), 3))
+
+    existing_texts = {str(fact.get("text", "")).lower() for fact in facts}
+    for fact in wikipedia_facts(summary, plain_extract, limit, article_url):
+        text = str(fact.get("text", "")).lower()
+        if text in existing_texts:
+            continue
+        facts.append(fact)
+        existing_texts.add(text)
+        if len(facts) >= limit:
+            break
+
+    return facts[:limit]
 
 
 def history_year_value(value: object) -> int | None:
@@ -1733,11 +2247,34 @@ def history_payload(
             content_urls = wiki.get("content_urls", {})
             desktop_urls = content_urls.get("desktop", {}) if isinstance(content_urls, dict) else {}
             thumbnail = wiki.get("thumbnail", {})
+            article_url = desktop_urls.get("page")
+            plain_extract = ""
+            wikidata_entity = None
+
+            try:
+                plain_extract = fetch_wikipedia_plain_extract(str(wiki.get("title") or location), lang)
+            except Exception as error:
+                safe_log(f"History Wikipedia extract fetch failed: {error}")
+
+            qid = str(wiki.get("wikibase_item", ""))
+            if qid:
+                try:
+                    wikidata_entity = fetch_wikidata_entity(qid)
+                except Exception as error:
+                    safe_log(f"History Wikidata fetch failed: {error}")
+
             location_payload = {
                 "title": wiki.get("title") or location,
                 "description": wiki.get("description"),
-                "facts": text_facts_from_extract(str(wiki.get("extract", "")), limit_facts),
-                "articleUrl": desktop_urls.get("page"),
+                "facts": build_location_facts(
+                    wiki,
+                    plain_extract,
+                    wikidata_entity,
+                    lang,
+                    limit_facts,
+                    article_url,
+                ),
+                "articleUrl": article_url,
                 "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
             }
         except LookupError:
@@ -1806,7 +2343,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
-        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)")
         if COOKIE_SECURE:
             self.send_header(
                 "Strict-Transport-Security",
@@ -1996,11 +2533,11 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, ensure_daily_questions())
                 return
 
-            if path == "/api/history" and method == "GET":
+            if path in {"/api/history", "/api/facts"} and method == "GET":
                 location = str(params.get("location", [""])[0]).strip()
                 date_value = str(params.get("date", [today_game_date()])[0]).strip()
                 lang = normalise_history_lang(params.get("lang", ["en"])[0])
-                limit_facts = self.query_int(params, "limitFacts", 3, 1, 5)
+                limit_facts = self.query_int(params, "limitFacts", 6, 1, 8)
                 limit_events = self.query_int(params, "limitEvents", 5, 1, 10)
                 payload, status = history_payload(
                     location,
