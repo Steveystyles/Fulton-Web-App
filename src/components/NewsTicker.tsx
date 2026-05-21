@@ -4,39 +4,75 @@ import { cleanNewsTitle } from "../lib/news";
 
 const emptyHeadline = "No breaking Saints stories yet. The live feed is ready.";
 
+function mergeTickerItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
+  const itemsByKey = new Map<string, NewsItem>();
+
+  for (const item of [...nextItems, ...currentItems]) {
+    itemsByKey.set(item.sourceKey, item);
+  }
+
+  return Array.from(itemsByKey.values())
+    .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt))
+    .slice(0, 12);
+}
+
 export function NewsTicker() {
   const [items, setItems] = useState<NewsItem[]>([]);
 
   useEffect(() => {
     let active = true;
+    let stream: EventSource | null = null;
+    let pollTimer: number | undefined;
 
-    async function loadHeadlines() {
+    async function loadHeadlines(force = false) {
       try {
-        const response = await api.news(5, "breaking");
+        const response = await api.news(12, "breaking", { force });
         const fallbackResponse =
-          response.items.length === 0 ? await api.news(5, "all") : response;
+          response.items.length === 0 ? await api.news(12, "all", { force }) : response;
         if (active) {
-          setItems(fallbackResponse.items);
+          setItems((currentItems) => mergeTickerItems(currentItems, fallbackResponse.items));
         }
       } catch {
         if (active) {
-          setItems([]);
+          setItems((currentItems) => currentItems);
         }
       }
     }
 
     void loadHeadlines();
+    pollTimer = window.setInterval(() => void loadHeadlines(true), 60_000);
+
+    try {
+      stream = new EventSource("/api/news/stream");
+      stream.addEventListener("news", (event) => {
+        if (!active) {
+          return;
+        }
+        const item = JSON.parse((event as MessageEvent<string>).data) as NewsItem;
+        setItems((currentItems) => mergeTickerItems(currentItems, [item]));
+      });
+      stream.onerror = () => {
+        stream?.close();
+        stream = null;
+      };
+    } catch {
+      stream = null;
+    }
 
     return () => {
       active = false;
+      stream?.close();
+      if (pollTimer !== undefined) {
+        window.clearInterval(pollTimer);
+      }
     };
   }, []);
 
-  const headline = useMemo(() => {
+  const headlines = useMemo(() => {
     if (items.length === 0) {
-      return emptyHeadline;
+      return [emptyHeadline];
     }
-    return items.map((item) => cleanNewsTitle(item.title, item.source)).join("   |   ");
+    return items.map((item) => cleanNewsTitle(item.title, item.source));
   }, [items]);
   const tickerLabel = useMemo(() => {
     if (items.some((item) => item.priority === "live-scores")) {
@@ -59,11 +95,18 @@ export function NewsTicker() {
           {tickerLabel}
         </span>
         <div className="min-w-0 flex-1 overflow-hidden saints-focus" tabIndex={0}>
-          <div className="ticker-track flex w-max items-center gap-8 whitespace-nowrap text-sm font-semibold text-white/[0.88]">
-            <span>{headline}</span>
-            <span aria-hidden="true">{headline}</span>
-            <span aria-hidden="true">{headline}</span>
-            <span aria-hidden="true">{headline}</span>
+          <div className="ticker-track flex w-max min-w-full items-center whitespace-nowrap text-sm font-semibold text-white/[0.88]">
+            {[0, 1].map((groupIndex) => (
+              <div
+                key={groupIndex}
+                className="flex min-w-full shrink-0 items-center gap-8 pr-8"
+                aria-hidden={groupIndex > 0}
+              >
+                {headlines.map((headline, index) => (
+                  <span key={`${groupIndex}-${headline}-${index}`}>{headline}</span>
+                ))}
+              </div>
+            ))}
           </div>
         </div>
       </div>

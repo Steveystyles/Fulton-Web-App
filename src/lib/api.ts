@@ -88,6 +88,8 @@ export type HistoryEvent = {
   year: string;
   text: string;
   links: Array<{ title?: string; link?: string }>;
+  category?: "history" | "sport" | "born";
+  label?: string;
 };
 
 export type HistoryFactTheme =

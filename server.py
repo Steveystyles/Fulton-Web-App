@@ -98,6 +98,75 @@ NEWS_QUERIES = (
     '"Scottish Premiership" live scores',
 )
 SUPPORTED_HISTORY_LANGS = {"en", "fr", "de", "es", "it"}
+HISTORY_INTEREST_KEYWORDS = (
+    "first",
+    "founded",
+    "opened",
+    "launched",
+    "discovered",
+    "invented",
+    "independence",
+    "election",
+    "president",
+    "prime minister",
+    "king",
+    "queen",
+    "record",
+    "award",
+    "wins",
+    "won",
+    "world",
+    "historic",
+    "landmark",
+)
+HISTORY_SPORT_KEYWORDS = (
+    "football",
+    "soccer",
+    "cup",
+    "league",
+    "olympic",
+    "olympics",
+    "championship",
+    "tournament",
+    "match",
+    "goal",
+    "scored",
+    "rugby",
+    "cricket",
+    "tennis",
+    "golf",
+    "boxing",
+    "athletics",
+    "racing",
+    "sport",
+)
+HISTORY_FAMOUS_BIRTH_KEYWORDS = (
+    "actor",
+    "actress",
+    "singer",
+    "musician",
+    "footballer",
+    "player",
+    "athlete",
+    "boxer",
+    "golfer",
+    "tennis",
+    "writer",
+    "author",
+    "poet",
+    "artist",
+    "scientist",
+    "inventor",
+    "politician",
+    "president",
+    "prime minister",
+    "king",
+    "queen",
+    "director",
+    "comedian",
+    "journalist",
+    "broadcaster",
+)
 
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
@@ -1502,21 +1571,133 @@ def text_facts_from_extract(extract: str, limit: int) -> list[str]:
     return [sentence.strip() for sentence in sentences if sentence.strip()][:limit]
 
 
+def history_year_value(value: object) -> int | None:
+    raw = str(value or "").strip()
+    match = re.search(r"\d+", raw)
+    if match is None:
+        return None
+    year = int(match.group(0))
+    return -year if "BC" in raw.upper() or "BCE" in raw.upper() else year
+
+
+def history_keyword_score(text: str, keywords: tuple[str, ...], points: int) -> int:
+    text_lower = text.lower()
+    return sum(points for keyword in keywords if keyword in text_lower)
+
+
+def history_recency_score(year: int | None) -> int:
+    if year is None:
+        return 0
+    if year < 0:
+        return -20
+
+    current_year = datetime.now(timezone.utc).year
+    age = current_year - year
+    if age < 0:
+        return 0
+    if age <= 40:
+        return 60
+    if age <= 100:
+        return 48
+    if age <= 180:
+        return 34
+    if age <= 300:
+        return 22
+    if age <= 500:
+        return 10
+    return 0
+
+
+def normalise_history_item(item: object, category: str) -> dict[str, Any] | None:
+    if not isinstance(item, dict) or not item.get("text"):
+        return None
+
+    return {
+        "year": str(item.get("year", "")),
+        "text": str(item.get("text", "")),
+        "links": item.get("links", []) if isinstance(item.get("links"), list) else [],
+        "category": category,
+    }
+
+
+def ranked_history_items(items: list[dict[str, Any]], category: str) -> list[dict[str, Any]]:
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+
+    for item in items:
+        text = str(item.get("text", ""))
+        year = history_year_value(item.get("year"))
+        score = history_recency_score(year)
+
+        if category == "sport":
+            score += history_keyword_score(text, HISTORY_SPORT_KEYWORDS, 24)
+        elif category == "born":
+            score += history_keyword_score(text, HISTORY_FAMOUS_BIRTH_KEYWORDS, 18)
+        else:
+            score += history_keyword_score(text, HISTORY_INTEREST_KEYWORDS, 12)
+
+        scored.append((score, year if year is not None else -9999, item))
+
+    scored.sort(key=lambda candidate: (candidate[0], candidate[1]), reverse=True)
+    return [item for _, _, item in scored]
+
+
 def fetch_history_events(month: int, day: int, limit: int) -> list[dict[str, Any]]:
     payload = fetch_json_url(f"https://history.muffinlabs.com/date/{month}/{day}")
-    events = payload.get("data", {}).get("Events", [])
+    data = payload.get("data", {})
+    events = data.get("Events", []) if isinstance(data, dict) else []
+    births = data.get("Births", []) if isinstance(data, dict) else []
     if not isinstance(events, list):
         return []
 
-    return [
-        {
-            "year": str(item.get("year", "")),
-            "text": str(item.get("text", "")),
-            "links": item.get("links", []) if isinstance(item.get("links"), list) else [],
-        }
-        for item in events[:limit]
-        if isinstance(item, dict) and item.get("text")
+    normalised_events = [
+        normalised
+        for item in events
+        if (normalised := normalise_history_item(item, "history")) is not None
     ]
+    sport_events = [
+        {**item, "category": "sport"}
+        for item in normalised_events
+        if history_keyword_score(str(item.get("text", "")), HISTORY_SPORT_KEYWORDS, 1) > 0
+    ]
+    history_events = [
+        item
+        for item in normalised_events
+        if history_keyword_score(str(item.get("text", "")), HISTORY_SPORT_KEYWORDS, 1) == 0
+    ]
+    birth_events = [
+        normalised
+        for item in births
+        if (normalised := normalise_history_item(item, "born")) is not None
+    ] if isinstance(births, list) else []
+    famous_birth_events = [
+        item
+        for item in birth_events
+        if history_keyword_score(str(item.get("text", "")), HISTORY_FAMOUS_BIRTH_KEYWORDS, 1) > 0
+    ] or birth_events
+
+    selected: list[dict[str, Any]] = []
+    selected.extend(ranked_history_items(history_events, "history")[: max(2, limit - 3)])
+    selected.extend(ranked_history_items(sport_events, "sport")[:1])
+    selected.extend(ranked_history_items(famous_birth_events, "born")[:2])
+
+    if len(selected) < limit:
+        selected_keys = {
+            (item.get("category"), item.get("year"), item.get("text")) for item in selected
+        }
+        fallback_pool = ranked_history_items(
+            [*history_events, *sport_events, *birth_events],
+            "history",
+        )
+        for item in fallback_pool:
+            key = (item.get("category"), item.get("year"), item.get("text"))
+            if key in selected_keys:
+                continue
+            selected.append(item)
+            selected_keys.add(key)
+            if len(selected) >= limit:
+                break
+
+    return selected[:limit]
 
 
 def history_payload(

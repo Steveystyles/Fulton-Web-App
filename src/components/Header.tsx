@@ -1,10 +1,10 @@
 import { LogOut, ShieldCheck, UserRound } from "lucide-react";
 import { NavLink } from "react-router-dom";
-import crestPlaceholder from "../assets/crest-placeholder.svg";
+import crest from "../assets/crest.svg";
 import { useAuth } from "../context/AuthContext";
 
 const headerButtonClass =
-  "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white transition hover:bg-white/[0.16] saints-focus";
+  "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white transition hover:bg-white/[0.16] active:bg-saints-red active:text-white saints-focus";
 
 export function Header() {
   const { logout, user } = useAuth();
@@ -12,9 +12,9 @@ export function Header() {
   return (
     <header className="saints-stripe-edge flex min-h-16 items-center gap-3 bg-saints-black px-4 pb-1 text-white">
       <img
-        src={crestPlaceholder}
-        alt="Fulton's Quiz shield placeholder"
-        className="h-11 w-10 shrink-0"
+        src={crest}
+        alt="St Mirren Football Club crest"
+        className="h-11 w-11 shrink-0 rounded-full bg-white object-contain"
       />
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-xl font-black leading-tight tracking-normal">

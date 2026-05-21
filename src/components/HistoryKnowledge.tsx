@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  Cake,
   CalendarDays,
   ExternalLink,
   LoaderCircle,
@@ -7,9 +8,10 @@ import {
   Navigation,
   Search,
   Sparkles,
+  Trophy,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { api, type HistoryFact, type HistoryResponse } from "../lib/api";
+import { api, type HistoryEvent, type HistoryFact, type HistoryResponse } from "../lib/api";
 import { Card } from "./Card";
 
 const defaultLocation = "Paisley";
@@ -51,7 +53,7 @@ async function reverseGeocode(latitude: number, longitude: number) {
     format: "jsonv2",
     lat: String(latitude),
     lon: String(longitude),
-    zoom: "10",
+    zoom: "14",
     addressdetails: "1",
   });
   const response = await fetch(`https://nominatim.openstreetmap.org/reverse?${params}`);
@@ -65,16 +67,27 @@ async function reverseGeocode(latitude: number, longitude: number) {
     address.town ??
     address.city ??
     address.village ??
+    address.locality ??
+    address.borough ??
+    address.city_district ??
     address.hamlet ??
-    address.municipality ??
-    address.county;
-  const region = address.state ?? address.county ?? address.country;
+    address.municipality;
 
-  if (place && region && place !== region) {
-    return `${place}, ${region}`;
-  }
   if (place) {
     return String(place);
+  }
+  if (typeof payload?.display_name === "string" && address.county) {
+    const parts = payload.display_name
+      .split(",")
+      .map((part: string) => part.trim())
+      .filter(Boolean);
+    const countyIndex = parts.findIndex((part: string) => part === address.county);
+    if (countyIndex > 0) {
+      return parts[countyIndex - 1];
+    }
+  }
+  if (address.county) {
+    return String(address.county);
   }
   if (typeof payload?.display_name === "string") {
     return payload.display_name.split(",").slice(0, 2).join(",").trim();
@@ -189,7 +202,14 @@ export function HistoryKnowledge() {
     };
   }, [historyDate, submittedLocation]);
 
-  const events = useMemo(() => history?.globalEvents.slice(0, 5) ?? [], [history]);
+  const eventGroups = useMemo(() => {
+    const events = history?.globalEvents ?? [];
+    return {
+      history: events.filter((event) => (event.category ?? "history") === "history"),
+      sport: events.filter((event) => event.category === "sport"),
+      born: events.filter((event) => event.category === "born"),
+    };
+  }, [history]);
   const facts = useMemo(
     () => (history?.location?.facts ?? []).map((fact, index) => normaliseFact(fact, index)),
     [history],
@@ -225,7 +245,7 @@ export function HistoryKnowledge() {
 
   return (
     <section className="space-y-3" aria-label="Local knowledge and history">
-      <Card className="p-3">
+      <Card className="p-4">
         <form className="space-y-3" onSubmit={submitLocation}>
           <div className="flex items-center gap-3">
             <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-saints-black text-white">
@@ -245,8 +265,8 @@ export function HistoryKnowledge() {
             {locationNotice}
           </p>
 
-          <div className="grid grid-cols-[1fr_auto] gap-2">
-            <label className="block">
+          <div className="grid grid-cols-1 gap-2 min-[390px]:grid-cols-[minmax(0,1fr)_minmax(9.75rem,10.25rem)]">
+            <label className="block min-w-0">
               <span className="text-xs font-black uppercase tracking-normal text-slate-500">
                 Location
               </span>
@@ -257,7 +277,7 @@ export function HistoryKnowledge() {
               />
             </label>
 
-            <label className="block w-36">
+            <label className="block min-w-0">
               <span className="text-xs font-black uppercase tracking-normal text-slate-500">
                 Date
               </span>
@@ -394,40 +414,18 @@ export function HistoryKnowledge() {
           ) : null}
 
           <Card className="p-4">
-            <div className="mb-3 flex items-center gap-2 text-saints-red">
+            <div className="mb-4 flex items-center gap-2 text-saints-red">
               <CalendarDays aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
               <p className="text-sm font-black uppercase tracking-normal">
                 This day in history
               </p>
             </div>
 
-            <div className="space-y-3">
-              {events.map((event) => (
-                <div key={`${event.year}-${event.text}`} className="flex gap-3">
-                  <div className="flex w-16 shrink-0 justify-end">
-                    <span className="h-fit rounded-full bg-saints-black px-2.5 py-1 text-xs font-black text-white">
-                      {event.year}
-                    </span>
-                  </div>
-                  <div className="min-w-0 border-l-2 border-red-100 pb-3 pl-3 last:pb-0">
-                    <p className="text-sm font-semibold leading-relaxed text-slate-700">
-                      {event.text}
-                    </p>
-                    {event.links[0]?.link ? (
-                      <a
-                        href={event.links[0].link}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-2 inline-flex items-center gap-1 text-xs font-black uppercase tracking-normal text-saints-red"
-                      >
-                        <BookOpen aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
-                        Read more
-                      </a>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-              {events.length === 0 ? (
+            <div className="space-y-4">
+              <HistoryEventList title="Highlights" events={eventGroups.history} icon="history" />
+              <HistoryEventList title="Sport" events={eventGroups.sport} icon="sport" />
+              <HistoryEventList title="Born today" events={eventGroups.born} icon="born" />
+              {(history?.globalEvents.length ?? 0) === 0 ? (
                 <p className="rounded-2xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600">
                   No history events are available for this date just now.
                 </p>
@@ -436,6 +434,61 @@ export function HistoryKnowledge() {
           </Card>
         </>
       )}
+    </section>
+  );
+}
+
+function HistoryEventList({
+  events,
+  icon,
+  title,
+}: {
+  events: HistoryEvent[];
+  icon: "history" | "sport" | "born";
+  title: string;
+}) {
+  if (events.length === 0) {
+    return null;
+  }
+
+  const Icon = icon === "sport" ? Trophy : icon === "born" ? Cake : BookOpen;
+
+  return (
+    <section aria-label={title}>
+      <div className="mb-2 flex items-center gap-2 text-saints-black">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-saints-redSoft text-saints-red">
+          <Icon aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
+        </span>
+        <p className="text-xs font-black uppercase tracking-normal">{title}</p>
+      </div>
+
+      <div className="space-y-3">
+        {events.map((event) => (
+          <div key={`${event.category ?? "history"}-${event.year}-${event.text}`} className="flex gap-3">
+            <div className="flex w-16 shrink-0 justify-end">
+              <span className="h-fit rounded-full bg-saints-black px-2.5 py-1 text-xs font-black text-white">
+                {event.year}
+              </span>
+            </div>
+            <div className="min-w-0 border-l-2 border-red-100 pb-3 pl-3 last:pb-0">
+              <p className="text-sm font-semibold leading-relaxed text-slate-700">
+                {event.text}
+              </p>
+              {event.links[0]?.link ? (
+                <a
+                  href={event.links[0].link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 inline-flex items-center gap-1 text-xs font-black uppercase tracking-normal text-saints-red"
+                >
+                  <BookOpen aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
+                  Read more
+                </a>
+              ) : null}
+            </div>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
