@@ -89,6 +89,8 @@ CORS_ALLOWED_ORIGINS = {
     if origin.strip()
 }
 DIFFICULTIES = ("easy", "medium", "hard")
+QUIZ_POINTS_BY_DIFFICULTY = {"easy": 1, "medium": 3, "hard": 5}
+WORDLE_POINTS_BY_ATTEMPT = {1: 10, 2: 5, 3: 4, 4: 3, 5: 2, 6: 1}
 NEWS_QUERIES = (
     '"St Mirren"',
     '"St Mirren" football',
@@ -456,6 +458,22 @@ def initialize_database() -> None:
                 UNIQUE (result_id, attempt_number)
             );
 
+            CREATE TABLE IF NOT EXISTS daily_quiz_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                game_date TEXT NOT NULL,
+                category TEXT NOT NULL CHECK (category IN ('football', 'general')),
+                answers_json TEXT NOT NULL,
+                score INTEGER NOT NULL DEFAULT 0,
+                max_score INTEGER NOT NULL DEFAULT 0,
+                correct_count INTEGER NOT NULL DEFAULT 0,
+                completed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE (user_id, game_date, category)
+            );
+
             CREATE TABLE IF NOT EXISTS news_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_key TEXT NOT NULL UNIQUE,
@@ -476,7 +494,10 @@ def initialize_database() -> None:
             ON news_items (published_at DESC);
             """
             )
+            ensure_column(conn, "users", "is_moderator", "INTEGER NOT NULL DEFAULT 0")
             ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
+            ensure_column(conn, "wordle_results", "score", "INTEGER NOT NULL DEFAULT 0")
+            backfill_wordle_scores(conn)
             user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
             if user_count == 0:
                 bootstrap_error = validate_bootstrap_admin()
@@ -545,15 +566,29 @@ def validate_bootstrap_admin() -> str | None:
     return None
 
 
+def row_has_value(row: sqlite3.Row, key: str) -> bool:
+    return key in row.keys() and bool(row[key])
+
+
+def effective_user_role(row: sqlite3.Row) -> str:
+    if row["role"] == "admin":
+        return "admin"
+    return "mod" if row_has_value(row, "is_moderator") else "user"
+
+
+def user_can_manage_players(row: sqlite3.Row) -> bool:
+    return row["role"] == "admin" or row_has_value(row, "is_moderator")
+
+
 def user_payload(row: sqlite3.Row) -> dict[str, Any]:
-    return {"id": row["id"], "username": row["username"], "role": row["role"]}
+    return {"id": row["id"], "username": row["username"], "role": effective_user_role(row)}
 
 
 def admin_user_payload(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"],
         "username": row["username"],
-        "role": row["role"],
+        "role": effective_user_role(row),
         "createdAt": row["created_at"],
         "gamesPlayed": row["games_played"] or 0,
         "wins": row["wins"] or 0,
@@ -746,13 +781,34 @@ def get_or_create_wordle_result(
     ).fetchone()
 
 
+def wordle_score(status: str, attempts_used: int) -> int:
+    if status != "won":
+        return 0
+    return WORDLE_POINTS_BY_ATTEMPT.get(attempts_used, 0)
+
+
+def backfill_wordle_scores(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, status, attempts_used, score
+        FROM wordle_results
+        WHERE status != 'in_progress'
+        """
+    ).fetchall()
+    for row in rows:
+        next_score = wordle_score(row["status"], row["attempts_used"])
+        if row["score"] != next_score:
+            conn.execute("UPDATE wordle_results SET score = ? WHERE id = ?", (next_score, row["id"]))
+
+
 def wordle_stats(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
     row = conn.execute(
         """
         SELECT
             SUM(CASE WHEN status IN ('won', 'lost') THEN 1 ELSE 0 END) AS played,
             SUM(CASE WHEN status = 'won' THEN 1 ELSE 0 END) AS wins,
-            SUM(CASE WHEN status = 'lost' THEN 1 ELSE 0 END) AS losses
+            SUM(CASE WHEN status = 'lost' THEN 1 ELSE 0 END) AS losses,
+            SUM(score) AS points
         FROM wordle_results
         WHERE user_id = ?
         """,
@@ -762,6 +818,7 @@ def wordle_stats(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
         "played": row["played"] or 0,
         "wins": row["wins"] or 0,
         "losses": row["losses"] or 0,
+        "points": row["points"] or 0,
     }
 
 
@@ -798,6 +855,7 @@ def serialize_wordle_state(
         "result": {
             "status": status,
             "attemptsUsed": result["attempts_used"],
+            "score": result["score"],
             "guesses": guesses,
             "answer": game["secret_word"] if status != "in_progress" else None,
         },
@@ -1224,6 +1282,22 @@ def validate_daily_questions(payload: dict[str, Any]) -> bool:
     return True
 
 
+def order_daily_questions(payload: dict[str, Any]) -> dict[str, Any]:
+    ordered = dict(payload)
+    difficulty_index = {difficulty: index for index, difficulty in enumerate(DIFFICULTIES)}
+    for category in ("football", "general"):
+        questions = payload.get(category)
+        if isinstance(questions, list):
+            ordered[category] = sorted(
+                questions,
+                key=lambda question: difficulty_index.get(
+                    question.get("difficulty") if isinstance(question, dict) else "",
+                    len(DIFFICULTIES),
+                ),
+            )
+    return ordered
+
+
 def daily_questions_path(game_date: str) -> Path:
     return QUIZ_DATA_DIR / f"daily-questions-{game_date}.json"
 
@@ -1242,7 +1316,7 @@ def ensure_daily_questions() -> dict[str, Any]:
                 and validate_daily_questions(payload)
                 and not contains_legacy_placeholder_questions(payload)
             ):
-                return payload
+                return order_daily_questions(payload)
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -1250,7 +1324,173 @@ def ensure_daily_questions() -> dict[str, Any]:
     temp_path = path.with_suffix(".tmp")
     temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temp_path.replace(path)
-    return payload
+    return order_daily_questions(payload)
+
+
+def score_quiz_answers(
+    questions: list[dict[str, Any]],
+    answers: list[str],
+) -> dict[str, int]:
+    score = 0
+    max_score = 0
+    correct_count = 0
+    for index, question in enumerate(questions):
+        difficulty = str(question.get("difficulty", ""))
+        points = QUIZ_POINTS_BY_DIFFICULTY.get(difficulty, 0)
+        max_score += points
+        if index < len(answers) and answers[index] == question.get("correct_answer"):
+            score += points
+            correct_count += 1
+    return {"score": score, "maxScore": max_score, "correctCount": correct_count}
+
+
+def serialize_quiz_result(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "date": row["game_date"],
+        "category": row["category"],
+        "score": row["score"],
+        "maxScore": row["max_score"],
+        "correctCount": row["correct_count"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def save_daily_quiz_result(
+    conn: sqlite3.Connection,
+    user_id: int,
+    game_date: str,
+    category: str,
+    answers: list[str],
+) -> tuple[dict[str, Any], int]:
+    daily_questions = ensure_daily_questions()
+    if game_date != daily_questions["date"]:
+        return {"error": "Only today's quiz can be scored."}, HTTPStatus.BAD_REQUEST
+    if category not in {"football", "general"}:
+        return {"error": "Quiz category must be football or general."}, HTTPStatus.BAD_REQUEST
+
+    questions = daily_questions[category]
+    if len(answers) != len(questions):
+        return {"error": "Submit one answer for each quiz question."}, HTTPStatus.BAD_REQUEST
+
+    existing = conn.execute(
+        """
+        SELECT *
+        FROM daily_quiz_results
+        WHERE user_id = ? AND game_date = ? AND category = ?
+        """,
+        (user_id, game_date, category),
+    ).fetchone()
+    if existing is not None:
+        return {"result": serialize_quiz_result(existing)}, HTTPStatus.OK
+
+    totals = score_quiz_answers(questions, answers)
+    now = utc_now()
+    try:
+        conn.execute(
+            """
+            INSERT INTO daily_quiz_results (
+                user_id, game_date, category, answers_json, score, max_score,
+                correct_count, completed_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                game_date,
+                category,
+                json.dumps(answers),
+                totals["score"],
+                totals["maxScore"],
+                totals["correctCount"],
+                now,
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        pass
+
+    result = conn.execute(
+        """
+        SELECT *
+        FROM daily_quiz_results
+        WHERE user_id = ? AND game_date = ? AND category = ?
+        """,
+        (user_id, game_date, category),
+    ).fetchone()
+    return {"result": serialize_quiz_result(result)}, HTTPStatus.CREATED
+
+
+def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    rows = conn.execute(
+        """
+        WITH wordle_scores AS (
+            SELECT
+                user_id,
+                SUM(score) AS points,
+                SUM(CASE WHEN status IN ('won', 'lost') THEN 1 ELSE 0 END) AS played,
+                SUM(CASE WHEN status = 'won' THEN 1 ELSE 0 END) AS wins
+            FROM wordle_results
+            GROUP BY user_id
+        ),
+        quiz_scores AS (
+            SELECT
+                user_id,
+                SUM(score) AS points,
+                SUM(max_score) AS max_points,
+                COUNT(*) AS played,
+                SUM(correct_count) AS correct_count
+            FROM daily_quiz_results
+            GROUP BY user_id
+        )
+        SELECT
+            users.id,
+            users.username,
+            COALESCE(wordle_scores.points, 0) AS wordle_points,
+            COALESCE(wordle_scores.played, 0) AS wordle_played,
+            COALESCE(wordle_scores.wins, 0) AS wordle_wins,
+            COALESCE(quiz_scores.points, 0) AS quiz_points,
+            COALESCE(quiz_scores.max_points, 0) AS quiz_max_points,
+            COALESCE(quiz_scores.played, 0) AS quiz_played,
+            COALESCE(quiz_scores.correct_count, 0) AS quiz_correct
+        FROM users
+        LEFT JOIN wordle_scores ON wordle_scores.user_id = users.id
+        LEFT JOIN quiz_scores ON quiz_scores.user_id = users.id
+        WHERE users.role != 'admin'
+        ORDER BY
+            (COALESCE(wordle_scores.points, 0) + COALESCE(quiz_scores.points, 0)) DESC,
+            COALESCE(wordle_scores.wins, 0) DESC,
+            LOWER(users.username)
+        """
+    ).fetchall()
+
+    players = []
+    for index, row in enumerate(rows):
+        players.append(
+            {
+                "rank": index + 1,
+                "id": row["id"],
+                "username": row["username"],
+                "totalPoints": row["wordle_points"] + row["quiz_points"],
+                "wordlePoints": row["wordle_points"],
+                "wordlePlayed": row["wordle_played"],
+                "wordleWins": row["wordle_wins"],
+                "quizPoints": row["quiz_points"],
+                "quizMaxPoints": row["quiz_max_points"],
+                "quizPlayed": row["quiz_played"],
+                "quizCorrect": row["quiz_correct"],
+            }
+        )
+
+    return {
+        "players": players,
+        "summary": {
+            "playerCount": len(players),
+            "totalPoints": sum(player["totalPoints"] for player in players),
+            "quizPlays": sum(player["quizPlayed"] for player in players),
+            "wordlePlays": sum(player["wordlePlayed"] for player in players),
+        },
+    }
 
 
 def serialize_news_item(row: sqlite3.Row) -> dict[str, Any]:
@@ -1839,19 +2079,31 @@ def split_fact_sentences(text: str) -> list[str]:
 
 
 def clean_fact_sentence(sentence: str) -> str | None:
-    cleaned = re.sub(r"\s+", " ", str(sentence or "")).strip()
+    cleaned = re.sub(r"=+\s*[^=]+\s*=+", " ", str(sentence or ""))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     if len(cleaned) < 38 or len(cleaned) > 260:
         return None
     if " may refer to:" in cleaned.lower() or " may refer to " in cleaned.lower():
+        return None
+    if "according to" in cleaned.lower():
         return None
     if cleaned.count(",") > 8:
         return None
     return cleaned
 
 
+def fact_keyword_score(text: str, keywords: tuple[str, ...], points: int) -> int:
+    score = 0
+    for keyword in keywords:
+        pattern = rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])"
+        if re.search(pattern, text.lower()):
+            score += points
+    return score
+
+
 def classify_fact_theme(sentence: str) -> str:
     scored = [
-        (history_keyword_score(sentence, keywords, 1), theme)
+        (fact_keyword_score(sentence, keywords, 1), theme)
         for theme, keywords in FACT_THEME_KEYWORDS.items()
     ]
     scored.sort(reverse=True)
@@ -1860,7 +2112,7 @@ def classify_fact_theme(sentence: str) -> str:
 
 def fact_candidate_score(sentence: str, theme: str) -> int:
     score = 0 if theme == "general" else 30
-    score += history_keyword_score(sentence, FACT_THEME_KEYWORDS.get(theme, ()), 5)
+    score += fact_keyword_score(sentence, FACT_THEME_KEYWORDS.get(theme, ()), 5)
     if re.search(r"\b(1[0-9]{3}|20[0-9]{2}|[0-9]{1,2}(st|nd|rd|th) century)\b", sentence):
         score += 12
     if 70 <= len(sentence) <= 190:
@@ -1995,14 +2247,13 @@ def wikidata_entity_label(entity: dict[str, Any], lang: str, fallback: str) -> s
     return fallback
 
 
-def wikidata_facts(
+def wikidata_profile(
     entity: dict[str, Any] | None,
     lang: str,
     fallback_title: str,
-    limit: int,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any] | None:
     if entity is None:
-        return []
+        return None
 
     qid = str(entity.get("id", ""))
     source_url = f"https://www.wikidata.org/wiki/{qid}" if qid else None
@@ -2016,86 +2267,49 @@ def wikidata_facts(
                 related_ids.append(entity_id)
 
     related_labels = fetch_wikidata_labels(related_ids, lang)
-    facts: list[dict[str, Any]] = []
-
     instance_labels = [
         related_labels[entity_id]
         for claim in wikidata_claims(entity, "P31")[:3]
         if (entity_id := wikidata_entity_id(wikidata_claim_value(claim))) in related_labels
     ]
-    if instance_labels:
-        facts.append(
-            make_history_fact(
-                title="Place identity",
-                text=f"Wikidata identifies {title} as {', '.join(instance_labels)}.",
-                theme="general",
-                source_name="Wikidata",
-                source_url=source_url,
-                confidence="high",
-            )
-        )
-
     population = None
     for claim in wikidata_claims(entity, "P1082")[:1]:
         population = wikidata_quantity_text(wikidata_claim_value(claim))
-    if population:
-        facts.append(
-            make_history_fact(
-                title="Population",
-                text=f"Wikidata records {title}'s population as {population}.",
-                theme="people",
-                source_name="Wikidata",
-                source_url=source_url,
-                confidence="high",
-            )
-        )
 
+    inception = None
     for claim in wikidata_claims(entity, "P571")[:1]:
         inception = wikidata_time_text(wikidata_claim_value(claim))
-        if inception:
-            facts.append(
-                make_history_fact(
-                    title="Founded",
-                    text=f"Wikidata records {title}'s inception date as {inception}.",
-                    theme="history",
-                    source_name="Wikidata",
-                    source_url=source_url,
-                    confidence="high",
-                )
-            )
-
     containing_places = [
         related_labels[entity_id]
         for claim in wikidata_claims(entity, "P131")[:2]
         if (entity_id := wikidata_entity_id(wikidata_claim_value(claim))) in related_labels
     ]
-    if containing_places:
-        facts.append(
-            make_history_fact(
-                title="Area",
-                text=f"Wikidata places {title} within {', '.join(containing_places)}.",
-                theme="general",
-                source_name="Wikidata",
-                source_url=source_url,
-                confidence="high",
-            )
-        )
+    countries = [
+        related_labels[entity_id]
+        for claim in wikidata_claims(entity, "P17")[:1]
+        if (entity_id := wikidata_entity_id(wikidata_claim_value(claim))) in related_labels
+    ]
 
-    return facts[:limit]
+    return {
+        "title": title,
+        "types": instance_labels,
+        "population": population,
+        "areas": containing_places,
+        "country": countries[0] if countries else None,
+        "inception": inception,
+        "sourceName": "Wikidata",
+        "sourceUrl": source_url,
+    }
 
 
 def build_location_facts(
     summary: dict[str, Any],
     plain_extract: str,
-    wikidata_entity: dict[str, Any] | None,
-    lang: str,
     limit: int,
     article_url: str | None,
 ) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
-    facts.extend(wikidata_facts(wikidata_entity, lang, str(summary.get("title") or ""), 3))
-
-    existing_texts = {str(fact.get("text", "")).lower() for fact in facts}
+    existing_texts: set[str] = set()
     for fact in wikipedia_facts(summary, plain_extract, limit, article_url):
         text = str(fact.get("text", "")).lower()
         if text in existing_texts:
@@ -2289,11 +2503,14 @@ def history_payload(
             location_payload = {
                 "title": wiki.get("title") or location,
                 "description": wiki.get("description"),
+                "profile": wikidata_profile(
+                    wikidata_entity,
+                    lang,
+                    str(wiki.get("title") or location),
+                ),
                 "facts": build_location_facts(
                     wiki,
                     plain_extract,
-                    wikidata_entity,
-                    lang,
                     limit_facts,
                     article_url,
                 ),
@@ -2556,6 +2773,29 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, ensure_daily_questions())
                 return
 
+            if path == "/api/daily-quiz/result" and method == "POST":
+                payload = self.read_json()
+                game_date = str(payload.get("date", "")).strip()
+                category = str(payload.get("category", "")).strip()
+                raw_answers = payload.get("answers", [])
+                answers = raw_answers if isinstance(raw_answers, list) else []
+                if not all(isinstance(answer, str) for answer in answers):
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, "Quiz answers must be text.")
+                    return
+                result_payload, status = save_daily_quiz_result(
+                    conn,
+                    user["id"],
+                    game_date,
+                    category,
+                    answers,
+                )
+                self.send_json(status, result_payload)
+                return
+
+            if path == "/api/leaderboard" and method == "GET":
+                self.send_json(HTTPStatus.OK, leaderboard_payload(conn))
+                return
+
             if path in {"/api/history", "/api/facts"} and method == "GET":
                 location = str(params.get("location", [""])[0]).strip()
                 date_value = str(params.get("date", [today_game_date()])[0]).strip()
@@ -2604,8 +2844,8 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
 
             if path.startswith("/api/admin/"):
-                if user["role"] != "admin":
-                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                if not user_can_manage_players(user):
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Player management access required.")
                     return
                 self.handle_admin(conn, user, method, path)
                 return
@@ -2768,6 +3008,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         won = all(tile["color"] == "green" for tile in feedback)
         status = "won" if won else "lost" if attempt_number >= MAX_ATTEMPTS else "in_progress"
         completed_at = utc_now() if status != "in_progress" else None
+        score = wordle_score(status, attempt_number)
         now = utc_now()
 
         conn.execute(
@@ -2781,10 +3022,10 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         conn.execute(
             """
             UPDATE wordle_results
-            SET status = ?, attempts_used = ?, completed_at = ?, updated_at = ?
+            SET status = ?, attempts_used = ?, score = ?, completed_at = ?, updated_at = ?
             WHERE id = ?
             """,
-            (status, attempt_number, completed_at, now, result["id"]),
+            (status, attempt_number, score, completed_at, now, result["id"]),
         )
 
         self.send_json(HTTPStatus.OK, serialize_wordle_state(conn, user["id"], game))
@@ -2803,6 +3044,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     users.id,
                     users.username,
                     users.role,
+                    users.is_moderator,
                     users.created_at,
                     SUM(CASE WHEN wordle_results.status IN ('won', 'lost') THEN 1 ELSE 0 END)
                         AS games_played,
@@ -2810,9 +3052,12 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     SUM(CASE WHEN wordle_results.status = 'lost' THEN 1 ELSE 0 END) AS losses
                 FROM users
                 LEFT JOIN wordle_results ON wordle_results.user_id = users.id
+                WHERE ? = 'admin' OR (users.role = 'user' AND users.is_moderator = 0)
                 GROUP BY users.id
                 ORDER BY users.role ASC, LOWER(users.username)
                 """
+                ,
+                (user["role"],),
             ).fetchall()
             self.send_json(HTTPStatus.OK, {"users": [admin_user_payload(row) for row in rows]})
             return
@@ -2831,18 +3076,25 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             if password_error is not None:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, password_error)
                 return
-            if role not in {"admin", "user"}:
-                self.send_error_json(HTTPStatus.BAD_REQUEST, "Role must be admin or user.")
+            if role not in {"admin", "mod", "user"}:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "Role must be admin, mod, or user.")
+                return
+            if user["role"] != "admin" and role != "user":
+                self.send_error_json(HTTPStatus.FORBIDDEN, "Moderators can only add players.")
                 return
 
             now = utc_now()
+            stored_role = "admin" if role == "admin" else "user"
+            is_moderator = 1 if role == "mod" else 0
             try:
                 conn.execute(
                     """
-                    INSERT INTO users (username, password_hash, role, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO users (
+                        username, password_hash, role, is_moderator, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (username, hash_password(password), role, now, now),
+                    (username, hash_password(password), stored_role, is_moderator, now, now),
                 )
             except sqlite3.IntegrityError:
                 self.send_error_json(HTTPStatus.CONFLICT, "Username is already taken.")
@@ -2853,6 +3105,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
         reset_match = re.fullmatch(r"/api/admin/users/(\d+)/reset-password", path)
         if reset_match is not None and method == "POST":
+            if user["role"] != "admin":
+                self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                return
             target_id = int(reset_match.group(1))
             payload = self.read_json()
             password = str(payload.get("password", ""))
@@ -2878,6 +3133,19 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             target_id = int(delete_match.group(1))
             if target_id == user["id"]:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, "You cannot delete your own account.")
+                return
+
+            target = conn.execute(
+                "SELECT role, is_moderator FROM users WHERE id = ?",
+                (target_id,),
+            ).fetchone()
+            if target is None:
+                self.send_error_json(HTTPStatus.NOT_FOUND, "User not found.")
+                return
+            if user["role"] != "admin" and (
+                target["role"] != "user" or target["is_moderator"]
+            ):
+                self.send_error_json(HTTPStatus.FORBIDDEN, "Moderators can only delete players.")
                 return
 
             cursor = conn.execute("DELETE FROM users WHERE id = ?", (target_id,))

@@ -151,23 +151,130 @@ class ProductionServerHardeningTests(unittest.TestCase):
             "server.fetch_wikidata_labels",
             return_value={"Q486972": "human settlement", "Q211091": "Renfrewshire"},
         ):
+            profile = server.wikidata_profile(entity, "en", "Paisley")
             facts = server.build_location_facts(
                 summary,
                 extract,
-                entity,
-                "en",
                 8,
                 "https://en.wikipedia.org/wiki/Paisley,_Renfrewshire",
             )
 
+        self.assertEqual(profile["population"], "77,220")
+        self.assertEqual(profile["areas"], ["Renfrewshire"])
         self.assertGreaterEqual(len(facts), 6)
         self.assertTrue(all(isinstance(fact, dict) for fact in facts))
         self.assertTrue(all(fact["sourceName"] and fact["sourceUrl"] for fact in facts))
         self.assertTrue(all(fact["confidence"] in {"high", "medium", "low"} for fact in facts))
-        self.assertIn("Wikidata", {fact["sourceName"] for fact in facts})
+        self.assertEqual({fact["sourceName"] for fact in facts}, {"Wikipedia"})
         self.assertTrue({"history", "landmark", "industry", "culture"}.intersection(
             {fact["theme"] for fact in facts}
         ))
+
+    def test_quiz_order_and_scoring_use_difficulty_weights(self) -> None:
+        import server
+
+        questions = [
+            {"difficulty": "hard", "correct_answer": "H"},
+            {"difficulty": "easy", "correct_answer": "E"},
+            {"difficulty": "medium", "correct_answer": "M"},
+        ]
+        payload = {"date": "2026-05-22", "football": questions, "general": questions}
+        ordered = server.order_daily_questions(payload)
+
+        self.assertEqual(
+            [question["difficulty"] for question in ordered["football"]],
+            ["easy", "medium", "hard"],
+        )
+        self.assertEqual(
+            server.score_quiz_answers(ordered["football"], ["E", "wrong", "H"]),
+            {"score": 6, "maxScore": 9, "correctCount": 2},
+        )
+
+    def test_wordle_points_curve(self) -> None:
+        import server
+
+        self.assertEqual([server.wordle_score("won", attempt) for attempt in range(1, 7)], [10, 5, 4, 3, 2, 1])
+        self.assertEqual(server.wordle_score("lost", 6), 0)
+
+    def test_leaderboard_excludes_admin_accounts(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        original_quiz_data_dir = server.QUIZ_DATA_DIR
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.QUIZ_DATA_DIR = data_dir / "quizzes"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-05-22T12:00:00+00:00"
+                with conn:
+                    conn.execute(
+                        "INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        ("admin", "hash", "admin", now, now),
+                    )
+                    conn.execute(
+                        "INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        ("dad", "hash", "user", now, now),
+                    )
+                    rows = conn.execute("SELECT id, username FROM users").fetchall()
+                    user_ids = {row["username"]: row["id"] for row in rows}
+                    for username, score in (("admin", 9), ("dad", 6)):
+                        conn.execute(
+                            """
+                            INSERT INTO daily_quiz_results (
+                                user_id, game_date, category, answers_json, score, max_score,
+                                correct_count, completed_at, created_at, updated_at
+                            )
+                            VALUES (?, ?, 'football', '[]', ?, 9, 2, ?, ?, ?)
+                            """,
+                            (user_ids[username], "2026-05-22", score, now, now, now),
+                        )
+                payload = server.leaderboard_payload(conn)
+
+            self.assertEqual([player["username"] for player in payload["players"]], ["dad"])
+            self.assertEqual(payload["players"][0]["totalPoints"], 6)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+            server.QUIZ_DATA_DIR = original_quiz_data_dir
+
+    def test_moderator_flag_exposes_mod_role_and_player_management(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        original_quiz_data_dir = server.QUIZ_DATA_DIR
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.QUIZ_DATA_DIR = data_dir / "quizzes"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-05-22T12:00:00+00:00"
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO users (
+                            username, password_hash, role, is_moderator, created_at, updated_at
+                        )
+                        VALUES ('dad', 'hash', 'user', 1, ?, ?)
+                        """,
+                        (now, now),
+                    )
+                dad = conn.execute("SELECT * FROM users WHERE username = 'dad'").fetchone()
+
+            self.assertEqual(server.user_payload(dad)["role"], "mod")
+            self.assertTrue(server.user_can_manage_players(dad))
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+            server.QUIZ_DATA_DIR = original_quiz_data_dir
 
     def test_news_classifier_does_not_mark_routine_stories_as_breaking(self) -> None:
         import server

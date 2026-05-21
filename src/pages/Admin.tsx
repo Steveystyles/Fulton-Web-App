@@ -7,6 +7,7 @@ import { api, type AdminUser, type Role } from "../lib/api";
 
 export function Admin() {
   const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -103,7 +104,7 @@ export function Admin() {
   }
 
   return (
-    <PageContainer title="ADMIN" number="A">
+    <PageContainer title={isAdmin ? "ADMIN" : "PLAYERS"} number="A">
       <Card>
         <form className="space-y-4" onSubmit={handleAddUser}>
           <div className="flex items-start gap-3">
@@ -113,7 +114,9 @@ export function Admin() {
             <div className="min-w-0">
               <p className="text-xl font-black leading-tight text-slate-950">Add player</p>
               <p className="mt-1 text-sm font-semibold text-slate-600">
-                Create player or admin accounts with 12+ character passwords.
+                {isAdmin
+                  ? "Create player, moderator, or admin accounts with 12+ character passwords."
+                  : "Create a player account and choose their first password."}
               </p>
             </div>
           </div>
@@ -136,14 +139,17 @@ export function Admin() {
               autoComplete="new-password"
               required
             />
-            <select
-              value={role}
-              onChange={(event) => setRole(event.target.value as Role)}
-              className="h-12 w-full rounded-2xl border border-slate-300 bg-white px-3 text-base font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
-            >
-              <option value="user">User</option>
-              <option value="admin">Admin</option>
-            </select>
+            {isAdmin ? (
+              <select
+                value={role}
+                onChange={(event) => setRole(event.target.value as Role)}
+                className="h-12 w-full rounded-2xl border border-slate-300 bg-white px-3 text-base font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
+              >
+                <option value="user">Player</option>
+                <option value="mod">Moderator</option>
+                <option value="admin">Admin</option>
+              </select>
+            ) : null}
           </div>
 
           <button
@@ -202,29 +208,31 @@ export function Admin() {
                   </button>
                 </div>
 
-                <div className="mt-3 flex gap-2">
-                  <input
-                    value={resetPasswords[targetUser.id] ?? ""}
-                    onChange={(event) =>
-                      setResetPasswords((current) => ({
-                        ...current,
-                        [targetUser.id]: event.target.value,
-                      }))
-                    }
-                    className="h-11 min-w-0 flex-1 rounded-2xl border border-slate-300 bg-white px-3 text-sm font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
-                    placeholder="New password (12+ chars)"
-                    type="password"
-                    autoComplete="new-password"
-                  />
-                  <button
-                    type="button"
-                    aria-label={`Reset ${targetUser.username} password`}
-                    onClick={() => void handleResetPassword(targetUser)}
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-saints-black text-white transition hover:bg-slate-800 focus:outline-none focus:ring-4 focus:ring-slate-500/30"
-                  >
-                    <KeyRound aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-                  </button>
-                </div>
+                {isAdmin ? (
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      value={resetPasswords[targetUser.id] ?? ""}
+                      onChange={(event) =>
+                        setResetPasswords((current) => ({
+                          ...current,
+                          [targetUser.id]: event.target.value,
+                        }))
+                      }
+                      className="h-11 min-w-0 flex-1 rounded-2xl border border-slate-300 bg-white px-3 text-sm font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
+                      placeholder="New password (12+ chars)"
+                      type="password"
+                      autoComplete="new-password"
+                    />
+                    <button
+                      type="button"
+                      aria-label={`Reset ${targetUser.username} password`}
+                      onClick={() => void handleResetPassword(targetUser)}
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-saints-black text-white transition hover:bg-slate-800 focus:outline-none focus:ring-4 focus:ring-slate-500/30"
+                    >
+                      <KeyRound aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+                    </button>
+                  </div>
+                ) : null}
               </article>
             );
           })}

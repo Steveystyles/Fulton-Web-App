@@ -25,10 +25,10 @@ export function Header() {
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        {user?.role === "admin" ? (
+        {user?.role === "admin" || user?.role === "mod" ? (
           <NavLink
             to="/admin"
-            aria-label="Admin"
+            aria-label={user.role === "admin" ? "Admin" : "Players"}
             className={({ isActive }) =>
               [
                 headerButtonClass,

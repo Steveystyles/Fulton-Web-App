@@ -1,4 +1,4 @@
-export type Role = "admin" | "user";
+export type Role = "admin" | "mod" | "user";
 
 export type User = {
   id: number;
@@ -28,6 +28,7 @@ export type WordleState = {
   result: {
     status: "in_progress" | "won" | "lost";
     attemptsUsed: number;
+    score: number;
     guesses: WordleGuess[];
     answer: string | null;
   };
@@ -35,6 +36,7 @@ export type WordleState = {
     played: number;
     wins: number;
     losses: number;
+    points: number;
   };
 };
 
@@ -92,6 +94,39 @@ export type HistoryEvent = {
   label?: string;
 };
 
+export type DailyQuizResult = {
+  date: string;
+  category: "football" | "general";
+  score: number;
+  maxScore: number;
+  correctCount: number;
+  completedAt: string;
+};
+
+export type LeaderboardPlayer = {
+  rank: number;
+  id: number;
+  username: string;
+  totalPoints: number;
+  wordlePoints: number;
+  wordlePlayed: number;
+  wordleWins: number;
+  quizPoints: number;
+  quizMaxPoints: number;
+  quizPlayed: number;
+  quizCorrect: number;
+};
+
+export type LeaderboardResponse = {
+  players: LeaderboardPlayer[];
+  summary: {
+    playerCount: number;
+    totalPoints: number;
+    quizPlays: number;
+    wordlePlays: number;
+  };
+};
+
 export type HistoryFactTheme =
   | "history"
   | "landmark"
@@ -110,6 +145,17 @@ export type HistoryFact = {
   confidence: "high" | "medium" | "low";
 };
 
+export type HistoryLocationProfile = {
+  title: string;
+  types: string[];
+  population: string | null;
+  areas: string[];
+  country: string | null;
+  inception: string | null;
+  sourceName: string;
+  sourceUrl: string | null;
+};
+
 export type HistoryResponse = {
   request: {
     location: string;
@@ -119,6 +165,7 @@ export type HistoryResponse = {
   location: {
     title: string;
     description: string | null;
+    profile?: HistoryLocationProfile | null;
     facts: Array<string | HistoryFact>;
     articleUrl: string | null;
     thumbnailUrl: string | null;
@@ -265,6 +312,21 @@ export const api = {
 
   dailyQuestions(options?: { force?: boolean }) {
     return fetchDailyQuestions(options);
+  },
+
+  submitDailyQuizResult(payload: {
+    date: string;
+    category: "football" | "general";
+    answers: string[];
+  }) {
+    return request<{ result: DailyQuizResult }>("/api/daily-quiz/result", {
+      method: "POST",
+      body: jsonBody(payload),
+    });
+  },
+
+  leaderboard() {
+    return request<LeaderboardResponse>("/api/leaderboard");
   },
 
   news(limit = 50, category: NewsCategory = "all", options?: { force?: boolean }) {

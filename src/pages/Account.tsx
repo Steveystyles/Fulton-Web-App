@@ -14,6 +14,8 @@ export function Account() {
   const [error, setError] = useState("");
   const [savingProfile, setSavingProfile] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
+  const accountLabel =
+    user?.role === "admin" ? "Admin" : user?.role === "mod" ? "Moderator" : "Player";
 
   async function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -62,7 +64,7 @@ export function Account() {
             <div className="min-w-0">
               <p className="text-xl font-black leading-tight text-slate-950">Profile</p>
               <p className="mt-1 text-sm font-semibold text-slate-600">
-                {user?.role === "admin" ? "Admin" : "Player"}
+                {accountLabel}
               </p>
             </div>
           </div>

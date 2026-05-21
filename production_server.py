@@ -139,6 +139,22 @@ def initialize_database() -> None:
                 UNIQUE (result_id, attempt_number)
             );
 
+            CREATE TABLE IF NOT EXISTS daily_quiz_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                game_date TEXT NOT NULL,
+                category TEXT NOT NULL CHECK (category IN ('football', 'general')),
+                answers_json TEXT NOT NULL,
+                score INTEGER NOT NULL DEFAULT 0,
+                max_score INTEGER NOT NULL DEFAULT 0,
+                correct_count INTEGER NOT NULL DEFAULT 0,
+                completed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE (user_id, game_date, category)
+            );
+
             CREATE TABLE IF NOT EXISTS news_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_key TEXT NOT NULL UNIQUE,
@@ -159,7 +175,10 @@ def initialize_database() -> None:
             ON news_items (published_at DESC);
             """
             )
+            server.ensure_column(conn, "users", "is_moderator", "INTEGER NOT NULL DEFAULT 0")
             server.ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
+            server.ensure_column(conn, "wordle_results", "score", "INTEGER NOT NULL DEFAULT 0")
+            server.backfill_wordle_scores(conn)
             user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
             if user_count == 0:
                 bootstrap_error = _bootstrap_admin_error()

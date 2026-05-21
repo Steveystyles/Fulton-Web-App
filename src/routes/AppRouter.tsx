@@ -209,7 +209,7 @@ export function AppRouter() {
           <Route
             path="/admin"
             element={
-              user.role === "admin" ? (
+              user.role === "admin" || user.role === "mod" ? (
                 <AppFrame>
                   <Admin />
                 </AppFrame>

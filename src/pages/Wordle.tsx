@@ -125,7 +125,7 @@ export function Wordle() {
     }
 
     if (state.result.status === "won") {
-      return `Solved in ${state.result.attemptsUsed}`;
+      return `Solved in ${state.result.attemptsUsed} - ${state.result.score} pts`;
     }
 
     if (state.result.status === "lost") {
@@ -183,6 +183,13 @@ export function Wordle() {
         <form className="space-y-3 pb-2" onSubmit={handleSubmit}>
           {statusText ? (
             <p className="text-center text-base font-black text-slate-700">{statusText}</p>
+          ) : null}
+          {state ? (
+            <div className="mx-auto flex w-fit items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-black uppercase text-slate-600">
+              <span>{state.stats.points} Wordle pts</span>
+              <span className="h-1 w-1 rounded-full bg-saints-red" aria-hidden="true" />
+              <span>{state.stats.wins} wins</span>
+            </div>
           ) : null}
 
           <div className="mx-auto grid max-w-[17rem] gap-1.5" aria-label="Wordle board">

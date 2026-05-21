@@ -1,6 +1,6 @@
 import { ArrowRight, Check, CircleAlert, LoaderCircle, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { DailyQuizQuestion, QuizDifficulty } from "../lib/api";
+import { api, type DailyQuizQuestion, type DailyQuizResult, type QuizDifficulty } from "../lib/api";
 import { Card } from "./Card";
 
 type DailyQuizProps = {
@@ -14,7 +14,7 @@ type DailyQuizProps = {
 };
 
 type StoredQuizState = {
-  version: 1;
+  version: number;
   currentIndex: number;
   answers: string[];
 };
@@ -23,7 +23,7 @@ type QuizRuntimeState = StoredQuizState & {
   storageKey: string;
 };
 
-const storageVersion = 1;
+const storageVersion = 2;
 const emptyRuntimeState: QuizRuntimeState = {
   storageKey: "",
   version: storageVersion,
@@ -35,6 +35,11 @@ const difficultyClasses: Record<QuizDifficulty, string> = {
   easy: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   medium: "bg-amber-50 text-amber-700 ring-amber-200",
   hard: "bg-saints-redSoft text-saints-red ring-red-200",
+};
+const difficultyPoints: Record<QuizDifficulty, number> = {
+  easy: 1,
+  medium: 3,
+  hard: 5,
 };
 
 function formatQuizDate(quizDate?: string) {
@@ -64,6 +69,9 @@ function normaliseStoredState(value: unknown, questionCount: number): StoredQuiz
   }
 
   const payload = value as Partial<StoredQuizState>;
+  if (payload.version !== storageVersion) {
+    return { version: storageVersion, currentIndex: 0, answers: [] };
+  }
   const answers = Array.isArray(payload.answers)
     ? payload.answers
         .filter((answer): answer is string => typeof answer === "string")
@@ -108,6 +116,8 @@ export function DailyQuiz({
   emptyMessage,
 }: DailyQuizProps) {
   const [quizState, setQuizState] = useState<QuizRuntimeState>(emptyRuntimeState);
+  const [savedResult, setSavedResult] = useState<DailyQuizResult | null>(null);
+  const [scoreError, setScoreError] = useState("");
   const storageKey = useMemo(() => {
     return quizDate && questions.length > 0
       ? quizStorageKey(quizId, storageScope, quizDate)
@@ -123,6 +133,11 @@ export function DailyQuiz({
     const restoredState = readStoredQuizState(storageKey, questions.length);
     setQuizState({ ...restoredState, storageKey });
   }, [questions.length, storageKey]);
+
+  useEffect(() => {
+    setSavedResult(null);
+    setScoreError("");
+  }, [storageKey]);
 
   useEffect(() => {
     if (!storageKey || quizState.storageKey !== storageKey || questions.length === 0) {
@@ -149,9 +164,50 @@ export function DailyQuiz({
   const formattedDate = formatQuizDate(quizDate);
   const score = useMemo(() => {
     return questions.reduce((total, question, index) => {
-      return total + (answers[index] === question.correct_answer ? 1 : 0);
+      return total + (answers[index] === question.correct_answer ? difficultyPoints[question.difficulty] : 0);
     }, 0);
   }, [answers, questions]);
+  const maxScore = useMemo(() => {
+    return questions.reduce((total, question) => total + difficultyPoints[question.difficulty], 0);
+  }, [questions]);
+
+  useEffect(() => {
+    let active = true;
+
+    if (
+      !isComplete ||
+      !quizDate ||
+      savedResult !== null ||
+      answers.length !== questions.length
+    ) {
+      return;
+    }
+    const resultDate = quizDate;
+
+    async function saveScore() {
+      try {
+        const response = await api.submitDailyQuizResult({
+          date: resultDate,
+          category: quizId,
+          answers,
+        });
+        if (active) {
+          setSavedResult(response.result);
+          setScoreError("");
+        }
+      } catch (caughtError) {
+        if (active) {
+          setScoreError(caughtError instanceof Error ? caughtError.message : "Score was not saved.");
+        }
+      }
+    }
+
+    void saveScore();
+
+    return () => {
+      active = false;
+    };
+  }, [answers, isComplete, questions.length, quizDate, quizId, savedResult]);
 
   const answerState = useMemo(() => {
     if (!locked || currentQuestion === undefined) {
@@ -252,12 +308,17 @@ export function DailyQuiz({
                 Final score
               </h3>
               <p className="mt-3 text-5xl font-black leading-none text-saints-black">
-                {score} / {questions.length}
+                {savedResult?.score ?? score} / {savedResult?.maxScore ?? maxScore}
               </p>
             </div>
             <p className="text-sm font-semibold leading-relaxed text-slate-600">
-              Today's quiz is complete. A fresh quiz will unlock after the daily refresh.
+              Easy questions are worth 1, medium 3, and hard 5. A fresh quiz will unlock after the daily refresh.
             </p>
+            {scoreError ? (
+              <p className="rounded-2xl bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
+                {scoreError}
+              </p>
+            ) : null}
           </div>
         </Card>
 
@@ -283,7 +344,7 @@ export function DailyQuiz({
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                      Question {index + 1}
+                      Question {index + 1} / {difficultyPoints[question.difficulty]} pts
                     </p>
                     <h3 className="mt-1 text-base font-black leading-tight text-slate-950">
                       {question.question}
@@ -335,7 +396,7 @@ export function DailyQuiz({
               difficultyClasses[currentQuestion.difficulty],
             ].join(" ")}
           >
-            {currentQuestion.difficulty}
+            {currentQuestion.difficulty} / {difficultyPoints[currentQuestion.difficulty]} pts
           </span>
         </header>
 
