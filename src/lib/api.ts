@@ -90,6 +90,24 @@ export type HistoryEvent = {
   links: Array<{ title?: string; link?: string }>;
 };
 
+export type HistoryFactTheme =
+  | "history"
+  | "landmark"
+  | "industry"
+  | "culture"
+  | "people"
+  | "date"
+  | "general";
+
+export type HistoryFact = {
+  title: string;
+  text: string;
+  theme: HistoryFactTheme;
+  sourceName: string;
+  sourceUrl: string | null;
+  confidence: "high" | "medium" | "low";
+};
+
 export type HistoryResponse = {
   request: {
     location: string;
@@ -99,7 +117,7 @@ export type HistoryResponse = {
   location: {
     title: string;
     description: string | null;
-    facts: string[];
+    facts: Array<string | HistoryFact>;
     articleUrl: string | null;
     thumbnailUrl: string | null;
   } | null;
