@@ -6,6 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY index.html postcss.config.js tailwind.config.ts tsconfig.json vite.config.ts ./
+COPY public ./public
 COPY src ./src
 RUN npm run build
 
