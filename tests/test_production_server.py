@@ -169,6 +169,40 @@ class ProductionServerHardeningTests(unittest.TestCase):
             {fact["theme"] for fact in facts}
         ))
 
+    def test_news_classifier_does_not_mark_routine_stories_as_breaking(self) -> None:
+        import server
+
+        routine_titles = [
+            "8 emerging transfer headlines as Hibs and Aberdeen eye centre backs",
+            "Craig McLeish on St Mirren injury news and contract talks",
+            "Premier Sports Cup group stage draw date and time confirmed",
+        ]
+
+        for title in routine_titles:
+            with self.subTest(title=title):
+                priority, tags = server.classify_news_item(title, "", ["breaking"])
+                self.assertEqual(priority, "news")
+                self.assertNotIn("breaking", tags)
+
+    def test_news_classifier_keeps_explicit_breaking_and_live_scores(self) -> None:
+        import server
+
+        breaking_priority, breaking_tags = server.classify_news_item(
+            "Breaking: St Mirren appoint new manager",
+            "",
+            [],
+        )
+        live_priority, live_tags = server.classify_news_item(
+            "Partick Thistle v St Mirren live score and match centre",
+            "",
+            [],
+        )
+
+        self.assertEqual(breaking_priority, "breaking")
+        self.assertIn("breaking", breaking_tags)
+        self.assertEqual(live_priority, "live-scores")
+        self.assertIn("live-scores", live_tags)
+
     def test_history_events_prefer_recent_sport_and_birth_highlights(self) -> None:
         import server
 

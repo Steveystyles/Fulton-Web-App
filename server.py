@@ -1422,7 +1422,11 @@ def classify_news_item(
     tags: list[str],
 ) -> tuple[str, list[str]]:
     haystack = f"{title} {summary}".lower()
-    clean_tags = list(dict.fromkeys(tags))
+    clean_tags = [
+        tag
+        for tag in list(dict.fromkeys(tags))
+        if tag not in {"breaking", "news", "live-scores"}
+    ]
 
     live_score_terms = (
         "live score",
@@ -1436,26 +1440,34 @@ def classify_news_item(
         "half-time",
         "kick-off",
     )
-    breaking_terms = (
+    explicit_breaking_terms = (
         "breaking",
-        "confirmed",
-        "signs",
-        "signing",
-        "transfer",
-        "injury",
-        "sacked",
-        "appointed",
-        "contract",
-        "deal",
         "exclusive",
         "urgent",
+        "just in",
+        "developing",
+    )
+    high_impact_breaking_terms = (
+        "sacked",
+        "dismissed",
+        "appointed",
+        "resigns",
+        "resigned",
+        "dies",
+        "died",
+        "death",
+        "postponed",
+        "cancelled",
+        "called off",
     )
 
     if any(term in haystack for term in live_score_terms):
         clean_tags.append("live-scores")
         return "live-scores", list(dict.fromkeys(clean_tags))
 
-    if any(term in haystack for term in breaking_terms):
+    if any(term in haystack for term in explicit_breaking_terms) or any(
+        term in haystack for term in high_impact_breaking_terms
+    ):
         clean_tags.append("breaking")
         return "breaking", list(dict.fromkeys(clean_tags))
 
@@ -1466,9 +1478,8 @@ def classify_news_item(
 def backfill_news_categories(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         """
-        SELECT id, title, summary, tags_json
+        SELECT id, title, summary, priority, tags_json
         FROM news_items
-        WHERE priority NOT IN ('breaking', 'news', 'live-scores')
         """
     ).fetchall()
 
@@ -1479,13 +1490,16 @@ def backfill_news_categories(conn: sqlite3.Connection) -> None:
             tags = []
         clean_tags = tags if isinstance(tags, list) else []
         priority, next_tags = classify_news_item(row["title"], row["summary"], clean_tags)
+        next_tags_json = json.dumps(next_tags[:8])
+        if priority == row["priority"] and next_tags_json == row["tags_json"]:
+            continue
         conn.execute(
             """
             UPDATE news_items
             SET priority = ?, tags_json = ?, updated_at = ?
             WHERE id = ?
             """,
-            (priority, json.dumps(next_tags[:8]), utc_now(), row["id"]),
+            (priority, next_tags_json, utc_now(), row["id"]),
         )
 
 

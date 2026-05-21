@@ -27,10 +27,8 @@ export function NewsTicker() {
     async function loadHeadlines(force = false) {
       try {
         const response = await api.news(12, "breaking", { force });
-        const fallbackResponse =
-          response.items.length === 0 ? await api.news(12, "all", { force }) : response;
         if (active) {
-          setItems((currentItems) => mergeTickerItems(currentItems, fallbackResponse.items));
+          setItems((currentItems) => mergeTickerItems(currentItems, response.items));
         }
       } catch {
         if (active) {
@@ -49,7 +47,9 @@ export function NewsTicker() {
           return;
         }
         const item = JSON.parse((event as MessageEvent<string>).data) as NewsItem;
-        setItems((currentItems) => mergeTickerItems(currentItems, [item]));
+        if (item.priority === "breaking") {
+          setItems((currentItems) => mergeTickerItems(currentItems, [item]));
+        }
       });
       stream.onerror = () => {
         stream?.close();
@@ -74,15 +74,7 @@ export function NewsTicker() {
     }
     return items.map((item) => cleanNewsTitle(item.title, item.source));
   }, [items]);
-  const tickerLabel = useMemo(() => {
-    if (items.some((item) => item.priority === "live-scores")) {
-      return "Live";
-    }
-    if (items.length > 0 && items.every((item) => item.priority === "breaking")) {
-      return "Breaking";
-    }
-    return "News";
-  }, [items]);
+  const tickerLabel = "Breaking";
 
   return (
     <section
