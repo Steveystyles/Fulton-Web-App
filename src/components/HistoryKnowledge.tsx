@@ -4,14 +4,20 @@ import {
   ExternalLink,
   LoaderCircle,
   MapPin,
+  Navigation,
   Search,
   Sparkles,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { api, type HistoryResponse } from "../lib/api";
+import { api, type HistoryFact, type HistoryResponse } from "../lib/api";
 import { Card } from "./Card";
 
 const defaultLocation = "Paisley";
+
+type HistoryLocationQuery = {
+  location: string;
+  source: "manual" | "device" | "fallback";
+};
 
 function todayIsoDate() {
   const now = new Date();
@@ -21,13 +27,131 @@ function todayIsoDate() {
   return `${year}-${month}-${day}`;
 }
 
+function isFactObject(fact: string | HistoryFact): fact is HistoryFact {
+  return typeof fact !== "string";
+}
+
+function normaliseFact(fact: string | HistoryFact, index: number): HistoryFact {
+  if (isFactObject(fact)) {
+    return fact;
+  }
+
+  return {
+    title: `Local fact #${index + 1}`,
+    text: fact,
+    theme: "general",
+    sourceName: "Wikipedia",
+    sourceUrl: null,
+    confidence: "medium",
+  };
+}
+
+async function reverseGeocode(latitude: number, longitude: number) {
+  const params = new URLSearchParams({
+    format: "jsonv2",
+    lat: String(latitude),
+    lon: String(longitude),
+    zoom: "10",
+    addressdetails: "1",
+  });
+  const response = await fetch(`https://nominatim.openstreetmap.org/reverse?${params}`);
+  if (!response.ok) {
+    throw new Error("Location lookup failed.");
+  }
+
+  const payload = await response.json();
+  const address = payload?.address ?? {};
+  const place =
+    address.town ??
+    address.city ??
+    address.village ??
+    address.hamlet ??
+    address.municipality ??
+    address.county;
+  const region = address.state ?? address.county ?? address.country;
+
+  if (place && region && place !== region) {
+    return `${place}, ${region}`;
+  }
+  if (place) {
+    return String(place);
+  }
+  if (typeof payload?.display_name === "string") {
+    return payload.display_name.split(",").slice(0, 2).join(",").trim();
+  }
+
+  throw new Error("Could not identify your nearest town.");
+}
+
+function getDeviceLocation(): Promise<HistoryLocationQuery> {
+  return new Promise((resolve, reject) => {
+    if (!("geolocation" in navigator)) {
+      reject(new Error("Device location is not available."));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const nextLocation = await reverseGeocode(
+            position.coords.latitude,
+            position.coords.longitude,
+          );
+          resolve({ location: nextLocation, source: "device" });
+        } catch (error) {
+          reject(error);
+        }
+      },
+      () => reject(new Error("Location permission was not granted.")),
+      { enableHighAccuracy: false, maximumAge: 60 * 60 * 1000, timeout: 7000 },
+    );
+  });
+}
+
 export function HistoryKnowledge() {
   const [location, setLocation] = useState(defaultLocation);
-  const [submittedLocation, setSubmittedLocation] = useState(defaultLocation);
+  const [submittedLocation, setSubmittedLocation] = useState<HistoryLocationQuery>({
+    location: defaultLocation,
+    source: "fallback",
+  });
   const [historyDate, setHistoryDate] = useState(todayIsoDate);
   const [history, setHistory] = useState<HistoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
+  const [locationNotice, setLocationNotice] = useState(
+    "Use your device location for local facts, or search another place.",
+  );
+
+  useEffect(() => {
+    let active = true;
+    setLocating(true);
+
+    void getDeviceLocation()
+      .then((query) => {
+        if (!active) {
+          return;
+        }
+        setLocation(query.location);
+        setSubmittedLocation(query);
+        setLocationNotice("Showing facts near your device location. You can search another place anytime.");
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setLocationNotice("Location permission is optional. Showing Paisley until you search another place.");
+      })
+      .finally(() => {
+        if (active) {
+          setLocating(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -37,7 +161,7 @@ export function HistoryKnowledge() {
     async function loadHistory() {
       try {
         const response = await api.history({
-          location: submittedLocation,
+          location: submittedLocation.location,
           date: historyDate,
           lang: "en",
         });
@@ -66,14 +190,37 @@ export function HistoryKnowledge() {
   }, [historyDate, submittedLocation]);
 
   const events = useMemo(() => history?.globalEvents.slice(0, 5) ?? [], [history]);
-  const facts = history?.location?.facts ?? [];
+  const facts = useMemo(
+    () => (history?.location?.facts ?? []).map((fact, index) => normaliseFact(fact, index)),
+    [history],
+  );
 
   function submitLocation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedLocation = location.trim();
     if (trimmedLocation) {
-      setSubmittedLocation(trimmedLocation);
+      setSubmittedLocation({ location: trimmedLocation, source: "manual" });
+      setLocationNotice("Showing facts for your searched location.");
     }
+  }
+
+  function useCurrentLocation() {
+    setLocating(true);
+    setError("");
+    void getDeviceLocation()
+      .then((query) => {
+        setLocation(query.location);
+        setSubmittedLocation(query);
+        setLocationNotice("Showing facts near your device location. You can search another place anytime.");
+      })
+      .catch((caughtError) => {
+        setLocationNotice(
+          caughtError instanceof Error
+            ? caughtError.message
+            : "Device location could not be used just now.",
+        );
+      })
+      .finally(() => setLocating(false));
   }
 
   return (
@@ -89,10 +236,14 @@ export function HistoryKnowledge() {
                 Facts
               </p>
               <p className="mt-1 text-sm font-bold text-slate-500">
-                {history?.location?.title ?? submittedLocation}
+                {history?.location?.title ?? submittedLocation.location}
               </p>
             </div>
           </div>
+
+          <p className="rounded-2xl bg-slate-50 px-3 py-2 text-xs font-bold leading-relaxed text-slate-600">
+            {locationNotice}
+          </p>
 
           <div className="grid grid-cols-[1fr_auto] gap-2">
             <label className="block">
@@ -119,13 +270,27 @@ export function HistoryKnowledge() {
             </label>
           </div>
 
-          <button
-            type="submit"
-            className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-2xl bg-saints-black px-4 py-2 text-sm font-black text-white transition hover:bg-slate-800 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
-          >
-            <Search aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
-            Update
-          </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="submit"
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-saints-black px-4 py-2 text-sm font-black text-white transition hover:bg-slate-800 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+            >
+              <Search aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+              Search
+            </button>
+            <button
+              type="button"
+              onClick={useCurrentLocation}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-black text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+            >
+              {locating ? (
+                <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
+              ) : (
+                <Navigation aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+              )}
+              Near me
+            </button>
+          </div>
         </form>
       </Card>
 
@@ -156,10 +321,10 @@ export function HistoryKnowledge() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                    Local snapshot
+                    Local story
                   </p>
                   <h2 className="mt-1 text-2xl font-black leading-tight text-slate-950">
-                    {history?.location?.title ?? submittedLocation}
+                    {history?.location?.title ?? submittedLocation.location}
                   </h2>
                   {history?.location?.description ? (
                     <p className="mt-1 text-sm font-bold text-slate-500">
@@ -192,7 +357,7 @@ export function HistoryKnowledge() {
             <section className="grid gap-2" aria-label="Location facts">
               {facts.map((fact, index) => (
                 <div
-                  key={fact}
+                  key={`${index}-${fact.title}`}
                   className="rounded-2xl border border-slate-200 bg-white p-3 shadow-soft"
                 >
                   <div className="flex items-start gap-3">
@@ -201,11 +366,26 @@ export function HistoryKnowledge() {
                     </span>
                     <div className="min-w-0">
                       <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                        Did you know #{index + 1}
+                        {fact.title}
                       </p>
                       <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
-                        {fact}
+                        {fact.text}
                       </p>
+                      {fact.sourceUrl ? (
+                        <a
+                          href={fact.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-2 inline-flex items-center gap-1 text-xs font-black uppercase tracking-normal text-saints-red"
+                        >
+                          <BookOpen aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
+                          {fact.sourceName}
+                        </a>
+                      ) : (
+                        <p className="mt-2 text-xs font-black uppercase tracking-normal text-slate-400">
+                          Source: {fact.sourceName}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
