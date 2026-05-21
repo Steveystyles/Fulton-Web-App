@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type NewsItem } from "../lib/api";
+import { cleanNewsTitle } from "../lib/news";
 
 const emptyHeadline = "No breaking Saints stories yet. The live feed is ready.";
 
@@ -35,7 +36,7 @@ export function NewsTicker() {
     if (items.length === 0) {
       return emptyHeadline;
     }
-    return items.map((item) => item.title).join("   |   ");
+    return items.map((item) => cleanNewsTitle(item.title, item.source)).join("   |   ");
   }, [items]);
 
   return (

@@ -48,6 +48,37 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DB_PATH = original_db_path
             server.QUIZ_DATA_DIR = original_quiz_data_dir
 
+    def test_daily_quiz_generation_does_not_use_report_placeholder_questions(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        original_quiz_data_dir = server.QUIZ_DATA_DIR
+        original_api_key = server.QUIZ_OPENAI_API_KEY
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.QUIZ_DATA_DIR = data_dir / "quizzes"
+            server.QUIZ_OPENAI_API_KEY = ""
+
+            payload = server.ensure_daily_questions()
+            question_texts = {
+                question["question"]
+                for category in ("football", "general")
+                for question in payload[category]
+            }
+
+            self.assertFalse(
+                server.LEGACY_PLACEHOLDER_QUESTION_TEXTS.intersection(question_texts)
+            )
+            self.assertTrue(server.validate_daily_questions(payload))
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+            server.QUIZ_DATA_DIR = original_quiz_data_dir
+            server.QUIZ_OPENAI_API_KEY = original_api_key
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,11 +8,10 @@ import { api, type DailyQuestionsResponse } from "../lib/api";
 import { Account } from "../pages/Account";
 import { Admin } from "../pages/Admin";
 import { Facts } from "../pages/Facts";
-import { FootballQuiz } from "../pages/FootballQuiz";
-import { GeneralQuiz } from "../pages/GeneralQuiz";
 import { Leaderboard } from "../pages/Leaderboard";
 import { Login } from "../pages/Login";
 import { News } from "../pages/News";
+import { Quiz } from "../pages/Quiz";
 import { Wordle } from "../pages/Wordle";
 
 function millisecondsUntilTomorrow() {
@@ -157,13 +156,14 @@ export function AppRouter() {
             }
           />
           <Route
-            path="/football"
+            path="/quiz"
             element={
               <AppFrame>
-                <FootballQuiz
+                <Quiz
                   storageScope={user.id}
                   quizDate={dailyQuestions?.date}
-                  questions={dailyQuestions?.football ?? []}
+                  footballQuestions={dailyQuestions?.football ?? []}
+                  generalQuestions={dailyQuestions?.general ?? []}
                   loading={quizLoading}
                   error={quizError}
                 />
@@ -171,18 +171,12 @@ export function AppRouter() {
             }
           />
           <Route
+            path="/football"
+            element={<Navigate to="/quiz" replace />}
+          />
+          <Route
             path="/general"
-            element={
-              <AppFrame>
-                <GeneralQuiz
-                  storageScope={user.id}
-                  quizDate={dailyQuestions?.date}
-                  questions={dailyQuestions?.general ?? []}
-                  loading={quizLoading}
-                  error={quizError}
-                />
-              </AppFrame>
-            }
+            element={<Navigate to="/quiz" replace />}
           />
           <Route
             path="/leaderboard"

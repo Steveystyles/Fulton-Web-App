@@ -24,6 +24,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
@@ -60,6 +61,14 @@ HISTORY_USER_AGENT = os.environ.get(
     "FultonHistory/1.0 (+https://fultons-quiz.co.uk)",
 )
 HISTORY_CACHE_TTL_SEC = int(os.environ.get("HISTORY_CACHE_TTL_SEC", "86400"))
+QUIZ_OPENAI_API_KEY = (
+    os.environ.get("FULTONS_QUIZ_OPENAI_API_KEY")
+    or os.environ.get("FULTONS_OPENAI_API_KEY")
+    or os.environ.get("OPENAI_API_KEY")
+    or ""
+)
+QUIZ_OPENAI_MODEL = os.environ.get("FULTONS_QUIZ_OPENAI_MODEL", "gpt-4.1-mini")
+QUIZ_OPENAI_TIMEOUT_SEC = int(os.environ.get("FULTONS_QUIZ_OPENAI_TIMEOUT_SEC", "30"))
 COOKIE_SECURE = os.environ.get("FULTONS_COOKIE_SECURE", "0") == "1"
 SEED_DEMO_USERS = os.environ.get("FULTONS_SEED_DEMO_USERS", "0") == "1"
 BOOTSTRAP_ADMIN_USERNAME = os.environ.get("FULTONS_BOOTSTRAP_ADMIN_USERNAME", "").strip()
@@ -613,69 +622,388 @@ def serialize_wordle_state(
     }
 
 
-def default_daily_questions(game_date: str) -> dict[str, Any]:
+CURATED_QUIZ_BANK: dict[str, dict[str, list[dict[str, Any]]]] = {
+    "football": {
+        "easy": [
+            {
+                "question": "What nickname is commonly used for St Mirren?",
+                "answers": ["The Buddies", "The Jags", "The Spiders", "The Bairns"],
+                "correct_answer": "The Buddies",
+                "explanation": "St Mirren are widely known as The Buddies.",
+            },
+            {
+                "question": "In which town is St Mirren Park located?",
+                "answers": ["Paisley", "Greenock", "Ayr", "Dumfries"],
+                "correct_answer": "Paisley",
+                "explanation": "St Mirren Park is in Paisley, Renfrewshire.",
+            },
+            {
+                "question": "How many players does a football team start with on the pitch?",
+                "answers": ["9", "10", "11", "12"],
+                "correct_answer": "11",
+                "explanation": "A standard football team starts with 11 players.",
+            },
+            {
+                "question": "Which card sends a player off in football?",
+                "answers": ["Blue", "Green", "Yellow", "Red"],
+                "correct_answer": "Red",
+                "explanation": "A red card means the player is sent off.",
+            },
+            {
+                "question": "What is the top division of Scottish league football called?",
+                "answers": ["Scottish Premiership", "Scottish Championship", "League One", "League Two"],
+                "correct_answer": "Scottish Premiership",
+                "explanation": "The Scottish Premiership is the top tier of the SPFL.",
+            },
+        ],
+        "medium": [
+            {
+                "question": "Which year did St Mirren win the Scottish Cup by beating Dundee United 1-0?",
+                "answers": ["1977", "1987", "1997", "2007"],
+                "correct_answer": "1987",
+                "explanation": "St Mirren won the 1987 Scottish Cup final 1-0 at Hampden.",
+            },
+            {
+                "question": "Which club plays its home matches at Tynecastle Park?",
+                "answers": ["Hearts", "Hibernian", "Dundee", "Kilmarnock"],
+                "correct_answer": "Hearts",
+                "explanation": "Tynecastle Park is the home ground of Heart of Midlothian.",
+            },
+            {
+                "question": "What does VAR stand for in football?",
+                "answers": [
+                    "Video Assistant Referee",
+                    "Verified Action Replay",
+                    "Virtual Assistant Review",
+                    "Video Assessment Rule",
+                ],
+                "correct_answer": "Video Assistant Referee",
+                "explanation": "VAR means Video Assistant Referee.",
+            },
+            {
+                "question": "Which national team did Kenny Dalglish represent?",
+                "answers": ["Scotland", "England", "Wales", "Northern Ireland"],
+                "correct_answer": "Scotland",
+                "explanation": "Kenny Dalglish is one of Scotland's most celebrated footballers.",
+            },
+            {
+                "question": "Which Edinburgh club plays at Easter Road?",
+                "answers": ["Hibernian", "Hearts", "Livingston", "Raith Rovers"],
+                "correct_answer": "Hibernian",
+                "explanation": "Easter Road is Hibernian's home stadium.",
+            },
+        ],
+        "hard": [
+            {
+                "question": "Who managed St Mirren when they won the 1987 Scottish Cup?",
+                "answers": ["Alex Smith", "Tom Hendrie", "Jim Clunie", "Tony Fitzpatrick"],
+                "correct_answer": "Alex Smith",
+                "explanation": "Alex Smith was St Mirren manager for the 1987 Scottish Cup win.",
+            },
+            {
+                "question": "Who scored St Mirren's winning goal in the 1987 Scottish Cup final?",
+                "answers": ["Ian Ferguson", "Frank McGarvey", "Billy Stark", "Neil Cooper"],
+                "correct_answer": "Ian Ferguson",
+                "explanation": "Ian Ferguson scored the only goal against Dundee United.",
+            },
+            {
+                "question": "Which club did St Mirren beat in the 2013 Scottish League Cup final?",
+                "answers": ["Hearts", "Celtic", "Rangers", "Aberdeen"],
+                "correct_answer": "Hearts",
+                "explanation": "St Mirren beat Hearts 3-2 in the 2013 final.",
+            },
+            {
+                "question": "Which stadium hosted St Mirren's 1987 Scottish Cup final win?",
+                "answers": ["Hampden Park", "Ibrox", "Celtic Park", "Pittodrie"],
+                "correct_answer": "Hampden Park",
+                "explanation": "The 1987 Scottish Cup final was played at Hampden Park.",
+            },
+            {
+                "question": "Which Scottish club is nicknamed The Jambos?",
+                "answers": ["Hearts", "Partick Thistle", "Queen's Park", "Falkirk"],
+                "correct_answer": "Hearts",
+                "explanation": "The Jambos is a common nickname for Heart of Midlothian.",
+            },
+        ],
+    },
+    "general": {
+        "easy": [
+            {
+                "question": "Which planet is known as the Red Planet?",
+                "answers": ["Mars", "Venus", "Saturn", "Mercury"],
+                "correct_answer": "Mars",
+                "explanation": "Mars is called the Red Planet because iron oxide gives it a reddish colour.",
+            },
+            {
+                "question": "What is the largest planet in our solar system?",
+                "answers": ["Jupiter", "Earth", "Neptune", "Uranus"],
+                "correct_answer": "Jupiter",
+                "explanation": "Jupiter is the largest planet in the solar system.",
+            },
+            {
+                "question": "At sea level, what temperature does water freeze at in Celsius?",
+                "answers": ["0", "10", "32", "100"],
+                "correct_answer": "0",
+                "explanation": "Water freezes at 0 degrees Celsius at standard pressure.",
+            },
+            {
+                "question": "Who wrote the Harry Potter book series?",
+                "answers": ["J.K. Rowling", "Roald Dahl", "Suzanne Collins", "Philip Pullman"],
+                "correct_answer": "J.K. Rowling",
+                "explanation": "J.K. Rowling wrote the Harry Potter novels.",
+            },
+            {
+                "question": "What is the smallest prime number?",
+                "answers": ["1", "2", "3", "5"],
+                "correct_answer": "2",
+                "explanation": "Two is the smallest prime number and the only even prime.",
+            },
+        ],
+        "medium": [
+            {
+                "question": "Which Japanese art form is based on folding paper?",
+                "answers": ["Origami", "Ikebana", "Haiku", "Bonsai"],
+                "correct_answer": "Origami",
+                "explanation": "Origami is the art of paper folding.",
+            },
+            {
+                "question": "Who painted The Starry Night?",
+                "answers": ["Vincent van Gogh", "Claude Monet", "Pablo Picasso", "Henri Matisse"],
+                "correct_answer": "Vincent van Gogh",
+                "explanation": "Vincent van Gogh painted The Starry Night in 1889.",
+            },
+            {
+                "question": "What is the currency of Japan?",
+                "answers": ["Yen", "Won", "Yuan", "Ringgit"],
+                "correct_answer": "Yen",
+                "explanation": "Japan's currency is the yen.",
+            },
+            {
+                "question": "What process do plants use to convert light into chemical energy?",
+                "answers": ["Photosynthesis", "Respiration", "Fermentation", "Condensation"],
+                "correct_answer": "Photosynthesis",
+                "explanation": "Photosynthesis lets plants use light to make sugars.",
+            },
+            {
+                "question": "Which organ pumps blood around the human body?",
+                "answers": ["Heart", "Liver", "Kidney", "Lung"],
+                "correct_answer": "Heart",
+                "explanation": "The heart pumps blood through the circulatory system.",
+            },
+        ],
+        "hard": [
+            {
+                "question": "Which machine is Ada Lovelace most closely associated with?",
+                "answers": ["Analytical Engine", "Difference Printer", "Enigma Machine", "Manchester Baby"],
+                "correct_answer": "Analytical Engine",
+                "explanation": "Ada Lovelace wrote notes about Charles Babbage's Analytical Engine.",
+            },
+            {
+                "question": "Which element has the chemical symbol W?",
+                "answers": ["Tungsten", "Tin", "Titanium", "Tellurium"],
+                "correct_answer": "Tungsten",
+                "explanation": "W comes from wolfram, another name historically used for tungsten.",
+            },
+            {
+                "question": "Which treaty formally ended World War I between Germany and the Allied powers?",
+                "answers": ["Treaty of Versailles", "Treaty of Paris", "Treaty of Utrecht", "Treaty of Lisbon"],
+                "correct_answer": "Treaty of Versailles",
+                "explanation": "The Treaty of Versailles was signed in 1919.",
+            },
+            {
+                "question": "Which modern city was historically known as Constantinople?",
+                "answers": ["Istanbul", "Athens", "Sofia", "Ankara"],
+                "correct_answer": "Istanbul",
+                "explanation": "Constantinople is now Istanbul in Turkiye.",
+            },
+            {
+                "question": "What is the name of the boundary around a black hole beyond which light cannot escape?",
+                "answers": ["Event horizon", "Photon belt", "Gravity wall", "Dark limit"],
+                "correct_answer": "Event horizon",
+                "explanation": "The event horizon marks the point from which nothing can escape a black hole.",
+            },
+        ],
+    },
+}
+
+LEGACY_PLACEHOLDER_QUESTION_TEXTS = {
+    "Which club plays its home matches at Anfield?",
+    "Which nation won UEFA Euro 2016?",
+    "Who scored the winning goal for Manchester United in the 1999 UEFA Champions League final?",
+    "What is the capital city of France?",
+    "Which element has the chemical symbol Au?",
+    "In which year was the first successful human heart transplant performed?",
+}
+
+
+def curated_question_for(game_date: str, category: str, difficulty: str) -> dict[str, Any]:
+    pool = CURATED_QUIZ_BANK[category][difficulty]
+    digest = hashlib.sha256(f"{game_date}:{category}:{difficulty}".encode("utf-8")).digest()
+    index = int.from_bytes(digest[:4], "big") % len(pool)
+    question = dict(pool[index])
+    question["difficulty"] = difficulty
+    return question
+
+
+def curated_daily_questions(game_date: str) -> dict[str, Any]:
     return {
         "date": game_date,
         "football": [
-            {
-                "difficulty": "easy",
-                "question": "Which club plays its home matches at Anfield?",
-                "answers": ["Liverpool", "Everton", "Celtic", "Leeds United"],
-                "correct_answer": "Liverpool",
-                "explanation": "Anfield is the home stadium of Liverpool FC.",
-            },
-            {
-                "difficulty": "medium",
-                "question": "Which nation won UEFA Euro 2016?",
-                "answers": ["France", "Portugal", "Germany", "Spain"],
-                "correct_answer": "Portugal",
-                "explanation": "Portugal beat France 1-0 after extra time in the final.",
-            },
-            {
-                "difficulty": "hard",
-                "question": (
-                    "Who scored the winning goal for Manchester United in the "
-                    "1999 UEFA Champions League final?"
-                ),
-                "answers": [
-                    "Teddy Sheringham",
-                    "Ole Gunnar Solskjaer",
-                    "David Beckham",
-                    "Ryan Giggs",
-                ],
-                "correct_answer": "Ole Gunnar Solskjaer",
-                "explanation": "Solskjaer scored in stoppage time to complete the comeback.",
-            },
+            curated_question_for(game_date, "football", difficulty)
+            for difficulty in DIFFICULTIES
         ],
         "general": [
-            {
-                "difficulty": "easy",
-                "question": "What is the capital city of France?",
-                "answers": ["Paris", "Lyon", "Marseille", "Nice"],
-                "correct_answer": "Paris",
-                "explanation": "Paris is the capital of France.",
-            },
-            {
-                "difficulty": "medium",
-                "question": "Which element has the chemical symbol Au?",
-                "answers": ["Silver", "Iron", "Gold", "Argon"],
-                "correct_answer": "Gold",
-                "explanation": "Au comes from the Latin word aurum.",
-            },
-            {
-                "difficulty": "hard",
-                "question": (
-                    "In which year was the first successful human heart "
-                    "transplant performed?"
-                ),
-                "answers": ["1958", "1967", "1974", "1981"],
-                "correct_answer": "1967",
-                "explanation": (
-                    "The first successful human heart transplant was performed in 1967."
-                ),
-            },
+            curated_question_for(game_date, "general", difficulty)
+            for difficulty in DIFFICULTIES
         ],
     }
+
+
+def quiz_json_schema() -> dict[str, Any]:
+    question_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["difficulty", "question", "answers", "correct_answer", "explanation"],
+        "properties": {
+            "difficulty": {"type": "string", "enum": list(DIFFICULTIES)},
+            "question": {"type": "string"},
+            "answers": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": {"type": "string"},
+            },
+            "correct_answer": {"type": "string"},
+            "explanation": {"type": "string"},
+        },
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["date", "football", "general"],
+        "properties": {
+            "date": {"type": "string"},
+            "football": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": question_schema,
+            },
+            "general": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": question_schema,
+            },
+        },
+    }
+
+
+def quiz_generation_prompt(game_date: str) -> str:
+    return (
+        "Create a Fulton Web App daily quiz payload for date "
+        f"{game_date}. Return exactly three football questions and exactly "
+        "three general knowledge questions. Each category must include one "
+        "easy, one medium, and one hard question. Football should favour St "
+        "Mirren, Scottish football, football rules, and memorable football "
+        "history. General knowledge should mix science, arts, geography, "
+        "language, history, and culture. Avoid obvious sample prompts such as "
+        "Anfield, Euro 2016, capital of France, chemical symbol Au, and the "
+        "first heart transplant. Use four plausible answer options per "
+        "question, keep the correct answer exactly equal to one option, and "
+        "write a short explanation."
+    )
+
+
+def extract_openai_response_text(payload: dict[str, Any]) -> str:
+    output_text = payload.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    output_items = payload.get("output")
+    if not isinstance(output_items, list):
+        return ""
+
+    for item in output_items:
+        if not isinstance(item, dict):
+            continue
+        content_items = item.get("content")
+        if not isinstance(content_items, list):
+            continue
+        for content in content_items:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text")
+            if isinstance(text, str) and text.strip():
+                return text
+    return ""
+
+
+def openai_daily_questions(game_date: str) -> dict[str, Any] | None:
+    if not QUIZ_OPENAI_API_KEY:
+        return None
+
+    request_payload = {
+        "model": QUIZ_OPENAI_MODEL,
+        "input": quiz_generation_prompt(game_date),
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "fulton_daily_quiz",
+                "strict": True,
+                "schema": quiz_json_schema(),
+            }
+        },
+    }
+    request = Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {QUIZ_OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=QUIZ_OPENAI_TIMEOUT_SEC) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, OSError, json.JSONDecodeError) as error:
+        safe_log(f"OpenAI quiz generation failed; using curated fallback: {error}")
+        return None
+
+    response_text = extract_openai_response_text(response_payload)
+    if not response_text:
+        safe_log("OpenAI quiz generation returned no text; using curated fallback")
+        return None
+
+    try:
+        payload = json.loads(response_text)
+    except json.JSONDecodeError:
+        safe_log("OpenAI quiz generation returned invalid JSON; using curated fallback")
+        return None
+
+    if isinstance(payload, dict):
+        payload["date"] = game_date
+        if validate_daily_questions(payload):
+            return payload
+
+    safe_log("OpenAI quiz generation failed validation; using curated fallback")
+    return None
+
+
+def generated_daily_questions(game_date: str) -> dict[str, Any]:
+    return openai_daily_questions(game_date) or curated_daily_questions(game_date)
+
+
+def contains_legacy_placeholder_questions(payload: dict[str, Any]) -> bool:
+    question_texts = {
+        question.get("question")
+        for category in ("football", "general")
+        for question in payload.get(category, [])
+        if isinstance(question, dict)
+    }
+    return LEGACY_PLACEHOLDER_QUESTION_TEXTS.issubset(question_texts)
 
 
 def validate_daily_questions(payload: dict[str, Any]) -> bool:
@@ -725,12 +1053,17 @@ def ensure_daily_questions() -> dict[str, Any]:
     if path.exists():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(payload, dict) and validate_daily_questions(payload):
+            if (
+                isinstance(payload, dict)
+                and payload.get("date") == game_date
+                and validate_daily_questions(payload)
+                and not contains_legacy_placeholder_questions(payload)
+            ):
                 return payload
         except (OSError, json.JSONDecodeError):
             pass
 
-    payload = default_daily_questions(game_date)
+    payload = generated_daily_questions(game_date)
     temp_path = path.with_suffix(".tmp")
     temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     temp_path.replace(path)
@@ -1842,6 +2175,10 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
 def run() -> None:
     initialize_database()
+    try:
+        ensure_daily_questions()
+    except Exception as error:  # pragma: no cover - startup logging guard
+        safe_log(f"Daily quiz preload failed: {error}")
     start_news_monitor()
     host = os.environ.get("FULTONS_HOST", "127.0.0.1")
     port = int(os.environ.get("FULTONS_PORT", "8000"))

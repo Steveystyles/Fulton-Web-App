@@ -8,6 +8,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../components/Card";
 import { api, type NewsCategory, type NewsItem } from "../lib/api";
+import { cleanNewsTitle } from "../lib/news";
 
 type FeedStatus = "loading" | "live" | "polling" | "offline";
 
@@ -233,52 +234,56 @@ export function News() {
       ) : null}
 
       <section className="space-y-3" aria-label="Latest news stories">
-        {items.map((item) => (
-          <Card key={item.sourceKey} as="article" className="p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                  {item.source} - {formatPublishedAt(item.publishedAt)}
-                </p>
-                <h3 className="mt-2 text-lg font-black leading-tight text-slate-950">
-                  {item.title}
-                </h3>
-              </div>
-              <a
-                href={item.url}
-                target="_blank"
-                rel="noreferrer"
-                aria-label={`Open story: ${item.title}`}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
-              >
-                <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-              </a>
-            </div>
+        {items.map((item) => {
+          const title = cleanNewsTitle(item.title, item.source);
 
-            {item.summary ? (
-              <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-600">
-                {item.summary}
-              </p>
-            ) : null}
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-black uppercase text-saints-red">
-                {item.priority === "live-scores" ? (
-                  <Trophy aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
-                ) : null}
-                {formatPriority(item.priority)}
-              </span>
-              {item.tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black uppercase text-slate-600"
+          return (
+            <Card key={item.sourceKey} as="article" className="p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="text-lg font-black leading-tight text-slate-950">
+                    {title}
+                  </h3>
+                  <p className="mt-2 text-xs font-black uppercase tracking-normal text-saints-red">
+                    {item.source} - {formatPublishedAt(item.publishedAt)}
+                  </p>
+                </div>
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={`Open story: ${title}`}
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
                 >
-                  {tag}
+                  <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+                </a>
+              </div>
+
+              {item.summary ? (
+                <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-600">
+                  {item.summary}
+                </p>
+              ) : null}
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-black uppercase text-saints-red">
+                  {item.priority === "live-scores" ? (
+                    <Trophy aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+                  ) : null}
+                  {formatPriority(item.priority)}
                 </span>
-              ))}
-            </div>
-          </Card>
-        ))}
+                {item.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black uppercase text-slate-600"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </Card>
+          );
+        })}
       </section>
     </section>
   );
