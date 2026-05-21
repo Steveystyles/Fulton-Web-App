@@ -25,9 +25,9 @@ export function Login() {
   }
 
   return (
-    <div className="min-h-dvh overflow-x-hidden bg-slate-950 text-slate-950 sm:bg-[linear-gradient(90deg,#0b0b10_0%,#17181f_50%,#0b0b10_100%)]">
-      <main className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col justify-center overflow-x-hidden bg-saints-paper px-4 py-8 shadow-2xl">
-        <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-soft">
+    <div className="saints-shell-bg min-h-dvh overflow-x-hidden text-slate-950">
+      <main className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col justify-center overflow-x-hidden bg-saints-paper px-4 py-8 shadow-2xl ring-1 ring-white/10">
+        <section className="max-w-full overflow-hidden rounded-[1.75rem] saints-card p-5">
           <div className="flex items-center gap-3">
             <img
               src={crestPlaceholder}

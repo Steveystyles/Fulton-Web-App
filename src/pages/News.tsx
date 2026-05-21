@@ -195,8 +195,8 @@ export function News() {
                   className={[
                     "flex min-h-11 items-center justify-center rounded-xl border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
                     active
-                      ? "border-saints-red bg-saints-red text-white"
-                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-saints-red/40 hover:bg-white",
+                      ? "border-saints-black bg-saints-black text-white"
+                      : "border-saints-line bg-white text-slate-700 hover:border-saints-red/40 hover:bg-saints-redSoft",
                   ].join(" ")}
                 >
                   {option.label}
@@ -253,7 +253,7 @@ export function News() {
                   target="_blank"
                   rel="noreferrer"
                   aria-label={`Open story: ${title}`}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-saints-mist text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
                 >
                   <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
                 </a>
@@ -266,7 +266,7 @@ export function News() {
               ) : null}
 
               <div className="mt-3 flex flex-wrap gap-2">
-                <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-black uppercase text-saints-red">
+                <span className="inline-flex items-center gap-1 rounded-full bg-saints-redSoft px-2.5 py-1 text-xs font-black uppercase text-saints-red">
                   {item.priority === "live-scores" ? (
                     <Trophy aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
                   ) : null}
@@ -275,7 +275,7 @@ export function News() {
                 {item.tags.map((tag) => (
                   <span
                     key={tag}
-                    className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black uppercase text-slate-600"
+                    className="rounded-full bg-saints-mist px-2.5 py-1 text-xs font-black uppercase text-slate-600"
                   >
                     {tag}
                   </span>

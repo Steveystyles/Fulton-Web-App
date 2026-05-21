@@ -34,7 +34,7 @@ const emptyRuntimeState: QuizRuntimeState = {
 const difficultyClasses: Record<QuizDifficulty, string> = {
   easy: "bg-emerald-50 text-emerald-700 ring-emerald-200",
   medium: "bg-amber-50 text-amber-700 ring-amber-200",
-  hard: "bg-red-50 text-saints-red ring-red-200",
+  hard: "bg-saints-redSoft text-saints-red ring-red-200",
 };
 
 function formatQuizDate(quizDate?: string) {
@@ -352,8 +352,8 @@ export function DailyQuiz({
                 : state === "incorrect"
                   ? "border-saints-red bg-saints-red text-white"
                   : state === "muted"
-                    ? "border-slate-200 bg-slate-100 text-slate-500"
-                    : "border-slate-200 bg-slate-50 text-slate-950 hover:border-saints-red/40 hover:bg-white";
+                    ? "border-saints-line bg-saints-mist text-slate-500"
+                    : "border-saints-line bg-white text-saints-ink hover:border-saints-red/40 hover:bg-saints-redSoft";
 
             return (
               <button
@@ -388,7 +388,7 @@ export function DailyQuiz({
             <button
               type="button"
               onClick={goNext}
-              className="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-saints-black px-4 py-2 text-sm font-black text-white transition hover:bg-slate-800 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+              className="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-saints-black px-4 py-2 text-sm font-black text-white transition hover:bg-saints-charcoal focus:outline-none focus:ring-4 focus:ring-saints-red/20"
             >
               {currentIndex === questions.length - 1 ? "See final score" : "Next question"}
               <ArrowRight aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />

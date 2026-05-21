@@ -15,10 +15,10 @@ export function NavItem({ to, label, icon: Icon, end = false }: NavItemProps) {
       end={end}
       className={({ isActive }) =>
         [
-          "group flex min-h-16 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-xs font-bold transition",
+          "group flex min-h-16 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-xs font-bold transition saints-focus",
           isActive
-            ? "bg-red-50 text-saints-red"
-            : "text-slate-500 hover:bg-slate-100 hover:text-slate-900",
+            ? "bg-saints-black text-white shadow-sm"
+            : "text-slate-500 hover:bg-white hover:text-saints-black",
         ].join(" ")
       }
     >
@@ -30,6 +30,13 @@ export function NavItem({ to, label, icon: Icon, end = false }: NavItemProps) {
             strokeWidth={isActive ? 2.8 : 2.2}
           />
           <span className="leading-none">{label}</span>
+          <span
+            className={[
+              "mt-0.5 h-1 w-5 rounded-full",
+              isActive ? "bg-saints-red" : "bg-transparent",
+            ].join(" ")}
+            aria-hidden="true"
+          />
         </>
       )}
     </NavLink>

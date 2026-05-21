@@ -3,11 +3,14 @@ import { NavLink } from "react-router-dom";
 import crestPlaceholder from "../assets/crest-placeholder.svg";
 import { useAuth } from "../context/AuthContext";
 
+const headerButtonClass =
+  "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white transition hover:bg-white/[0.16] saints-focus";
+
 export function Header() {
   const { logout, user } = useAuth();
 
   return (
-    <header className="flex min-h-16 items-center gap-3 bg-saints-black px-4 text-white">
+    <header className="saints-stripe-edge flex min-h-16 items-center gap-3 bg-saints-black px-4 pb-1 text-white">
       <img
         src={crestPlaceholder}
         alt="Fulton's Quiz shield placeholder"
@@ -28,8 +31,8 @@ export function Header() {
             aria-label="Admin"
             className={({ isActive }) =>
               [
-                "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 text-white transition focus:outline-none focus:ring-2 focus:ring-white/70",
-                isActive ? "bg-saints-red" : "bg-white/[0.08] hover:bg-white/[0.14]",
+                headerButtonClass,
+                isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]",
               ].join(" ")
             }
           >
@@ -41,8 +44,8 @@ export function Header() {
           aria-label="Account"
           className={({ isActive }) =>
             [
-              "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 text-white transition focus:outline-none focus:ring-2 focus:ring-white/70",
-              isActive ? "bg-saints-red" : "bg-white/[0.08] hover:bg-white/[0.14]",
+              headerButtonClass,
+              isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]",
             ].join(" ")
           }
         >
@@ -52,7 +55,7 @@ export function Header() {
           type="button"
           aria-label="Sign out"
           onClick={() => void logout()}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/[0.08] text-white transition hover:bg-white/[0.14] focus:outline-none focus:ring-2 focus:ring-white/70"
+          className={`${headerButtonClass} bg-white/[0.08]`}
         >
           <LogOut aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
         </button>

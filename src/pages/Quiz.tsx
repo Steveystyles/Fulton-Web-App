@@ -59,8 +59,8 @@ export function Quiz({
               className={[
                 "flex min-h-12 items-center justify-center gap-2 rounded-2xl border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
                 active
-                  ? "border-saints-red bg-saints-red text-white shadow-soft"
-                  : "border-slate-200 bg-white text-slate-700 hover:border-saints-red/40",
+                  ? "border-saints-black bg-saints-black text-white shadow-sm"
+                  : "border-saints-line bg-white text-slate-700 hover:border-saints-red/40 hover:bg-saints-redSoft",
               ].join(" ")}
             >
               <Icon aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.5} />

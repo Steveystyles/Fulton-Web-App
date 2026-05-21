@@ -23,7 +23,7 @@ function millisecondsUntilTomorrow() {
 
 function AppFrame({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
   return (
-    <div className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl">
+    <div className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10">
       <div className="top-shell">
         <Header />
         <NewsTicker />
@@ -116,7 +116,7 @@ export function AppRouter() {
 
   if (loading) {
     return (
-      <div className="flex min-h-dvh items-center justify-center bg-saints-black px-4 text-white">
+      <div className="saints-shell-bg flex min-h-dvh items-center justify-center px-4 text-white">
         <div className="text-center">
           <p className="text-2xl font-black">Fulton's Quiz</p>
           <p className="mt-2 text-sm font-bold uppercase tracking-normal text-white/70">
@@ -133,7 +133,7 @@ export function AppRouter() {
 
   return (
     <BrowserRouter>
-      <div className="min-h-dvh overflow-x-hidden bg-slate-950 text-slate-950 sm:bg-[linear-gradient(90deg,#0b0b10_0%,#17181f_50%,#0b0b10_100%)]">
+      <div className="saints-shell-bg min-h-dvh overflow-x-hidden text-slate-950">
         <Routes>
           <Route
             path="/"

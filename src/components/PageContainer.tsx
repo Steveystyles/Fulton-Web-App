@@ -11,9 +11,8 @@ export function PageContainer({ title, number, children }: PageContainerProps) {
 
   return (
     <section className="page-fade space-y-4" aria-labelledby={headingId}>
-      <div className="max-w-full overflow-hidden rounded-[2rem] bg-saints-black text-white shadow-soft">
+      <div className="saints-card-hero saints-stripe-edge max-w-full overflow-hidden rounded-[1.75rem] text-white">
         <div className="relative p-5">
-          <div className="absolute -right-4 -top-8 h-24 w-24 rounded-full border-[18px] border-saints-red/[0.35]" />
           <div className="relative flex items-end justify-between gap-4">
             <h2
               id={headingId}

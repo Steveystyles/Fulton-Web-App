@@ -179,7 +179,7 @@ export function Wordle() {
 
   return (
     <section className="page-fade space-y-3" aria-label="Wordle game">
-      <section className="max-w-full overflow-hidden rounded-3xl border border-slate-200 bg-white p-3 shadow-soft">
+      <section className="max-w-full overflow-hidden rounded-[1.75rem] saints-card p-3">
         <form className="space-y-3 pb-2" onSubmit={handleSubmit}>
           {statusText ? (
             <p className="text-center text-base font-black text-slate-700">{statusText}</p>
