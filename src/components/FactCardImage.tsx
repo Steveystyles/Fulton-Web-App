@@ -1,81 +1,50 @@
 import { useEffect, useMemo, useState } from "react";
 import { type HistoryFact, type HistoryLocationImage } from "../lib/api";
 
-type WikiSearchPage = {
+type WikiPage = {
+  pageid?: number;
   title?: string;
-  description?: string;
-  excerpt?: string;
+  extract?: string;
+  fullurl?: string;
+  original?: { source?: string; width?: number; height?: number };
+  thumbnail?: { source?: string; width?: number; height?: number };
 };
 
-type WikiSummary = {
-  title?: string;
-  description?: string;
-  extract?: string;
-  thumbnail?: { source?: string; width?: number; height?: number };
-  originalimage?: { source?: string; width?: number; height?: number };
-  content_urls?: { desktop?: { page?: string } };
+type ImageCandidate = {
+  image: HistoryLocationImage;
+  score: number;
 };
 
 const stopWords = new Set([
-  "about",
-  "after",
-  "among",
-  "annual",
-  "based",
-  "became",
-  "been",
-  "before",
-  "building",
-  "buildings",
-  "centre",
-  "century",
-  "during",
-  "fact",
-  "facts",
-  "first",
-  "former",
-  "from",
-  "history",
-  "into",
-  "late",
-  "local",
-  "many",
-  "most",
-  "name",
-  "named",
-  "that",
-  "their",
-  "this",
-  "today",
-  "town",
-  "used",
-  "were",
-  "which",
-  "with",
+  "about", "after", "also", "among", "annual", "based", "became", "been", "before",
+  "being", "building", "buildings", "called", "centre", "century", "during", "early",
+  "fact", "facts", "first", "former", "from", "history", "into", "known", "late",
+  "local", "many", "most", "name", "named", "near", "part", "place", "that", "their",
+  "this", "today", "town", "used", "were", "which", "with", "would",
 ]);
 
-const genericImageWords = [
-  "arms",
-  "badge",
-  "coat",
-  "diagram",
-  "flag",
-  "icon",
-  "locator",
-  "logo",
-  "map",
-  "seal",
-  "shield",
-  "symbol",
-];
+const genericImageWords = ["arms", "badge", "coat", "diagram", "flag", "icon", "locator", "logo", "map", "seal", "shield", "symbol"];
+const genericArticleWords = ["area", "council", "county", "district", "geography", "history of", "list of", "municipality", "region", "shire", "town", "village"];
+
+function normalise(value: string) {
+  return value.toLowerCase().replace(/&[a-z]+;/g, " ").replace(/[^a-z0-9' ]+/g, " ");
+}
 
 function terms(text: string, excluded = new Set<string>()) {
   const output = new Set<string>();
-  for (const match of text.matchAll(/[A-Za-z][A-Za-z0-9']+/g)) {
-    const term = match[0].toLowerCase();
+  for (const match of normalise(text).matchAll(/[a-z][a-z0-9']+/g)) {
+    const term = match[0];
     if (term.length >= 4 && !stopWords.has(term) && !excluded.has(term)) {
       output.add(term);
     }
+  }
+  return output;
+}
+
+function quotedPhrases(text: string) {
+  const output: string[] = [];
+  for (const match of text.matchAll(/[“"]([^”"]{4,80})[”"]/g)) {
+    output.push(match[1].trim());
   }
   return output;
 }
@@ -84,28 +53,28 @@ function namedPhrases(text: string, placeTitle: string) {
   const place = placeTitle.split(",", 1)[0].trim().toLowerCase();
   const seen = new Set<string>();
   const output: string[] = [];
-  for (const match of text.matchAll(/[A-Z][A-Za-z0-9']+(?:\s+[A-Z][A-Za-z0-9']+)*/g)) {
-    const phrase = match[0].trim();
+
+  for (const phrase of quotedPhrases(text)) {
     const key = phrase.toLowerCase();
-    if (phrase.length >= 4 && key !== place && !seen.has(key) && !stopWords.has(key)) {
+    if (!seen.has(key) && key !== place) {
       seen.add(key);
       output.push(phrase);
     }
   }
-  return output;
-}
 
-function scoreFactMatch(fact: HistoryFact, pageText: string, placeTitle: string) {
-  const placeTerms = terms(placeTitle);
-  const factTerms = terms(`${fact.title} ${fact.text}`, placeTerms);
-  const pageTerms = terms(pageText, placeTerms);
-  let score = 0;
-  for (const term of factTerms) {
-    if (pageTerms.has(term)) {
-      score += 1;
+  for (const match of text.matchAll(/[A-Z][A-Za-z0-9'&.-]+(?:\s+(?:of|and|the|[A-Z][A-Za-z0-9'&.-]+)){0,5}/g)) {
+    const phrase = match[0].replace(/\s+/g, " ").trim();
+    const key = phrase.toLowerCase();
+    if (
+      phrase.length >= 4 && key !== place && !seen.has(key) && !stopWords.has(key) &&
+      !genericArticleWords.some((word) => key === word || key.startsWith(`${word} `))
+    ) {
+      seen.add(key);
+      output.push(phrase);
     }
   }
-  return score;
+
+  return output;
 }
 
 function articleUrl(title: string) {
@@ -117,15 +86,24 @@ function isGenericImage(url: string) {
   return genericImageWords.some((word) => normalised.includes(word));
 }
 
-function bestSummaryImage(summary: WikiSummary) {
-  const original = summary.originalimage;
+function isGenericArticleTitle(title: string, placeTitle: string) {
+  const place = placeTitle.split(",", 1)[0].trim().toLowerCase();
+  const value = title.toLowerCase();
+  if (value === place) {
+    return true;
+  }
+  return genericArticleWords.some((word) => value === word || value.includes(word));
+}
+
+function bestPageImage(page: WikiPage) {
+  const original = page.original;
   if (original?.source?.startsWith("https://") && !isGenericImage(original.source)) {
     if ((original.width ?? 0) >= 320 && (original.height ?? 0) >= 160) {
       return original.source;
     }
   }
 
-  const thumbnail = summary.thumbnail;
+  const thumbnail = page.thumbnail;
   if (thumbnail?.source?.startsWith("https://") && !isGenericImage(thumbnail.source)) {
     if ((thumbnail.width ?? 0) >= 240 && (thumbnail.height ?? 0) >= 120) {
       return thumbnail.source;
@@ -135,77 +113,116 @@ function bestSummaryImage(summary: WikiSummary) {
   return null;
 }
 
-function searchQueries(fact: HistoryFact, placeTitle: string) {
-  const place = placeTitle.split(",", 1)[0].trim();
-  const factText = `${fact.title} ${fact.text}`;
-  const names = namedPhrases(factText, placeTitle).slice(0, 3);
-  const keywords = [...terms(factText, terms(placeTitle))].slice(0, 5);
-  return Array.from(
-    new Set([
-      ...names.map((name) => `${place} ${name}`),
-      ...names,
-      `${place} ${keywords.slice(0, 4).join(" ")}`,
-      keywords.slice(0, 4).join(" "),
-    ].filter((query) => query.trim().length > 3)),
-  ).slice(0, 6);
+function scorePage(fact: HistoryFact, page: WikiPage, placeTitle: string) {
+  const title = String(page.title ?? "");
+  const extract = String(page.extract ?? "");
+  const placeTerms = terms(placeTitle);
+  const factTerms = terms(`${fact.title} ${fact.text}`, placeTerms);
+  const pageTerms = terms(`${title} ${extract}`, placeTerms);
+  const titleTerms = terms(title, placeTerms);
+  const factText = normalise(`${fact.title} ${fact.text}`);
+  let score = 0;
+
+  for (const term of factTerms) {
+    if (pageTerms.has(term)) {
+      score += titleTerms.has(term) ? 5 : 2;
+    }
+  }
+
+  for (const phrase of namedPhrases(`${fact.title} ${fact.text}`, placeTitle)) {
+    const normalisedPhrase = normalise(phrase).trim();
+    if (normalisedPhrase.length >= 4 && normalise(title).includes(normalisedPhrase)) {
+      score += 18;
+    } else if (normalisedPhrase.length >= 4 && normalise(extract).includes(normalisedPhrase)) {
+      score += 8;
+    }
+  }
+
+  if (title && factText.includes(normalise(title).trim())) {
+    score += 14;
+  }
+
+  if (isGenericArticleTitle(title, placeTitle)) {
+    score -= 18;
+  }
+
+  return score;
 }
 
-async function fetchSummary(title: string) {
-  const response = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}?redirect=true`);
+function searchQueries(fact: HistoryFact, placeTitle: string) {
+  const factText = `${fact.title} ${fact.text}`;
+  const names = namedPhrases(factText, placeTitle).slice(0, 5);
+  const keywords = [...terms(factText, terms(placeTitle))].slice(0, 8);
+  const titleKeywords = [...terms(fact.title, terms(placeTitle))].slice(0, 6);
+
+  return Array.from(
+    new Set([
+      ...names,
+      fact.title,
+      titleKeywords.join(" "),
+      keywords.slice(0, 6).join(" "),
+      keywords.slice(0, 4).join(" "),
+    ].map((query) => query.trim()).filter((query) => query.length > 3)),
+  ).slice(0, 7);
+}
+
+async function fetchPageCandidates(query: string) {
+  const params = new URLSearchParams({
+    action: "query",
+    format: "json",
+    generator: "search",
+    gsrsearch: query,
+    gsrlimit: "8",
+    prop: "pageimages|extracts|info",
+    piprop: "original|thumbnail",
+    pithumbsize: "960",
+    exintro: "1",
+    explaintext: "1",
+    exsentences: "3",
+    inprop: "url",
+    origin: "*",
+  });
+  const response = await fetch(`https://en.wikipedia.org/w/api.php?${params}`);
   if (!response.ok) {
-    return null;
+    return [];
   }
-  return response.json() as Promise<WikiSummary>;
+  const payload = await response.json();
+  const pages = payload?.query?.pages;
+  if (!pages || typeof pages !== "object") {
+    return [];
+  }
+  return Object.values(pages) as WikiPage[];
 }
 
 async function searchFactArticleImage(fact: HistoryFact, placeTitle: string) {
-  let best: { image: HistoryLocationImage; score: number } | null = null;
+  let best: ImageCandidate | null = null;
 
   for (const query of searchQueries(fact, placeTitle)) {
-    const params = new URLSearchParams({ q: query, limit: "8" });
-    const searchResponse = await fetch(`https://en.wikipedia.org/w/rest.php/v1/search/page?${params}`);
-    if (!searchResponse.ok) {
-      continue;
-    }
-    const searchPayload = await searchResponse.json();
-    const pages = Array.isArray(searchPayload?.pages) ? searchPayload.pages : [];
-
-    for (const page of pages as WikiSearchPage[]) {
+    const pages = await fetchPageCandidates(query);
+    for (const page of pages) {
       const title = String(page.title ?? "").trim();
-      if (!title || genericImageWords.some((word) => title.toLowerCase().includes(word))) {
+      if (!title) {
         continue;
       }
-      const searchScore = scoreFactMatch(fact, `${title} ${page.description ?? ""} ${page.excerpt ?? ""}`, placeTitle);
-      if (searchScore < 2) {
-        continue;
-      }
-
-      const summary = await fetchSummary(title);
-      if (!summary) {
-        continue;
-      }
-      const imageUrl = bestSummaryImage(summary);
+      const imageUrl = bestPageImage(page);
       if (!imageUrl) {
         continue;
       }
-      const summaryScore = scoreFactMatch(fact, `${summary.title ?? title} ${summary.description ?? ""} ${summary.extract ?? ""}`, placeTitle);
-      const score = searchScore + summaryScore;
-      if (score < 4) {
+      const score = scorePage(fact, page, placeTitle);
+      if (score < 12) {
         continue;
       }
-
       const image: HistoryLocationImage = {
         url: imageUrl,
-        title: String(summary.title ?? title),
+        title,
         sourceName: "Wikipedia",
-        sourceUrl: summary.content_urls?.desktop?.page ?? articleUrl(title),
+        sourceUrl: String(page.fullurl ?? articleUrl(title)),
       };
       if (!best || score > best.score) {
         best = { image, score };
       }
     }
-
-    if (best && best.score >= 7) {
+    if (best && best.score >= 28) {
       break;
     }
   }
@@ -231,19 +248,16 @@ export function FactCardImage({
     setImage(null);
     setFailed(false);
 
-    const timer = window.setTimeout(() => {
-      void searchFactArticleImage(fact, placeTitle)
-        .then((nextImage) => {
-          if (active) {
-            setImage(nextImage);
-          }
-        })
-        .catch(() => undefined);
-    }, 250);
+    void searchFactArticleImage(fact, placeTitle)
+      .then((nextImage) => {
+        if (active) {
+          setImage(nextImage);
+        }
+      })
+      .catch(() => undefined);
 
     return () => {
       active = false;
-      window.clearTimeout(timer);
     };
   }, [fact, key, placeTitle]);
 
