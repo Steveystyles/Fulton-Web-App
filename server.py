@@ -2063,6 +2063,14 @@ def wikipedia_article_images_url(lang: str, title: str, limit: int = 18) -> str:
     )
 
 
+def commons_fact_image_search_url(query: str, limit: int = 5) -> str:
+    return (
+        "https://commons.wikimedia.org/w/api.php?action=query&format=json"
+        f"&generator=search&gsrnamespace=6&gsrlimit={limit}"
+        f"&gsrsearch={quote_plus(query)}&prop=imageinfo&iiprop=url&iiurlwidth=960"
+    )
+
+
 def wikidata_entity_url(qid: str) -> str:
     return f"https://www.wikidata.org/wiki/Special:EntityData/{quote_plus(qid)}.json"
 
@@ -2167,6 +2175,50 @@ WIKIPEDIA_IMAGE_REJECT_TERMS = (
     "shield",
     "symbol",
 )
+FACT_IMAGE_STOP_TERMS = {
+    "after",
+    "among",
+    "annual",
+    "based",
+    "been",
+    "before",
+    "building",
+    "buildings",
+    "centre",
+    "century",
+    "closed",
+    "during",
+    "either",
+    "example",
+    "file",
+    "first",
+    "focus",
+    "former",
+    "from",
+    "geograph",
+    "giving",
+    "global",
+    "history",
+    "image",
+    "important",
+    "into",
+    "late",
+    "main",
+    "many",
+    "most",
+    "named",
+    "noticeable",
+    "still",
+    "that",
+    "their",
+    "this",
+    "today",
+    "town",
+    "used",
+    "were",
+    "which",
+    "with",
+}
 
 
 def summary_location_image(
@@ -2258,6 +2310,167 @@ def fetch_wikipedia_images(
             break
 
     return images[:limit]
+
+
+def fact_image_terms(value: str, excluded_terms: set[str] | None = None) -> set[str]:
+    terms = {
+        term.lower()
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9']+", str(value or ""))
+        if len(term) >= 4
+    }
+    terms.difference_update(FACT_IMAGE_STOP_TERMS)
+    if excluded_terms:
+        terms.difference_update(excluded_terms)
+    return terms
+
+
+def fact_image_query(fact: dict[str, Any], place_title: str) -> str:
+    place_name = place_title.split(",", 1)[0].strip()
+    place_terms = fact_image_terms(place_title)
+    proper_terms: list[str] = []
+    fallback_terms: list[str] = []
+    seen_terms: set[str] = set()
+
+    for term in re.findall(r"[A-Za-z][A-Za-z0-9']+", str(fact.get("text") or "")):
+        normalised = term.lower()
+        if (
+            len(normalised) < 4
+            or normalised in seen_terms
+            or normalised in place_terms
+            or normalised in FACT_IMAGE_STOP_TERMS
+        ):
+            continue
+        fallback_terms.append(term)
+        if term[0].isupper():
+            proper_terms.append(term)
+        seen_terms.add(normalised)
+
+    query_terms = proper_terms[:6] or fallback_terms[:6]
+    return " ".join(part for part in (place_name, *query_terms) if part).strip()
+
+
+def fact_image_match_score(
+    fact: dict[str, Any],
+    image: dict[str, str | None],
+    place_terms: set[str],
+) -> int:
+    fact_terms = fact_image_terms(
+        f"{fact.get('title', '')} {fact.get('text', '')}",
+        place_terms,
+    )
+    image_terms = fact_image_terms(str(image.get("title") or ""), place_terms)
+    shared_terms = fact_terms.intersection(image_terms)
+    if not shared_terms:
+        return 0
+
+    score = len(shared_terms) * 10
+    text = str(fact.get("text") or "").lower()
+    title = str(image.get("title") or "").lower()
+    if any(term in text and term in title for term in shared_terms):
+        score += 4
+    return score
+
+
+def fetch_commons_fact_image(
+    fact: dict[str, Any],
+    place_title: str,
+) -> dict[str, str | None] | None:
+    query = fact_image_query(fact, place_title)
+    if not query:
+        return None
+
+    try:
+        payload = fetch_json_url(commons_fact_image_search_url(query), timeout=5)
+    except Exception as error:
+        safe_log(f"History Commons fact image fetch failed: {error}")
+        return None
+
+    pages = payload.get("query", {}).get("pages", {}) if isinstance(payload, dict) else {}
+    if not isinstance(pages, dict):
+        return None
+
+    place_terms = fact_image_terms(place_title)
+    candidates: list[tuple[int, dict[str, str | None]]] = []
+    for page in pages.values():
+        if not isinstance(page, dict):
+            continue
+        image = normalise_wikipedia_image(page)
+        if image is None:
+            continue
+        score = fact_image_match_score(fact, image, place_terms)
+        if score > 0:
+            candidates.append((score, image))
+
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    return candidates[0][1] if candidates else None
+
+
+def attach_fact_images(
+    facts: list[dict[str, Any]],
+    images: list[dict[str, str | None]],
+    place_title: str,
+) -> list[dict[str, Any]]:
+    place_terms = fact_image_terms(place_title)
+    used_urls: set[str] = set()
+    facts_with_images: list[dict[str, Any]] = []
+
+    for fact in facts:
+        ranked_images = sorted(
+            (
+                (fact_image_match_score(fact, image, place_terms), image)
+                for image in images
+                if isinstance(image.get("url"), str) and image["url"] not in used_urls
+            ),
+            key=lambda candidate: candidate[0],
+            reverse=True,
+        )
+        next_fact = dict(fact)
+        if ranked_images and ranked_images[0][0] > 0:
+            image = ranked_images[0][1]
+            next_fact["image"] = image
+            used_urls.add(str(image["url"]))
+        facts_with_images.append(next_fact)
+
+    return facts_with_images
+
+
+def fetch_missing_fact_images(
+    facts: list[dict[str, Any]],
+    place_title: str,
+) -> list[dict[str, Any]]:
+    missing_facts = [
+        (index, fact)
+        for index, fact in enumerate(facts)
+        if not isinstance(fact.get("image"), dict)
+    ]
+    if not missing_facts:
+        return facts
+
+    used_urls = {
+        str(image["url"])
+        for fact in facts
+        if isinstance((image := fact.get("image")), dict) and isinstance(image.get("url"), str)
+    }
+    with ThreadPoolExecutor(max_workers=min(3, len(missing_facts))) as executor:
+        futures = [
+            (index, executor.submit(fetch_commons_fact_image, fact, place_title))
+            for index, fact in missing_facts
+        ]
+        for index, future in futures:
+            try:
+                image = future.result()
+            except Exception as error:
+                safe_log(f"History Commons fact image task failed: {error}")
+                continue
+            if image is None or not isinstance(image.get("url"), str):
+                continue
+            image_url = str(image["url"])
+            if image_url in used_urls:
+                continue
+            facts[index]["image"] = image
+            used_urls.add(image_url)
+
+    return facts
 
 
 def fetch_wikidata_entity(qid: str) -> dict[str, Any] | None:
@@ -2725,23 +2938,32 @@ def history_payload(
                 except Exception as error:
                     safe_log(f"History Wikidata fetch failed: {error}")
 
+            title = str(wiki.get("title") or location)
+            location_images = fetch_wikipedia_images(wiki, lang, article_url)
             location_payload = {
-                "title": wiki.get("title") or location,
+                "title": title,
                 "description": wiki.get("description"),
                 "profile": wikidata_profile(
                     wikidata_entity,
                     lang,
-                    str(wiki.get("title") or location),
+                    title,
                 ),
-                "facts": build_location_facts(
-                    wiki,
-                    plain_extract,
-                    limit_facts,
-                    article_url,
+                "facts": fetch_missing_fact_images(
+                    attach_fact_images(
+                        build_location_facts(
+                            wiki,
+                            plain_extract,
+                            limit_facts,
+                            article_url,
+                        ),
+                        location_images,
+                        title,
+                    ),
+                    title,
                 ),
                 "articleUrl": article_url,
                 "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
-                "images": fetch_wikipedia_images(wiki, lang, article_url),
+                "images": location_images,
             }
         except LookupError:
             return {"error": f"No location facts found for {location}."}, HTTPStatus.NOT_FOUND

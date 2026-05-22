@@ -219,6 +219,69 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(images[1]["sourceName"], "Wikimedia Commons")
         self.assertIn("generator=images", fetch.call_args[0][0])
 
+    def test_fact_images_only_attach_when_media_title_matches_fact_text(self) -> None:
+        import server
+
+        facts = [
+            {
+                "title": "Landmark",
+                "text": "Paisley Abbey is a medieval landmark in the town.",
+                "theme": "landmark",
+            },
+            {
+                "title": "Industry",
+                "text": "Paisley became a global centre of the weaving industry.",
+                "theme": "industry",
+            },
+        ]
+        images = [
+            {
+                "url": "https://upload.wikimedia.org/paisley-abbey.jpg",
+                "title": "Paisley Abbey from the west.jpg",
+                "sourceName": "Wikimedia Commons",
+                "sourceUrl": None,
+            },
+            {
+                "url": "https://upload.wikimedia.org/townscape.jpg",
+                "title": "Paisley town centre.jpg",
+                "sourceName": "Wikimedia Commons",
+                "sourceUrl": None,
+            },
+        ]
+
+        matched = server.attach_fact_images(facts, images, "Paisley, Renfrewshire")
+
+        self.assertEqual(matched[0]["image"]["title"], "Paisley Abbey from the west.jpg")
+        self.assertNotIn("image", matched[1])
+
+    def test_missing_fact_image_can_be_retrieved_from_commons_search(self) -> None:
+        import server
+
+        fact = {
+            "title": "Landmark",
+            "text": "Paisley Abbey is a medieval landmark in the town.",
+            "theme": "landmark",
+        }
+        search_payload = {
+            "query": {
+                "pages": {
+                    "1": {
+                        "title": "File:Paisley Abbey cloisters.jpg",
+                        "imageinfo": [{
+                            "thumburl": "https://upload.wikimedia.org/paisley-abbey-cloisters.jpg",
+                        }],
+                    },
+                }
+            }
+        }
+
+        with patch("server.fetch_json_url", return_value=search_payload) as fetch:
+            image = server.fetch_commons_fact_image(fact, "Paisley, Renfrewshire")
+
+        self.assertEqual(image["title"], "Paisley Abbey cloisters.jpg")
+        self.assertIn("commons.wikimedia.org", fetch.call_args[0][0])
+        self.assertIn("generator=search", fetch.call_args[0][0])
+
     def test_quiz_order_and_scoring_use_difficulty_weights(self) -> None:
         import server
 

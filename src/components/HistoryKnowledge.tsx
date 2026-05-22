@@ -338,23 +338,9 @@ export function HistoryKnowledge() {
 
   return (
     <section className="space-y-3" aria-label="Local knowledge and history">
-      <Card className="p-4">
-        <form className="space-y-3" onSubmit={submitLocation}>
-          <div className="flex items-center gap-3">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-saints-black text-white">
-              <MapPin aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-            </span>
-            <div className="min-w-0">
-              <p className="text-lg font-black leading-tight text-slate-950">
-                Facts
-              </p>
-              <p className="mt-1 text-sm font-bold text-slate-500">
-                {history?.location?.title ?? submittedLocation.location}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-50 p-3">
+      <Card className="p-3">
+        <form className="space-y-2" onSubmit={submitLocation}>
+          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-50 p-2.5">
             <ControlValue
               label="Location"
               value={history?.location?.title ?? submittedLocation.location}
@@ -368,9 +354,9 @@ export function HistoryKnowledge() {
               type="button"
               onClick={() => setFiltersOpen((current) => !current)}
               aria-expanded={filtersOpen}
-              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm font-black text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+              className="inline-flex min-h-9 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-black text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
             >
-              <MapPin aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+              <MapPin aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.4} />
               Change location
             </button>
           </div>
@@ -446,7 +432,7 @@ export function HistoryKnowledge() {
                 {facts.map((fact, index) => {
                   const meta = themeMeta[fact.theme] ?? themeMeta.general;
                   const Icon = meta.icon;
-                  const factImage = townImages[index % Math.max(townImages.length, 1)];
+                  const factImage = fact.image ?? null;
                   return (
                     <div
                       key={`${index}-${fact.title}`}
@@ -555,8 +541,8 @@ function DateChangeButton({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="relative inline-flex min-h-11 min-w-0 cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm font-black text-slate-950 transition hover:bg-slate-50 focus-within:ring-4 focus-within:ring-saints-red/20">
-      <CalendarDays aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+    <label className="relative inline-flex min-h-9 min-w-0 cursor-pointer items-center justify-center gap-1.5 overflow-hidden rounded-xl border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-black text-slate-950 transition hover:bg-slate-50 focus-within:ring-4 focus-within:ring-saints-red/20">
+      <CalendarDays aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.4} />
       <span>
         Change date
       </span>

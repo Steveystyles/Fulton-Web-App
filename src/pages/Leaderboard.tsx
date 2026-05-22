@@ -100,30 +100,13 @@ export function Leaderboard() {
         <>
           {currentPlayer ? (
             <CurrentPlayerCard player={currentPlayer} highestScore={highestScore} />
-          ) : (
-            <Card>
-              <div className="flex items-center gap-3">
-                <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-saints-red text-white">
-                  <Medal aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-                </span>
-                <div className="min-w-0">
-                  <p className="text-xl font-black text-slate-950">Scores</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-600">
-                    Player scores and streaks.
-                  </p>
-                </div>
-              </div>
-            </Card>
-          )}
+          ) : null}
 
           <Card className="p-3">
-            <div className="mb-3 flex items-end justify-between gap-3">
-              <div>
-                <p className="text-lg font-black text-slate-950">Score table</p>
-                <p className="mt-0.5 text-xs font-bold text-slate-500">
-                  Select a player for the full breakdown.
-                </p>
-              </div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs font-bold text-slate-500">
+                Select a player for the full breakdown.
+              </p>
               {board ? (
                 <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
                   {board.summary.playerCount} players

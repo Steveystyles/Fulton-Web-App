@@ -1,8 +1,9 @@
 import {
+  ArrowDownUp,
   ExternalLink,
   LoaderCircle,
   Newspaper,
-  Radio,
+  SlidersHorizontal,
   Trophy,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -11,6 +12,7 @@ import { api, type NewsCategory, type NewsItem } from "../lib/api";
 import { cleanNewsTitle } from "../lib/news";
 
 type FeedStatus = "loading" | "live" | "polling" | "offline";
+type NewsOrder = "newest" | "oldest";
 
 const categoryOptions: Array<{ value: NewsCategory; label: string }> = [
   { value: "all", label: "All" },
@@ -62,6 +64,8 @@ function shouldShowItem(item: NewsItem, category: NewsCategory) {
 export function News() {
   const [items, setItems] = useState<NewsItem[]>([]);
   const [category, setCategory] = useState<NewsCategory>("all");
+  const [order, setOrder] = useState<NewsOrder>("newest");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [status, setStatus] = useState<FeedStatus>("loading");
   const [error, setError] = useState("");
 
@@ -149,69 +153,86 @@ export function News() {
   }, [category]);
   const emptyStoryLabel =
     category === "all" ? "stories" : `${selectedCategoryLabel.toLowerCase()} stories`;
+  const orderedItems = useMemo(() => {
+    return [...items].sort((left, right) => {
+      const comparison = right.publishedAt.localeCompare(left.publishedAt);
+      return order === "newest" ? comparison : -comparison;
+    });
+  }, [items, order]);
 
   return (
     <section className="page-fade space-y-3" aria-label="News">
-      <Card className="p-3">
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-saints-black text-white">
-              {status === "loading" ? (
-                <LoaderCircle aria-hidden="true" className="h-5 w-5 animate-spin" />
-              ) : (
-                <Radio aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-lg font-black leading-tight text-slate-950">
-                St Mirren feed
-              </p>
-              <p className="mt-1 text-sm font-semibold text-slate-600">
-                {selectedCategoryLabel} - {statusLabel}
-              </p>
-            </div>
-            <span
-              className={[
-                "rounded-full px-3 py-1 text-xs font-black uppercase",
-                status === "live"
-                  ? "bg-emerald-50 text-emerald-700"
-                  : status === "offline"
-                    ? "bg-red-50 text-saints-red"
-                    : "bg-slate-100 text-slate-600",
-              ].join(" ")}
-            >
-              {statusLabel}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2" aria-label="News filters">
-            {categoryOptions.map((option) => {
-              const active = option.value === category;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setCategory(option.value)}
-                  className={[
-                    "flex min-h-11 items-center justify-center rounded-xl border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
-                    active
-                      ? "border-saints-black bg-saints-black text-white"
-                      : "border-saints-line bg-white text-slate-700 hover:border-saints-red/40 hover:bg-saints-redSoft",
-                  ].join(" ")}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-
-          {error ? (
-            <p className="rounded-2xl bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
-              {error}
-            </p>
+      <div className="flex items-center justify-end gap-2">
+        <span
+          className={[
+            "inline-flex min-h-8 items-center gap-1 rounded-full px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-normal",
+            status === "live"
+              ? "bg-emerald-50 text-emerald-700"
+              : status === "offline"
+                ? "bg-red-50 text-saints-red"
+                : "bg-slate-100 text-slate-600",
+          ].join(" ")}
+        >
+          {status === "loading" ? (
+            <LoaderCircle aria-hidden="true" className="h-3 w-3 animate-spin" />
           ) : null}
-        </div>
-      </Card>
+          {statusLabel}
+        </span>
+        <button
+          type="button"
+          onClick={() => setFiltersOpen((current) => !current)}
+          aria-expanded={filtersOpen}
+          className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-slate-300 bg-white px-2.5 py-1 text-xs font-black text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+        >
+          <SlidersHorizontal aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+          Filter
+        </button>
+      </div>
+
+      {filtersOpen ? (
+        <Card className="p-3" as="section" aria-label="News filters">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="block min-w-0">
+              <span className="text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+                Stories
+              </span>
+              <select
+                value={category}
+                onChange={(event) => setCategory(event.target.value as NewsCategory)}
+                className="mt-1 h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-black text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
+              >
+                {categoryOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block min-w-0">
+              <span className="inline-flex items-center gap-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+                <ArrowDownUp aria-hidden="true" className="h-3 w-3" strokeWidth={2.6} />
+                Order
+              </span>
+              <select
+                value={order}
+                onChange={(event) => setOrder(event.target.value as NewsOrder)}
+                className="mt-1 h-10 w-full rounded-xl border border-slate-300 bg-white px-3 text-sm font-black text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
+              >
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+              </select>
+            </label>
+          </div>
+        </Card>
+      ) : null}
+
+      {error ? (
+        <Card>
+          <p className="rounded-2xl bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
+            {error}
+          </p>
+        </Card>
+      ) : null}
 
       {items.length === 0 && status !== "loading" ? (
         <Card>
@@ -234,7 +255,7 @@ export function News() {
       ) : null}
 
       <section className="space-y-3" aria-label="Latest news stories">
-        {items.map((item) => {
+        {orderedItems.map((item) => {
           const title = cleanNewsTitle(item.title, item.source);
 
           return (

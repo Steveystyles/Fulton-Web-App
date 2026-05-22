@@ -146,6 +146,7 @@ export type HistoryFact = {
   sourceName: string;
   sourceUrl: string | null;
   confidence: "high" | "medium" | "low";
+  image?: HistoryLocationImage | null;
 };
 
 export type HistoryLocationProfile = {
