@@ -40,6 +40,11 @@ button {
   appearance: none;
 }
 
+input[type="date"] {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .top-shell {
   position: fixed;
   top: 0;

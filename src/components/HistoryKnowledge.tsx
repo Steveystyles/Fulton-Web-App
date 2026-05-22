@@ -350,7 +350,7 @@ export function HistoryKnowledge() {
                 value={historyDate}
                 onChange={(event) => setHistoryDate(event.target.value)}
                 type="date"
-                className="mt-1 h-12 w-full rounded-2xl border border-slate-300 bg-white px-3 text-base font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
+                className="mt-1 block h-12 w-full min-w-0 max-w-full rounded-2xl border border-slate-300 bg-white px-3 text-base font-bold text-slate-950 outline-none transition focus:border-saints-red focus:ring-4 focus:ring-saints-red/15"
               />
             </label>
           </div>

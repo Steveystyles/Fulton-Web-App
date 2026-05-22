@@ -902,7 +902,7 @@ CURATED_QUIZ_BANK: dict[str, dict[str, list[dict[str, Any]]]] = {
                 "question": "Which year did St Mirren win the Scottish Cup by beating Dundee United 1-0?",
                 "answers": ["1977", "1987", "1997", "2007"],
                 "correct_answer": "1987",
-                "explanation": "St Mirren won the 1987 Scottish Cup final 1-0 at Hampden.",
+                "explanation": "Ian Ferguson's extra-time goal won the 1987 final against Dundee United.",
             },
             {
                 "question": "Which club plays its home matches at Tynecastle Park?",
@@ -1152,7 +1152,8 @@ def quiz_generation_prompt(game_date: str) -> str:
         "Anfield, Euro 2016, capital of France, chemical symbol Au, and the "
         "first heart transplant. Use four plausible answer options per "
         "question, keep the correct answer exactly equal to one option, and "
-        "write a short explanation."
+        "write a short explanation. Explanations must not reveal the answer "
+        "to another question in the same category set."
     )
 
 
@@ -1288,14 +1289,42 @@ def order_daily_questions(payload: dict[str, Any]) -> dict[str, Any]:
     for category in ("football", "general"):
         questions = payload.get(category)
         if isinstance(questions, list):
-            ordered[category] = sorted(
+            sorted_questions = sorted(
                 questions,
                 key=lambda question: difficulty_index.get(
                     question.get("difficulty") if isinstance(question, dict) else "",
                     len(DIFFICULTIES),
                 ),
             )
+            ordered[category] = safe_question_explanations(sorted_questions)
     return ordered
+
+
+def safe_question_explanations(questions: list[Any]) -> list[Any]:
+    safe_questions = []
+    for index, question in enumerate(questions):
+        if not isinstance(question, dict):
+            safe_questions.append(question)
+            continue
+
+        next_question = dict(question)
+        explanation = str(question.get("explanation", ""))
+        later_answers = [
+            str(later_question.get("correct_answer", "")).strip()
+            for later_question in questions[index + 1 :]
+            if isinstance(later_question, dict)
+        ]
+        if any(
+            len(answer) >= 3
+            and re.search(rf"(?<!\w){re.escape(answer)}(?!\w)", explanation, re.IGNORECASE)
+            for answer in later_answers
+        ):
+            next_question["explanation"] = (
+                "The correct answer for this question is shown above."
+            )
+        safe_questions.append(next_question)
+
+    return safe_questions
 
 
 def daily_questions_path(game_date: str) -> Path:
@@ -1421,6 +1450,66 @@ def save_daily_quiz_result(
     return {"result": serialize_quiz_result(result)}, HTTPStatus.CREATED
 
 
+def score_day_streak(date_values: list[str], current_date: str | None = None) -> dict[str, int]:
+    days = []
+    for date_value in set(date_values):
+        try:
+            days.append(datetime.strptime(date_value, "%Y-%m-%d").date())
+        except ValueError:
+            continue
+
+    if not days:
+        return {"current": 0, "best": 0}
+
+    ordered_days = sorted(days)
+    best = 1
+    run = 1
+    for previous, day in zip(ordered_days, ordered_days[1:]):
+        run = run + 1 if day == previous + timedelta(days=1) else 1
+        best = max(best, run)
+
+    reference_date = current_date or today_game_date()
+    try:
+        today = datetime.strptime(reference_date, "%Y-%m-%d").date()
+    except ValueError:
+        today = ordered_days[-1]
+
+    latest = ordered_days[-1]
+    if latest not in {today, today - timedelta(days=1)}:
+        return {"current": 0, "best": best}
+
+    active_days = set(ordered_days)
+    current = 0
+    day = latest
+    while day in active_days:
+        current += 1
+        day -= timedelta(days=1)
+
+    return {"current": current, "best": best}
+
+
+def player_score_day_streaks(conn: sqlite3.Connection) -> dict[int, dict[str, int]]:
+    activity_rows = conn.execute(
+        """
+        SELECT wordle_results.user_id, daily_wordle_games.game_date
+        FROM wordle_results
+        INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+        WHERE wordle_results.status IN ('won', 'lost')
+        UNION
+        SELECT user_id, game_date
+        FROM daily_quiz_results
+        """
+    ).fetchall()
+    activity_dates: dict[int, list[str]] = {}
+    for row in activity_rows:
+        activity_dates.setdefault(row["user_id"], []).append(row["game_date"])
+
+    return {
+        user_id: score_day_streak(date_values)
+        for user_id, date_values in activity_dates.items()
+    }
+
+
 def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     rows = conn.execute(
         """
@@ -1464,8 +1553,10 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         """
     ).fetchall()
 
+    streaks = player_score_day_streaks(conn)
     players = []
     for index, row in enumerate(rows):
+        streak = streaks.get(row["id"], {"current": 0, "best": 0})
         players.append(
             {
                 "rank": index + 1,
@@ -1479,6 +1570,8 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 "quizMaxPoints": row["quiz_max_points"],
                 "quizPlayed": row["quiz_played"],
                 "quizCorrect": row["quiz_correct"],
+                "currentStreak": streak["current"],
+                "bestStreak": streak["best"],
             }
         )
 
@@ -1489,6 +1582,7 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             "totalPoints": sum(player["totalPoints"] for player in players),
             "quizPlays": sum(player["quizPlayed"] for player in players),
             "wordlePlays": sum(player["wordlePlayed"] for player in players),
+            "bestStreak": max((player["bestStreak"] for player in players), default=0),
         },
     }
 

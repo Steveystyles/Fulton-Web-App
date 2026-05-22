@@ -115,6 +115,8 @@ export type LeaderboardPlayer = {
   quizMaxPoints: number;
   quizPlayed: number;
   quizCorrect: number;
+  currentStreak: number;
+  bestStreak: number;
 };
 
 export type LeaderboardResponse = {
@@ -124,6 +126,7 @@ export type LeaderboardResponse = {
     totalPoints: number;
     quizPlays: number;
     wordlePlays: number;
+    bestStreak: number;
   };
 };
 

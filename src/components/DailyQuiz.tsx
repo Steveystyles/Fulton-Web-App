@@ -444,7 +444,7 @@ export function DailyQuiz({
               {currentAnswer === currentQuestion.correct_answer ? "Correct" : "Not this time"}
             </p>
             <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-600">
-              {currentQuestion.explanation}
+              Answer details are shown after the final score.
             </p>
             <button
               type="button"

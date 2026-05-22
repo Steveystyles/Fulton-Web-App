@@ -1,4 +1,4 @@
-import { BarChart3, Hash, LoaderCircle, Medal, Trophy } from "lucide-react";
+import { BarChart3, Flame, Hash, LoaderCircle, Medal, Trophy } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../components/Card";
 import { api, type LeaderboardResponse } from "../lib/api";
@@ -64,10 +64,11 @@ export function Leaderboard() {
         </div>
 
         {board ? (
-          <div className="mt-4 grid grid-cols-3 gap-2" aria-label="Score summary">
+          <div className="mt-4 grid grid-cols-2 gap-2" aria-label="Score summary">
             <ScoreStat label="Players" value={board.summary.playerCount} />
             <ScoreStat label="Quiz plays" value={board.summary.quizPlays} />
             <ScoreStat label="Wordles" value={board.summary.wordlePlays} />
+            <ScoreStat label="Best streak" value={board.summary.bestStreak} />
           </div>
         ) : null}
       </Card>
@@ -138,7 +139,7 @@ export function Leaderboard() {
                     />
                   </div>
 
-                  <div className="mt-3 grid grid-cols-2 gap-2">
+                  <div className="mt-3 grid grid-cols-1 gap-2 min-[390px]:grid-cols-3">
                     <ScoreDetail
                       icon={Hash}
                       label="Wordle"
@@ -150,6 +151,12 @@ export function Leaderboard() {
                       label="Quiz"
                       value={`${player.quizPoints} pts`}
                       detail={`${player.quizCorrect} correct`}
+                    />
+                    <ScoreDetail
+                      icon={Flame}
+                      label="Streak"
+                      value={`${player.currentStreak} day${player.currentStreak === 1 ? "" : "s"}`}
+                      detail={`Best ${player.bestStreak}`}
                     />
                   </div>
                 </article>

@@ -189,6 +189,23 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.score_quiz_answers(ordered["football"], ["E", "wrong", "H"]),
             {"score": 6, "maxScore": 9, "correctCount": 2},
         )
+        leaky_questions = [
+            {"difficulty": "easy", "correct_answer": "E", "explanation": "Easy."},
+            {
+                "difficulty": "medium",
+                "correct_answer": "M",
+                "explanation": "The next answer is Hampden Park.",
+            },
+            {
+                "difficulty": "hard",
+                "correct_answer": "Hampden Park",
+                "explanation": "Hard.",
+            },
+        ]
+        safe_payload = server.order_daily_questions(
+            {"date": "2026-05-22", "football": leaky_questions, "general": leaky_questions}
+        )
+        self.assertNotIn("Hampden Park", safe_payload["football"][1]["explanation"])
 
     def test_wordle_points_curve(self) -> None:
         import server
@@ -237,6 +254,51 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
             self.assertEqual([player["username"] for player in payload["players"]], ["dad"])
             self.assertEqual(payload["players"][0]["totalPoints"], 6)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+            server.QUIZ_DATA_DIR = original_quiz_data_dir
+
+    def test_leaderboard_includes_score_day_streaks(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        original_quiz_data_dir = server.QUIZ_DATA_DIR
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.QUIZ_DATA_DIR = data_dir / "quizzes"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-05-22T12:00:00+00:00"
+                with conn:
+                    conn.execute(
+                        "INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        ("dad", "hash", "user", now, now),
+                    )
+                    dad_id = conn.execute(
+                        "SELECT id FROM users WHERE username = 'dad'"
+                    ).fetchone()["id"]
+                    for game_date in ("2026-05-18", "2026-05-19", "2026-05-21", "2026-05-22"):
+                        conn.execute(
+                            """
+                            INSERT INTO daily_quiz_results (
+                                user_id, game_date, category, answers_json, score, max_score,
+                                correct_count, completed_at, created_at, updated_at
+                            )
+                            VALUES (?, ?, 'football', '[]', 1, 9, 1, ?, ?, ?)
+                            """,
+                            (dad_id, game_date, now, now, now),
+                        )
+                with patch("server.today_game_date", return_value="2026-05-22"):
+                    payload = server.leaderboard_payload(conn)
+
+            self.assertEqual(payload["players"][0]["currentStreak"], 2)
+            self.assertEqual(payload["players"][0]["bestStreak"], 2)
+            self.assertEqual(payload["summary"]["bestStreak"], 2)
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
