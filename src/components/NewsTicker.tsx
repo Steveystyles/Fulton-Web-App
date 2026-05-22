@@ -22,7 +22,7 @@ export function NewsTicker() {
   const [items, setItems] = useState<NewsItem[]>([]);
   const tickerGroupRef = useRef<HTMLDivElement | null>(null);
   const [tickerShift, setTickerShift] = useState("-50%");
-  const [tickerDuration, setTickerDuration] = useState("78s");
+  const [tickerDuration, setTickerDuration] = useState("140s");
 
   useEffect(() => {
     let active = true;
@@ -94,7 +94,8 @@ export function NewsTicker() {
       const width = Math.ceil(group.getBoundingClientRect().width);
       if (width > 0) {
         setTickerShift(`-${width}px`);
-        setTickerDuration(`${Math.max(78, Math.ceil(width / 16))}s`);
+        // Slow, readable motion. About 8px/sec, with a high minimum for short feeds.
+        setTickerDuration(`${Math.max(140, Math.ceil(width / 8))}s`);
       }
     };
 
