@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { api, type NewsItem } from "../lib/api";
 import { cleanNewsTitle } from "../lib/news";
 
@@ -114,7 +114,7 @@ export function NewsTicker() {
     <section
       className="ticker-frame border-b border-white/10 bg-saints-charcoal text-white"
       aria-label="News ticker"
-      style={{ "--ticker-shift": tickerShift } as React.CSSProperties}
+      style={{ "--ticker-shift": tickerShift } as CSSProperties}
     >
       <div className="flex min-h-10 items-center gap-3 overflow-hidden pl-4">
         <span className="inline-flex items-center gap-1.5 rounded-sm bg-saints-red px-2.5 py-1 text-xs font-black uppercase leading-none text-white">
