@@ -1315,8 +1315,7 @@ def safe_question_explanations(questions: list[Any]) -> list[Any]:
             if isinstance(later_question, dict)
         ]
         if any(
-            len(answer) >= 3
-            and re.search(rf"(?<!\w){re.escape(answer)}(?!\w)", explanation, re.IGNORECASE)
+            explanation_leaks_answer(explanation, answer)
             for answer in later_answers
         ):
             next_question["explanation"] = (
@@ -1325,6 +1324,22 @@ def safe_question_explanations(questions: list[Any]) -> list[Any]:
         safe_questions.append(next_question)
 
     return safe_questions
+
+
+def explanation_leaks_answer(explanation: str, answer: str) -> bool:
+    if len(answer) < 3:
+        return False
+
+    leak_terms = {answer}
+    leak_terms.update(
+        word
+        for word in re.findall(r"[A-Za-z0-9]+", answer)
+        if len(word) >= 5
+    )
+    return any(
+        re.search(rf"(?<!\w){re.escape(term)}(?!\w)", explanation, re.IGNORECASE)
+        for term in leak_terms
+    )
 
 
 def daily_questions_path(game_date: str) -> Path:

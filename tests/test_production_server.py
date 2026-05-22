@@ -194,7 +194,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             {
                 "difficulty": "medium",
                 "correct_answer": "M",
-                "explanation": "The next answer is Hampden Park.",
+                "explanation": "The next answer is Hampden.",
             },
             {
                 "difficulty": "hard",
