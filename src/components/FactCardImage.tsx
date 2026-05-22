@@ -1,7 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { type HistoryFact, type HistoryLocationImage } from "../lib/api";
 
-const factImageStopTerms = new Set([
+type WikiSearchPage = {
+  title?: string;
+  description?: string;
+  excerpt?: string;
+};
+
+type WikiSummary = {
+  title?: string;
+  description?: string;
+  extract?: string;
+  thumbnail?: { source?: string; width?: number; height?: number };
+  originalimage?: { source?: string; width?: number; height?: number };
+  content_urls?: { desktop?: { page?: string } };
+};
+
+const stopWords = new Set([
   "about",
   "after",
   "among",
@@ -21,7 +36,6 @@ const factImageStopTerms = new Set([
   "former",
   "from",
   "history",
-  "image",
   "into",
   "late",
   "local",
@@ -40,7 +54,7 @@ const factImageStopTerms = new Set([
   "with",
 ]);
 
-const rejectedImageTerms = [
+const genericImageWords = [
   "arms",
   "badge",
   "coat",
@@ -55,251 +69,148 @@ const rejectedImageTerms = [
   "symbol",
 ];
 
-type CommonsPage = {
-  title?: string;
-  imageinfo?: Array<{
-    thumburl?: string;
-    url?: string;
-    descriptionurl?: string;
-  }>;
-};
-
-type WikipediaSearchPage = {
-  title?: string;
-  description?: string;
-  excerpt?: string;
-  thumbnail?: {
-    url?: string;
-  };
-};
-
-function absoluteWikipediaImageUrl(url: string | undefined) {
-  if (!url) {
-    return null;
-  }
-  if (url.startsWith("//")) {
-    return `https:${url}`;
-  }
-  if (url.startsWith("/")) {
-    return `https://en.wikipedia.org${url}`;
-  }
-  return url.startsWith("https://") ? url : null;
-}
-
-function wikipediaArticleUrl(title: string) {
-  return `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`;
-}
-
-function textTerms(value: string, excludedTerms = new Set<string>()) {
-  const terms = new Set<string>();
-  for (const match of value.matchAll(/[A-Za-z][A-Za-z0-9']+/g)) {
+function terms(text: string, excluded = new Set<string>()) {
+  const output = new Set<string>();
+  for (const match of text.matchAll(/[A-Za-z][A-Za-z0-9']+/g)) {
     const term = match[0].toLowerCase();
-    if (term.length < 4 || factImageStopTerms.has(term) || excludedTerms.has(term)) {
-      continue;
+    if (term.length >= 4 && !stopWords.has(term) && !excluded.has(term)) {
+      output.add(term);
     }
-    terms.add(term);
   }
-  return terms;
+  return output;
 }
 
-function properTerms(value: string, excludedTerms: Set<string>) {
-  const terms: string[] = [];
+function namedPhrases(text: string, placeTitle: string) {
+  const place = placeTitle.split(",", 1)[0].trim().toLowerCase();
   const seen = new Set<string>();
-  for (const match of value.matchAll(/[A-Z][A-Za-z0-9']+/g)) {
-    const rawTerm = match[0];
-    const term = rawTerm.toLowerCase();
-    if (
-      rawTerm.length < 4 ||
-      seen.has(term) ||
-      excludedTerms.has(term) ||
-      factImageStopTerms.has(term)
-    ) {
-      continue;
+  const output: string[] = [];
+  for (const match of text.matchAll(/[A-Z][A-Za-z0-9']+(?:\s+[A-Z][A-Za-z0-9']+)*/g)) {
+    const phrase = match[0].trim();
+    const key = phrase.toLowerCase();
+    if (phrase.length >= 4 && key !== place && !seen.has(key) && !stopWords.has(key)) {
+      seen.add(key);
+      output.push(phrase);
     }
-    terms.push(rawTerm);
-    seen.add(term);
   }
-  return terms;
+  return output;
 }
 
-function imageFromCommonsPage(page: CommonsPage): HistoryLocationImage | null {
-  const title = String(page.title ?? "");
-  const cleanTitle = title.replace(/^File:/i, "").trim();
-  const titleLower = cleanTitle.toLowerCase();
-  if (!/\.(?:jpe?g|png|webp)$/i.test(cleanTitle)) {
-    return null;
-  }
-  if (rejectedImageTerms.some((term) => titleLower.includes(term))) {
-    return null;
-  }
-
-  const info = page.imageinfo?.[0];
-  const url = info?.thumburl ?? info?.url;
-  if (!url?.startsWith("https://")) {
-    return null;
-  }
-
-  return {
-    url,
-    title: cleanTitle,
-    sourceName: "Wikimedia Commons",
-    sourceUrl: info?.descriptionurl ?? null,
-  };
-}
-
-function pageTextScore(fact: HistoryFact, pageText: string, placeTitle: string) {
-  const placeTerms = textTerms(placeTitle);
-  const factTerms = textTerms(`${fact.title} ${fact.text}`, placeTerms);
-  const pageTerms = textTerms(pageText, placeTerms);
+function scoreFactMatch(fact: HistoryFact, pageText: string, placeTitle: string) {
+  const placeTerms = terms(placeTitle);
+  const factTerms = terms(`${fact.title} ${fact.text}`, placeTerms);
+  const pageTerms = terms(pageText, placeTerms);
   let score = 0;
   for (const term of factTerms) {
     if (pageTerms.has(term)) {
-      score += 10;
+      score += 1;
     }
   }
   return score;
 }
 
-function imageScore(fact: HistoryFact, image: HistoryLocationImage, placeTitle: string) {
-  const titleScore = pageTextScore(fact, image.title, placeTitle);
-  const titleLower = image.title.toLowerCase();
-  const factLower = fact.text.toLowerCase();
-  const placeTerms = textTerms(placeTitle);
-  const factTerms = textTerms(`${fact.title} ${fact.text}`, placeTerms);
-  const bonus = [...factTerms].some((term) => titleLower.includes(term) && factLower.includes(term)) ? 6 : 0;
-  return titleScore + bonus;
+function articleUrl(title: string) {
+  return `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`;
 }
 
-function factImageQueries(fact: HistoryFact, placeTitle: string) {
-  const placeName = placeTitle.split(",", 1)[0].trim();
-  const placeTerms = textTerms(placeTitle);
+function isGenericImage(url: string) {
+  const normalised = decodeURIComponent(url).toLowerCase();
+  return genericImageWords.some((word) => normalised.includes(word));
+}
+
+function bestSummaryImage(summary: WikiSummary) {
+  const original = summary.originalimage;
+  if (original?.source?.startsWith("https://") && !isGenericImage(original.source)) {
+    if ((original.width ?? 0) >= 320 && (original.height ?? 0) >= 160) {
+      return original.source;
+    }
+  }
+
+  const thumbnail = summary.thumbnail;
+  if (thumbnail?.source?.startsWith("https://") && !isGenericImage(thumbnail.source)) {
+    if ((thumbnail.width ?? 0) >= 240 && (thumbnail.height ?? 0) >= 120) {
+      return thumbnail.source;
+    }
+  }
+
+  return null;
+}
+
+function searchQueries(fact: HistoryFact, placeTitle: string) {
+  const place = placeTitle.split(",", 1)[0].trim();
   const factText = `${fact.title} ${fact.text}`;
-  const namedTerms = properTerms(factText, placeTerms);
-  const fallbackTerms = [...textTerms(factText, placeTerms)].slice(0, 6);
-  const groups = [
-    namedTerms.slice(0, 5),
-    namedTerms.slice(0, 3),
-    fallbackTerms.slice(0, 5),
-    fallbackTerms.slice(0, 3),
-    fallbackTerms.slice(0, 2),
-  ].filter((group) => group.length > 0);
-
+  const names = namedPhrases(factText, placeTitle).slice(0, 3);
+  const keywords = [...terms(factText, terms(placeTitle))].slice(0, 5);
   return Array.from(
-    new Set(
-      groups.map((group) => [placeName, ...group].filter(Boolean).join(" ")),
-    ),
-  ).slice(0, 5);
+    new Set([
+      ...names.map((name) => `${place} ${name}`),
+      ...names,
+      `${place} ${keywords.slice(0, 4).join(" ")}`,
+      keywords.slice(0, 4).join(" "),
+    ].filter((query) => query.trim().length > 3)),
+  ).slice(0, 6);
 }
 
-function wikipediaPageToImage(
-  fact: HistoryFact,
-  page: WikipediaSearchPage,
-  placeTitle: string,
-): { image: HistoryLocationImage; score: number } | null {
-  const title = String(page.title ?? "").trim();
-  const thumbnailUrl = absoluteWikipediaImageUrl(page.thumbnail?.url);
-  if (!title || !thumbnailUrl) {
+async function fetchSummary(title: string) {
+  const response = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}?redirect=true`);
+  if (!response.ok) {
     return null;
   }
-  const titleLower = title.toLowerCase();
-  if (rejectedImageTerms.some((term) => titleLower.includes(term))) {
-    return null;
-  }
-  const searchableText = `${title} ${page.description ?? ""} ${page.excerpt ?? ""}`;
-  const score = pageTextScore(fact, searchableText, placeTitle);
-  if (score <= 0) {
-    return null;
-  }
-  return {
-    score,
-    image: {
-      url: thumbnailUrl,
-      title,
-      sourceName: "Wikipedia",
-      sourceUrl: wikipediaArticleUrl(title),
-    },
-  };
+  return response.json() as Promise<WikiSummary>;
 }
 
-async function searchWikipediaFactArticleImage(fact: HistoryFact, placeTitle: string) {
-  const queries = factImageQueries(fact, placeTitle);
+async function searchFactArticleImage(fact: HistoryFact, placeTitle: string) {
   let best: { image: HistoryLocationImage; score: number } | null = null;
 
-  for (const query of queries) {
+  for (const query of searchQueries(fact, placeTitle)) {
     const params = new URLSearchParams({ q: query, limit: "8" });
-    const response = await fetch(`https://en.wikipedia.org/w/rest.php/v1/search/page?${params}`);
-    if (!response.ok) {
+    const searchResponse = await fetch(`https://en.wikipedia.org/w/rest.php/v1/search/page?${params}`);
+    if (!searchResponse.ok) {
       continue;
     }
-    const payload = await response.json();
-    const pages = Array.isArray(payload?.pages) ? payload.pages : [];
-    for (const page of pages as WikipediaSearchPage[]) {
-      const candidate = wikipediaPageToImage(fact, page, placeTitle);
-      if (candidate && (!best || candidate.score > best.score)) {
-        best = candidate;
-      }
-    }
-    if (best && best.score >= 20) {
-      break;
-    }
-  }
+    const searchPayload = await searchResponse.json();
+    const pages = Array.isArray(searchPayload?.pages) ? searchPayload.pages : [];
 
-  return best?.image ?? null;
-}
-
-async function searchCommonsImage(fact: HistoryFact, placeTitle: string) {
-  const queries = factImageQueries(fact, placeTitle);
-  const placeTerms = textTerms(placeTitle);
-  let best: { image: HistoryLocationImage; score: number } | null = null;
-
-  for (const query of queries) {
-    const params = new URLSearchParams({
-      action: "query",
-      format: "json",
-      generator: "search",
-      gsrnamespace: "6",
-      gsrlimit: "8",
-      gsrsearch: query,
-      prop: "imageinfo",
-      iiprop: "url",
-      iiurlwidth: "960",
-      origin: "*",
-    });
-    const response = await fetch(`https://commons.wikimedia.org/w/api.php?${params}`);
-    if (!response.ok) {
-      continue;
-    }
-    const payload = await response.json();
-    const pages = payload?.query?.pages;
-    if (!pages || typeof pages !== "object") {
-      continue;
-    }
-
-    for (const page of Object.values(pages) as CommonsPage[]) {
-      const image = imageFromCommonsPage(page);
-      if (!image) {
+    for (const page of pages as WikiSearchPage[]) {
+      const title = String(page.title ?? "").trim();
+      if (!title || genericImageWords.some((word) => title.toLowerCase().includes(word))) {
         continue;
       }
-      const score = imageScore(fact, image, placeTitle) + (textTerms(image.title, placeTerms).size > 0 ? 2 : 0);
-      if (score > 0 && (!best || score > best.score)) {
+      const searchScore = scoreFactMatch(fact, `${title} ${page.description ?? ""} ${page.excerpt ?? ""}`, placeTitle);
+      if (searchScore < 2) {
+        continue;
+      }
+
+      const summary = await fetchSummary(title);
+      if (!summary) {
+        continue;
+      }
+      const imageUrl = bestSummaryImage(summary);
+      if (!imageUrl) {
+        continue;
+      }
+      const summaryScore = scoreFactMatch(fact, `${summary.title ?? title} ${summary.description ?? ""} ${summary.extract ?? ""}`, placeTitle);
+      const score = searchScore + summaryScore;
+      if (score < 4) {
+        continue;
+      }
+
+      const image: HistoryLocationImage = {
+        url: imageUrl,
+        title: String(summary.title ?? title),
+        sourceName: "Wikipedia",
+        sourceUrl: summary.content_urls?.desktop?.page ?? articleUrl(title),
+      };
+      if (!best || score > best.score) {
         best = { image, score };
       }
     }
 
-    if (best && best.score >= 18) {
+    if (best && best.score >= 7) {
       break;
     }
   }
 
   return best?.image ?? null;
-}
-
-async function searchFactImage(fact: HistoryFact, placeTitle: string) {
-  const articleImage = await searchWikipediaFactArticleImage(fact, placeTitle);
-  if (articleImage) {
-    return articleImage;
-  }
-  return searchCommonsImage(fact, placeTitle);
 }
 
 export function FactCardImage({
@@ -311,52 +222,43 @@ export function FactCardImage({
   fallbackImage: HistoryLocationImage | null;
   placeTitle: string;
 }) {
-  const [resolvedImage, setResolvedImage] = useState<HistoryLocationImage | null>(null);
-  const [imageFailed, setImageFailed] = useState(false);
-  const [searching, setSearching] = useState(true);
-  const lookupKey = useMemo(
-    () => `${placeTitle}|${fact.title}|${fact.text}`,
-    [fact.text, fact.title, placeTitle],
-  );
+  const [image, setImage] = useState<HistoryLocationImage | null>(null);
+  const [failed, setFailed] = useState(false);
+  const key = useMemo(() => `${placeTitle}|${fact.title}|${fact.text}`, [fact.text, fact.title, placeTitle]);
 
   useEffect(() => {
     let active = true;
-    setImageFailed(false);
-    setResolvedImage(null);
-    setSearching(true);
+    setImage(null);
+    setFailed(false);
 
-    void searchFactImage(fact, placeTitle)
-      .then((image) => {
-        if (active && image) {
-          setResolvedImage(image);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (active) {
-          setSearching(false);
-        }
-      });
+    const timer = window.setTimeout(() => {
+      void searchFactArticleImage(fact, placeTitle)
+        .then((nextImage) => {
+          if (active) {
+            setImage(nextImage);
+          }
+        })
+        .catch(() => undefined);
+    }, 250);
 
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
-  }, [fact, lookupKey, placeTitle]);
+  }, [fact, key, placeTitle]);
 
-  if (!resolvedImage || imageFailed) {
-    return searching ? (
-      <div className="h-24 animate-pulse bg-slate-100" aria-label="Finding article image" />
-    ) : null;
+  if (!image || failed) {
+    return null;
   }
 
   return (
     <div className="relative h-24 overflow-hidden">
       <img
-        key={resolvedImage.url}
-        src={resolvedImage.url}
-        alt=""
+        key={image.url}
+        src={image.url}
+        alt={`Image for ${fact.title}`}
         loading="lazy"
-        onError={() => setImageFailed(true)}
+        onError={() => setFailed(true)}
         className="h-full w-full object-cover"
       />
       <div className="absolute inset-0 bg-gradient-to-r from-slate-950/35 via-slate-950/5 to-transparent" />
