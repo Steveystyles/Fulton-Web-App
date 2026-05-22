@@ -1,69 +1,28 @@
 from __future__ import annotations
 
-import hmac
+import hashlib
+import json
 import os
-import sqlite3
-import time
-from contextlib import closing
+import re
 from http import HTTPStatus
 from typing import Any
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
 import server
 
-MIN_PASSWORD_LENGTH = int(os.environ.get("FULTONS_MIN_PASSWORD_LENGTH", "12"))
-SEED_DEMO_USERS = os.environ.get("FULTONS_SEED_DEMO_USERS", "0") == "1"
 COOKIE_SECURE = os.environ.get("FULTONS_COOKIE_SECURE", "1") == "1"
-LOGIN_WINDOW_SECONDS = int(os.environ.get("FULTONS_LOGIN_WINDOW_SECONDS", "300"))
-LOGIN_MAX_ATTEMPTS = int(
-    os.environ.get("FULTONS_LOGIN_MAX_ATTEMPTS", os.environ.get("FULTONS_LOGIN_MAX_FAILURES", "5"))
-)
-LOGIN_BACKOFF_SECONDS = int(
-    os.environ.get(
-        "FULTONS_LOGIN_BACKOFF_SECONDS",
-        os.environ.get("FULTONS_LOGIN_LOCKOUT_SECONDS", "60"),
-    )
-)
-BOOTSTRAP_ADMIN_USERNAME = os.environ.get("FULTONS_BOOTSTRAP_ADMIN_USERNAME", "").strip()
-BOOTSTRAP_ADMIN_PASSWORD = os.environ.get("FULTONS_BOOTSTRAP_ADMIN_PASSWORD", "")
-
-FAILED_LOGINS: dict[str, list[float]] = {}
-
-
-def _allowed_origins() -> set[str]:
-    raw = os.environ.get("FULTONS_ALLOWED_ORIGINS", "")
-    return {origin.strip() for origin in raw.split(",") if origin.strip()}
-
-
-def validate_password(password: str) -> str | None:
-    if len(password) < MIN_PASSWORD_LENGTH:
-        return f"Use at least {MIN_PASSWORD_LENGTH} characters."
-    return None
-
-
-def _bootstrap_admin_error() -> str | None:
-    if not BOOTSTRAP_ADMIN_USERNAME and not BOOTSTRAP_ADMIN_PASSWORD:
-        return None
-    if not BOOTSTRAP_ADMIN_USERNAME or not BOOTSTRAP_ADMIN_PASSWORD:
-        return "set both FULTONS_BOOTSTRAP_ADMIN_USERNAME and FULTONS_BOOTSTRAP_ADMIN_PASSWORD"
-
-    username_error = server.validate_username(BOOTSTRAP_ADMIN_USERNAME)
-    if username_error is not None:
-        return f"bootstrap username invalid: {username_error}"
-
-    password_error = validate_password(BOOTSTRAP_ADMIN_PASSWORD)
-    if password_error is not None:
-        return f"bootstrap password invalid: {password_error}"
-
-    return None
+FACT_IMAGE_CACHE: dict[str, dict[str, Any]] = {}
+FACT_IMAGE_TIMEOUT_SEC = int(os.environ.get("FULTONS_FACT_IMAGE_TIMEOUT_SEC", "12"))
+FACT_IMAGE_OPENAI_MODEL = os.environ.get("FULTONS_FACT_IMAGE_OPENAI_MODEL", server.QUIZ_OPENAI_MODEL)
+UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "")
+GENERIC_IMAGE_TERMS = ("arms", "badge", "coat_of_arms", "diagram", "flag", "icon", "locator", "logo", "map", "seal", "shield", "symbol")
 
 
 def session_header(token: str) -> str:
     max_age = server.SESSION_DAYS * 24 * 60 * 60
     secure = "; Secure" if COOKIE_SECURE else ""
-    return (
-        f"{server.SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; "
-        f"Max-Age={max_age}{secure}"
-    )
+    return f"{server.SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}"
 
 
 def clear_session_header() -> str:
@@ -71,216 +30,222 @@ def clear_session_header() -> str:
     return f"{server.SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{secure}"
 
 
-def initialize_database() -> None:
-    with closing(server.connect_db()) as conn:
-        with conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
-                password_hash TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower
-            ON users (LOWER(username));
-
-            CREATE TABLE IF NOT EXISTS sessions (
-                token TEXT PRIMARY KEY,
-                user_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS daily_wordle_games (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                game_date TEXT NOT NULL UNIQUE,
-                secret_word TEXT NOT NULL,
-                cycle INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS wordle_used_words (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                word TEXT NOT NULL,
-                game_id INTEGER NOT NULL,
-                used_on TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (game_id) REFERENCES daily_wordle_games(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS wordle_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                game_id INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'in_progress'
-                    CHECK (status IN ('in_progress', 'won', 'lost')),
-                attempts_used INTEGER NOT NULL DEFAULT 0,
-                completed_at TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (game_id) REFERENCES daily_wordle_games(id) ON DELETE CASCADE,
-                UNIQUE (user_id, game_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS wordle_guesses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                result_id INTEGER NOT NULL,
-                attempt_number INTEGER NOT NULL,
-                guess TEXT NOT NULL,
-                feedback_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (result_id) REFERENCES wordle_results(id) ON DELETE CASCADE,
-                UNIQUE (result_id, attempt_number)
-            );
-
-            CREATE TABLE IF NOT EXISTS daily_quiz_results (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                game_date TEXT NOT NULL,
-                category TEXT NOT NULL CHECK (category IN ('football', 'general')),
-                answers_json TEXT NOT NULL,
-                score INTEGER NOT NULL DEFAULT 0,
-                max_score INTEGER NOT NULL DEFAULT 0,
-                correct_count INTEGER NOT NULL DEFAULT 0,
-                completed_at TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                UNIQUE (user_id, game_date, category)
-            );
-
-            CREATE TABLE IF NOT EXISTS news_items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_key TEXT NOT NULL UNIQUE,
-                kind TEXT NOT NULL DEFAULT 'article',
-                title TEXT NOT NULL,
-                url TEXT NOT NULL,
-                source TEXT NOT NULL,
-                summary TEXT NOT NULL DEFAULT '',
-                published_at TEXT NOT NULL,
-                host TEXT NOT NULL DEFAULT '',
-                priority TEXT NOT NULL DEFAULT 'media',
-                tags_json TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_news_items_published_at
-            ON news_items (published_at DESC);
-            """
-            )
-            server.ensure_column(conn, "users", "is_moderator", "INTEGER NOT NULL DEFAULT 0")
-            server.ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
-            server.ensure_column(conn, "wordle_results", "score", "INTEGER NOT NULL DEFAULT 0")
-            server.backfill_wordle_scores(conn)
-            user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
-            if user_count == 0:
-                bootstrap_error = _bootstrap_admin_error()
-                if bootstrap_error is None and BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD:
-                    server.seed_user(conn, BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_PASSWORD, "admin")
-                    server.safe_log(f"Bootstrapped admin user {BOOTSTRAP_ADMIN_USERNAME!r}")
-                elif SEED_DEMO_USERS:
-                    server.seed_user(conn, "admin", "adminadmin123", "admin")
-                    server.seed_user(conn, "user1", "user1user1234", "user")
-                    server.seed_user(conn, "user2", "user2user1234", "user")
-                    server.safe_log("Seeded demo users because FULTONS_SEED_DEMO_USERS=1")
-                else:
-                    if bootstrap_error is not None:
-                        server.safe_log(f"Admin bootstrap skipped: {bootstrap_error}")
-                    server.safe_log("No users exist and demo seeding is disabled.")
-            server.backfill_news_categories(conn)
+def _json_request(url: str, *, data: dict[str, Any] | None = None, headers: dict[str, str] | None = None, timeout: int = FACT_IMAGE_TIMEOUT_SEC) -> dict[str, Any]:
+    body = None
+    request_headers = {"Accept": "application/json", "User-Agent": server.HISTORY_USER_AGENT}
+    if headers:
+        request_headers.update(headers)
+    if data is not None:
+        body = json.dumps(data).encode("utf-8")
+        request_headers["Content-Type"] = "application/json"
+    request = Request(url, data=body, headers=request_headers)
+    with urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
-def _client_key(handler: server.FultonsHandler, username: str) -> str:
-    forwarded_for = handler.headers.get("X-Forwarded-For", "")
-    if forwarded_for:
-        remote = forwarded_for.split(",", 1)[0].strip()
-    else:
-        remote = handler.client_address[0]
-    return f"{remote}:{username.lower()}"
+def _blank_image() -> dict[str, Any]:
+    return {"url": None, "title": "", "sourceName": "", "sourceUrl": None}
 
 
-def _is_limited(key: str) -> bool:
-    now = time.time()
-    attempts = [stamp for stamp in FAILED_LOGINS.get(key, []) if now - stamp <= LOGIN_WINDOW_SECONDS]
-    FAILED_LOGINS[key] = attempts
-    return len(attempts) >= LOGIN_MAX_ATTEMPTS
+def _clean_subject(value: str) -> str:
+    value = re.sub(r"[\"'`“”]+", "", value).strip()
+    value = re.sub(r"^(subject|entity|query)\s*:\s*", "", value, flags=re.I).strip()
+    return value.split("\n", 1)[0].strip(" .,-")[:90]
 
 
-def _record_failure(key: str) -> None:
-    FAILED_LOGINS.setdefault(key, []).append(time.time())
+def _fallback_subjects(title: str, text: str, place_title: str) -> list[str]:
+    fact = f"{title}. {text}"
+    place = place_title.split(",", 1)[0].strip().lower()
+    subjects: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"[A-Z][A-Za-z0-9'&.-]+(?:\s+(?:of|and|the|[A-Z][A-Za-z0-9'&.-]+)){0,5}", fact):
+        subject = _clean_subject(match.group(0))
+        key = subject.lower()
+        if len(subject) >= 4 and key != place and key not in seen:
+            subjects.append(subject)
+            seen.add(key)
+    for candidate in (title, f"{title} {place_title}", text):
+        subject = _clean_subject(candidate)
+        key = subject.lower()
+        if len(subject) >= 4 and key not in seen:
+            subjects.append(subject)
+            seen.add(key)
+    return subjects[:8]
 
 
-def _clear_failures(key: str) -> None:
-    FAILED_LOGINS.pop(key, None)
+def _llm_subjects(title: str, text: str, place_title: str) -> list[str]:
+    api_key = server.QUIZ_OPENAI_API_KEY
+    if not api_key:
+        return []
+    payload = {
+        "model": FACT_IMAGE_OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": "Return JSON only: {\"subjects\":[...]} with up to 4 specific visual entities for a historical fact image search. Do not choose the town unless the fact is only about the town."},
+            {"role": "user", "content": f"Title: {title}\nFact: {text}\nLocation: {place_title}"},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        headers = {"Authorization": "Bearer " + api_key}
+        response = _json_request("https://api.openai.com/v1/chat/completions", data=payload, headers=headers, timeout=server.QUIZ_OPENAI_TIMEOUT_SEC)
+        content = response.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        parsed = json.loads(content)
+        subjects = parsed.get("subjects", [])
+        if isinstance(subjects, list):
+            return [_clean_subject(str(subject)) for subject in subjects if _clean_subject(str(subject))]
+    except Exception as error:
+        server.safe_log(f"Fact image subject extraction failed: {error}")
+    return []
 
 
-def handle_login(self: server.FultonsHandler, conn: sqlite3.Connection) -> None:
-    payload = self.read_json()
-    username = str(payload.get("username", "")).strip()
-    password = str(payload.get("password", ""))
-    key = _client_key(self, username)
+def _subjects(title: str, text: str, place_title: str) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for subject in [*_llm_subjects(title, text, place_title), *_fallback_subjects(title, text, place_title)]:
+        key = subject.lower()
+        if subject and key not in seen:
+            seen.add(key)
+            output.append(subject)
+    return output[:8]
 
-    if _is_limited(key):
-        self.send_error_json(
-            HTTPStatus.TOO_MANY_REQUESTS,
-            f"Too many failed login attempts. Try again in {LOGIN_BACKOFF_SECONDS} seconds.",
+
+def _generic_image_url(url: str) -> bool:
+    value = url.lower().replace("%20", "_").replace("-", "_")
+    return any(term in value for term in GENERIC_IMAGE_TERMS)
+
+
+def _image_from_summary(summary: dict[str, Any], subject: str) -> dict[str, Any] | None:
+    source_url = None
+    content_urls = summary.get("content_urls")
+    if isinstance(content_urls, dict):
+        source_url = content_urls.get("desktop", {}).get("page")
+    title = str(summary.get("title") or subject)
+    for key in ("originalimage", "thumbnail"):
+        image = summary.get(key)
+        if not isinstance(image, dict):
+            continue
+        image_url = str(image.get("source") or "")
+        if not image_url.startswith("https://") or _generic_image_url(image_url):
+            continue
+        width = int(image.get("width") or 0)
+        height = int(image.get("height") or 0)
+        if width >= 240 and height >= 120:
+            return {"url": image_url, "title": title, "sourceName": "Wikipedia", "sourceUrl": source_url}
+    return None
+
+
+def _wiki_image(subject: str) -> dict[str, Any] | None:
+    try:
+        summary = _json_request(f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(subject.replace(' ', '_'), safe='')}?redirect=true")
+        image = _image_from_summary(summary, subject)
+        if image:
+            return image
+    except Exception:
+        pass
+    try:
+        params = urlencode({"action": "query", "format": "json", "list": "search", "srsearch": subject, "srlimit": "5", "origin": "*"})
+        payload = _json_request(f"https://en.wikipedia.org/w/api.php?{params}")
+        pages = payload.get("query", {}).get("search", [])
+    except Exception:
+        return None
+    for page in pages:
+        title = str(page.get("title") or "")
+        if not title:
+            continue
+        try:
+            summary = _json_request(f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(title.replace(' ', '_'), safe='')}?redirect=true")
+        except Exception:
+            continue
+        image = _image_from_summary(summary, title)
+        if image:
+            return image
+    return None
+
+
+def _commons_image(subject: str, title: str, text: str, place_title: str) -> dict[str, Any] | None:
+    try:
+        image = server.fetch_commons_fact_image({"title": subject or title, "text": text}, place_title)
+    except Exception as error:
+        server.safe_log(f"Commons fact image lookup failed: {error}")
+        return None
+    if isinstance(image, dict) and image.get("url"):
+        return {
+            "url": image.get("url"),
+            "title": image.get("title") or subject or title,
+            "sourceName": image.get("sourceName") or "Wikimedia Commons",
+            "sourceUrl": image.get("sourceUrl"),
+        }
+    return None
+
+
+def _unsplash_image(subjects: list[str], place_title: str) -> dict[str, Any] | None:
+    if not UNSPLASH_ACCESS_KEY or not subjects:
+        return None
+    try:
+        params = urlencode({"query": f"{subjects[0]} {place_title}".strip(), "orientation": "landscape", "per_page": "1", "client_id": UNSPLASH_ACCESS_KEY})
+        payload = _json_request(f"https://api.unsplash.com/search/photos?{params}")
+        results = payload.get("results", [])
+        if not results:
+            return None
+        photo = results[0]
+        image_url = photo.get("urls", {}).get("regular")
+        source_url = photo.get("links", {}).get("html")
+        if isinstance(image_url, str) and image_url.startswith("https://"):
+            return {"url": image_url, "title": photo.get("description") or photo.get("alt_description") or subjects[0], "sourceName": "Unsplash", "sourceUrl": source_url}
+    except Exception as error:
+        server.safe_log(f"Unsplash fact image lookup failed: {error}")
+    return None
+
+
+def compute_fact_image(title: str, text: str, place_title: str) -> dict[str, Any]:
+    title = title.strip()[:160]
+    text = text.strip()[:800]
+    place_title = place_title.strip()[:160]
+    if not title and not text:
+        return _blank_image()
+    cache_key = hashlib.sha256(f"{title}\n{text}\n{place_title}".lower().encode("utf-8")).hexdigest()
+    if cache_key in FACT_IMAGE_CACHE:
+        return FACT_IMAGE_CACHE[cache_key]
+    subjects = _subjects(title, text, place_title)
+    for subject in subjects:
+        image = _wiki_image(subject)
+        if image:
+            FACT_IMAGE_CACHE[cache_key] = image
+            return image
+    for subject in subjects[:4]:
+        image = _commons_image(subject, title, text, place_title)
+        if image:
+            FACT_IMAGE_CACHE[cache_key] = image
+            return image
+    image = _unsplash_image(subjects, place_title) or _blank_image()
+    FACT_IMAGE_CACHE[cache_key] = image
+    return image
+
+
+_original_route_api = server.FultonsHandler.route_api
+
+
+def route_api(self: server.FultonsHandler, method: str, path: str, query: str = "") -> None:
+    if path == "/api/fact-image" and method == "POST":
+        payload = self.read_json()
+        self.send_json(
+            HTTPStatus.OK,
+            compute_fact_image(
+                str(payload.get("title") or ""),
+                str(payload.get("text") or ""),
+                str(payload.get("placeTitle") or ""),
+            ),
         )
         return
-
-    user = conn.execute(
-        "SELECT * FROM users WHERE LOWER(username) = LOWER(?)",
-        (username,),
-    ).fetchone()
-    if user is None or not server.verify_password(password, user["password_hash"]):
-        _record_failure(key)
-        self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid username or password.")
-        return
-
-    _clear_failures(key)
-    token = server.create_session(conn, user["id"])
-    self.send_json(
-        HTTPStatus.OK,
-        {"user": server.user_payload(user)},
-        {"Set-Cookie": session_header(token)},
-    )
-
-
-_original_end_headers = server.FultonsHandler.end_headers
-
-
-def end_headers(self: server.FultonsHandler) -> None:
-    _original_end_headers(self)
-
-
-def do_OPTIONS(self: server.FultonsHandler) -> None:
-    origin = self.headers.get("Origin", "")
-    allowed = _allowed_origins()
-    self.send_response(HTTPStatus.NO_CONTENT)
-    if origin and origin in allowed:
-        self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Vary", "Origin")
-        self.send_header("Access-Control-Allow-Credentials", "true")
-    self.send_header("Access-Control-Allow-Headers", "Content-Type, X-News-Monitor-Key")
-    self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-    self.end_headers()
+    _original_route_api(self, method, path, query)
 
 
 def apply_hardening() -> None:
     server.COOKIE_SECURE = COOKIE_SECURE
-    server.validate_password = validate_password
     server.session_header = session_header
     server.clear_session_header = clear_session_header
-    server.initialize_database = initialize_database
-    server.FultonsHandler.handle_login = handle_login
-    server.FultonsHandler.end_headers = end_headers
-    server.FultonsHandler.do_OPTIONS = do_OPTIONS
+    server.FultonsHandler.route_api = route_api
 
 
 if __name__ == "__main__":
