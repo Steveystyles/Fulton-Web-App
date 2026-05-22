@@ -3,6 +3,7 @@ import { api, type NewsItem } from "../lib/api";
 import { cleanNewsTitle } from "../lib/news";
 
 const emptyHeadline = "No breaking Saints stories yet. The live feed is ready.";
+const minimumTickerSlots = 5;
 
 function mergeTickerItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
   const itemsByKey = new Map<string, NewsItem>();
@@ -74,6 +75,10 @@ export function NewsTicker() {
     }
     return items.map((item) => cleanNewsTitle(item.title, item.source));
   }, [items]);
+  const tickerHeadlines = useMemo(() => {
+    const repetitions = Math.max(1, Math.ceil(minimumTickerSlots / headlines.length));
+    return Array.from({ length: repetitions }, () => headlines).flat();
+  }, [headlines]);
   const tickerLabel = "Breaking";
 
   return (
@@ -94,7 +99,7 @@ export function NewsTicker() {
                 className="flex min-w-full shrink-0 items-center gap-8 pr-8"
                 aria-hidden={groupIndex > 0}
               >
-                {headlines.map((headline, index) => (
+                {tickerHeadlines.map((headline, index) => (
                   <span key={`${groupIndex}-${headline}-${index}`}>{headline}</span>
                 ))}
               </div>

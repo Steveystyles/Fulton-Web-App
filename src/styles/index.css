@@ -65,7 +65,7 @@ input[type="date"] {
 }
 
 .ticker-track {
-  animation: ticker 88s linear infinite;
+  animation: ticker 42s linear infinite;
 }
 
 @layer components {
