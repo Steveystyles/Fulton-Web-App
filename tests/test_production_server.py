@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from contextlib import closing
+from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,10 +15,10 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
 
     def test_password_policy_requires_longer_passwords(self) -> None:
-        import production_server
+        import server
 
-        self.assertIsNotNone(production_server.validate_password("short"))
-        self.assertIsNone(production_server.validate_password("correct-horse-battery"))
+        self.assertIsNotNone(server.validate_password("short"))
+        self.assertIsNone(server.validate_password("correct-horse-battery"))
 
     def test_session_cookie_can_be_marked_secure(self) -> None:
         import production_server
@@ -27,8 +28,74 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn("SameSite=Lax", header)
         self.assertIn("Secure", header)
 
-    def test_production_permissions_policy_allows_geolocation(self) -> None:
+    def test_fact_image_route_requires_login(self) -> None:
         import production_server
+
+        error: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers: dict[str, str] = {}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                error.append((status, message))
+
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value=None),
+            patch("server.current_user", return_value=None),
+            patch("production_server.compute_fact_image") as compute_fact_image,
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            production_server.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/fact-image",
+            )
+
+        self.assertEqual(error, [(HTTPStatus.UNAUTHORIZED, "Login required.")])
+        compute_fact_image.assert_not_called()
+
+    def test_fact_image_route_resolves_images_for_logged_in_users(self) -> None:
+        import production_server
+
+        sent: list[tuple[HTTPStatus, dict[str, str]]] = []
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def read_json(self) -> dict[str, str]:
+                return {
+                    "title": "Paisley Abbey",
+                    "text": "Paisley Abbey is a local landmark.",
+                    "placeTitle": "Paisley",
+                }
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, str]) -> None:
+                sent.append((status, payload))
+
+        image = {"url": "https://upload.wikimedia.org/paisley-abbey.jpg"}
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1}),
+            patch("production_server.compute_fact_image", return_value=image) as compute_fact_image,
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            production_server.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/fact-image",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, image)])
+        compute_fact_image.assert_called_once_with(
+            "Paisley Abbey",
+            "Paisley Abbey is a local landmark.",
+            "Paisley",
+        )
+
+    def test_production_permissions_policy_allows_geolocation(self) -> None:
+        import server
 
         sent_headers: list[tuple[str, str]] = []
 
@@ -36,14 +103,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             def send_header(self, name: str, value: str) -> None:
                 sent_headers.append((name, value))
 
-        def original_end_headers(handler: DummyHandler) -> None:
-            handler.send_header(
-                "Permissions-Policy",
-                "camera=(), microphone=(), geolocation=(self)",
-            )
-
-        with patch.object(production_server, "_original_end_headers", original_end_headers):
-            production_server.end_headers(DummyHandler())  # type: ignore[arg-type]
+        server.FultonsHandler.send_security_headers(DummyHandler())  # type: ignore[arg-type]
 
         policy_headers = [
             value for name, value in sent_headers if name.lower() == "permissions-policy"
@@ -51,7 +111,6 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(policy_headers, ["camera=(), microphone=(), geolocation=(self)"])
 
     def test_production_database_does_not_seed_demo_users_by_default(self) -> None:
-        import production_server
         import server
 
         original_data_dir = server.DATA_DIR
@@ -62,7 +121,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = data_dir
             server.DB_PATH = data_dir / "fultons.db"
             server.QUIZ_DATA_DIR = data_dir / "quizzes"
-            production_server.initialize_database()
+            server.initialize_database()
 
             with closing(server.connect_db()) as conn:
                 count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]

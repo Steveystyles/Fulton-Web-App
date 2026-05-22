@@ -362,6 +362,13 @@ _original_route_api = server.FultonsHandler.route_api
 
 def route_api(self: server.FultonsHandler, method: str, path: str, query: str = "") -> None:
     if path == "/api/fact-image" and method == "POST":
+        with server.connect_db() as conn:
+            token = server.get_cookie_value(self.headers, server.SESSION_COOKIE)
+            user = server.current_user(conn, token)
+            if user is None:
+                self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
+                return
+
         payload = self.read_json()
         self.send_json(
             HTTPStatus.OK,
