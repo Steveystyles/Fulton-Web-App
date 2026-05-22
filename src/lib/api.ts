@@ -196,6 +196,7 @@ type JsonBody = Record<string, unknown>;
 
 let dailyQuestionsPromise: Promise<DailyQuestionsResponse> | undefined;
 const newsPromises = new Map<string, Promise<NewsResponse>>();
+const historyPromises = new Map<string, Promise<HistoryResponse>>();
 
 export class ApiError extends Error {
   status: number;
@@ -240,6 +241,10 @@ function newsCacheKey(limit: number, category: NewsCategory) {
   return `${category}:${limit}`;
 }
 
+function historyCacheKey(params: { location: string; date: string; lang?: string }) {
+  return `${params.lang ?? "en"}:${params.location.trim().toLowerCase()}:${params.date}`;
+}
+
 function fetchNews(
   limit = 50,
   category: NewsCategory = "all",
@@ -278,6 +283,36 @@ function fetchDailyQuestions(options: { force?: boolean } = {}) {
   }
 
   return dailyQuestionsPromise;
+}
+
+function fetchHistory(params: { location: string; date: string; lang?: string }) {
+  const cacheKey = historyCacheKey(params);
+  const existingPromise = historyPromises.get(cacheKey);
+  if (existingPromise !== undefined) {
+    return existingPromise;
+  }
+
+  const searchParams = new URLSearchParams({
+    location: params.location,
+    date: params.date,
+    lang: params.lang ?? "en",
+  });
+  const promise = request<HistoryResponse>(`/api/facts?${searchParams.toString()}`).catch(
+    (error) => {
+      historyPromises.delete(cacheKey);
+      throw error;
+    },
+  );
+  historyPromises.set(cacheKey, promise);
+  return promise;
+}
+
+function todayIsoDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export const api = {
@@ -349,16 +384,21 @@ export const api = {
     void fetchNews(50, "all").catch(() => undefined);
     void fetchNews(50, "breaking").catch(() => undefined);
     void fetchNews(50, "live-scores").catch(() => undefined);
-    void fetchNews(5, "breaking").catch(() => undefined);
+    void fetchNews(12, "breaking").catch(() => undefined);
   },
 
   history(params: { location: string; date: string; lang?: string }) {
-    const searchParams = new URLSearchParams({
-      location: params.location,
-      date: params.date,
-      lang: params.lang ?? "en",
-    });
-    return request<HistoryResponse>(`/api/facts?${searchParams.toString()}`);
+    return fetchHistory(params);
+  },
+
+  warmHistory(location = "Paisley") {
+    void fetchHistory({ location, date: todayIsoDate(), lang: "en" }).catch(() => undefined);
+  },
+
+  warmCoreData() {
+    this.warmNews();
+    this.warmHistory();
+    void fetchDailyQuestions().catch(() => undefined);
   },
 
   adminUsers() {
