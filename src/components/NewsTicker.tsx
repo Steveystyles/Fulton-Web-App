@@ -83,20 +83,25 @@ export function NewsTicker() {
   }, [headlines]);
 
   useEffect(() => {
-    const group = tickerGroupRef.current;
-    if (!group) {
-      return undefined;
-    }
+    const updateTickerShift = () => {
+      const group = tickerGroupRef.current;
+      if (!group) {
+        return;
+      }
 
-    function updateTickerShift() {
       const width = Math.ceil(group.getBoundingClientRect().width);
       if (width > 0) {
         setTickerShift(`-${width}px`);
       }
-    }
+    };
 
     updateTickerShift();
     window.setTimeout(updateTickerShift, 250);
+
+    const group = tickerGroupRef.current;
+    if (!group) {
+      return undefined;
+    }
 
     if (typeof ResizeObserver === "undefined") {
       window.addEventListener("resize", updateTickerShift);
