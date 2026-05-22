@@ -2180,6 +2180,7 @@ FACT_IMAGE_STOP_TERMS = {
     "among",
     "annual",
     "based",
+    "became",
     "been",
     "before",
     "building",
@@ -2206,6 +2207,7 @@ FACT_IMAGE_STOP_TERMS = {
     "main",
     "many",
     "most",
+    "name",
     "named",
     "noticeable",
     "still",
@@ -2325,6 +2327,11 @@ def fact_image_terms(value: str, excluded_terms: set[str] | None = None) -> set[
 
 
 def fact_image_query(fact: dict[str, Any], place_title: str) -> str:
+    queries = fact_image_queries(fact, place_title)
+    return queries[0] if queries else ""
+
+
+def fact_image_queries(fact: dict[str, Any], place_title: str) -> list[str]:
     place_name = place_title.split(",", 1)[0].strip()
     place_terms = fact_image_terms(place_title)
     proper_terms: list[str] = []
@@ -2345,8 +2352,30 @@ def fact_image_query(fact: dict[str, Any], place_title: str) -> str:
             proper_terms.append(term)
         seen_terms.add(normalised)
 
-    query_terms = proper_terms[:6] or fallback_terms[:6]
-    return " ".join(part for part in (place_name, *query_terms) if part).strip()
+    term_groups: list[list[str]] = []
+    if proper_terms:
+        term_groups.extend([proper_terms[:4], proper_terms[:2]])
+    if fallback_terms:
+        term_groups.extend([
+            fallback_terms[:4],
+            fallback_terms[-3:],
+            fallback_terms[-2:],
+            fallback_terms[:2],
+        ])
+
+    queries: list[str] = []
+    for term_group in term_groups:
+        query = " ".join(part for part in (place_name, *term_group) if part).strip()
+        if query and query not in queries:
+            queries.append(query)
+    return queries
+
+
+def named_roman_numerals(value: str) -> dict[str, str]:
+    return {
+        name.lower(): numeral.upper()
+        for name, numeral in re.findall(r"\b([A-Z][a-z]+)\s+([IVXLCDM]+)\b", str(value or ""))
+    }
 
 
 def fact_image_match_score(
@@ -2354,18 +2383,28 @@ def fact_image_match_score(
     image: dict[str, str | None],
     place_terms: set[str],
 ) -> int:
+    fact_text = f"{fact.get('title', '')} {fact.get('text', '')}"
+    image_title = str(image.get("title") or "")
+    fact_roman_names = named_roman_numerals(fact_text)
+    image_roman_names = named_roman_numerals(image_title)
+    if any(
+        name in fact_roman_names and fact_roman_names[name] != numeral
+        for name, numeral in image_roman_names.items()
+    ):
+        return 0
+
     fact_terms = fact_image_terms(
-        f"{fact.get('title', '')} {fact.get('text', '')}",
+        fact_text,
         place_terms,
     )
-    image_terms = fact_image_terms(str(image.get("title") or ""), place_terms)
+    image_terms = fact_image_terms(image_title, place_terms)
     shared_terms = fact_terms.intersection(image_terms)
     if not shared_terms:
         return 0
 
     score = len(shared_terms) * 10
     text = str(fact.get("text") or "").lower()
-    title = str(image.get("title") or "").lower()
+    title = image_title.lower()
     if any(term in text and term in title for term in shared_terms):
         score += 4
     return score
@@ -2375,34 +2414,43 @@ def fetch_commons_fact_image(
     fact: dict[str, Any],
     place_title: str,
 ) -> dict[str, str | None] | None:
-    query = fact_image_query(fact, place_title)
-    if not query:
-        return None
-
-    try:
-        payload = fetch_json_url(commons_fact_image_search_url(query), timeout=5)
-    except Exception as error:
-        safe_log(f"History Commons fact image fetch failed: {error}")
-        return None
-
-    pages = payload.get("query", {}).get("pages", {}) if isinstance(payload, dict) else {}
-    if not isinstance(pages, dict):
+    queries = fact_image_queries(fact, place_title)
+    if not queries:
         return None
 
     place_terms = fact_image_terms(place_title)
-    candidates: list[tuple[int, dict[str, str | None]]] = []
-    for page in pages.values():
-        if not isinstance(page, dict):
+    seen_urls: set[str] = set()
+    for query in queries:
+        try:
+            payload = fetch_json_url(commons_fact_image_search_url(query), timeout=5)
+        except Exception as error:
+            safe_log(f"History Commons fact image fetch failed: {error}")
             continue
-        image = normalise_wikipedia_image(page)
-        if image is None:
-            continue
-        score = fact_image_match_score(fact, image, place_terms)
-        if score > 0:
-            candidates.append((score, image))
 
-    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-    return candidates[0][1] if candidates else None
+        pages = payload.get("query", {}).get("pages", {}) if isinstance(payload, dict) else {}
+        if not isinstance(pages, dict):
+            continue
+
+        candidates: list[tuple[int, dict[str, str | None]]] = []
+        for page in pages.values():
+            if not isinstance(page, dict):
+                continue
+            image = normalise_wikipedia_image(page)
+            if image is None or not isinstance(image.get("url"), str):
+                continue
+            image_url = str(image["url"])
+            if image_url in seen_urls:
+                continue
+            score = fact_image_match_score(fact, image, place_terms)
+            if score > 0:
+                candidates.append((score, image))
+                seen_urls.add(image_url)
+
+        candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+        if candidates:
+            return candidates[0][1]
+
+    return None
 
 
 def attach_fact_images(

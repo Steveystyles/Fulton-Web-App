@@ -282,6 +282,42 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn("commons.wikimedia.org", fetch.call_args[0][0])
         self.assertIn("generator=search", fetch.call_args[0][0])
 
+    def test_fact_image_queries_include_shorter_fact_searches(self) -> None:
+        import server
+
+        queries = server.fact_image_queries(
+            {
+                "title": "Industry",
+                "text": (
+                    "Paisley became a global centre of the weaving industry, "
+                    "giving its name to the Paisley shawl and Paisley pattern."
+                ),
+            },
+            "Paisley, Renfrewshire",
+        )
+
+        self.assertIn("Paisley weaving industry shawl pattern", queries)
+        self.assertIn("Paisley shawl pattern", queries)
+
+    def test_fact_image_match_rejects_wrong_roman_numeral_person(self) -> None:
+        import server
+
+        score = server.fact_image_match_score(
+            {
+                "title": "People",
+                "text": "Robert II is believed to have been born in Paisley Abbey.",
+            },
+            {
+                "url": "https://upload.wikimedia.org/robert-iii.jpg",
+                "title": "King Robert III memorial, Paisley Abbey.jpg",
+                "sourceName": "Wikimedia Commons",
+                "sourceUrl": None,
+            },
+            server.fact_image_terms("Paisley, Renfrewshire"),
+        )
+
+        self.assertEqual(score, 0)
+
     def test_quiz_order_and_scoring_use_difficulty_weights(self) -> None:
         import server
 

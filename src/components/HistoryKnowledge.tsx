@@ -79,15 +79,6 @@ function todayIsoDate() {
   return `${year}-${month}-${day}`;
 }
 
-function formatHistoryDate(dateValue: string) {
-  const [year, month, day] = dateValue.split("-").map(Number);
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  }).format(new Date(year, month - 1, day));
-}
-
 function isFactObject(fact: string | HistoryFact): fact is HistoryFact {
   return typeof fact !== "string";
 }
@@ -340,14 +331,6 @@ export function HistoryKnowledge() {
     <section className="space-y-3" aria-label="Local knowledge and history">
       <Card className="p-3">
         <form className="space-y-2" onSubmit={submitLocation}>
-          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-50 p-2.5">
-            <ControlValue
-              label="Location"
-              value={history?.location?.title ?? submittedLocation.location}
-            />
-            <ControlValue label="Date" value={formatHistoryDate(historyDate)} />
-          </div>
-
           <div className="grid grid-cols-2 gap-2">
             <DateChangeButton historyDate={historyDate} onChange={setHistoryDate} />
             <button
@@ -519,17 +502,6 @@ export function HistoryKnowledge() {
         </>
       )}
     </section>
-  );
-}
-
-function ControlValue({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
-        {label}
-      </p>
-      <p className="mt-0.5 truncate text-sm font-black text-slate-950">{value}</p>
-    </div>
   );
 }
 
