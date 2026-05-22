@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type NewsItem } from "../lib/api";
 import { cleanNewsTitle } from "../lib/news";
 
@@ -19,6 +19,8 @@ function mergeTickerItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
 
 export function NewsTicker() {
   const [items, setItems] = useState<NewsItem[]>([]);
+  const tickerGroupRef = useRef<HTMLDivElement | null>(null);
+  const [tickerShift, setTickerShift] = useState("-50%");
 
   useEffect(() => {
     let active = true;
@@ -79,12 +81,40 @@ export function NewsTicker() {
     const repetitions = Math.max(1, Math.ceil(minimumTickerSlots / headlines.length));
     return Array.from({ length: repetitions }, () => headlines).flat();
   }, [headlines]);
+
+  useEffect(() => {
+    const group = tickerGroupRef.current;
+    if (!group) {
+      return undefined;
+    }
+
+    function updateTickerShift() {
+      const width = Math.ceil(group.getBoundingClientRect().width);
+      if (width > 0) {
+        setTickerShift(`-${width}px`);
+      }
+    }
+
+    updateTickerShift();
+    window.setTimeout(updateTickerShift, 250);
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateTickerShift);
+      return () => window.removeEventListener("resize", updateTickerShift);
+    }
+
+    const observer = new ResizeObserver(updateTickerShift);
+    observer.observe(group);
+    return () => observer.disconnect();
+  }, [tickerHeadlines]);
+
   const tickerLabel = "Breaking";
 
   return (
     <section
       className="ticker-frame border-b border-white/10 bg-saints-charcoal text-white"
       aria-label="News ticker"
+      style={{ "--ticker-shift": tickerShift } as React.CSSProperties}
     >
       <div className="flex min-h-10 items-center gap-3 overflow-hidden pl-4">
         <span className="inline-flex items-center gap-1.5 rounded-sm bg-saints-red px-2.5 py-1 text-xs font-black uppercase leading-none text-white">
@@ -96,7 +126,8 @@ export function NewsTicker() {
             {[0, 1].map((groupIndex) => (
               <div
                 key={groupIndex}
-                className="flex min-w-full shrink-0 items-center gap-8 pr-8"
+                ref={groupIndex === 0 ? tickerGroupRef : undefined}
+                className="ticker-group flex min-w-full shrink-0 items-center gap-8 pr-8"
                 aria-hidden={groupIndex > 0}
               >
                 {tickerHeadlines.map((headline, index) => (
