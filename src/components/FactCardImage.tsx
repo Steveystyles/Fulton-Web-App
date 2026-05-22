@@ -87,7 +87,7 @@ function absoluteWikipediaImageUrl(url: string | undefined) {
 }
 
 function wikipediaArticleUrl(title: string) {
-  return `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replaceAll(" ", "_"))}`;
+  return `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, "_"))}`;
 }
 
 function textTerms(value: string, excludedTerms = new Set<string>()) {
