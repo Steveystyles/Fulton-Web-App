@@ -170,6 +170,55 @@ class ProductionServerHardeningTests(unittest.TestCase):
             {fact["theme"] for fact in facts}
         ))
 
+    def test_wikipedia_images_keep_location_photos_and_skip_badges(self) -> None:
+        import server
+
+        summary = {
+            "title": "Paisley, Renfrewshire",
+            "thumbnail": {"source": "https://upload.wikimedia.org/paisley-lead.jpg"},
+        }
+        article_url = "https://en.wikipedia.org/wiki/Paisley,_Renfrewshire"
+        media_payload = {
+            "query": {
+                "pages": {
+                    "1": {
+                        "title": "File:Paisley town centre.jpg",
+                        "imageinfo": [{
+                            "thumburl": "https://upload.wikimedia.org/paisley-town-centre.jpg",
+                            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Paisley_town_centre.jpg",
+                        }],
+                    },
+                    "2": {
+                        "title": "File:Paisley coat of arms.svg",
+                        "imageinfo": [{
+                            "thumburl": "https://upload.wikimedia.org/paisley-arms.svg",
+                        }],
+                    },
+                    "3": {
+                        "title": "File:Paisley Abbey.png",
+                        "imageinfo": [{
+                            "url": "https://upload.wikimedia.org/paisley-abbey.png",
+                        }],
+                    },
+                }
+            }
+        }
+
+        with patch("server.fetch_json_url", return_value=media_payload) as fetch:
+            images = server.fetch_wikipedia_images(summary, "en", article_url, limit=4)
+
+        self.assertEqual(
+            [image["url"] for image in images],
+            [
+                "https://upload.wikimedia.org/paisley-lead.jpg",
+                "https://upload.wikimedia.org/paisley-town-centre.jpg",
+                "https://upload.wikimedia.org/paisley-abbey.png",
+            ],
+        )
+        self.assertEqual(images[0]["sourceName"], "Wikipedia")
+        self.assertEqual(images[1]["sourceName"], "Wikimedia Commons")
+        self.assertIn("generator=images", fetch.call_args[0][0])
+
     def test_quiz_order_and_scoring_use_difficulty_weights(self) -> None:
         import server
 

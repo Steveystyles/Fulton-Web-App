@@ -159,6 +159,13 @@ export type HistoryLocationProfile = {
   sourceUrl: string | null;
 };
 
+export type HistoryLocationImage = {
+  url: string;
+  title: string;
+  sourceName: string;
+  sourceUrl: string | null;
+};
+
 export type HistoryResponse = {
   request: {
     location: string;
@@ -172,6 +179,7 @@ export type HistoryResponse = {
     facts: Array<string | HistoryFact>;
     articleUrl: string | null;
     thumbnailUrl: string | null;
+    images?: HistoryLocationImage[];
   } | null;
   globalEvents: HistoryEvent[];
   partial: boolean;

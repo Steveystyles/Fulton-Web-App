@@ -20,6 +20,7 @@ import {
   api,
   type HistoryEvent,
   type HistoryFact,
+  type HistoryLocationImage,
   type HistoryLocationProfile,
   type HistoryResponse,
 } from "../lib/api";
@@ -104,6 +105,21 @@ function normaliseFact(fact: string | HistoryFact, index: number): HistoryFact {
     sourceUrl: null,
     confidence: "medium",
   };
+}
+
+function locationImages(location: HistoryResponse["location"]): HistoryLocationImage[] {
+  if (location?.images?.length) {
+    return location.images;
+  }
+  if (location?.thumbnailUrl) {
+    return [{
+      url: location.thumbnailUrl,
+      title: location.title,
+      sourceName: "Wikipedia",
+      sourceUrl: location.articleUrl,
+    }];
+  }
+  return [];
 }
 
 function formatProfileSummary(profile: HistoryLocationProfile) {
@@ -288,6 +304,7 @@ export function HistoryKnowledge() {
     () => (history?.location?.facts ?? []).map((fact, index) => normaliseFact(fact, index)),
     [history],
   );
+  const townImages = useMemo(() => locationImages(history?.location ?? null), [history]);
 
   function submitLocation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -429,12 +446,28 @@ export function HistoryKnowledge() {
                 {facts.map((fact, index) => {
                   const meta = themeMeta[fact.theme] ?? themeMeta.general;
                   const Icon = meta.icon;
+                  const factImage = townImages[index % Math.max(townImages.length, 1)];
                   return (
                     <div
                       key={`${index}-${fact.title}`}
-                      className="rounded-2xl border border-slate-200 bg-white p-3 shadow-soft"
+                      className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-soft"
                     >
-                      <div className="flex items-start gap-3">
+                      {factImage ? (
+                        <div className="relative h-24 overflow-hidden">
+                          <img
+                            key={factImage.url}
+                            src={factImage.url}
+                            alt=""
+                            loading="lazy"
+                            onError={(event) => {
+                              event.currentTarget.hidden = true;
+                            }}
+                            className="h-full w-full object-cover"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-r from-slate-950/35 via-slate-950/5 to-transparent" />
+                        </div>
+                      ) : null}
+                      <div className="flex items-start gap-3 p-3">
                         <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${meta.className}`}>
                           <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
                         </span>
@@ -545,42 +578,18 @@ function LocalStoryCard({
   history: HistoryResponse | null;
   submittedLocation: HistoryLocationQuery;
 }) {
+  const title = history?.location?.title ?? submittedLocation.location;
+  const images = locationImages(history?.location ?? null);
+
   return (
     <Card className="overflow-hidden p-0">
-      {history?.location?.thumbnailUrl ? (
-        <img
-          src={history.location.thumbnailUrl}
-          alt=""
-          className="h-36 w-full object-cover"
-        />
-      ) : null}
+      <TownStoryBackdrop
+        articleUrl={history?.location?.articleUrl ?? null}
+        description={history?.location?.description ?? null}
+        images={images}
+        title={title}
+      />
       <div className="space-y-3 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-              Local story
-            </p>
-            <h2 className="mt-1 text-2xl font-black leading-tight text-slate-950">
-              {history?.location?.title ?? submittedLocation.location}
-            </h2>
-            {history?.location?.description ? (
-              <p className="mt-1 text-sm font-bold text-slate-500">
-                {history.location.description}
-              </p>
-            ) : null}
-          </div>
-          {history?.location?.articleUrl ? (
-            <a
-              href={history.location.articleUrl}
-              target="_blank"
-              rel="noreferrer"
-              aria-label={`Open article for ${history.location.title}`}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
-            >
-              <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-            </a>
-          ) : null}
-        </div>
 
         {history?.partial && history.warnings.length > 0 ? (
           <p className="rounded-2xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">
@@ -625,6 +634,95 @@ function LocalStoryCard({
         ) : null}
       </div>
     </Card>
+  );
+}
+
+function TownStoryBackdrop({
+  articleUrl,
+  description,
+  images,
+  title,
+}: {
+  articleUrl: string | null;
+  description: string | null;
+  images: HistoryLocationImage[];
+  title: string;
+}) {
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const slideKey = images.map((image) => image.url).join("|");
+
+  useEffect(() => {
+    setActiveImageIndex(0);
+  }, [slideKey]);
+
+  useEffect(() => {
+    if (images.length < 2) {
+      return undefined;
+    }
+
+    const interval = window.setInterval(() => {
+      setActiveImageIndex((current) => (current + 1) % images.length);
+    }, 5000);
+    return () => window.clearInterval(interval);
+  }, [images.length, slideKey]);
+
+  return (
+    <div className="relative min-h-44 overflow-hidden bg-slate-950">
+      {images.map((image, index) => (
+        <img
+          key={image.url}
+          src={image.url}
+          alt=""
+          aria-hidden="true"
+          loading={index === 0 ? "eager" : "lazy"}
+          onError={(event) => {
+            event.currentTarget.hidden = true;
+          }}
+          className={`absolute inset-0 h-full w-full object-cover transition duration-1000 ${
+            index === activeImageIndex ? "scale-100 opacity-100" : "scale-105 opacity-0"
+          }`}
+        />
+      ))}
+      <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/60 to-slate-950/15" />
+      <div className="relative flex min-h-44 flex-col justify-end gap-2 p-4 text-white">
+        <div className="flex items-end justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-black uppercase tracking-normal text-white/80">
+              Local story
+            </p>
+            <h2 className="mt-1 text-2xl font-black leading-tight">{title}</h2>
+          </div>
+          {articleUrl ? (
+            <a
+              href={articleUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open article for ${title}`}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white/90 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-white/30"
+            >
+              <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+            </a>
+          ) : null}
+        </div>
+        {description ? (
+          <p className="max-w-xl text-sm font-bold leading-snug text-white/85">
+            {description}
+          </p>
+        ) : null}
+        {images.length > 1 ? (
+          <div className="flex gap-1.5" aria-hidden="true">
+            {images.map((image, index) => (
+              <span
+                key={`${image.url}-dot`}
+                className={`h-1.5 rounded-full transition-all ${
+                  index === activeImageIndex ? "w-6 bg-saints-red" : "w-1.5 bg-white/55"
+                }`}
+              />
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

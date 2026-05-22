@@ -2055,6 +2055,14 @@ def wikipedia_plain_extract_url(lang: str, title: str) -> str:
     )
 
 
+def wikipedia_article_images_url(lang: str, title: str, limit: int = 18) -> str:
+    return (
+        f"https://{lang}.wikipedia.org/w/api.php?action=query&format=json"
+        f"&generator=images&gimlimit={limit}&prop=imageinfo&iiprop=url"
+        f"&iiurlwidth=960&redirects=1&titles={quote_plus(title)}"
+    )
+
+
 def wikidata_entity_url(qid: str) -> str:
     return f"https://www.wikidata.org/wiki/Special:EntityData/{quote_plus(qid)}.json"
 
@@ -2142,6 +2150,114 @@ def fetch_wikipedia_plain_extract(title: str, lang: str) -> str:
         if isinstance(page, dict) and isinstance(page.get("extract"), str):
             return page["extract"]
     return ""
+
+
+WIKIPEDIA_IMAGE_REJECT_TERMS = (
+    "arms",
+    "badge",
+    "coat",
+    "commons-logo",
+    "diagram",
+    "flag",
+    "icon",
+    "locator",
+    "logo",
+    "map",
+    "seal",
+    "shield",
+    "symbol",
+)
+
+
+def summary_location_image(
+    summary: dict[str, Any],
+    article_url: str | None,
+) -> dict[str, str | None] | None:
+    thumbnail = summary.get("thumbnail", {})
+    source = thumbnail.get("source") if isinstance(thumbnail, dict) else None
+    if not isinstance(source, str) or not source.startswith("https://"):
+        return None
+
+    return {
+        "url": source,
+        "title": str(summary.get("title") or "Location image"),
+        "sourceName": "Wikipedia",
+        "sourceUrl": article_url,
+    }
+
+
+def wikipedia_image_title_is_useful(title: str) -> bool:
+    clean_title = re.sub(r"^File:", "", str(title or ""), flags=re.IGNORECASE).strip()
+    title_lower = clean_title.lower()
+    if not re.search(r"\.(?:jpe?g|png|webp)$", title_lower):
+        return False
+    return not any(term in title_lower for term in WIKIPEDIA_IMAGE_REJECT_TERMS)
+
+
+def normalise_wikipedia_image(page: dict[str, Any]) -> dict[str, str | None] | None:
+    title = str(page.get("title") or "")
+    if not wikipedia_image_title_is_useful(title):
+        return None
+
+    image_info = page.get("imageinfo", [])
+    first_info = image_info[0] if isinstance(image_info, list) and image_info else {}
+    if not isinstance(first_info, dict):
+        return None
+
+    url = first_info.get("thumburl") or first_info.get("url")
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return None
+
+    source_url = first_info.get("descriptionurl")
+    return {
+        "url": url,
+        "title": re.sub(r"^File:", "", title, flags=re.IGNORECASE).strip(),
+        "sourceName": "Wikimedia Commons",
+        "sourceUrl": source_url if isinstance(source_url, str) else None,
+    }
+
+
+def fetch_wikipedia_images(
+    summary: dict[str, Any],
+    lang: str,
+    article_url: str | None,
+    limit: int = 5,
+) -> list[dict[str, str | None]]:
+    images: list[dict[str, str | None]] = []
+    seen_urls: set[str] = set()
+
+    def append_image(image: dict[str, str | None] | None) -> None:
+        if image is None or not isinstance(image.get("url"), str):
+            return
+        image_url = str(image["url"])
+        if image_url in seen_urls:
+            return
+        images.append(image)
+        seen_urls.add(image_url)
+
+    append_image(summary_location_image(summary, article_url))
+    title = str(summary.get("title") or "").strip()
+    if not title or len(images) >= limit:
+        return images[:limit]
+
+    try:
+        payload = fetch_json_url(wikipedia_article_images_url(lang, title), timeout=5)
+    except Exception as error:
+        safe_log(f"History Wikipedia image fetch failed: {error}")
+        return images[:limit]
+
+    pages = payload.get("query", {}).get("pages", {}) if isinstance(payload, dict) else {}
+    if not isinstance(pages, dict):
+        return images[:limit]
+
+    for page in pages.values():
+        if not isinstance(page, dict):
+            continue
+        append_image(normalise_wikipedia_image(page))
+        if len(images) >= limit:
+            break
+
+    return images[:limit]
 
 
 def fetch_wikidata_entity(qid: str) -> dict[str, Any] | None:
@@ -2625,6 +2741,7 @@ def history_payload(
                 ),
                 "articleUrl": article_url,
                 "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
+                "images": fetch_wikipedia_images(wiki, lang, article_url),
             }
         except LookupError:
             return {"error": f"No location facts found for {location}."}, HTTPStatus.NOT_FOUND
