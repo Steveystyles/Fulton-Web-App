@@ -66,6 +66,8 @@ input[type="date"] {
 
 .ticker-track {
   animation: ticker 42s linear infinite;
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
 }
 
 @layer components {
@@ -131,11 +133,11 @@ input[type="date"] {
 
 @keyframes ticker {
   from {
-    transform: translateX(0);
+    transform: translate3d(0, 0, 0);
   }
 
   to {
-    transform: translateX(-50%);
+    transform: translate3d(var(--ticker-shift, -50%), 0, 0);
   }
 }
 
