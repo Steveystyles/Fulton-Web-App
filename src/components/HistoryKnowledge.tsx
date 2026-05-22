@@ -25,6 +25,7 @@ import {
   type HistoryResponse,
 } from "../lib/api";
 import { Card } from "./Card";
+import { FactCardImage } from "./FactCardImage";
 
 const defaultLocation = "Paisley";
 
@@ -295,7 +296,7 @@ export function HistoryKnowledge() {
     () => (history?.location?.facts ?? []).map((fact, index) => normaliseFact(fact, index)),
     [history],
   );
-  const townImages = useMemo(() => locationImages(history?.location ?? null), [history]);
+  const placeTitle = history?.location?.title ?? submittedLocation.location;
 
   function submitLocation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -415,27 +416,16 @@ export function HistoryKnowledge() {
                 {facts.map((fact, index) => {
                   const meta = themeMeta[fact.theme] ?? themeMeta.general;
                   const Icon = meta.icon;
-                  const factImage = fact.image ?? null;
                   return (
                     <div
                       key={`${index}-${fact.title}`}
                       className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-soft"
                     >
-                      {factImage ? (
-                        <div className="relative h-24 overflow-hidden">
-                          <img
-                            key={factImage.url}
-                            src={factImage.url}
-                            alt=""
-                            loading="lazy"
-                            onError={(event) => {
-                              event.currentTarget.hidden = true;
-                            }}
-                            className="h-full w-full object-cover"
-                          />
-                          <div className="absolute inset-0 bg-gradient-to-r from-slate-950/35 via-slate-950/5 to-transparent" />
-                        </div>
-                      ) : null}
+                      <FactCardImage
+                        fact={fact}
+                        fallbackImage={fact.image ?? null}
+                        placeTitle={placeTitle}
+                      />
                       <div className="flex items-start gap-3 p-3">
                         <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${meta.className}`}>
                           <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
