@@ -1,8 +1,9 @@
-import { BarChart3, Crown, Flame, Hash, LoaderCircle, Medal, Trophy } from "lucide-react";
+import { Flame, Hash, LoaderCircle, Medal, Trophy, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Card } from "../components/Card";
 import { useAuth } from "../context/AuthContext";
-import { api, type LeaderboardResponse } from "../lib/api";
+import { api, type LeaderboardPlayer, type LeaderboardResponse } from "../lib/api";
 
 function percent(value: number, maximum: number) {
   if (maximum <= 0 || value <= 0) {
@@ -11,11 +12,16 @@ function percent(value: number, maximum: number) {
   return `${Math.max(4, Math.round((value / maximum) * 100))}%`;
 }
 
+function dayLabel(value: number) {
+  return `${value} day${value === 1 ? "" : "s"}`;
+}
+
 export function Leaderboard() {
   const { user } = useAuth();
   const [board, setBoard] = useState<LeaderboardResponse | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [selectedPlayer, setSelectedPlayer] = useState<LeaderboardPlayer | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -44,59 +50,33 @@ export function Leaderboard() {
     };
   }, []);
 
+  useEffect(() => {
+    if (selectedPlayer === null) {
+      return;
+    }
+
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setSelectedPlayer(null);
+      }
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [selectedPlayer]);
+
   const players = board?.players ?? [];
+  const currentPlayer = useMemo(
+    () => players.find((player) => player.id === user?.id) ?? null,
+    [players, user?.id],
+  );
   const highestScore = useMemo(
     () => players.reduce((highest, player) => Math.max(highest, player.totalPoints), 0),
     [players],
   );
-  const podium = players.slice(0, 3);
-  const leader = podium[0];
 
   return (
     <section className="page-fade space-y-3" aria-label="Scores">
-      <Card className="overflow-hidden p-0">
-        <div className="bg-saints-black px-4 py-4 text-white">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-saints-red">
-              <Medal aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xl font-black">Scores</p>
-              <p className="mt-0.5 text-sm font-semibold text-white/70">
-                Quiz, Wordle and streak form.
-              </p>
-            </div>
-          </div>
-
-          {leader ? (
-            <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-white/15 bg-white/10 p-3">
-              <div className="min-w-0">
-                <p className="flex items-center gap-1.5 text-[0.68rem] font-black uppercase tracking-normal text-white/60">
-                  <Crown aria-hidden="true" className="h-3.5 w-3.5 text-amber-300" />
-                  Current leader
-                </p>
-                <p className="mt-1 truncate text-lg font-black">{leader.username}</p>
-              </div>
-              <div className="shrink-0 text-right">
-                <p className="text-2xl font-black leading-none">{leader.totalPoints}</p>
-                <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
-                  points
-                </p>
-              </div>
-            </div>
-          ) : null}
-        </div>
-
-        {board ? (
-          <div className="grid grid-cols-2 gap-2 p-3" aria-label="Score summary">
-            <ScoreStat label="Players" value={board.summary.playerCount} />
-            <ScoreStat label="Best streak" value={board.summary.bestStreak} />
-            <ScoreStat label="Quiz plays" value={board.summary.quizPlays} />
-            <ScoreStat label="Wordles" value={board.summary.wordlePlays} />
-          </div>
-        ) : null}
-      </Card>
-
       {loading ? (
         <Card>
           <div className="flex min-h-28 items-center justify-center gap-2 text-sm font-black text-slate-500">
@@ -118,146 +98,304 @@ export function Leaderboard() {
         </Card>
       ) : (
         <>
-          {podium.length > 0 ? (
-            <section className="grid grid-cols-1 gap-2 min-[390px]:grid-cols-3" aria-label="Leaderboard leaders">
-              {podium.map((player) => (
-                <PodiumPlayer key={player.id} player={player} isCurrentUser={player.id === user?.id} />
-              ))}
-            </section>
-          ) : null}
+          {currentPlayer ? (
+            <CurrentPlayerCard player={currentPlayer} highestScore={highestScore} />
+          ) : (
+            <Card>
+              <div className="flex items-center gap-3">
+                <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-saints-red text-white">
+                  <Medal aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-xl font-black text-slate-950">Scores</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-600">
+                    Player scores and streaks.
+                  </p>
+                </div>
+              </div>
+            </Card>
+          )}
 
-          <section className="space-y-2" aria-label="Player leaderboard">
-            {players.map((player) => {
-              const scoredPoints = Math.max(1, player.totalPoints);
-              return (
-                <article
-                  key={player.id}
-                  className={[
-                    "rounded-2xl border bg-white p-3 shadow-soft",
-                    player.id === user?.id
-                      ? "border-saints-red ring-2 ring-saints-red/10"
-                      : "border-slate-200",
-                  ].join(" ")}
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-saints-black text-base font-black text-white">
-                      {player.rank}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-base font-black text-slate-950">
-                        {player.username}
-                      </p>
-                      {player.id === user?.id ? (
-                        <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
-                          Your score
-                        </p>
-                      ) : null}
-                      <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-100">
-                        <div
-                          className="h-full rounded-full bg-saints-red"
-                          style={{ width: percent(player.totalPoints, highestScore) }}
-                        />
-                      </div>
-                    </div>
-                    <span className="rounded-full bg-saints-redSoft px-3 py-1.5 text-sm font-black text-saints-red">
-                      {player.totalPoints} pts
-                    </span>
-                  </div>
+          <Card className="p-3">
+            <div className="mb-3 flex items-end justify-between gap-3">
+              <div>
+                <p className="text-lg font-black text-slate-950">Score table</p>
+                <p className="mt-0.5 text-xs font-bold text-slate-500">
+                  Select a player for the full breakdown.
+                </p>
+              </div>
+              {board ? (
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+                  {board.summary.playerCount} players
+                </span>
+              ) : null}
+            </div>
 
-                  <div className="mt-3 h-3 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
-                    <div
-                      className="h-full bg-saints-black"
-                      style={{
-                        width: percent(player.wordlePoints, scoredPoints),
-                        float: "left",
-                      }}
+            <div className="overflow-hidden rounded-2xl border border-slate-200">
+              <table className="w-full border-collapse bg-white text-left" aria-label="Player score table">
+                <thead className="bg-slate-50 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Player</th>
+                    <th className="px-2 py-2 text-right">Score</th>
+                    <th className="px-3 py-2 text-right">Streak</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {players.map((player) => (
+                    <ScoreRow
+                      key={player.id}
+                      player={player}
+                      isCurrentUser={player.id === user?.id}
+                      onSelect={() => setSelectedPlayer(player)}
                     />
-                    <div
-                      className="h-full bg-emerald-500"
-                      style={{
-                        width: percent(player.quizPoints, scoredPoints),
-                        float: "left",
-                      }}
-                    />
-                  </div>
-                  <div className="mt-1 flex items-center justify-between text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
-                    <span>Wordle</span>
-                    <span>Quiz</span>
-                  </div>
-
-                  <div className="mt-3 grid grid-cols-1 gap-2 min-[390px]:grid-cols-3">
-                    <ScoreDetail
-                      icon={Hash}
-                      label="Wordle"
-                      value={`${player.wordlePoints} pts`}
-                      detail={`${player.wordleWins}/${player.wordlePlayed} wins`}
-                    />
-                    <ScoreDetail
-                      icon={Trophy}
-                      label="Quiz"
-                      value={`${player.quizPoints} pts`}
-                      detail={`${player.quizCorrect} correct`}
-                    />
-                    <ScoreDetail
-                      icon={Flame}
-                      label="Streak"
-                      value={`${player.currentStreak} day${player.currentStreak === 1 ? "" : "s"}`}
-                      detail={`Best ${player.bestStreak}`}
-                    />
-                  </div>
-                </article>
-              );
-            })}
-          </section>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
         </>
       )}
+
+      <PlayerDetailDialog player={selectedPlayer} onClose={() => setSelectedPlayer(null)} />
     </section>
   );
 }
 
-function PodiumPlayer({
-  isCurrentUser,
+function CurrentPlayerCard({
+  highestScore,
   player,
 }: {
-  isCurrentUser: boolean;
-  player: LeaderboardResponse["players"][number];
+  highestScore: number;
+  player: LeaderboardPlayer;
 }) {
-  const podiumTone =
-    player.rank === 1
-      ? "border-amber-300 bg-amber-50"
-      : player.rank === 2
-        ? "border-slate-300 bg-slate-50"
-        : "border-orange-200 bg-orange-50";
+  const scoredPoints = Math.max(1, player.totalPoints);
 
   return (
-    <article className={`rounded-2xl border p-3 shadow-soft ${podiumTone}`}>
-      <div className="flex items-start justify-between gap-2">
-        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-saints-black text-sm font-black text-white">
-          {player.rank}
-        </span>
-        <span className="inline-flex items-center gap-1 rounded-full bg-white/85 px-2 py-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
-          <Flame aria-hidden="true" className="h-3 w-3 text-saints-red" />
-          {player.currentStreak}
-        </span>
+    <Card className="overflow-hidden p-0">
+      <div className="bg-saints-black px-4 py-4 text-white">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
+              <Medal aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
+              Your stats
+            </p>
+            <h1 className="mt-1 truncate text-2xl font-black">{player.username}</h1>
+          </div>
+          <div className="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-right">
+            <p className="text-[0.68rem] font-black uppercase tracking-normal text-white/60">
+              Rank
+            </p>
+            <p className="text-2xl font-black leading-none">#{player.rank}</p>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+          <div>
+            <p className="text-5xl font-black leading-none">{player.totalPoints}</p>
+            <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
+              total points
+            </p>
+          </div>
+          <div className="text-right">
+            <p className="inline-flex items-center gap-1 rounded-full bg-saints-red px-2.5 py-1 text-xs font-black">
+              <Flame aria-hidden="true" className="h-3.5 w-3.5" />
+              {dayLabel(player.currentStreak)}
+            </p>
+            <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
+              best {player.bestStreak}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15">
+          <div
+            className="h-full rounded-full bg-saints-red"
+            style={{ width: percent(player.totalPoints, highestScore) }}
+          />
+        </div>
       </div>
-      <p className="mt-3 truncate text-sm font-black text-slate-950">{player.username}</p>
-      {isCurrentUser ? (
-        <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">You</p>
-      ) : null}
-      <p className="mt-2 text-2xl font-black leading-none text-saints-black">
-        {player.totalPoints}
-      </p>
-      <p className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
-        points
-      </p>
-    </article>
+
+      <div className="space-y-3 p-3">
+        <ContributionBar player={player} scoredPoints={scoredPoints} />
+        <div className="grid grid-cols-2 gap-2">
+          <ScoreFigure
+            icon={Hash}
+            label="Wordle"
+            value={`${player.wordlePoints} pts`}
+            detail={`${player.wordleWins}/${player.wordlePlayed} wins`}
+          />
+          <ScoreFigure
+            icon={Trophy}
+            label="Quiz"
+            value={`${player.quizPoints} pts`}
+            detail={`${player.quizCorrect} correct`}
+          />
+          <StatFigure label="Quiz plays" value={player.quizPlayed} />
+          <StatFigure label="Best streak" value={player.bestStreak} />
+        </div>
+      </div>
+    </Card>
   );
 }
 
-function ScoreStat({ label, value }: { label: string; value: number }) {
+function ScoreRow({
+  isCurrentUser,
+  onSelect,
+  player,
+}: {
+  isCurrentUser: boolean;
+  onSelect: () => void;
+  player: LeaderboardPlayer;
+}) {
   return (
-    <div className="rounded-2xl bg-slate-50 px-2 py-3 text-center">
-      <p className="text-lg font-black leading-none text-slate-950">{value}</p>
+    <tr
+      tabIndex={0}
+      role="button"
+      aria-label={`Open stats for ${player.username}`}
+      onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      className="cursor-pointer border-t border-slate-100 transition hover:bg-saints-redSoft focus:bg-saints-redSoft focus:outline-none"
+    >
+      <td className="min-w-0 px-3 py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-saints-black text-sm font-black text-white">
+            {player.rank}
+          </span>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-black text-slate-950">{player.username}</p>
+            {isCurrentUser ? (
+              <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+                You
+              </p>
+            ) : null}
+          </div>
+        </div>
+      </td>
+      <td className="px-2 py-3 text-right text-base font-black text-slate-950">
+        {player.totalPoints}
+      </td>
+      <td className="px-3 py-3 text-right">
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-700">
+          <Flame aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
+          {player.currentStreak}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
+function ContributionBar({
+  player,
+  scoredPoints,
+}: {
+  player: LeaderboardPlayer;
+  scoredPoints: number;
+}) {
+  return (
+    <div>
+      <div className="h-3 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
+        <div
+          className="h-full bg-saints-black"
+          style={{ width: percent(player.wordlePoints, scoredPoints), float: "left" }}
+        />
+        <div
+          className="h-full bg-emerald-500"
+          style={{ width: percent(player.quizPoints, scoredPoints), float: "left" }}
+        />
+      </div>
+      <div className="mt-1 flex items-center justify-between text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
+        <span>Wordle</span>
+        <span>Quiz</span>
+      </div>
+    </div>
+  );
+}
+
+function PlayerDetailDialog({
+  onClose,
+  player,
+}: {
+  onClose: () => void;
+  player: LeaderboardPlayer | null;
+}) {
+  if (player === null) {
+    return null;
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/55 p-3 backdrop-blur-sm min-[540px]:items-center"
+      onMouseDown={onClose}
+    >
+      <Card
+        as="div"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="player-stats-title"
+        onMouseDown={(event) => event.stopPropagation()}
+        className="max-h-[85dvh] w-full max-w-[430px] overflow-y-auto p-4"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-black uppercase tracking-normal text-saints-red">
+              Player stats
+            </p>
+            <h2 id="player-stats-title" className="mt-1 truncate text-2xl font-black text-slate-950">
+              {player.username}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close player stats"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+          >
+            <X aria-hidden="true" className="h-5 w-5" strokeWidth={2.5} />
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-3 gap-2">
+          <StatFigure label="Rank" value={`#${player.rank}`} />
+          <StatFigure label="Score" value={player.totalPoints} />
+          <StatFigure label="Streak" value={player.currentStreak} />
+        </div>
+
+        <div className="mt-4 space-y-3">
+          <ContributionBar player={player} scoredPoints={Math.max(1, player.totalPoints)} />
+          <div className="grid grid-cols-2 gap-2">
+            <ScoreFigure
+              icon={Hash}
+              label="Wordle points"
+              value={player.wordlePoints}
+              detail={`${player.wordleWins} wins from ${player.wordlePlayed}`}
+            />
+            <ScoreFigure
+              icon={Trophy}
+              label="Quiz points"
+              value={player.quizPoints}
+              detail={`${player.quizCorrect} correct`}
+            />
+            <StatFigure label="Quiz max" value={player.quizMaxPoints} />
+            <StatFigure label="Best streak" value={player.bestStreak} />
+            <StatFigure label="Quiz plays" value={player.quizPlayed} />
+            <StatFigure label="Wordles" value={player.wordlePlayed} />
+          </div>
+        </div>
+      </Card>
+    </div>,
+    document.body,
+  );
+}
+
+function StatFigure({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="min-w-0 rounded-2xl bg-slate-50 px-2.5 py-3 text-center">
+      <p className="truncate text-lg font-black leading-none text-slate-950">{value}</p>
       <p className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
         {label}
       </p>
@@ -265,16 +403,16 @@ function ScoreStat({ label, value }: { label: string; value: number }) {
   );
 }
 
-function ScoreDetail({
+function ScoreFigure({
   detail,
   icon: Icon,
   label,
   value,
 }: {
   detail: string;
-  icon: typeof BarChart3;
+  icon: typeof Hash;
   label: string;
-  value: string;
+  value: number | string;
 }) {
   return (
     <div className="flex min-w-0 items-start gap-2 rounded-2xl bg-slate-50 p-2.5">

@@ -5,7 +5,6 @@ import {
   CalendarDays,
   ExternalLink,
   Factory,
-  Filter,
   Landmark,
   LoaderCircle,
   MapPin,
@@ -308,6 +307,7 @@ export function HistoryKnowledge() {
         setLocation(query.location);
         setSubmittedLocation(query);
         setLocationNotice("Showing facts near your device location. You can search another place anytime.");
+        setFiltersOpen(false);
       })
       .catch((caughtError) => {
         setLocationNotice(
@@ -337,19 +337,24 @@ export function HistoryKnowledge() {
             </div>
           </div>
 
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-            <DatePickerButton
-              historyDate={historyDate}
-              onChange={setHistoryDate}
+          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-50 p-3">
+            <ControlValue
+              label="Location"
+              value={history?.location?.title ?? submittedLocation.location}
             />
+            <ControlValue label="Date" value={formatHistoryDate(historyDate)} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <DateChangeButton historyDate={historyDate} onChange={setHistoryDate} />
             <button
               type="button"
               onClick={() => setFiltersOpen((current) => !current)}
               aria-expanded={filtersOpen}
               className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm font-black text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/20"
             >
-              <Filter aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
-              Change
+              <MapPin aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+              Change location
             </button>
           </div>
 
@@ -413,6 +418,8 @@ export function HistoryKnowledge() {
         </Card>
       ) : (
         <>
+          <LocalStoryCard history={history} submittedLocation={submittedLocation} />
+
           {facts.length > 0 ? (
             <section className="space-y-2" aria-label="Location facts">
               <p className="px-1 text-sm font-black uppercase tracking-normal text-saints-red">
@@ -471,86 +478,6 @@ export function HistoryKnowledge() {
             </Card>
           )}
 
-          <Card className="overflow-hidden p-0">
-            {history?.location?.thumbnailUrl ? (
-              <img
-                src={history.location.thumbnailUrl}
-                alt=""
-                className="h-36 w-full object-cover"
-              />
-            ) : null}
-            <div className="space-y-3 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                    Local story
-                  </p>
-                  <h2 className="mt-1 text-2xl font-black leading-tight text-slate-950">
-                    {history?.location?.title ?? submittedLocation.location}
-                  </h2>
-                  {history?.location?.description ? (
-                    <p className="mt-1 text-sm font-bold text-slate-500">
-                      {history.location.description}
-                    </p>
-                  ) : null}
-                </div>
-                {history?.location?.articleUrl ? (
-                  <a
-                    href={history.location.articleUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    aria-label={`Open article for ${history.location.title}`}
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
-                  >
-                    <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-                  </a>
-                ) : null}
-              </div>
-
-              {history?.partial && history.warnings.length > 0 ? (
-                <p className="rounded-2xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">
-                  Some sources are taking longer than usual, so this is a partial set.
-                </p>
-              ) : null}
-
-              {history?.location?.profile ? (
-                <section className="rounded-2xl bg-slate-50 p-3" aria-label="Location summary">
-                  <p className="text-xs font-black uppercase tracking-normal text-saints-red">
-                    At a glance
-                  </p>
-                  <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
-                    {formatProfileSummary(history.location.profile)}
-                  </p>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    {history.location.profile.population ? (
-                      <ProfileStat label="Population" value={history.location.profile.population} />
-                    ) : null}
-                    {history.location.profile.areas[0] ? (
-                      <ProfileStat label="Area" value={history.location.profile.areas[0]} />
-                    ) : null}
-                    {history.location.profile.country ? (
-                      <ProfileStat label="Country" value={history.location.profile.country} />
-                    ) : null}
-                    {history.location.profile.inception ? (
-                      <ProfileStat label="Recorded" value={history.location.profile.inception} />
-                    ) : null}
-                  </div>
-                  {history.location.profile.sourceUrl ? (
-                    <a
-                      href={history.location.profile.sourceUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-3 inline-flex items-center gap-1 text-xs font-black uppercase tracking-normal text-saints-red"
-                    >
-                      <BookOpen aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
-                      {history.location.profile.sourceName}
-                    </a>
-                  ) : null}
-                </section>
-              ) : null}
-            </div>
-          </Card>
-
           <Card className="p-4">
             <div className="mb-4 flex items-center gap-2 text-saints-red">
               <CalendarDays aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
@@ -576,7 +503,18 @@ export function HistoryKnowledge() {
   );
 }
 
-function DatePickerButton({
+function ControlValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+        {label}
+      </p>
+      <p className="mt-0.5 truncate text-sm font-black text-slate-950">{value}</p>
+    </div>
+  );
+}
+
+function DateChangeButton({
   historyDate,
   onChange,
 }: {
@@ -584,12 +522,10 @@ function DatePickerButton({
   onChange: (value: string) => void;
 }) {
   return (
-    <label className="relative block min-w-0 overflow-hidden rounded-2xl border border-slate-300 bg-slate-50 px-3 py-2 focus-within:border-saints-red focus-within:ring-4 focus-within:ring-saints-red/15">
-      <span className="block text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
-        Date
-      </span>
-      <span className="mt-0.5 block truncate text-sm font-black text-slate-950">
-        {formatHistoryDate(historyDate)}
+    <label className="relative inline-flex min-h-11 min-w-0 cursor-pointer items-center justify-center gap-2 overflow-hidden rounded-2xl border border-slate-300 bg-white px-3 py-2 text-sm font-black text-slate-950 transition hover:bg-slate-50 focus-within:ring-4 focus-within:ring-saints-red/20">
+      <CalendarDays aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+      <span>
+        Change date
       </span>
       <input
         value={historyDate}
@@ -599,6 +535,96 @@ function DatePickerButton({
         className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
       />
     </label>
+  );
+}
+
+function LocalStoryCard({
+  history,
+  submittedLocation,
+}: {
+  history: HistoryResponse | null;
+  submittedLocation: HistoryLocationQuery;
+}) {
+  return (
+    <Card className="overflow-hidden p-0">
+      {history?.location?.thumbnailUrl ? (
+        <img
+          src={history.location.thumbnailUrl}
+          alt=""
+          className="h-36 w-full object-cover"
+        />
+      ) : null}
+      <div className="space-y-3 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-black uppercase tracking-normal text-saints-red">
+              Local story
+            </p>
+            <h2 className="mt-1 text-2xl font-black leading-tight text-slate-950">
+              {history?.location?.title ?? submittedLocation.location}
+            </h2>
+            {history?.location?.description ? (
+              <p className="mt-1 text-sm font-bold text-slate-500">
+                {history.location.description}
+              </p>
+            ) : null}
+          </div>
+          {history?.location?.articleUrl ? (
+            <a
+              href={history.location.articleUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open article for ${history.location.title}`}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+            >
+              <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+            </a>
+          ) : null}
+        </div>
+
+        {history?.partial && history.warnings.length > 0 ? (
+          <p className="rounded-2xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">
+            Some sources are taking longer than usual, so this is a partial set.
+          </p>
+        ) : null}
+
+        {history?.location?.profile ? (
+          <section className="rounded-2xl bg-slate-50 p-3" aria-label="Location summary">
+            <p className="text-xs font-black uppercase tracking-normal text-saints-red">
+              At a glance
+            </p>
+            <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
+              {formatProfileSummary(history.location.profile)}
+            </p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              {history.location.profile.population ? (
+                <ProfileStat label="Population" value={history.location.profile.population} />
+              ) : null}
+              {history.location.profile.areas[0] ? (
+                <ProfileStat label="Area" value={history.location.profile.areas[0]} />
+              ) : null}
+              {history.location.profile.country ? (
+                <ProfileStat label="Country" value={history.location.profile.country} />
+              ) : null}
+              {history.location.profile.inception ? (
+                <ProfileStat label="Recorded" value={history.location.profile.inception} />
+              ) : null}
+            </div>
+            {history.location.profile.sourceUrl ? (
+              <a
+                href={history.location.profile.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-3 inline-flex items-center gap-1 text-xs font-black uppercase tracking-normal text-saints-red"
+              >
+                <BookOpen aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
+                {history.location.profile.sourceName}
+              </a>
+            ) : null}
+          </section>
+        ) : null}
+      </div>
+    </Card>
   );
 }
 
