@@ -3,7 +3,8 @@ import { api, type NewsItem } from "../lib/api";
 import { cleanNewsTitle } from "../lib/news";
 
 const emptyHeadline = "No breaking Saints stories yet. The live feed is ready.";
-const minimumTickerSlots = 5;
+const minimumTickerSlots = 7;
+const tickerCopies = 3;
 
 function mergeTickerItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
   const itemsByKey = new Map<string, NewsItem>();
@@ -21,6 +22,7 @@ export function NewsTicker() {
   const [items, setItems] = useState<NewsItem[]>([]);
   const tickerGroupRef = useRef<HTMLDivElement | null>(null);
   const [tickerShift, setTickerShift] = useState("-50%");
+  const [tickerDuration, setTickerDuration] = useState("78s");
 
   useEffect(() => {
     let active = true;
@@ -83,7 +85,7 @@ export function NewsTicker() {
   }, [headlines]);
 
   useEffect(() => {
-    const updateTickerShift = () => {
+    const updateTickerMetrics = () => {
       const group = tickerGroupRef.current;
       if (!group) {
         return;
@@ -92,25 +94,32 @@ export function NewsTicker() {
       const width = Math.ceil(group.getBoundingClientRect().width);
       if (width > 0) {
         setTickerShift(`-${width}px`);
+        setTickerDuration(`${Math.max(78, Math.ceil(width / 16))}s`);
       }
     };
 
-    updateTickerShift();
-    window.setTimeout(updateTickerShift, 250);
+    updateTickerMetrics();
+    const settleTimer = window.setTimeout(updateTickerMetrics, 300);
 
     const group = tickerGroupRef.current;
     if (!group) {
-      return undefined;
+      return () => window.clearTimeout(settleTimer);
     }
 
     if (typeof ResizeObserver === "undefined") {
-      window.addEventListener("resize", updateTickerShift);
-      return () => window.removeEventListener("resize", updateTickerShift);
+      window.addEventListener("resize", updateTickerMetrics);
+      return () => {
+        window.clearTimeout(settleTimer);
+        window.removeEventListener("resize", updateTickerMetrics);
+      };
     }
 
-    const observer = new ResizeObserver(updateTickerShift);
+    const observer = new ResizeObserver(updateTickerMetrics);
     observer.observe(group);
-    return () => observer.disconnect();
+    return () => {
+      window.clearTimeout(settleTimer);
+      observer.disconnect();
+    };
   }, [tickerHeadlines]);
 
   const tickerLabel = "Breaking";
@@ -119,7 +128,10 @@ export function NewsTicker() {
     <section
       className="ticker-frame border-b border-white/10 bg-saints-charcoal text-white"
       aria-label="News ticker"
-      style={{ "--ticker-shift": tickerShift } as CSSProperties}
+      style={{
+        "--ticker-shift": tickerShift,
+        "--ticker-duration": tickerDuration,
+      } as CSSProperties}
     >
       <div className="flex min-h-10 items-center gap-3 overflow-hidden pl-4">
         <span className="inline-flex items-center gap-1.5 rounded-sm bg-saints-red px-2.5 py-1 text-xs font-black uppercase leading-none text-white">
@@ -128,11 +140,11 @@ export function NewsTicker() {
         </span>
         <div className="min-w-0 flex-1 overflow-hidden saints-focus" tabIndex={0}>
           <div className="ticker-track flex w-max min-w-full items-center whitespace-nowrap text-sm font-semibold text-white/[0.88]">
-            {[0, 1].map((groupIndex) => (
+            {Array.from({ length: tickerCopies }, (_, groupIndex) => (
               <div
                 key={groupIndex}
                 ref={groupIndex === 0 ? tickerGroupRef : undefined}
-                className="ticker-group flex min-w-full shrink-0 items-center gap-8 pr-8"
+                className="ticker-group flex min-w-full shrink-0 items-center gap-10 pr-10"
                 aria-hidden={groupIndex > 0}
               >
                 {tickerHeadlines.map((headline, index) => (
