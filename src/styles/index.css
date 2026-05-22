@@ -65,7 +65,7 @@ input[type="date"] {
 }
 
 .ticker-track {
-  animation: ticker 42s linear infinite;
+  animation: ticker var(--ticker-duration, 120s) linear infinite;
   transform: translate3d(0, 0, 0);
   will-change: transform;
 }
