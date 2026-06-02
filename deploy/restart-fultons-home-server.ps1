@@ -39,6 +39,39 @@ if [ ! -f "$APPDATA_DIR/fultons.db" ]; then
   exit 1
 fi
 
+log "database preflight"
+python3 - "$APPDATA_DIR/fultons.db" <<'PY'
+import json
+import os
+import sqlite3
+import sys
+
+db_path = sys.argv[1]
+try:
+    conn = sqlite3.connect(db_path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        quick_check = conn.execute("PRAGMA quick_check").fetchone()[0]
+        user_table = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'"
+        ).fetchone()[0]
+        user_count = None
+        if user_table:
+            user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        print(json.dumps({
+            "dbPath": db_path,
+            "size": os.path.getsize(db_path),
+            "quickCheck": quick_check,
+            "userCount": user_count,
+        }, sort_keys=True))
+        if quick_check != "ok":
+            raise SystemExit("SQLite quick_check failed")
+    finally:
+        conn.close()
+except sqlite3.Error as exc:
+    raise SystemExit(f"SQLite startup preflight failed: {exc}") from exc
+PY
+
 log "storage mount"
 findmnt -T /srv/storage -o TARGET,SOURCE,FSTYPE,OPTIONS
 

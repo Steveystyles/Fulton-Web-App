@@ -4131,6 +4131,8 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     config=DAILY_QUIZ_CONFIG,
                     log=safe_log,
                 )
+                if result.get("status") == "published" and "questions" not in result:
+                    result = daily_quiz.quiz_payload(conn, quiz_date)
             status = (
                 HTTPStatus.OK
                 if result.get("status") == "published"
@@ -4293,14 +4295,17 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
                     return
                 payload = self.read_json()
+                quiz_date = str(payload.get("date") or today_game_date())
                 result = daily_quiz.regenerate_question(
                     conn,
-                    quiz_date=str(payload.get("date") or today_game_date()),
+                    quiz_date=quiz_date,
                     subject=str(payload.get("subject") or ""),
                     difficulty=str(payload.get("difficulty") or ""),
                     config=DAILY_QUIZ_CONFIG,
                     log=safe_log,
                 )
+                if result.get("status") == "published" and "questions" not in result:
+                    result = daily_quiz.quiz_payload(conn, quiz_date)
                 self.send_json(HTTPStatus.OK, result)
                 return
 

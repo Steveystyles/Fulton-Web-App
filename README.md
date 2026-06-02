@@ -28,6 +28,16 @@ npm start
 
 `npm start` runs the hardened production wrapper in `production_server.py`. It preserves the existing API while adding stronger password requirements, secure cookies, security headers, restricted CORS preflight handling, and basic login throttling.
 
+## Local Ops Dashboard
+
+Run the local external-monitor board with:
+
+```bat
+run-local-ops-dashboard.cmd
+```
+
+That launcher starts a localhost-only board at `http://127.0.0.1:8765/ops`, enables the SSH/public-health monitor endpoints, and reuses the existing process if the board is already up. Use `run-local-ops-dashboard.cmd --no-browser` if you want it to start quietly in the background.
+
 ## Homeserver Deployment
 
 The production container is built with `Dockerfile` and served through the Traefik-facing compose file at `deploy/compose.yaml`. Runtime data is mounted at `/srv/storage/appdata/fultons-quiz`.

@@ -1,25 +1,19 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
 import { NewsTicker } from "../components/NewsTicker";
 import { useAuth } from "../context/AuthContext";
-import { api, type DailyQuestionsResponse } from "../lib/api";
+import { api } from "../lib/api";
 import { Account } from "../pages/Account";
 import { Admin } from "../pages/Admin";
 import { Facts } from "../pages/Facts";
 import { Leaderboard } from "../pages/Leaderboard";
 import { Login } from "../pages/Login";
+import { LocalOps } from "../pages/LocalOps";
 import { News } from "../pages/News";
 import { Quiz } from "../pages/Quiz";
 import { Wordle } from "../pages/Wordle";
-
-function millisecondsUntilTomorrow() {
-  const now = new Date();
-  const tomorrow = new Date(now);
-  tomorrow.setHours(24, 0, 5, 0);
-  return Math.max(60_000, tomorrow.getTime() - now.getTime());
-}
 
 function AppFrame({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
   return (
@@ -32,7 +26,7 @@ function AppFrame({ children, compact = false }: { children: ReactNode; compact?
       <main
         id="main-content"
         className={[
-          "flex-1 overflow-x-hidden px-4 pb-[calc(6rem+env(safe-area-inset-bottom))]",
+          "flex-1 overflow-x-hidden px-4 pb-[calc(5rem+env(safe-area-inset-bottom))]",
           compact ? "pt-2" : "pt-4",
         ].join(" ")}
       >
@@ -45,74 +39,19 @@ function AppFrame({ children, compact = false }: { children: ReactNode; compact?
 
 export function AppRouter() {
   const { loading, user } = useAuth();
-  const [dailyQuestions, setDailyQuestions] = useState<DailyQuestionsResponse | null>(null);
-  const [quizLoading, setQuizLoading] = useState(false);
-  const [quizError, setQuizError] = useState<Error | null>(null);
+  const pathname =
+    typeof window === "undefined" ? "/" : window.location.pathname.replace(/\/+$/, "") || "/";
+  const localOpsMode = pathname === "/ops";
 
   useEffect(() => {
-    let active = true;
-    let refreshTimer: number | undefined;
-
-    if (user === null) {
-      setDailyQuestions(null);
-      setQuizError(null);
-      setQuizLoading(false);
-      return;
+    if (user !== null) {
+      api.warmNews();
     }
-
-    setQuizLoading(true);
-    setQuizError(null);
-
-    async function loadDailyQuestions(force = false) {
-      try {
-        const response = await api.dailyQuestions({ force });
-        if (active) {
-          setDailyQuestions(response);
-        }
-      } catch (caughtError) {
-        if (active) {
-          setQuizError(
-            caughtError instanceof Error
-              ? caughtError
-              : new Error("Daily quiz failed to load."),
-          );
-        }
-      } finally {
-        if (active) {
-          setQuizLoading(false);
-        }
-      }
-    }
-
-    function scheduleNextDailyRefresh() {
-      refreshTimer = window.setTimeout(() => {
-        void loadDailyQuestions(true).finally(() => {
-          if (active) {
-            scheduleNextDailyRefresh();
-          }
-        });
-      }, millisecondsUntilTomorrow());
-    }
-
-    function handleVisibilityChange() {
-      if (document.visibilityState === "visible") {
-        void loadDailyQuestions(true);
-      }
-    }
-
-    void loadDailyQuestions();
-    scheduleNextDailyRefresh();
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    api.warmNews();
-
-    return () => {
-      active = false;
-      if (refreshTimer !== undefined) {
-        window.clearTimeout(refreshTimer);
-      }
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
   }, [user]);
+
+  if (localOpsMode) {
+    return <LocalOps />;
+  }
 
   if (loading) {
     return (
@@ -158,26 +97,13 @@ export function AppRouter() {
           <Route
             path="/quiz"
             element={
-              <AppFrame>
-                <Quiz
-                  storageScope={user.id}
-                  quizDate={dailyQuestions?.date}
-                  footballQuestions={dailyQuestions?.football ?? []}
-                  generalQuestions={dailyQuestions?.general ?? []}
-                  loading={quizLoading}
-                  error={quizError}
-                />
+              <AppFrame compact>
+                <Quiz />
               </AppFrame>
             }
           />
-          <Route
-            path="/football"
-            element={<Navigate to="/quiz" replace />}
-          />
-          <Route
-            path="/general"
-            element={<Navigate to="/quiz" replace />}
-          />
+          <Route path="/football" element={<Navigate to="/quiz" replace />} />
+          <Route path="/general" element={<Navigate to="/quiz" replace />} />
           <Route
             path="/leaderboard"
             element={<Navigate to="/scores" replace />}

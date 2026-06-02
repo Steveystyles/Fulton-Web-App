@@ -1,4 +1,4 @@
-import { Flame, Hash, LoaderCircle, Medal, Trophy, X } from "lucide-react";
+import { CalendarDays, CircleHelp, Flame, Hash, Info, LoaderCircle, Medal, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Card } from "../components/Card";
@@ -14,6 +14,19 @@ function percent(value: number, maximum: number) {
 
 function dayLabel(value: number) {
   return `${value} day${value === 1 ? "" : "s"}`;
+}
+
+function shortDate(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+  }).format(new Date(year, month - 1, day));
+}
+
+function quizAccuracy(player: LeaderboardPlayer) {
+  const answered = player.quizPlayed * 3;
+  return answered > 0 ? `${Math.round((player.quizCorrect / answered) * 100)}%` : "0%";
 }
 
 export function Leaderboard() {
@@ -70,8 +83,8 @@ export function Leaderboard() {
     () => players.find((player) => player.id === user?.id) ?? null,
     [players, user?.id],
   );
-  const highestScore = useMemo(
-    () => players.reduce((highest, player) => Math.max(highest, player.totalPoints), 0),
+  const highestWeeklyScore = useMemo(
+    () => players.reduce((highest, player) => Math.max(highest, player.weeklyPoints), 0),
     [players],
   );
 
@@ -99,14 +112,20 @@ export function Leaderboard() {
       ) : (
         <>
           {currentPlayer ? (
-            <CurrentPlayerCard player={currentPlayer} highestScore={highestScore} />
+            <CurrentPlayerCard player={currentPlayer} highestWeeklyScore={highestWeeklyScore} />
           ) : null}
 
           <Card className="p-3">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-xs font-bold text-slate-500">
-                Select a player for the full breakdown.
-              </p>
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-black text-slate-950">7-day leaderboard</p>
+                {board ? (
+                  <p className="mt-0.5 flex items-center gap-1 text-xs font-bold text-slate-500">
+                    <CalendarDays aria-hidden="true" className="h-3.5 w-3.5" />
+                    {shortDate(board.summary.periodStart)} - {shortDate(board.summary.periodEnd)}
+                  </p>
+                ) : null}
+              </div>
               {board ? (
                 <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
                   {board.summary.playerCount} players
@@ -119,7 +138,7 @@ export function Leaderboard() {
                 <thead className="bg-slate-50 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
                   <tr>
                     <th className="px-3 py-2">Player</th>
-                    <th className="px-2 py-2 text-right">Score</th>
+                    <th className="px-2 py-2 text-right">This week</th>
                     <th className="px-3 py-2 text-right">Streak</th>
                   </tr>
                 </thead>
@@ -136,6 +155,7 @@ export function Leaderboard() {
               </table>
             </div>
           </Card>
+          <ScoreGuide />
         </>
       )}
 
@@ -145,14 +165,12 @@ export function Leaderboard() {
 }
 
 function CurrentPlayerCard({
-  highestScore,
+  highestWeeklyScore,
   player,
 }: {
-  highestScore: number;
+  highestWeeklyScore: number;
   player: LeaderboardPlayer;
 }) {
-  const scoredPoints = Math.max(1, player.totalPoints);
-
   return (
     <Card className="overflow-hidden p-0">
       <div className="bg-saints-black px-4 py-4 text-white">
@@ -160,7 +178,7 @@ function CurrentPlayerCard({
           <div className="min-w-0">
             <p className="flex items-center gap-2 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
               <Medal aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-              Your stats
+              Your 7-day score
             </p>
             <h1 className="mt-1 truncate text-2xl font-black">{player.username}</h1>
           </div>
@@ -174,9 +192,9 @@ function CurrentPlayerCard({
 
         <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
           <div>
-            <p className="text-5xl font-black leading-none">{player.totalPoints}</p>
+            <p className="text-5xl font-black leading-none">{player.weeklyPoints}</p>
             <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
-              total points
+              points this week
             </p>
           </div>
           <div className="text-right">
@@ -193,27 +211,35 @@ function CurrentPlayerCard({
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15">
           <div
             className="h-full rounded-full bg-saints-red"
-            style={{ width: percent(player.totalPoints, highestScore) }}
+            style={{ width: percent(player.weeklyPoints, highestWeeklyScore) }}
           />
         </div>
       </div>
 
       <div className="space-y-3 p-3">
-        <ContributionBar player={player} scoredPoints={scoredPoints} />
+        <ContributionBar
+          quizPoints={player.weeklyQuizPoints}
+          wordlePoints={player.weeklyWordlePoints}
+        />
         <div className="grid grid-cols-2 gap-2">
+          <ScoreFigure
+            icon={Hash}
+            label="All-time"
+            value={`${player.totalPoints} pts`}
+            detail="Your permanent total"
+          />
+          <ScoreFigure
+            icon={CircleHelp}
+            label="Quiz accuracy"
+            value={quizAccuracy(player)}
+            detail={`${player.quizCorrect} correct answers`}
+          />
           <ScoreFigure
             icon={Hash}
             label="Wordle"
             value={`${player.wordlePoints} pts`}
             detail={`${player.wordleWins}/${player.wordlePlayed} wins`}
           />
-          <ScoreFigure
-            icon={Trophy}
-            label="Quiz"
-            value={`${player.quizPoints} pts`}
-            detail={`${player.quizCorrect} correct`}
-          />
-          <StatFigure label="Quiz plays" value={player.quizPlayed} />
           <StatFigure label="Best streak" value={player.bestStreak} />
         </div>
       </div>
@@ -260,7 +286,7 @@ function ScoreRow({
         </div>
       </td>
       <td className="px-2 py-3 text-right text-base font-black text-slate-950">
-        {player.totalPoints}
+        {player.weeklyPoints}
       </td>
       <td className="px-3 py-3 text-right">
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-700">
@@ -272,28 +298,23 @@ function ScoreRow({
   );
 }
 
-function ContributionBar({
-  player,
-  scoredPoints,
-}: {
-  player: LeaderboardPlayer;
-  scoredPoints: number;
-}) {
+function ContributionBar({ quizPoints, wordlePoints }: { quizPoints: number; wordlePoints: number }) {
+  const scoredPoints = Math.max(1, quizPoints + wordlePoints);
   return (
     <div>
       <div className="h-3 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
         <div
           className="h-full bg-saints-black"
-          style={{ width: percent(player.wordlePoints, scoredPoints), float: "left" }}
+          style={{ width: percent(wordlePoints, scoredPoints), float: "left" }}
         />
         <div
-          className="h-full bg-emerald-500"
-          style={{ width: percent(player.quizPoints, scoredPoints), float: "left" }}
+          className="h-full bg-saints-red"
+          style={{ width: percent(quizPoints, scoredPoints), float: "left" }}
         />
       </div>
       <div className="mt-1 flex items-center justify-between text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
-        <span>Wordle</span>
-        <span>Quiz</span>
+        <span>Wordle {wordlePoints}</span>
+        <span>Quiz {quizPoints}</span>
       </div>
     </div>
   );
@@ -344,12 +365,15 @@ function PlayerDetailDialog({
 
         <div className="mt-4 grid grid-cols-3 gap-2">
           <StatFigure label="Rank" value={`#${player.rank}`} />
-          <StatFigure label="Score" value={player.totalPoints} />
+          <StatFigure label="This week" value={player.weeklyPoints} />
           <StatFigure label="Streak" value={player.currentStreak} />
         </div>
 
         <div className="mt-4 space-y-3">
-          <ContributionBar player={player} scoredPoints={Math.max(1, player.totalPoints)} />
+          <ContributionBar
+            quizPoints={player.weeklyQuizPoints}
+            wordlePoints={player.weeklyWordlePoints}
+          />
           <div className="grid grid-cols-2 gap-2">
             <ScoreFigure
               icon={Hash}
@@ -358,20 +382,37 @@ function PlayerDetailDialog({
               detail={`${player.wordleWins} wins from ${player.wordlePlayed}`}
             />
             <ScoreFigure
-              icon={Trophy}
+              icon={CircleHelp}
               label="Quiz points"
               value={player.quizPoints}
-              detail={`${player.quizCorrect} correct`}
+              detail={`${quizAccuracy(player)} accuracy`}
             />
-            <StatFigure label="Quiz max" value={player.quizMaxPoints} />
+            <StatFigure label="All-time" value={player.totalPoints} />
             <StatFigure label="Best streak" value={player.bestStreak} />
-            <StatFigure label="Quiz plays" value={player.quizPlayed} />
-            <StatFigure label="Wordles" value={player.wordlePlayed} />
           </div>
         </div>
       </Card>
     </div>,
     document.body,
+  );
+}
+
+function ScoreGuide() {
+  return (
+    <Card className="p-3">
+      <div className="flex items-start gap-2">
+        <Info aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-saints-red" strokeWidth={2.4} />
+        <div>
+          <h2 className="text-sm font-black text-slate-950">How scoring works</h2>
+          <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
+            Wordle awards 10 points for a first-guess win, then 5, 4, 3, 2, or 1. Quiz questions award 1, 3, or 5 points by difficulty, plus 3 for a perfect round.
+          </p>
+          <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
+            The leaderboard covers the latest seven days so new players can compete. Open any player to see their all-time total.
+          </p>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -393,7 +434,7 @@ function ScoreFigure({
   value,
 }: {
   detail: string;
-  icon: typeof Hash;
+  icon: typeof Hash | typeof CircleHelp;
   label: string;
   value: number | string;
 }) {

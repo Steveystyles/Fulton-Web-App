@@ -1,8 +1,8 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { api, type NewsItem } from "../lib/api";
-import { cleanNewsTitle } from "../lib/news";
+import { cleanNewsTitle, newsFallbackRefreshMs, newsStoryKey } from "../lib/news";
 
-const emptyHeadline = "No breaking Saints stories yet. The live feed is ready.";
+const emptyHeadline = "No Saints stories yet. The live feed is ready.";
 const minimumTickerSlots = 7;
 const tickerCopies = 3;
 
@@ -10,7 +10,7 @@ function mergeTickerItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
   const itemsByKey = new Map<string, NewsItem>();
 
   for (const item of [...nextItems, ...currentItems]) {
-    itemsByKey.set(item.sourceKey, item);
+    itemsByKey.set(newsStoryKey(item.title, item.source), item);
   }
 
   return Array.from(itemsByKey.values())
@@ -31,7 +31,7 @@ export function NewsTicker() {
 
     async function loadHeadlines(force = false) {
       try {
-        const response = await api.news(12, "breaking", { force });
+        const response = await api.news(12, "all", { force });
         if (active) {
           setItems((currentItems) => mergeTickerItems(currentItems, response.items));
         }
@@ -43,7 +43,7 @@ export function NewsTicker() {
     }
 
     void loadHeadlines();
-    pollTimer = window.setInterval(() => void loadHeadlines(true), 60_000);
+    pollTimer = window.setInterval(() => void loadHeadlines(true), newsFallbackRefreshMs);
 
     try {
       stream = new EventSource("/api/news/stream");
@@ -52,9 +52,7 @@ export function NewsTicker() {
           return;
         }
         const item = JSON.parse((event as MessageEvent<string>).data) as NewsItem;
-        if (item.priority === "breaking") {
-          setItems((currentItems) => mergeTickerItems(currentItems, [item]));
-        }
+        setItems((currentItems) => mergeTickerItems(currentItems, [item]));
       });
       stream.onerror = () => {
         stream?.close();
@@ -77,7 +75,9 @@ export function NewsTicker() {
     if (items.length === 0) {
       return [emptyHeadline];
     }
-    return items.map((item) => cleanNewsTitle(item.title, item.source));
+    const breakingItems = items.filter((item) => item.priority === "breaking");
+    const tickerItems = breakingItems.length > 0 ? breakingItems : items;
+    return tickerItems.map((item) => cleanNewsTitle(item.title, item.source));
   }, [items]);
   const tickerHeadlines = useMemo(() => {
     const repetitions = Math.max(1, Math.ceil(minimumTickerSlots / headlines.length));
@@ -123,7 +123,7 @@ export function NewsTicker() {
     };
   }, [tickerHeadlines]);
 
-  const tickerLabel = "Breaking";
+  const tickerLabel = items.some((item) => item.priority === "breaking") ? "Breaking" : "Latest";
 
   return (
     <section

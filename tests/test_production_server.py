@@ -457,10 +457,18 @@ class ProductionServerHardeningTests(unittest.TestCase):
             "status": "published",
             "questions": [],
         }
+        status_only = {
+            "date": "2026-06-03",
+            "status": "published",
+            "accepted_questions": 6,
+            "failed_attempts": 0,
+            "failure_reason": None,
+        }
         with (
             patch("server.DAILY_QUIZ_CONFIG", SimpleNamespace(internal_token="expected-token")),
             patch("server.connect_db") as connect_db,
-            patch("server.daily_quiz.regenerate_question", return_value=published) as regenerate,
+            patch("server.daily_quiz.regenerate_question", return_value=status_only) as regenerate,
+            patch("server.daily_quiz.quiz_payload", return_value=published) as quiz_payload,
         ):
             connect_db.return_value.__enter__.return_value = object()
             server.FultonsHandler.route_api(  # type: ignore[arg-type]
@@ -472,6 +480,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(sent, [(HTTPStatus.OK, published)])
         regenerate.assert_called_once()
+        quiz_payload.assert_called_once_with(connect_db.return_value.__enter__.return_value, "2026-06-03")
 
     def test_local_generate_quiz_action_uses_https_not_ssh(self) -> None:
         import ops_monitor

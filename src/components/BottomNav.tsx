@@ -13,7 +13,7 @@ export function BottomNav() {
   return (
     <nav
       aria-label="Bottom navigation"
-      className="bottom-nav border-t border-saints-line bg-saints-paper/95 px-1.5 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-nav backdrop-blur-xl"
+      className="bottom-nav border-t border-saints-line bg-saints-paper/95 px-1.5 pb-[max(0.35rem,env(safe-area-inset-bottom))] pt-1.5 shadow-nav backdrop-blur-xl"
     >
       <div className="mx-auto flex w-full max-w-[430px] gap-1">
         {navItems.map((item) => (

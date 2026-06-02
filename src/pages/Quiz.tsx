@@ -1,20 +1,12 @@
 import { CircleHelp, UsersRound } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { DailyQuiz } from "../components/DailyQuiz";
-import type { DailyQuizQuestion } from "../lib/api";
+import { useAuth } from "../context/AuthContext";
+import { api, type DailyQuestionsResponse } from "../lib/api";
 
 type QuizCategory = "football" | "general";
 
-type QuizProps = {
-  storageScope: string | number;
-  quizDate?: string;
-  footballQuestions: DailyQuizQuestion[];
-  generalQuestions: DailyQuizQuestion[];
-  loading: boolean;
-  error: Error | null;
-};
-
-const quizOptions: Array<{
+const options: Array<{
   value: QuizCategory;
   label: string;
   icon: typeof CircleHelp;
@@ -23,63 +15,85 @@ const quizOptions: Array<{
   { value: "general", label: "General knowledge", icon: UsersRound },
 ];
 
-export function Quiz({
-  storageScope,
-  quizDate,
-  footballQuestions,
-  generalQuestions,
-  loading,
-  error,
-}: QuizProps) {
+export function Quiz() {
+  const { user } = useAuth();
   const [category, setCategory] = useState<QuizCategory>("football");
-  const activeQuestions = category === "football" ? footballQuestions : generalQuestions;
-  const emptyMessage =
-    category === "football"
-      ? "Today's football quiz is not available yet."
-      : "Today's general knowledge quiz is not available yet.";
+  const [dailyQuestions, setDailyQuestions] = useState<DailyQuestionsResponse | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  const questionCountLabel = useMemo(() => {
-    const footballCount = footballQuestions.length;
-    const generalCount = generalQuestions.length;
-    return `${footballCount} football / ${generalCount} general`;
-  }, [footballQuestions.length, generalQuestions.length]);
+  useEffect(() => {
+    let active = true;
+
+    async function loadDailyQuestions(force = false) {
+      try {
+        const response = await api.dailyQuestions({ force });
+        if (active) {
+          setDailyQuestions(response);
+          setError(null);
+        }
+      } catch (caughtError) {
+        if (active) {
+          setError(caughtError instanceof Error ? caughtError : new Error("Daily quiz failed to load."));
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    function refreshWhenVisible() {
+      if (document.visibilityState === "visible") {
+        void loadDailyQuestions(true);
+      }
+    }
+
+    void loadDailyQuestions();
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      active = false;
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, []);
+
+  const questions =
+    category === "football"
+      ? dailyQuestions?.football ?? []
+      : dailyQuestions?.general ?? [];
 
   return (
     <section className="page-fade space-y-3" aria-label="Daily quiz">
       <div className="grid grid-cols-2 gap-2" aria-label="Quiz type">
-        {quizOptions.map((option) => {
+        {options.map((option) => {
           const Icon = option.icon;
           const active = option.value === category;
-
           return (
             <button
               key={option.value}
               type="button"
               onClick={() => setCategory(option.value)}
               className={[
-                "flex min-h-12 items-center justify-center gap-2 rounded-2xl border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
+                "flex min-h-12 items-center justify-center gap-2 rounded-lg border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
                 active
                   ? "border-saints-black bg-saints-black text-white shadow-sm"
-                  : "border-saints-line bg-white text-slate-700 hover:border-saints-red/40 hover:bg-saints-redSoft",
+                  : "border-saints-line bg-white text-slate-700 hover:border-saints-red/40",
               ].join(" ")}
             >
               <Icon aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.5} />
-              <span className="min-w-0 leading-tight">{option.label}</span>
+              <span className="leading-tight">{option.label}</span>
             </button>
           );
         })}
       </div>
 
-      <p className="sr-only">{questionCountLabel}</p>
-
       <DailyQuiz
-        quizId={category}
-        storageScope={storageScope}
-        quizDate={quizDate}
-        questions={activeQuestions}
+        category={category}
+        storageScope={user?.id ?? 0}
+        quizDate={dailyQuestions?.date}
+        questions={questions}
         loading={loading}
         error={error}
-        emptyMessage={emptyMessage}
       />
     </section>
   );

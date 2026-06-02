@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { Delete } from "lucide-react";
+import { BookOpen, Delete, ExternalLink, LoaderCircle } from "lucide-react";
 import { api, type FeedbackColor, type WordleState } from "../lib/api";
+import type { WordleDefinition } from "../lib/api";
 
 type GuessValidity = "empty" | "short" | "checking" | "valid" | "invalid";
 
@@ -31,6 +32,9 @@ export function Wordle() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [definition, setDefinition] = useState<WordleDefinition | null>(null);
+  const [definitionError, setDefinitionError] = useState("");
+  const [definitionLoading, setDefinitionLoading] = useState(false);
 
   const gameStatus = state?.result.status ?? "in_progress";
   const isComplete = gameStatus !== "in_progress";
@@ -65,6 +69,38 @@ export function Wordle() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    if (!isComplete) {
+      return;
+    }
+
+    setDefinitionLoading(true);
+    setDefinitionError("");
+    void api
+      .wordleDefinition()
+      .then((response) => {
+        if (active) {
+          setDefinition(response);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setDefinitionError("Dictionary definition is unavailable right now.");
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setDefinitionLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isComplete]);
 
   useEffect(() => {
     let active = true;
@@ -178,9 +214,9 @@ export function Wordle() {
   }
 
   return (
-    <section className="page-fade space-y-3" aria-label="Wordle game">
-      <section className="max-w-full overflow-hidden rounded-[1.75rem] saints-card p-3">
-        <form className="space-y-3 pb-2" onSubmit={handleSubmit}>
+    <section className="page-fade" aria-label="Wordle game">
+      <section className="max-w-full overflow-hidden rounded-lg saints-card p-2.5">
+        <form className="space-y-2" onSubmit={handleSubmit}>
           {statusText ? (
             <p className="text-center text-base font-black text-slate-700">{statusText}</p>
           ) : null}
@@ -192,7 +228,7 @@ export function Wordle() {
             </div>
           ) : null}
 
-          <div className="mx-auto grid max-w-[17rem] gap-1.5" aria-label="Wordle board">
+          <div className="mx-auto grid max-w-[14.5rem] gap-1" aria-label="Wordle board">
             {Array.from({ length: maxAttempts }, (_, rowIndex) => {
               const submittedGuess = guesses[rowIndex];
               const isDraftRow = submittedGuess === undefined && rowIndex === guesses.length;
@@ -201,7 +237,7 @@ export function Wordle() {
               return (
                 <div
                   key={rowIndex}
-                  className="grid gap-2"
+                  className="grid gap-1"
                   style={{ gridTemplateColumns: `repeat(${wordLength}, minmax(0, 1fr))` }}
                 >
                   {Array.from({ length: wordLength }, (_, letterIndex) => {
@@ -216,7 +252,7 @@ export function Wordle() {
                       <div
                         key={letterIndex}
                         className={[
-                          "flex aspect-square min-h-10 items-center justify-center rounded-lg border-2 text-3xl font-black uppercase leading-none shadow-sm",
+                          "flex aspect-square min-h-9 items-center justify-center rounded-md border-2 text-2xl font-black uppercase leading-none shadow-sm",
                           colorClass,
                         ].join(" ")}
                       >
@@ -229,7 +265,7 @@ export function Wordle() {
             })}
           </div>
 
-          <div className="min-h-6 text-center text-sm font-black">
+          <div className="min-h-5 text-center text-xs font-black">
             {guessValidity === "checking" ? (
               <span className="text-slate-500">Checking word</span>
             ) : guessValidity === "invalid" ? (
@@ -239,12 +275,12 @@ export function Wordle() {
             ) : null}
           </div>
 
-          <div className="space-y-1.5" aria-label="Wordle keyboard">
+          <div className="space-y-1" aria-label="Wordle keyboard">
             {keyboardRows.map((row, rowIndex) => (
               <div
                 key={row}
                 className={[
-                  "grid gap-1.5",
+                  "grid gap-1",
                   rowIndex === 1
                     ? "grid-cols-9 px-3"
                     : rowIndex === 2
@@ -257,7 +293,7 @@ export function Wordle() {
                     type="button"
                     onClick={() => void submitGuess()}
                     disabled={!canSubmit}
-                    className="flex min-h-10 items-center justify-center rounded-lg bg-saints-red px-1 text-xs font-black uppercase text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+                    className="flex min-h-9 items-center justify-center rounded-md bg-saints-red px-1 text-[0.68rem] font-black uppercase text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
                   >
                     Enter
                   </button>
@@ -277,7 +313,7 @@ export function Wordle() {
                       onClick={() => addLetter(letter)}
                       disabled={isComplete || submitting}
                       className={[
-                        "flex min-h-10 items-center justify-center rounded-lg text-sm font-black uppercase shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed",
+                        "flex min-h-9 items-center justify-center rounded-md text-xs font-black uppercase shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed",
                         colorClass,
                       ].join(" ")}
                     >
@@ -292,7 +328,7 @@ export function Wordle() {
                     aria-label="Delete letter"
                     onClick={removeLetter}
                     disabled={isComplete || submitting || guess.length === 0}
-                    className="flex min-h-10 items-center justify-center rounded-lg bg-slate-100 text-slate-950 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    className="flex min-h-9 items-center justify-center rounded-md bg-slate-100 text-slate-950 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                   >
                     <Delete aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
                   </button>
@@ -307,6 +343,52 @@ export function Wordle() {
             </p>
           ) : null}
         </form>
+
+        {isComplete ? (
+          <section className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3" aria-label="Word definition">
+            <div className="flex items-start gap-2">
+              <BookOpen aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-saints-red" strokeWidth={2.4} />
+              <div className="min-w-0">
+                <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+                  Today's word
+                </p>
+                <h2 className="mt-1 text-xl font-black uppercase text-slate-950">
+                  {definition?.word ?? state?.result.answer}
+                </h2>
+                {definitionLoading ? (
+                  <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-slate-500">
+                    <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
+                    Loading dictionary definition
+                  </p>
+                ) : definition?.definition ? (
+                  <>
+                    {definition.partOfSpeech ? (
+                      <p className="mt-1 text-xs font-black italic text-slate-500">
+                        {definition.partOfSpeech}
+                      </p>
+                    ) : null}
+                    <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
+                      {definition.definition}
+                    </p>
+                    <a
+                      href={definition.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-flex items-center gap-1 text-xs font-black text-saints-red underline-offset-2 hover:underline"
+                    >
+                      Dictionary source
+                      <ExternalLink aria-hidden="true" className="h-3 w-3" />
+                    </a>
+                  </>
+                ) : (
+                  <p className="mt-2 text-sm font-semibold text-slate-500">
+                    {definitionError || "Dictionary definition is unavailable for this word."}
+                  </p>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : null}
       </section>
     </section>
   );

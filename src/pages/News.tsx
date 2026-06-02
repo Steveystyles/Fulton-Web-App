@@ -1,5 +1,6 @@
 import {
   ArrowDownUp,
+  Clock3,
   ExternalLink,
   LoaderCircle,
   Newspaper,
@@ -9,7 +10,13 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../components/Card";
 import { api, type NewsCategory, type NewsItem } from "../lib/api";
-import { cleanNewsTitle } from "../lib/news";
+import {
+  cleanNewsSummary,
+  cleanNewsTitle,
+  newsFallbackRefreshMs,
+  newsStoryKey,
+  visibleNewsTags,
+} from "../lib/news";
 
 type FeedStatus = "loading" | "live" | "polling" | "offline";
 type NewsOrder = "newest" | "oldest";
@@ -25,7 +32,7 @@ function mergeItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
   const itemsByKey = new Map<string, NewsItem>();
 
   for (const item of [...nextItems, ...currentItems]) {
-    itemsByKey.set(item.sourceKey, item);
+    itemsByKey.set(newsStoryKey(item.title, item.source), item);
   }
 
   return Array.from(itemsByKey.values()).sort((left, right) => {
@@ -55,6 +62,16 @@ function formatPriority(priority: string) {
     return "Breaking";
   }
   return "News";
+}
+
+function priorityClass(priority: string) {
+  if (priority === "breaking") {
+    return "bg-saints-red text-white";
+  }
+  if (priority === "live-scores") {
+    return "bg-amber-50 text-amber-700 ring-1 ring-amber-200";
+  }
+  return "bg-slate-100 text-slate-700 ring-1 ring-slate-200";
 }
 
 function shouldShowItem(item: NewsItem, category: NewsCategory) {
@@ -118,12 +135,12 @@ export function News() {
         stream = null;
         if (active) {
           setStatus("polling");
-          pollTimer = window.setInterval(() => void loadLatest("polling", true), 60_000);
+          pollTimer = window.setInterval(() => void loadLatest("polling", true), newsFallbackRefreshMs);
         }
       };
     } catch {
       setStatus("polling");
-      pollTimer = window.setInterval(() => void loadLatest("polling", true), 60_000);
+      pollTimer = window.setInterval(() => void loadLatest("polling", true), newsFallbackRefreshMs);
     }
 
     return () => {
@@ -257,50 +274,75 @@ export function News() {
       <section className="space-y-3" aria-label="Latest news stories">
         {orderedItems.map((item) => {
           const title = cleanNewsTitle(item.title, item.source);
+          const summary = cleanNewsSummary(item.summary, title, item.source);
+          const tags = visibleNewsTags(item.tags);
 
           return (
-            <Card key={item.sourceKey} as="article" className="p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <h3 className="text-lg font-black leading-tight text-slate-950">
+            <Card
+              key={newsStoryKey(title, item.source)}
+              as="article"
+              className="rounded-[1.35rem] p-0"
+            >
+              <div className="border-l-4 border-saints-red">
+                <div className="p-4 sm:p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-[0.68rem] font-black uppercase tracking-wide text-slate-500">
+                        {item.source}
+                      </p>
+                      <p className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-slate-500">
+                        <Clock3 aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.4} />
+                        {formatPublishedAt(item.publishedAt)}
+                      </p>
+                    </div>
+                    <span
+                      className={[
+                        "inline-flex min-h-7 shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-wide",
+                        priorityClass(item.priority),
+                      ].join(" ")}
+                    >
+                      {item.priority === "live-scores" ? (
+                        <Trophy aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+                      ) : null}
+                      {formatPriority(item.priority)}
+                    </span>
+                  </div>
+
+                  <h3 className="mt-4 text-lg font-black leading-snug text-slate-950">
                     {title}
                   </h3>
-                  <p className="mt-2 text-xs font-black uppercase tracking-normal text-saints-red">
-                    {item.source} - {formatPublishedAt(item.publishedAt)}
-                  </p>
-                </div>
-                <a
-                  href={item.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={`Open story: ${title}`}
-                  className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-saints-mist text-slate-950 transition hover:bg-saints-red hover:text-white focus:outline-none focus:ring-4 focus:ring-saints-red/20"
-                >
-                  <ExternalLink aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-                </a>
-              </div>
 
-              {item.summary ? (
-                <p className="mt-2 text-sm font-semibold leading-relaxed text-slate-600">
-                  {item.summary}
-                </p>
-              ) : null}
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <span className="inline-flex items-center gap-1 rounded-full bg-saints-redSoft px-2.5 py-1 text-xs font-black uppercase text-saints-red">
-                  {item.priority === "live-scores" ? (
-                    <Trophy aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+                  {summary ? (
+                    <p className="mt-2.5 text-[0.95rem] font-medium leading-6 text-slate-600">
+                      {summary}
+                    </p>
                   ) : null}
-                  {formatPriority(item.priority)}
-                </span>
-                {item.tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="rounded-full bg-saints-mist px-2.5 py-1 text-xs font-black uppercase text-slate-600"
+                </div>
+
+                <div className="flex flex-col gap-3 border-t border-slate-200 bg-slate-50/80 px-4 py-3 sm:px-5">
+                  {tags.length > 0 ? (
+                    <div className="flex flex-wrap gap-2" aria-label="Story tags">
+                      {tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded-full bg-white px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-wide text-slate-600 ring-1 ring-slate-200"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <a
+                    href={item.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={`Read story from ${item.source}: ${title}`}
+                    className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-2xl bg-saints-black px-4 py-2 text-sm font-black text-white transition hover:bg-saints-charcoal focus:outline-none focus:ring-4 focus:ring-saints-red/20 sm:w-auto sm:self-start"
                   >
-                    {tag}
-                  </span>
-                ))}
+                    Read story
+                    <ExternalLink aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+                  </a>
+                </div>
               </div>
             </Card>
           );
