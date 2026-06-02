@@ -14,7 +14,7 @@ import server
 COOKIE_SECURE = os.environ.get("FULTONS_COOKIE_SECURE", "1") == "1"
 FACT_IMAGE_CACHE: dict[str, dict[str, Any]] = {}
 FACT_IMAGE_TIMEOUT_SEC = int(os.environ.get("FULTONS_FACT_IMAGE_TIMEOUT_SEC", "18"))
-FACT_IMAGE_OPENAI_MODEL = os.environ.get("FULTONS_FACT_IMAGE_OPENAI_MODEL", server.QUIZ_OPENAI_MODEL)
+FACT_IMAGE_OPENAI_MODEL = os.environ.get("FULTONS_FACT_IMAGE_OPENAI_MODEL", server.OPENAI_MODEL)
 GENERIC_IMAGE_TERMS = (
     "arms",
     "badge",
@@ -69,9 +69,8 @@ def clear_session_header() -> str:
 def _api_key() -> str:
     return (
         os.environ.get("FULTONS_OPENAI_API_KEY")
-        or os.environ.get("FULTONS_QUIZ_OPENAI_API_KEY")
         or os.environ.get("OPENAI_API_KEY")
-        or server.QUIZ_OPENAI_API_KEY
+        or server.OPENAI_API_KEY
         or ""
     )
 
@@ -170,7 +169,7 @@ def _planned_queries(title: str, text: str, place_title: str) -> list[str]:
             "https://api.openai.com/v1/chat/completions",
             data=payload,
             headers={"Authorization": "Bearer " + api_key},
-            timeout=server.QUIZ_OPENAI_TIMEOUT_SEC,
+            timeout=server.OPENAI_TIMEOUT_SEC,
         )
         parsed = json.loads(response.get("choices", [{}])[0].get("message", {}).get("content", "{}"))
         raw_queries = parsed.get("queries", [])
@@ -326,7 +325,7 @@ def _choose_relevant_candidate(title: str, text: str, place_title: str, candidat
             "https://api.openai.com/v1/chat/completions",
             data=payload,
             headers={"Authorization": "Bearer " + api_key},
-            timeout=server.QUIZ_OPENAI_TIMEOUT_SEC,
+            timeout=server.OPENAI_TIMEOUT_SEC,
         )
         parsed = json.loads(response.get("choices", [{}])[0].get("message", {}).get("content", "{}"))
         index = parsed.get("index")

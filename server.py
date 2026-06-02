@@ -17,16 +17,21 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote_plus, urlparse
+from urllib.parse import parse_qs, quote, quote_plus, urlparse
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
+
+import daily_quiz
+import local_ops_settings
+import ops_monitor
 
 try:
     from zoneinfo import ZoneInfo
@@ -38,7 +43,6 @@ PROJECT_DIR = APP_DIR.parent
 DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "fultons.db"
 DIST_DIR = APP_DIR / "dist"
-QUIZ_DATA_DIR = DATA_DIR / "quizzes"
 SESSION_COOKIE = "fultons_session"
 SESSION_DAYS = 14
 PASSWORD_ITERATIONS = 260_000
@@ -50,7 +54,16 @@ NEWS_LIMIT_MAX = 100
 NEWS_MONITOR_ENABLED = os.environ.get("FULTONS_NEWS_MONITOR_ENABLED", "1") != "0"
 NEWS_MONITOR_INTERVAL_SEC = max(
     300,
-    int(os.environ.get("FULTONS_NEWS_MONITOR_INTERVAL_SEC", "900")),
+    int(os.environ.get("FULTONS_NEWS_MONITOR_INTERVAL_SEC", "3600")),
+)
+DAILY_QUIZ_SCHEDULER_ENABLED = (
+    os.environ.get("FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED", "1") != "0"
+)
+DAILY_QUIZ_SCHEDULER_HOUR = int(
+    os.environ.get("FULTONS_DAILY_QUIZ_SCHEDULER_HOUR", "0")
+)
+DAILY_QUIZ_SCHEDULER_MINUTE = int(
+    os.environ.get("FULTONS_DAILY_QUIZ_SCHEDULER_MINUTE", "5")
 )
 NEWS_USER_AGENT = os.environ.get(
     "FULTONS_NEWS_USER_AGENT",
@@ -61,14 +74,58 @@ HISTORY_USER_AGENT = os.environ.get(
     "FultonHistory/1.0 (+https://fultons-quiz.co.uk)",
 )
 HISTORY_CACHE_TTL_SEC = int(os.environ.get("HISTORY_CACHE_TTL_SEC", "86400"))
-QUIZ_OPENAI_API_KEY = (
-    os.environ.get("FULTONS_QUIZ_OPENAI_API_KEY")
-    or os.environ.get("FULTONS_OPENAI_API_KEY")
+OPENAI_API_KEY = (
+    os.environ.get("FULTONS_OPENAI_API_KEY")
     or os.environ.get("OPENAI_API_KEY")
     or ""
 )
-QUIZ_OPENAI_MODEL = os.environ.get("FULTONS_QUIZ_OPENAI_MODEL", "gpt-4.1-mini")
-QUIZ_OPENAI_TIMEOUT_SEC = int(os.environ.get("FULTONS_QUIZ_OPENAI_TIMEOUT_SEC", "30"))
+OPENAI_MODEL = os.environ.get(
+    "FULTONS_OPENAI_MODEL",
+    "gpt-4.1-mini",
+)
+OPENAI_TIMEOUT_SEC = int(os.environ.get("FULTONS_OPENAI_TIMEOUT_SEC", "30"))
+FACT_ROTATION_TTL_SEC = int(os.environ.get("FULTONS_FACT_ROTATION_TTL_SEC", "86400"))
+FACTS_GEMINI_API_KEY = (
+    os.environ.get("FULTONS_FACTS_GEMINI_API_KEY")
+    or os.environ.get("GEMINI_API_KEY")
+    or ""
+)
+FACTS_AI_GENERATOR_MODEL = os.environ.get(
+    "FULTONS_FACTS_AI_GENERATOR_MODEL",
+    os.environ.get("AI_GENERATOR_MODEL", "gemini-3.5-flash"),
+).strip()
+FACTS_AI_CRITIC_MODEL = os.environ.get(
+    "FULTONS_FACTS_AI_CRITIC_MODEL",
+    os.environ.get("AI_CRITIC_MODEL", "gemini-3.1-flash-lite"),
+).strip()
+FACTS_AI_TIMEOUT_SEC = max(
+    5,
+    int(os.environ.get("FULTONS_FACTS_AI_TIMEOUT_SEC", os.environ.get("AI_TIMEOUT_SEC", "20"))),
+)
+FACTS_AI_REQUEST_DELAY_SEC = max(
+    0.0,
+    float(
+        os.environ.get(
+            "FULTONS_FACTS_AI_REQUEST_DELAY_SEC",
+            os.environ.get("AI_REQUEST_DELAY_SEC", "2"),
+        )
+    ),
+)
+FACTS_AI_TRANSIENT_RETRIES = max(
+    0,
+    int(
+        os.environ.get(
+            "FULTONS_FACTS_AI_TRANSIENT_RETRIES",
+            os.environ.get("AI_TRANSIENT_RETRIES", "2"),
+        )
+    ),
+)
+DAILY_QUIZ_CONFIG = daily_quiz.QuizConfig.from_env()
+EXPECTED_DATA_DIR = os.environ.get("FULTONS_EXPECT_DATA_DIR", "").strip()
+REQUIRE_EXISTING_DB = os.environ.get("FULTONS_REQUIRE_EXISTING_DB", "0") == "1"
+MIN_DB_USERS = int(os.environ.get("FULTONS_MIN_DB_USERS", "0"))
+HEALTH_DETAIL = os.environ.get("FULTONS_HEALTH_DETAIL", "0") == "1"
+LOCAL_OPS_ENABLED = os.environ.get("FULTONS_LOCAL_OPS_ENABLED", "0") == "1"
 COOKIE_SECURE = os.environ.get("FULTONS_COOKIE_SECURE", "0") == "1"
 SEED_DEMO_USERS = os.environ.get("FULTONS_SEED_DEMO_USERS", "0") == "1"
 BOOTSTRAP_ADMIN_USERNAME = os.environ.get("FULTONS_BOOTSTRAP_ADMIN_USERNAME", "").strip()
@@ -88,9 +145,14 @@ CORS_ALLOWED_ORIGINS = {
     for origin in os.environ.get("FULTONS_ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 }
-DIFFICULTIES = ("easy", "medium", "hard")
-QUIZ_POINTS_BY_DIFFICULTY = {"easy": 1, "medium": 3, "hard": 5}
 WORDLE_POINTS_BY_ATTEMPT = {1: 10, 2: 5, 3: 4, 4: 3, 5: 2, 6: 1}
+QUIZ_POINTS_BY_DIFFICULTY = {"easy": 1, "medium": 3, "hard": 5}
+QUIZ_PERFECT_ROUND_BONUS = 3
+WORD_DEFINITION_TIMEOUT_SEC = max(
+    1,
+    int(os.environ.get("FULTONS_WORD_DEFINITION_TIMEOUT_SEC", "5")),
+)
+WORD_DEFINITION_CACHE: dict[str, dict[str, str | None]] = {}
 NEWS_QUERIES = (
     '"St Mirren"',
     '"St Mirren" football',
@@ -283,12 +345,19 @@ FACT_THEME_LABELS = {
     "date": "Anniversary",
     "general": "Local fact",
 }
+FACT_CRITIC_THRESHOLDS = {
+    "relevance": 8,
+    "interestingness": 7,
+    "placeSpecificity": 8,
+}
 
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
 HISTORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOGIN_ATTEMPTS: dict[str, tuple[int, float]] = {}
 LOGIN_ATTEMPTS_LOCK = threading.Lock()
+FACTS_AI_LOCK = threading.Lock()
+FACTS_AI_NEXT_REQUEST_AT = 0.0
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -331,6 +400,148 @@ def safe_log(message: str) -> None:
         print(message, flush=True)
     except OSError:
         pass
+
+
+def is_loopback_ip(value: str) -> bool:
+    return value in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+
+def db_user_count(conn: sqlite3.Connection) -> int | None:
+    row = conn.execute(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+    ).fetchone()
+    if row is None or row["count"] == 0:
+        return None
+    return int(conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"])
+
+
+def runtime_storage_health(
+    *,
+    write_check: bool = False,
+    require_existing_db: bool | None = None,
+    min_users: int | None = None,
+) -> dict[str, Any]:
+    require_db = REQUIRE_EXISTING_DB if require_existing_db is None else require_existing_db
+    minimum_users = MIN_DB_USERS if min_users is None else min_users
+    errors: list[str] = []
+    payload: dict[str, Any] = {
+        "ok": True,
+        "dataDir": str(DATA_DIR),
+        "dbPath": str(DB_PATH),
+        "expectedDataDir": EXPECTED_DATA_DIR or None,
+        "uid": os.getuid() if hasattr(os, "getuid") else None,
+        "gid": os.getgid() if hasattr(os, "getgid") else None,
+        "writeCheck": write_check,
+        "requireExistingDb": require_db,
+        "minUsers": minimum_users,
+    }
+
+    if EXPECTED_DATA_DIR and str(DATA_DIR) != EXPECTED_DATA_DIR:
+        errors.append(f"DATA_DIR is {DATA_DIR}, expected {EXPECTED_DATA_DIR}")
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        errors.append(f"Cannot create data directory: {error}")
+
+    payload["dataDirExists"] = DATA_DIR.exists()
+    payload["dataDirIsDir"] = DATA_DIR.is_dir()
+    payload["dataDirWritable"] = os.access(DATA_DIR, os.W_OK) if DATA_DIR.exists() else False
+
+    if write_check and DATA_DIR.exists():
+        probe_path = DATA_DIR / ".fultons-startup-write-test"
+        try:
+            probe_path.write_text("ok", encoding="utf-8")
+            probe_path.unlink(missing_ok=True)
+            payload["dataDirWriteProbe"] = "ok"
+        except OSError as error:
+            errors.append(f"Cannot write to data directory: {error}")
+            payload["dataDirWriteProbe"] = "failed"
+
+    payload["dbExists"] = DB_PATH.exists()
+    if require_db and not DB_PATH.exists():
+        errors.append(f"Required database is missing at {DB_PATH}")
+
+    if DB_PATH.exists():
+        try:
+            payload["dbSizeBytes"] = DB_PATH.stat().st_size
+            payload["dbWritable"] = os.access(DB_PATH, os.W_OK)
+        except OSError as error:
+            errors.append(f"Cannot stat database: {error}")
+
+    if require_db and not DB_PATH.exists():
+        payload["errors"] = errors
+        payload["ok"] = not errors
+        return payload
+
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        try:
+            quick_check = conn.execute("PRAGMA quick_check").fetchone()
+            payload["quickCheck"] = quick_check[0] if quick_check is not None else None
+            if payload["quickCheck"] != "ok":
+                errors.append(f"SQLite quick_check returned {payload['quickCheck']!r}")
+
+            table_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'"
+            ).fetchone()
+            payload["tableCount"] = int(table_row["count"]) if table_row else 0
+            user_count = db_user_count(conn)
+            payload["userCount"] = user_count
+            if minimum_users > 0 and (user_count is None or user_count < minimum_users):
+                errors.append(
+                    f"Database user count is {user_count or 0}, expected at least {minimum_users}"
+                )
+
+            if write_check:
+                now = utc_now()
+                with conn:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS startup_checks (
+                            checked_at TEXT PRIMARY KEY
+                        )
+                        """
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO startup_checks (checked_at) VALUES (?)",
+                        (now,),
+                    )
+                    conn.execute("DELETE FROM startup_checks WHERE checked_at = ?", (now,))
+                payload["dbWriteProbe"] = "ok"
+        finally:
+            conn.close()
+    except sqlite3.Error as error:
+        errors.append(f"SQLite access failed: {error}")
+    except OSError as error:
+        errors.append(f"Database filesystem access failed: {error}")
+
+    payload["errors"] = errors
+    payload["ok"] = not errors
+    return payload
+
+
+def assert_runtime_storage_ready(stage: str) -> None:
+    payload = runtime_storage_health(write_check=True)
+    if payload["ok"]:
+        safe_log(
+            "Runtime storage check passed "
+            f"({stage}): db={payload.get('dbPath')} users={payload.get('userCount')}"
+        )
+        return
+
+    safe_log(f"Runtime storage check failed ({stage}): {json.dumps(payload, sort_keys=True)}")
+    raise RuntimeError("; ".join(payload["errors"]))
+
+
+def health_storage_payload(storage: dict[str, Any]) -> dict[str, Any]:
+    if HEALTH_DETAIL:
+        return storage
+    return {
+        "ok": storage["ok"],
+        "errorCount": len(storage.get("errors", [])),
+    }
 
 
 def hash_password(password: str) -> str:
@@ -492,12 +703,38 @@ def initialize_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_news_items_published_at
             ON news_items (published_at DESC);
+
+            CREATE TABLE IF NOT EXISTS history_fact_rotations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rotation_key TEXT NOT NULL,
+                facts_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_history_fact_rotations_key_created_at
+            ON history_fact_rotations (rotation_key, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS history_fact_review_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rotation_key TEXT NOT NULL,
+                selection_json TEXT,
+                critique_json TEXT,
+                failure_reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_history_fact_review_failures_key_created_at
+            ON history_fact_review_failures (rotation_key, created_at DESC);
             """
             )
             ensure_column(conn, "users", "is_moderator", "INTEGER NOT NULL DEFAULT 0")
             ensure_column(conn, "daily_wordle_games", "cycle", "INTEGER NOT NULL DEFAULT 1")
             ensure_column(conn, "wordle_results", "score", "INTEGER NOT NULL DEFAULT 0")
+            ensure_column(conn, "daily_quiz_results", "bonus_points", "INTEGER NOT NULL DEFAULT 0")
+            ensure_column(conn, "news_items", "story_key", "TEXT NOT NULL DEFAULT ''")
             backfill_wordle_scores(conn)
+            daily_quiz.initialize_database(conn)
+            backfill_daily_quiz_scores(conn)
             user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
             if user_count == 0:
                 bootstrap_error = validate_bootstrap_admin()
@@ -513,7 +750,14 @@ def initialize_database() -> None:
                     if bootstrap_error is not None:
                         safe_log(f"Admin bootstrap skipped: {bootstrap_error}")
                     safe_log("No users exist and demo seeding is disabled.")
-            backfill_news_categories(conn)
+            backfill_news_items(conn)
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_news_items_story_key
+                ON news_items (story_key)
+                WHERE story_key <> ''
+                """
+            )
 
 
 def ensure_column(
@@ -863,606 +1107,58 @@ def serialize_wordle_state(
     }
 
 
-CURATED_QUIZ_BANK: dict[str, dict[str, list[dict[str, Any]]]] = {
-    "football": {
-        "easy": [
-            {
-                "question": "What nickname is commonly used for St Mirren?",
-                "answers": ["The Buddies", "The Jags", "The Spiders", "The Bairns"],
-                "correct_answer": "The Buddies",
-                "explanation": "St Mirren are widely known as The Buddies.",
-            },
-            {
-                "question": "In which town is St Mirren Park located?",
-                "answers": ["Paisley", "Greenock", "Ayr", "Dumfries"],
-                "correct_answer": "Paisley",
-                "explanation": "St Mirren Park is in Paisley, Renfrewshire.",
-            },
-            {
-                "question": "How many players does a football team start with on the pitch?",
-                "answers": ["9", "10", "11", "12"],
-                "correct_answer": "11",
-                "explanation": "A standard football team starts with 11 players.",
-            },
-            {
-                "question": "Which card sends a player off in football?",
-                "answers": ["Blue", "Green", "Yellow", "Red"],
-                "correct_answer": "Red",
-                "explanation": "A red card means the player is sent off.",
-            },
-            {
-                "question": "What is the top division of Scottish league football called?",
-                "answers": ["Scottish Premiership", "Scottish Championship", "League One", "League Two"],
-                "correct_answer": "Scottish Premiership",
-                "explanation": "The Scottish Premiership is the top tier of the SPFL.",
-            },
-        ],
-        "medium": [
-            {
-                "question": "Which year did St Mirren win the Scottish Cup by beating Dundee United 1-0?",
-                "answers": ["1977", "1987", "1997", "2007"],
-                "correct_answer": "1987",
-                "explanation": "Ian Ferguson's extra-time goal won the 1987 final against Dundee United.",
-            },
-            {
-                "question": "Which club plays its home matches at Tynecastle Park?",
-                "answers": ["Hearts", "Hibernian", "Dundee", "Kilmarnock"],
-                "correct_answer": "Hearts",
-                "explanation": "Tynecastle Park is the home ground of Heart of Midlothian.",
-            },
-            {
-                "question": "What does VAR stand for in football?",
-                "answers": [
-                    "Video Assistant Referee",
-                    "Verified Action Replay",
-                    "Virtual Assistant Review",
-                    "Video Assessment Rule",
-                ],
-                "correct_answer": "Video Assistant Referee",
-                "explanation": "VAR means Video Assistant Referee.",
-            },
-            {
-                "question": "Which national team did Kenny Dalglish represent?",
-                "answers": ["Scotland", "England", "Wales", "Northern Ireland"],
-                "correct_answer": "Scotland",
-                "explanation": "Kenny Dalglish is one of Scotland's most celebrated footballers.",
-            },
-            {
-                "question": "Which Edinburgh club plays at Easter Road?",
-                "answers": ["Hibernian", "Hearts", "Livingston", "Raith Rovers"],
-                "correct_answer": "Hibernian",
-                "explanation": "Easter Road is Hibernian's home stadium.",
-            },
-        ],
-        "hard": [
-            {
-                "question": "Who managed St Mirren when they won the 1987 Scottish Cup?",
-                "answers": ["Alex Smith", "Tom Hendrie", "Jim Clunie", "Tony Fitzpatrick"],
-                "correct_answer": "Alex Smith",
-                "explanation": "Alex Smith was St Mirren manager for the 1987 Scottish Cup win.",
-            },
-            {
-                "question": "Who scored St Mirren's winning goal in the 1987 Scottish Cup final?",
-                "answers": ["Ian Ferguson", "Frank McGarvey", "Billy Stark", "Neil Cooper"],
-                "correct_answer": "Ian Ferguson",
-                "explanation": "Ian Ferguson scored the only goal against Dundee United.",
-            },
-            {
-                "question": "Which club did St Mirren beat in the 2013 Scottish League Cup final?",
-                "answers": ["Hearts", "Celtic", "Rangers", "Aberdeen"],
-                "correct_answer": "Hearts",
-                "explanation": "St Mirren beat Hearts 3-2 in the 2013 final.",
-            },
-            {
-                "question": "Which stadium hosted St Mirren's 1987 Scottish Cup final win?",
-                "answers": ["Hampden Park", "Ibrox", "Celtic Park", "Pittodrie"],
-                "correct_answer": "Hampden Park",
-                "explanation": "The 1987 Scottish Cup final was played at Hampden Park.",
-            },
-            {
-                "question": "Which Scottish club is nicknamed The Jambos?",
-                "answers": ["Hearts", "Partick Thistle", "Queen's Park", "Falkirk"],
-                "correct_answer": "Hearts",
-                "explanation": "The Jambos is a common nickname for Heart of Midlothian.",
-            },
-        ],
-    },
-    "general": {
-        "easy": [
-            {
-                "question": "Which planet is known as the Red Planet?",
-                "answers": ["Mars", "Venus", "Saturn", "Mercury"],
-                "correct_answer": "Mars",
-                "explanation": "Mars is called the Red Planet because iron oxide gives it a reddish colour.",
-            },
-            {
-                "question": "What is the largest planet in our solar system?",
-                "answers": ["Jupiter", "Earth", "Neptune", "Uranus"],
-                "correct_answer": "Jupiter",
-                "explanation": "Jupiter is the largest planet in the solar system.",
-            },
-            {
-                "question": "At sea level, what temperature does water freeze at in Celsius?",
-                "answers": ["0", "10", "32", "100"],
-                "correct_answer": "0",
-                "explanation": "Water freezes at 0 degrees Celsius at standard pressure.",
-            },
-            {
-                "question": "Who wrote the Harry Potter book series?",
-                "answers": ["J.K. Rowling", "Roald Dahl", "Suzanne Collins", "Philip Pullman"],
-                "correct_answer": "J.K. Rowling",
-                "explanation": "J.K. Rowling wrote the Harry Potter novels.",
-            },
-            {
-                "question": "What is the smallest prime number?",
-                "answers": ["1", "2", "3", "5"],
-                "correct_answer": "2",
-                "explanation": "Two is the smallest prime number and the only even prime.",
-            },
-        ],
-        "medium": [
-            {
-                "question": "Which Japanese art form is based on folding paper?",
-                "answers": ["Origami", "Ikebana", "Haiku", "Bonsai"],
-                "correct_answer": "Origami",
-                "explanation": "Origami is the art of paper folding.",
-            },
-            {
-                "question": "Who painted The Starry Night?",
-                "answers": ["Vincent van Gogh", "Claude Monet", "Pablo Picasso", "Henri Matisse"],
-                "correct_answer": "Vincent van Gogh",
-                "explanation": "Vincent van Gogh painted The Starry Night in 1889.",
-            },
-            {
-                "question": "What is the currency of Japan?",
-                "answers": ["Yen", "Won", "Yuan", "Ringgit"],
-                "correct_answer": "Yen",
-                "explanation": "Japan's currency is the yen.",
-            },
-            {
-                "question": "What process do plants use to convert light into chemical energy?",
-                "answers": ["Photosynthesis", "Respiration", "Fermentation", "Condensation"],
-                "correct_answer": "Photosynthesis",
-                "explanation": "Photosynthesis lets plants use light to make sugars.",
-            },
-            {
-                "question": "Which organ pumps blood around the human body?",
-                "answers": ["Heart", "Liver", "Kidney", "Lung"],
-                "correct_answer": "Heart",
-                "explanation": "The heart pumps blood through the circulatory system.",
-            },
-        ],
-        "hard": [
-            {
-                "question": "Which machine is Ada Lovelace most closely associated with?",
-                "answers": ["Analytical Engine", "Difference Printer", "Enigma Machine", "Manchester Baby"],
-                "correct_answer": "Analytical Engine",
-                "explanation": "Ada Lovelace wrote notes about Charles Babbage's Analytical Engine.",
-            },
-            {
-                "question": "Which element has the chemical symbol W?",
-                "answers": ["Tungsten", "Tin", "Titanium", "Tellurium"],
-                "correct_answer": "Tungsten",
-                "explanation": "W comes from wolfram, another name historically used for tungsten.",
-            },
-            {
-                "question": "Which treaty formally ended World War I between Germany and the Allied powers?",
-                "answers": ["Treaty of Versailles", "Treaty of Paris", "Treaty of Utrecht", "Treaty of Lisbon"],
-                "correct_answer": "Treaty of Versailles",
-                "explanation": "The Treaty of Versailles was signed in 1919.",
-            },
-            {
-                "question": "Which modern city was historically known as Constantinople?",
-                "answers": ["Istanbul", "Athens", "Sofia", "Ankara"],
-                "correct_answer": "Istanbul",
-                "explanation": "Constantinople is now Istanbul in Turkiye.",
-            },
-            {
-                "question": "What is the name of the boundary around a black hole beyond which light cannot escape?",
-                "answers": ["Event horizon", "Photon belt", "Gravity wall", "Dark limit"],
-                "correct_answer": "Event horizon",
-                "explanation": "The event horizon marks the point from which nothing can escape a black hole.",
-            },
-        ],
-    },
-}
+def word_definition(word: str) -> dict[str, str | None]:
+    normalized_word = re.sub(r"[^a-z]", "", word.casefold())
+    cached = WORD_DEFINITION_CACHE.get(normalized_word)
+    if cached is not None:
+        return cached
 
-LEGACY_PLACEHOLDER_QUESTION_TEXTS = {
-    "Which club plays its home matches at Anfield?",
-    "Which nation won UEFA Euro 2016?",
-    "Who scored the winning goal for Manchester United in the 1999 UEFA Champions League final?",
-    "What is the capital city of France?",
-    "Which element has the chemical symbol Au?",
-    "In which year was the first successful human heart transplant performed?",
-}
-
-
-def curated_question_for(game_date: str, category: str, difficulty: str) -> dict[str, Any]:
-    pool = CURATED_QUIZ_BANK[category][difficulty]
-    digest = hashlib.sha256(f"{game_date}:{category}:{difficulty}".encode("utf-8")).digest()
-    index = int.from_bytes(digest[:4], "big") % len(pool)
-    question = dict(pool[index])
-    question["difficulty"] = difficulty
-    return question
-
-
-def curated_daily_questions(game_date: str) -> dict[str, Any]:
-    return {
-        "date": game_date,
-        "football": [
-            curated_question_for(game_date, "football", difficulty)
-            for difficulty in DIFFICULTIES
-        ],
-        "general": [
-            curated_question_for(game_date, "general", difficulty)
-            for difficulty in DIFFICULTIES
-        ],
+    source_url = "https://dictionaryapi.dev/"
+    empty_result = {
+        "word": normalized_word,
+        "definition": None,
+        "partOfSpeech": None,
+        "sourceUrl": source_url,
     }
+    if not normalized_word:
+        return empty_result
 
-
-def quiz_json_schema() -> dict[str, Any]:
-    question_schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["difficulty", "question", "answers", "correct_answer", "explanation"],
-        "properties": {
-            "difficulty": {"type": "string", "enum": list(DIFFICULTIES)},
-            "question": {"type": "string"},
-            "answers": {
-                "type": "array",
-                "minItems": 4,
-                "maxItems": 4,
-                "items": {"type": "string"},
-            },
-            "correct_answer": {"type": "string"},
-            "explanation": {"type": "string"},
-        },
-    }
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["date", "football", "general"],
-        "properties": {
-            "date": {"type": "string"},
-            "football": {
-                "type": "array",
-                "minItems": 3,
-                "maxItems": 3,
-                "items": question_schema,
-            },
-            "general": {
-                "type": "array",
-                "minItems": 3,
-                "maxItems": 3,
-                "items": question_schema,
-            },
-        },
-    }
-
-
-def quiz_generation_prompt(game_date: str) -> str:
-    return (
-        "Create a Fulton Web App daily quiz payload for date "
-        f"{game_date}. Return exactly three football questions and exactly "
-        "three general knowledge questions. Each category must include one "
-        "easy, one medium, and one hard question. Football should favour St "
-        "Mirren, Scottish football, football rules, and memorable football "
-        "history. General knowledge should mix science, arts, geography, "
-        "language, history, and culture. Avoid obvious sample prompts such as "
-        "Anfield, Euro 2016, capital of France, chemical symbol Au, and the "
-        "first heart transplant. Use four plausible answer options per "
-        "question, keep the correct answer exactly equal to one option, and "
-        "write a short explanation. Explanations must not reveal the answer "
-        "to another question in the same category set."
-    )
-
-
-def extract_openai_response_text(payload: dict[str, Any]) -> str:
-    output_text = payload.get("output_text")
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text
-
-    output_items = payload.get("output")
-    if not isinstance(output_items, list):
-        return ""
-
-    for item in output_items:
-        if not isinstance(item, dict):
-            continue
-        content_items = item.get("content")
-        if not isinstance(content_items, list):
-            continue
-        for content in content_items:
-            if not isinstance(content, dict):
-                continue
-            text = content.get("text")
-            if isinstance(text, str) and text.strip():
-                return text
-    return ""
-
-
-def openai_daily_questions(game_date: str) -> dict[str, Any] | None:
-    if not QUIZ_OPENAI_API_KEY:
-        return None
-
-    request_payload = {
-        "model": QUIZ_OPENAI_MODEL,
-        "input": quiz_generation_prompt(game_date),
-        "text": {
-            "format": {
-                "type": "json_schema",
-                "name": "fulton_daily_quiz",
-                "strict": True,
-                "schema": quiz_json_schema(),
-            }
-        },
-    }
     request = Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(request_payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {QUIZ_OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
+        f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(normalized_word, safe='')}",
+        headers={"Accept": "application/json", "User-Agent": NEWS_USER_AGENT},
     )
-
     try:
-        with urlopen(request, timeout=QUIZ_OPENAI_TIMEOUT_SEC) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, OSError, json.JSONDecodeError) as error:
-        safe_log(f"OpenAI quiz generation failed; using curated fallback: {error}")
-        return None
+        with urlopen(request, timeout=WORD_DEFINITION_TIMEOUT_SEC) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError):
+        return empty_result
 
-    response_text = extract_openai_response_text(response_payload)
-    if not response_text:
-        safe_log("OpenAI quiz generation returned no text; using curated fallback")
-        return None
+    if not isinstance(payload, list):
+        WORD_DEFINITION_CACHE[normalized_word] = empty_result
+        return empty_result
 
-    try:
-        payload = json.loads(response_text)
-    except json.JSONDecodeError:
-        safe_log("OpenAI quiz generation returned invalid JSON; using curated fallback")
-        return None
+    for entry in payload:
+        meanings = entry.get("meanings", []) if isinstance(entry, dict) else []
+        for meaning in meanings:
+            if not isinstance(meaning, dict):
+                continue
+            for item in meaning.get("definitions", []):
+                if not isinstance(item, dict):
+                    continue
+                definition = bounded_text(item.get("definition"), 500)
+                if definition:
+                    result = {
+                        "word": normalized_word,
+                        "definition": definition,
+                        "partOfSpeech": bounded_text(meaning.get("partOfSpeech"), 60) or None,
+                        "sourceUrl": source_url,
+                    }
+                    WORD_DEFINITION_CACHE[normalized_word] = result
+                    return result
 
-    if isinstance(payload, dict):
-        payload["date"] = game_date
-        if validate_daily_questions(payload):
-            return payload
+    WORD_DEFINITION_CACHE[normalized_word] = empty_result
+    return empty_result
 
-    safe_log("OpenAI quiz generation failed validation; using curated fallback")
-    return None
-
-
-def generated_daily_questions(game_date: str) -> dict[str, Any]:
-    return openai_daily_questions(game_date) or curated_daily_questions(game_date)
-
-
-def contains_legacy_placeholder_questions(payload: dict[str, Any]) -> bool:
-    question_texts = {
-        question.get("question")
-        for category in ("football", "general")
-        for question in payload.get(category, [])
-        if isinstance(question, dict)
-    }
-    return LEGACY_PLACEHOLDER_QUESTION_TEXTS.issubset(question_texts)
-
-
-def validate_daily_questions(payload: dict[str, Any]) -> bool:
-    if not isinstance(payload.get("date"), str):
-        return False
-
-    for category in ("football", "general"):
-        questions = payload.get(category)
-        if not isinstance(questions, list) or len(questions) != 3:
-            return False
-
-        seen_difficulties = set()
-        for question in questions:
-            if not isinstance(question, dict):
-                return False
-            difficulty = question.get("difficulty")
-            if difficulty not in DIFFICULTIES:
-                return False
-            seen_difficulties.add(difficulty)
-            answers = question.get("answers")
-            correct_answer = question.get("correct_answer")
-            if not isinstance(question.get("question"), str) or not question["question"].strip():
-                return False
-            if not isinstance(answers, list) or len(answers) != 4:
-                return False
-            if not all(isinstance(answer, str) and answer.strip() for answer in answers):
-                return False
-            if correct_answer not in answers:
-                return False
-            if not isinstance(question.get("explanation"), str):
-                return False
-        if seen_difficulties != set(DIFFICULTIES):
-            return False
-
-    return True
-
-
-def order_daily_questions(payload: dict[str, Any]) -> dict[str, Any]:
-    ordered = dict(payload)
-    difficulty_index = {difficulty: index for index, difficulty in enumerate(DIFFICULTIES)}
-    for category in ("football", "general"):
-        questions = payload.get(category)
-        if isinstance(questions, list):
-            sorted_questions = sorted(
-                questions,
-                key=lambda question: difficulty_index.get(
-                    question.get("difficulty") if isinstance(question, dict) else "",
-                    len(DIFFICULTIES),
-                ),
-            )
-            ordered[category] = safe_question_explanations(sorted_questions)
-    return ordered
-
-
-def safe_question_explanations(questions: list[Any]) -> list[Any]:
-    safe_questions = []
-    for index, question in enumerate(questions):
-        if not isinstance(question, dict):
-            safe_questions.append(question)
-            continue
-
-        next_question = dict(question)
-        explanation = str(question.get("explanation", ""))
-        later_answers = [
-            str(later_question.get("correct_answer", "")).strip()
-            for later_question in questions[index + 1 :]
-            if isinstance(later_question, dict)
-        ]
-        if any(
-            explanation_leaks_answer(explanation, answer)
-            for answer in later_answers
-        ):
-            next_question["explanation"] = (
-                "The correct answer for this question is shown above."
-            )
-        safe_questions.append(next_question)
-
-    return safe_questions
-
-
-def explanation_leaks_answer(explanation: str, answer: str) -> bool:
-    if len(answer) < 3:
-        return False
-
-    leak_terms = {answer}
-    leak_terms.update(
-        word
-        for word in re.findall(r"[A-Za-z0-9]+", answer)
-        if len(word) >= 5
-    )
-    return any(
-        re.search(rf"(?<!\w){re.escape(term)}(?!\w)", explanation, re.IGNORECASE)
-        for term in leak_terms
-    )
-
-
-def daily_questions_path(game_date: str) -> Path:
-    return QUIZ_DATA_DIR / f"daily-questions-{game_date}.json"
-
-
-def ensure_daily_questions() -> dict[str, Any]:
-    game_date = today_game_date()
-    QUIZ_DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path = daily_questions_path(game_date)
-
-    if path.exists():
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if (
-                isinstance(payload, dict)
-                and payload.get("date") == game_date
-                and validate_daily_questions(payload)
-                and not contains_legacy_placeholder_questions(payload)
-            ):
-                return order_daily_questions(payload)
-        except (OSError, json.JSONDecodeError):
-            pass
-
-    payload = generated_daily_questions(game_date)
-    temp_path = path.with_suffix(".tmp")
-    temp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    temp_path.replace(path)
-    return order_daily_questions(payload)
-
-
-def score_quiz_answers(
-    questions: list[dict[str, Any]],
-    answers: list[str],
-) -> dict[str, int]:
-    score = 0
-    max_score = 0
-    correct_count = 0
-    for index, question in enumerate(questions):
-        difficulty = str(question.get("difficulty", ""))
-        points = QUIZ_POINTS_BY_DIFFICULTY.get(difficulty, 0)
-        max_score += points
-        if index < len(answers) and answers[index] == question.get("correct_answer"):
-            score += points
-            correct_count += 1
-    return {"score": score, "maxScore": max_score, "correctCount": correct_count}
-
-
-def serialize_quiz_result(row: sqlite3.Row) -> dict[str, Any]:
-    return {
-        "date": row["game_date"],
-        "category": row["category"],
-        "score": row["score"],
-        "maxScore": row["max_score"],
-        "correctCount": row["correct_count"],
-        "completedAt": row["completed_at"],
-    }
-
-
-def save_daily_quiz_result(
-    conn: sqlite3.Connection,
-    user_id: int,
-    game_date: str,
-    category: str,
-    answers: list[str],
-) -> tuple[dict[str, Any], int]:
-    daily_questions = ensure_daily_questions()
-    if game_date != daily_questions["date"]:
-        return {"error": "Only today's quiz can be scored."}, HTTPStatus.BAD_REQUEST
-    if category not in {"football", "general"}:
-        return {"error": "Quiz category must be football or general."}, HTTPStatus.BAD_REQUEST
-
-    questions = daily_questions[category]
-    if len(answers) != len(questions):
-        return {"error": "Submit one answer for each quiz question."}, HTTPStatus.BAD_REQUEST
-
-    existing = conn.execute(
-        """
-        SELECT *
-        FROM daily_quiz_results
-        WHERE user_id = ? AND game_date = ? AND category = ?
-        """,
-        (user_id, game_date, category),
-    ).fetchone()
-    if existing is not None:
-        return {"result": serialize_quiz_result(existing)}, HTTPStatus.OK
-
-    totals = score_quiz_answers(questions, answers)
-    now = utc_now()
-    try:
-        conn.execute(
-            """
-            INSERT INTO daily_quiz_results (
-                user_id, game_date, category, answers_json, score, max_score,
-                correct_count, completed_at, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                game_date,
-                category,
-                json.dumps(answers),
-                totals["score"],
-                totals["maxScore"],
-                totals["correctCount"],
-                now,
-                now,
-                now,
-            ),
-        )
-    except sqlite3.IntegrityError:
-        pass
-
-    result = conn.execute(
-        """
-        SELECT *
-        FROM daily_quiz_results
-        WHERE user_id = ? AND game_date = ? AND category = ?
-        """,
-        (user_id, game_date, category),
-    ).fetchone()
-    return {"result": serialize_quiz_result(result)}, HTTPStatus.CREATED
 
 
 def score_day_streak(date_values: list[str], current_date: str | None = None) -> dict[str, int]:
@@ -1503,6 +1199,167 @@ def score_day_streak(date_values: list[str], current_date: str | None = None) ->
     return {"current": current, "best": best}
 
 
+def score_quiz_answers(
+    questions: list[dict[str, Any]],
+    answers: list[str],
+) -> dict[str, int]:
+    score = 0
+    max_score = 0
+    correct_count = 0
+    for index, question in enumerate(questions):
+        points = QUIZ_POINTS_BY_DIFFICULTY.get(str(question.get("difficulty", "")), 0)
+        max_score += points
+        if index < len(answers) and answers[index] == question.get("correct_answer"):
+            score += points
+            correct_count += 1
+    bonus_points = (
+        QUIZ_PERFECT_ROUND_BONUS
+        if questions and correct_count == len(questions)
+        else 0
+    )
+    return {
+        "score": score + bonus_points,
+        "maxScore": max_score + QUIZ_PERFECT_ROUND_BONUS,
+        "correctCount": correct_count,
+        "bonusPoints": bonus_points,
+    }
+
+
+def serialize_quiz_result(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "date": row["game_date"],
+        "category": row["category"],
+        "score": row["score"],
+        "maxScore": row["max_score"],
+        "correctCount": row["correct_count"],
+        "bonusPoints": row["bonus_points"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def quiz_category_questions(
+    conn: sqlite3.Connection,
+    game_date: str,
+    category: str,
+) -> list[dict[str, Any]]:
+    if category not in {"football", "general"}:
+        raise ValueError("Quiz category must be football or general.")
+    subject = "football" if category == "football" else "general_knowledge"
+    payload = daily_quiz.quiz_payload(conn, game_date)
+    return [
+        question
+        for question in payload["questions"]
+        if question["subject"] == subject
+    ]
+
+
+def save_daily_quiz_result(
+    conn: sqlite3.Connection,
+    user_id: int,
+    game_date: str,
+    category: str,
+    answers: list[str],
+) -> tuple[dict[str, Any], int]:
+    if game_date != today_game_date():
+        return {"error": "Only today's quiz can be scored."}, HTTPStatus.BAD_REQUEST
+    try:
+        questions = quiz_category_questions(conn, game_date, category)
+    except ValueError as error:
+        return {"error": str(error)}, HTTPStatus.BAD_REQUEST
+    except LookupError:
+        return {"error": "Today's quiz is not available."}, HTTPStatus.NOT_FOUND
+    if len(answers) != len(questions):
+        return {"error": "Submit one answer for each quiz question."}, HTTPStatus.BAD_REQUEST
+
+    existing = conn.execute(
+        """
+        SELECT *
+        FROM daily_quiz_results
+        WHERE user_id = ? AND game_date = ? AND category = ?
+        """,
+        (user_id, game_date, category),
+    ).fetchone()
+    if existing is not None:
+        return {"result": serialize_quiz_result(existing)}, HTTPStatus.OK
+
+    totals = score_quiz_answers(questions, answers)
+    now = utc_now()
+    try:
+        conn.execute(
+            """
+            INSERT INTO daily_quiz_results (
+                user_id, game_date, category, answers_json, score, max_score,
+                correct_count, bonus_points, completed_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                game_date,
+                category,
+                json.dumps(answers),
+                totals["score"],
+                totals["maxScore"],
+                totals["correctCount"],
+                totals["bonusPoints"],
+                now,
+                now,
+                now,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        pass
+
+    result = conn.execute(
+        """
+        SELECT *
+        FROM daily_quiz_results
+        WHERE user_id = ? AND game_date = ? AND category = ?
+        """,
+        (user_id, game_date, category),
+    ).fetchone()
+    return {"result": serialize_quiz_result(result)}, HTTPStatus.CREATED
+
+
+def backfill_daily_quiz_scores(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        """
+        SELECT id, game_date, category, answers_json, score, max_score, correct_count, bonus_points
+        FROM daily_quiz_results
+        """
+    ).fetchall()
+    for row in rows:
+        try:
+            answers = json.loads(row["answers_json"])
+            questions = quiz_category_questions(conn, row["game_date"], row["category"])
+        except (json.JSONDecodeError, LookupError, ValueError):
+            continue
+        if not isinstance(answers, list) or not all(isinstance(answer, str) for answer in answers):
+            continue
+        totals = score_quiz_answers(questions, answers)
+        stored_totals = (
+            row["score"],
+            row["max_score"],
+            row["correct_count"],
+            row["bonus_points"],
+        )
+        next_totals = (
+            totals["score"],
+            totals["maxScore"],
+            totals["correctCount"],
+            totals["bonusPoints"],
+        )
+        if stored_totals != next_totals:
+            conn.execute(
+                """
+                UPDATE daily_quiz_results
+                SET score = ?, max_score = ?, correct_count = ?, bonus_points = ?
+                WHERE id = ?
+                """,
+                (*next_totals, row["id"]),
+            )
+
+
 def player_score_day_streaks(conn: sqlite3.Connection) -> dict[int, dict[str, int]]:
     activity_rows = conn.execute(
         """
@@ -1526,6 +1383,10 @@ def player_score_day_streaks(conn: sqlite3.Connection) -> dict[int, dict[str, in
 
 
 def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
+    period_end = today_game_date()
+    period_start = (
+        datetime.strptime(period_end, "%Y-%m-%d").date() - timedelta(days=6)
+    ).isoformat()
     rows = conn.execute(
         """
         WITH wordle_scores AS (
@@ -1537,6 +1398,15 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             FROM wordle_results
             GROUP BY user_id
         ),
+        weekly_wordle_scores AS (
+            SELECT
+                wordle_results.user_id,
+                SUM(wordle_results.score) AS points
+            FROM wordle_results
+            INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+            WHERE daily_wordle_games.game_date >= ?
+            GROUP BY wordle_results.user_id
+        ),
         quiz_scores AS (
             SELECT
                 user_id,
@@ -1546,26 +1416,40 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 SUM(correct_count) AS correct_count
             FROM daily_quiz_results
             GROUP BY user_id
+        ),
+        weekly_quiz_scores AS (
+            SELECT
+                user_id,
+                SUM(score) AS points
+            FROM daily_quiz_results
+            WHERE game_date >= ?
+            GROUP BY user_id
         )
         SELECT
             users.id,
             users.username,
             COALESCE(wordle_scores.points, 0) AS wordle_points,
+            COALESCE(weekly_wordle_scores.points, 0) AS weekly_wordle_points,
             COALESCE(wordle_scores.played, 0) AS wordle_played,
             COALESCE(wordle_scores.wins, 0) AS wordle_wins,
             COALESCE(quiz_scores.points, 0) AS quiz_points,
+            COALESCE(weekly_quiz_scores.points, 0) AS weekly_quiz_points,
             COALESCE(quiz_scores.max_points, 0) AS quiz_max_points,
             COALESCE(quiz_scores.played, 0) AS quiz_played,
             COALESCE(quiz_scores.correct_count, 0) AS quiz_correct
         FROM users
         LEFT JOIN wordle_scores ON wordle_scores.user_id = users.id
+        LEFT JOIN weekly_wordle_scores ON weekly_wordle_scores.user_id = users.id
         LEFT JOIN quiz_scores ON quiz_scores.user_id = users.id
+        LEFT JOIN weekly_quiz_scores ON weekly_quiz_scores.user_id = users.id
         WHERE users.role != 'admin'
         ORDER BY
+            (COALESCE(weekly_wordle_scores.points, 0) + COALESCE(weekly_quiz_scores.points, 0)) DESC,
             (COALESCE(wordle_scores.points, 0) + COALESCE(quiz_scores.points, 0)) DESC,
             COALESCE(wordle_scores.wins, 0) DESC,
             LOWER(users.username)
-        """
+        """,
+        (period_start, period_start),
     ).fetchall()
 
     streaks = player_score_day_streaks(conn)
@@ -1577,6 +1461,9 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 "rank": index + 1,
                 "id": row["id"],
                 "username": row["username"],
+                "weeklyPoints": row["weekly_wordle_points"] + row["weekly_quiz_points"],
+                "weeklyWordlePoints": row["weekly_wordle_points"],
+                "weeklyQuizPoints": row["weekly_quiz_points"],
                 "totalPoints": row["wordle_points"] + row["quiz_points"],
                 "wordlePoints": row["wordle_points"],
                 "wordlePlayed": row["wordle_played"],
@@ -1593,7 +1480,10 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     return {
         "players": players,
         "summary": {
+            "periodStart": period_start,
+            "periodEnd": period_end,
             "playerCount": len(players),
+            "weeklyPoints": sum(player["weeklyPoints"] for player in players),
             "totalPoints": sum(player["totalPoints"] for player in players),
             "quizPlays": sum(player["quizPlayed"] for player in players),
             "wordlePlays": sum(player["wordlePlayed"] for player in players),
@@ -1625,12 +1515,79 @@ def bounded_text(value: Any, max_length: int) -> str:
     return text[:max_length]
 
 
+def normalise_news_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def clean_news_title(title: str, source: str) -> str:
+    title = re.sub(r"\s+", " ", title).strip()
+    source = re.sub(r"\s+", " ", source).strip()
+    if not source:
+        return title
+
+    escaped_source = re.escape(source)
+    return re.sub(
+        rf"(?:\s+[-|:]\s+|\s+\(){escaped_source}\)?$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def clean_news_summary(summary: str, title: str, source: str) -> str:
+    summary = strip_html(summary)
+    source = re.sub(r"\s+", " ", source).strip()
+    if source:
+        summary = re.sub(rf"\s+{re.escape(source)}$", "", summary, flags=re.IGNORECASE).strip()
+
+    summary_key = normalise_news_text(summary)
+    title_key = normalise_news_text(title)
+    if not summary_key or summary_key == title_key:
+        return ""
+    if len(summary_key) >= 24 and (
+        summary_key.startswith(title_key) or title_key.startswith(summary_key)
+    ):
+        return ""
+    return summary
+
+
+def news_story_key(title: str) -> str:
+    title_key = normalise_news_text(title)
+    return hashlib.sha256(title_key.encode("utf-8")).hexdigest() if title_key else ""
+
+
+def news_titles_are_near_duplicates(left: str, right: str) -> bool:
+    left_key = normalise_news_text(left)
+    right_key = normalise_news_text(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_words = set(left_key.split())
+    right_words = set(right_key.split())
+    shorter_word_count = min(len(left_words), len(right_words))
+    word_overlap = (
+        len(left_words & right_words) / shorter_word_count
+        if shorter_word_count
+        else 0
+    )
+    return SequenceMatcher(None, left_key, right_key).ratio() >= 0.9 or word_overlap >= 0.75
+
+
+def news_rows_are_near_duplicates(left: dict[str, Any], right: sqlite3.Row) -> bool:
+    if left["source"].casefold() != str(right["source"]).casefold():
+        return False
+    if left["published_at"] != str(right["published_at"]):
+        return False
+    return news_titles_are_near_duplicates(left["title"], str(right["title"]))
+
+
 def validate_news_payload(payload: dict[str, Any]) -> dict[str, Any]:
     source_key = bounded_text(payload.get("sourceKey"), 160)
-    title = bounded_text(payload.get("title"), 220)
     url = bounded_text(payload.get("url"), 600)
     source = bounded_text(payload.get("source"), 120) or "Unknown source"
-    summary = bounded_text(payload.get("summary"), 500)
+    title = clean_news_title(bounded_text(payload.get("title"), 220), source)
+    summary = clean_news_summary(bounded_text(payload.get("summary"), 500), title, source)
     host = bounded_text(payload.get("host"), 160)
     kind = bounded_text(payload.get("kind"), 40) or "article"
     published_at = bounded_text(payload.get("publishedAt"), 80) or utc_now()
@@ -1648,9 +1605,11 @@ def validate_news_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tags = raw_tags if isinstance(raw_tags, list) else []
     clean_tags = [bounded_text(tag, 40) for tag in tags if bounded_text(tag, 40)]
     priority, clean_tags = classify_news_item(title, summary, clean_tags)
+    story_key = news_story_key(title)
 
     return {
         "source_key": source_key,
+        "story_key": story_key,
         "kind": kind,
         "title": title,
         "url": url,
@@ -1670,21 +1629,41 @@ def upsert_news_item(
     item = validate_news_payload(payload)
     now = utc_now()
     existing = conn.execute(
-        "SELECT id FROM news_items WHERE source_key = ?",
-        (item["source_key"],),
+        """
+        SELECT id, story_key
+        FROM news_items
+        WHERE source_key = ? OR story_key = ?
+        ORDER BY published_at DESC, id DESC
+        LIMIT 1
+        """,
+        (item["source_key"], item["story_key"]),
     ).fetchone()
+    if existing is None:
+        recent_rows = conn.execute(
+            """
+            SELECT id, title, source, published_at, story_key
+            FROM news_items
+            ORDER BY published_at DESC, id DESC
+            LIMIT 100
+            """
+        ).fetchall()
+        existing = next(
+            (row for row in recent_rows if news_rows_are_near_duplicates(item, row)),
+            None,
+        )
 
     if existing is None:
         cursor = conn.execute(
             """
             INSERT INTO news_items (
-                source_key, kind, title, url, source, summary, published_at,
+                source_key, story_key, kind, title, url, source, summary, published_at,
                 host, priority, tags_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 item["source_key"],
+                item["story_key"],
                 item["kind"],
                 item["title"],
                 item["url"],
@@ -1702,15 +1681,17 @@ def upsert_news_item(
         inserted = True
     else:
         row_id = existing["id"]
+        item_story_key = str(existing["story_key"] or item["story_key"])
         conn.execute(
             """
             UPDATE news_items
-            SET kind = ?, title = ?, url = ?, source = ?, summary = ?,
+            SET story_key = ?, kind = ?, title = ?, url = ?, source = ?, summary = ?,
                 published_at = ?, host = ?, priority = ?, tags_json = ?,
                 updated_at = ?
             WHERE id = ?
             """,
             (
+                item_story_key,
                 item["kind"],
                 item["title"],
                 item["url"],
@@ -1817,6 +1798,55 @@ def classify_news_item(
         "cancelled",
         "called off",
     )
+    club_change_breaking_terms = (
+        "leaves st mirren",
+        "left st mirren",
+        "exits st mirren",
+        "joins st mirren",
+        "joined st mirren",
+        "st mirren appoint",
+        "st mirren sign",
+        "st mirren sack",
+        "st mirren release",
+        "st mirren name new",
+        "new recruitment chief named",
+        "new head of recruitment",
+    )
+    result_breaking_terms = (
+        "secure premiership status",
+        "secured premiership status",
+        "remain in the premiership",
+        "remains in the premiership",
+        "staying in the premiership",
+        "stayed in the premiership",
+        "stay up",
+        "stays up",
+        "stayed up",
+        "avoid relegation",
+        "avoids relegation",
+        "avoided relegation",
+        "avoiding relegation",
+        "survival secured",
+        "premiership survival",
+        "salvages positive season",
+        "massive win",
+        "priceless victory",
+        "dramatic win",
+    )
+    stale_result_context_terms = (
+        "preview",
+        "warm-up",
+        "build-up",
+        "could",
+        "would",
+        "should",
+        "need to",
+        "must",
+        "look to",
+        "survival battle",
+        "bid for survival",
+        "bid for premiership survival",
+    )
 
     if contains_news_term(haystack, live_score_terms):
         clean_tags.append("live-scores")
@@ -1825,6 +1855,16 @@ def classify_news_item(
     if contains_news_term(haystack, explicit_breaking_terms) or contains_news_term(
         haystack,
         high_impact_breaking_terms,
+    ) or contains_news_term(
+        haystack,
+        club_change_breaking_terms,
+    ):
+        clean_tags.append("breaking")
+        return "breaking", list(dict.fromkeys(clean_tags))
+
+    if contains_news_term(haystack, result_breaking_terms) and not contains_news_term(
+        haystack,
+        stale_result_context_terms,
     ):
         clean_tags.append("breaking")
         return "breaking", list(dict.fromkeys(clean_tags))
@@ -1833,31 +1873,58 @@ def classify_news_item(
     return "news", list(dict.fromkeys(clean_tags))
 
 
-def backfill_news_categories(conn: sqlite3.Connection) -> None:
+def backfill_news_items(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         """
-        SELECT id, title, summary, priority, tags_json
+        SELECT id, title, source, summary, published_at, priority, tags_json
         FROM news_items
+        ORDER BY published_at DESC, id DESC
         """
     ).fetchall()
 
+    seen_story_keys: set[str] = set()
+    kept_rows: list[dict[str, Any]] = []
     for row in rows:
+        title = clean_news_title(row["title"], row["source"])
+        summary = clean_news_summary(row["summary"], title, row["source"])
+        story_key = news_story_key(title)
+        duplicate = story_key in seen_story_keys or any(
+            news_rows_are_near_duplicates(
+                {
+                    "title": title,
+                    "source": row["source"],
+                    "published_at": row["published_at"],
+                },
+                kept_row,  # type: ignore[arg-type]
+            )
+            for kept_row in kept_rows
+        )
+        if duplicate:
+            conn.execute("DELETE FROM news_items WHERE id = ?", (row["id"],))
+            continue
+
         try:
             tags = json.loads(row["tags_json"])
         except json.JSONDecodeError:
             tags = []
         clean_tags = tags if isinstance(tags, list) else []
-        priority, next_tags = classify_news_item(row["title"], row["summary"], clean_tags)
+        priority, next_tags = classify_news_item(title, summary, clean_tags)
         next_tags_json = json.dumps(next_tags[:8])
-        if priority == row["priority"] and next_tags_json == row["tags_json"]:
-            continue
         conn.execute(
             """
             UPDATE news_items
-            SET priority = ?, tags_json = ?, updated_at = ?
+            SET story_key = ?, title = ?, summary = ?, priority = ?, tags_json = ?, updated_at = ?
             WHERE id = ?
             """,
-            (priority, next_tags_json, utc_now(), row["id"]),
+            (story_key, title, summary, priority, next_tags_json, utc_now(), row["id"]),
+        )
+        seen_story_keys.add(story_key)
+        kept_rows.append(
+            {
+                "title": title,
+                "source": row["source"],
+                "published_at": row["published_at"],
+            }
         )
 
 
@@ -1904,7 +1971,7 @@ def fetch_news_feed(query: str) -> list[dict[str, Any]]:
         if not title or not url.startswith(("http://", "https://")):
             continue
 
-        source_key = hashlib.sha256(f"{title}|{url}".encode("utf-8")).hexdigest()
+        source_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
         items.append(
             {
                 "sourceKey": source_key,
@@ -1976,6 +2043,68 @@ def start_news_monitor() -> None:
     thread.start()
 
 
+def server_timezone() -> timezone | ZoneInfo:
+    if ZoneInfo is None:
+        return timezone.utc
+    try:
+        return ZoneInfo(SERVER_TZ_NAME)
+    except Exception:
+        return timezone.utc
+
+
+def next_daily_quiz_run(now: datetime | None = None) -> datetime:
+    tz = server_timezone()
+    local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    next_run = local_now.replace(
+        hour=DAILY_QUIZ_SCHEDULER_HOUR,
+        minute=DAILY_QUIZ_SCHEDULER_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    if next_run <= local_now:
+        next_run += timedelta(days=1)
+    return next_run
+
+
+def ensure_tomorrow_daily_quiz(now: datetime | None = None) -> None:
+    tz = server_timezone()
+    local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    quiz_date = (local_now.date() + timedelta(days=1)).isoformat()
+    with closing(connect_db()) as conn:
+        status = daily_quiz.quiz_status(conn, quiz_date)
+        if status["status"] == "published":
+            safe_log(f"Daily quiz for {quiz_date} is already published")
+            return
+        daily_quiz.generate_daily_quiz(
+            conn,
+            quiz_date=quiz_date,
+            config=DAILY_QUIZ_CONFIG,
+            log=lambda message: safe_log(f"Daily quiz: {message}"),
+        )
+
+
+def daily_quiz_scheduler_loop() -> None:
+    safe_log("Daily quiz scheduler started")
+    while True:
+        try:
+            ensure_tomorrow_daily_quiz()
+        except Exception as error:
+            safe_log(f"Daily quiz scheduler generation failed: {error}")
+
+        next_run = next_daily_quiz_run()
+        delay = max(1.0, (next_run - datetime.now(next_run.tzinfo)).total_seconds())
+        safe_log(f"Daily quiz scheduler sleeping until {next_run.isoformat()}")
+        time.sleep(delay)
+
+
+def start_daily_quiz_scheduler() -> None:
+    if not DAILY_QUIZ_SCHEDULER_ENABLED:
+        safe_log("Daily quiz scheduler disabled")
+        return
+    thread = threading.Thread(target=daily_quiz_scheduler_loop, daemon=True)
+    thread.start()
+
+
 def normalise_history_lang(value: str) -> str:
     lang = str(value or "en").lower().split("-")[0]
     return lang if lang in SUPPORTED_HISTORY_LANGS else "en"
@@ -2026,6 +2155,155 @@ def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
     request = Request(url, headers={"User-Agent": HISTORY_USER_AGENT})
     with urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def parse_json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("AI response is not JSON text.")
+    text = value.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end < start:
+        raise ValueError("AI response does not contain a JSON object.")
+    payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("AI response JSON is not an object.")
+    return payload
+
+
+def parse_utc_timestamp(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def history_fact_text_key(value: str) -> str:
+    return re.sub(r"\W+", "", str(value or "").casefold())[:160]
+
+
+def history_fact_rotation_key(title: str, lang: str) -> str:
+    return f"{normalise_history_lang(lang)}:{history_fact_text_key(resolve_place_alias(title))}"
+
+
+def history_fact_rotation_limit(now: datetime | None = None) -> datetime:
+    reference = now or datetime.now(timezone.utc)
+    return reference - timedelta(seconds=FACT_ROTATION_TTL_SEC)
+
+
+def deserialize_history_facts(value: str) -> list[dict[str, Any]]:
+    payload = json.loads(value)
+    if not isinstance(payload, list):
+        raise ValueError("Stored facts payload is not a list.")
+    facts = [fact for fact in payload if isinstance(fact, dict)]
+    if not facts:
+        raise ValueError("Stored facts payload is empty.")
+    return facts
+
+
+def current_rotated_history_facts(
+    rotation_key: str,
+    now: datetime | None = None,
+) -> list[dict[str, Any]] | None:
+    cutoff = history_fact_rotation_limit(now)
+    with closing(connect_db()) as conn:
+        row = conn.execute(
+            """
+            SELECT facts_json, created_at
+            FROM history_fact_rotations
+            WHERE rotation_key = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (rotation_key,),
+        ).fetchone()
+    if row is None:
+        return None
+
+    created_at = parse_utc_timestamp(str(row["created_at"]))
+    if created_at is None or created_at < cutoff:
+        return None
+
+    try:
+        return deserialize_history_facts(str(row["facts_json"]))
+    except Exception as error:
+        safe_log(f"History fact rotation read failed: {error}")
+        return None
+
+
+def recent_rotated_history_texts(
+    rotation_key: str,
+    *,
+    limit: int = 6,
+) -> list[str]:
+    rows: list[sqlite3.Row]
+    with closing(connect_db()) as conn:
+        rows = conn.execute(
+            """
+            SELECT facts_json
+            FROM history_fact_rotations
+            WHERE rotation_key = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (rotation_key, max(1, limit)),
+        ).fetchall()
+
+    seen: set[str] = set()
+    texts: list[str] = []
+    for row in rows:
+        try:
+            facts = deserialize_history_facts(str(row["facts_json"]))
+        except Exception:
+            continue
+        for fact in facts:
+            text = str(fact.get("text") or "").strip()
+            text_key = history_fact_text_key(text)
+            if not text or text_key in seen:
+                continue
+            seen.add(text_key)
+            texts.append(text)
+    return texts
+
+
+def store_rotated_history_facts(
+    rotation_key: str,
+    facts: list[dict[str, Any]],
+    *,
+    created_at: str | None = None,
+) -> None:
+    timestamp = created_at or utc_now()
+    with closing(connect_db()) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO history_fact_rotations (rotation_key, facts_json, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (rotation_key, json.dumps(facts, ensure_ascii=True), timestamp),
+            )
+            conn.execute(
+                """
+                DELETE FROM history_fact_rotations
+                WHERE rotation_key = ?
+                  AND id NOT IN (
+                    SELECT id
+                    FROM history_fact_rotations
+                    WHERE rotation_key = ?
+                    ORDER BY created_at DESC
+                    LIMIT 8
+                  )
+                """,
+                (rotation_key, rotation_key),
+            )
 
 
 def normalise_place_alias_key(value: str) -> str:
@@ -2808,6 +3086,476 @@ def build_location_facts(
     return facts[:limit]
 
 
+def fallback_fact_critique(fact: dict[str, Any], place_title: str) -> dict[str, Any]:
+    text = str(fact.get("text") or "")
+    theme = str(fact.get("theme") or "general")
+    place_name = place_title.split(",", 1)[0].strip()
+    score = fact_candidate_score(text, theme)
+    mentions_place = place_name.lower() in text.lower()
+
+    relevance = 9 if theme != "general" else 7
+    if mentions_place:
+        relevance = min(10, relevance + 1)
+    place_specificity = 9 if theme in {"landmark", "history", "industry", "people"} else 8
+    if theme == "general":
+        place_specificity = 7
+    interestingness = max(6, min(10, 5 + score // 10))
+    theme_summary = {
+        "history": "It highlights a historical detail tied directly to the place.",
+        "landmark": "It names a recognisable local landmark rather than a generic town description.",
+        "industry": "It points to a trade or industry strongly associated with the place.",
+        "culture": "It surfaces a cultural detail that feels distinctive rather than generic.",
+        "people": "It connects the place to notable people associated with it.",
+        "date": "It gives a date-linked detail that is still rooted in the place itself.",
+        "general": "It is still place-specific, but broader than the stronger themed facts.",
+    }
+    return {
+        "relevance": relevance,
+        "interestingness": interestingness,
+        "placeSpecificity": place_specificity,
+        "summary": theme_summary.get(theme, theme_summary["general"]),
+    }
+
+
+def attach_fact_critiques(
+    facts: list[dict[str, Any]],
+    place_title: str,
+    critiques: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for index, fact in enumerate(facts):
+        critique = critiques.get(index) if critiques is not None else None
+        next_fact = dict(fact)
+        next_fact["critique"] = critique or fallback_fact_critique(fact, place_title)
+        enriched.append(next_fact)
+    return enriched
+
+
+def rotated_location_facts(
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int,
+    recent_texts: list[str],
+) -> list[dict[str, Any]]:
+    recent_keys = {history_fact_text_key(text) for text in recent_texts}
+
+    def choose(pool: list[dict[str, Any]], selected: list[dict[str, Any]], require_new_theme: bool) -> None:
+        selected_keys = {history_fact_text_key(str(item.get("text") or "")) for item in selected}
+        selected_themes = {str(item.get("theme") or "general") for item in selected}
+        for fact in pool:
+            text_key = history_fact_text_key(str(fact.get("text") or ""))
+            theme = str(fact.get("theme") or "general")
+            if text_key in selected_keys:
+                continue
+            if require_new_theme and theme != "general" and theme in selected_themes:
+                continue
+            selected.append(dict(fact))
+            selected_keys.add(text_key)
+            selected_themes.add(theme)
+            if len(selected) >= limit:
+                return
+
+    fresh_candidates = [
+        fact
+        for fact in candidates
+        if history_fact_text_key(str(fact.get("text") or "")) not in recent_keys
+    ]
+    selected: list[dict[str, Any]] = []
+    choose(fresh_candidates, selected, True)
+    if len(selected) < limit:
+        choose(fresh_candidates, selected, False)
+    if len(selected) < limit:
+        choose(candidates, selected, True)
+    if len(selected) < limit:
+        choose(candidates, selected, False)
+    return selected[:limit]
+
+
+def store_history_fact_review_failure(
+    rotation_key: str,
+    *,
+    selection: dict[str, Any] | None,
+    critique: dict[str, Any] | None,
+    failure_reason: str,
+    created_at: str | None = None,
+) -> None:
+    timestamp = created_at or utc_now()
+    with closing(connect_db()) as conn:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO history_fact_review_failures (
+                    rotation_key,
+                    selection_json,
+                    critique_json,
+                    failure_reason,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    rotation_key,
+                    json.dumps(selection, ensure_ascii=True) if selection is not None else None,
+                    json.dumps(critique, ensure_ascii=True) if critique is not None else None,
+                    failure_reason,
+                    timestamp,
+                ),
+            )
+            conn.execute(
+                """
+                DELETE FROM history_fact_review_failures
+                WHERE rotation_key = ?
+                  AND id NOT IN (
+                    SELECT id
+                    FROM history_fact_review_failures
+                    WHERE rotation_key = ?
+                    ORDER BY created_at DESC
+                    LIMIT 16
+                  )
+                """,
+                (rotation_key, rotation_key),
+            )
+
+
+def recent_history_fact_review_failures(
+    rotation_key: str,
+    *,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    with closing(connect_db()) as conn:
+        rows = conn.execute(
+            """
+            SELECT selection_json, critique_json, failure_reason, created_at
+            FROM history_fact_review_failures
+            WHERE rotation_key = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (rotation_key, max(1, limit)),
+        ).fetchall()
+
+    failures: list[dict[str, Any]] = []
+    for row in rows:
+        payload: dict[str, Any] = {
+            "failureReason": str(row["failure_reason"] or ""),
+            "createdAt": str(row["created_at"] or ""),
+        }
+        if row["selection_json"]:
+            try:
+                payload["selection"] = json.loads(str(row["selection_json"]))
+            except json.JSONDecodeError:
+                pass
+        if row["critique_json"]:
+            try:
+                payload["critique"] = json.loads(str(row["critique_json"]))
+            except json.JSONDecodeError:
+                pass
+        failures.append(payload)
+    return failures
+
+
+def ai_fact_selection_schema(limit: int) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "facts": {
+                "type": "array",
+                "minItems": limit,
+                "maxItems": limit,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidateIndex": {"type": "integer", "minimum": 0},
+                        "title": {"type": "string"},
+                        "text": {"type": "string"},
+                    },
+                    "required": ["candidateIndex", "title", "text"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["facts"],
+        "additionalProperties": False,
+    }
+
+
+def ai_fact_critique_schema(limit: int) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "overallPassed": {"type": "boolean"},
+            "notes": {"type": "string"},
+            "facts": {
+                "type": "array",
+                "minItems": limit,
+                "maxItems": limit,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidateIndex": {"type": "integer", "minimum": 0},
+                        "passed": {"type": "boolean"},
+                        "relevance": {"type": "integer", "minimum": 0, "maximum": 10},
+                        "interestingness": {"type": "integer", "minimum": 0, "maximum": 10},
+                        "placeSpecificity": {"type": "integer", "minimum": 0, "maximum": 10},
+                        "summary": {"type": "string"},
+                    },
+                    "required": [
+                        "candidateIndex",
+                        "passed",
+                        "relevance",
+                        "interestingness",
+                        "placeSpecificity",
+                        "summary",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["overallPassed", "notes", "facts"],
+        "additionalProperties": False,
+    }
+
+
+def facts_ai_wait_for_request_slot() -> None:
+    global FACTS_AI_NEXT_REQUEST_AT
+    with FACTS_AI_LOCK:
+        wait_sec = FACTS_AI_NEXT_REQUEST_AT - time.monotonic()
+        if wait_sec > 0:
+            time.sleep(wait_sec)
+        FACTS_AI_NEXT_REQUEST_AT = time.monotonic() + FACTS_AI_REQUEST_DELAY_SEC
+
+
+def facts_ai_defer_retry(attempt: int, error: HTTPError | None = None) -> None:
+    global FACTS_AI_NEXT_REQUEST_AT
+    retry_after_sec = 0.0
+    if error is not None:
+        retry_after = error.headers.get("Retry-After", "").strip()
+        try:
+            retry_after_sec = float(retry_after)
+        except ValueError:
+            retry_after_sec = 0.0
+        try:
+            error_payload = json.loads(error.read().decode("utf-8"))
+            details = error_payload.get("error", {}).get("details", [])
+            retry_info = next(
+                (
+                    detail
+                    for detail in details
+                    if str(detail.get("@type", "")).endswith("RetryInfo")
+                ),
+                {},
+            )
+            retry_delay = str(retry_info.get("retryDelay", "")).rstrip("s")
+            retry_after_sec = max(retry_after_sec, float(retry_delay or 0))
+        except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    delay = max(
+        FACTS_AI_REQUEST_DELAY_SEC,
+        retry_after_sec,
+        min(45.0, 3.0 * (2**attempt)),
+    )
+    with FACTS_AI_LOCK:
+        FACTS_AI_NEXT_REQUEST_AT = max(FACTS_AI_NEXT_REQUEST_AT, time.monotonic() + delay)
+
+
+def facts_ai_json_response(
+    *,
+    model: str,
+    prompt: str,
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    if not FACTS_GEMINI_API_KEY:
+        raise ValueError("Gemini API key is not configured.")
+
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{quote(model, safe='')}:generateContent"
+    )
+    request = Request(
+        url,
+        data=json.dumps(
+            {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.4,
+                    "responseMimeType": "application/json",
+                    "responseJsonSchema": schema,
+                },
+            }
+        ).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": FACTS_GEMINI_API_KEY,
+        },
+        method="POST",
+    )
+
+    for attempt in range(FACTS_AI_TRANSIENT_RETRIES + 1):
+        facts_ai_wait_for_request_slot()
+        try:
+            with urlopen(request, timeout=FACTS_AI_TIMEOUT_SEC) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as error:
+            if error.code in {429, 500, 502, 503, 504} and attempt < FACTS_AI_TRANSIENT_RETRIES:
+                facts_ai_defer_retry(attempt, error)
+                continue
+            raise RuntimeError(f"Gemini request failed with HTTP {error.code}.") from error
+        except (TimeoutError, URLError, OSError) as error:
+            if attempt < FACTS_AI_TRANSIENT_RETRIES:
+                facts_ai_defer_retry(attempt)
+                continue
+            raise RuntimeError(f"Gemini request timed out or failed: {error}") from error
+    else:  # pragma: no cover - loop exits through break or raise
+        raise RuntimeError("Gemini request failed.")
+
+    try:
+        text = payload["candidates"][0]["content"]["parts"][0]["text"]
+    except (IndexError, KeyError, TypeError) as error:
+        raise ValueError("Gemini returned no structured content.") from error
+    return parse_json_object(text)
+
+
+def reviewed_location_facts(
+    rotation_key: str,
+    place_title: str,
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int,
+    recent_texts: list[str],
+) -> list[dict[str, Any]]:
+    fallback = attach_fact_critiques(
+        rotated_location_facts(candidates, limit=limit, recent_texts=recent_texts),
+        place_title,
+    )
+    if not FACTS_GEMINI_API_KEY or len(candidates) < limit:
+        return fallback
+
+    failed_attempts = recent_history_fact_review_failures(rotation_key)
+    candidate_payload = [
+        {
+            "candidateIndex": index,
+            "title": str(candidate.get("title") or ""),
+            "text": str(candidate.get("text") or ""),
+            "theme": str(candidate.get("theme") or "general"),
+            "sourceName": str(candidate.get("sourceName") or ""),
+            "sourceUrl": candidate.get("sourceUrl"),
+            "confidence": str(candidate.get("confidence") or "medium"),
+        }
+        for index, candidate in enumerate(candidates)
+    ]
+    selection_result: dict[str, Any] | None = None
+    critique_result: dict[str, Any] | None = None
+    selector_prompt = (
+        "You are choosing two reviewed local-interest facts for a live facts page.\n\n"
+        f"Place: {place_title}\n"
+        f"Candidates:\n{json.dumps(candidate_payload, ensure_ascii=True, indent=2)}\n"
+        f"Recent facts to avoid repeating in the next 24-hour rotation:\n"
+        f"{json.dumps(recent_texts[:6], ensure_ascii=True, indent=2)}\n"
+        f"Previous failed selections and feedback:\n{json.dumps(failed_attempts, ensure_ascii=True, indent=2)}\n\n"
+        "Choose exactly two facts.\n"
+        "Use only the supplied candidate facts.\n"
+        "Do not merge multiple candidates into one fact.\n"
+        "Pick facts that are specific to the place, genuinely interesting, and distinct from each other.\n"
+        "Avoid generic summary lines and avoid repeating the recent facts or prior failed ideas.\n"
+        "Rewrite the title and text lightly for clarity, but do not add unsupported claims."
+    )
+
+    try:
+        selection_result = facts_ai_json_response(
+            model=FACTS_AI_GENERATOR_MODEL,
+            schema=ai_fact_selection_schema(limit),
+            prompt=selector_prompt,
+        )
+        selected_payload = selection_result.get("facts", [])
+        if not isinstance(selected_payload, list) or len(selected_payload) != limit:
+            raise ValueError("Gemini selection did not return the expected number of facts.")
+
+        selected_facts: list[dict[str, Any]] = []
+        selected_for_critique: list[dict[str, Any]] = []
+        seen_indexes: set[int] = set()
+        index_map: dict[int, int] = {}
+        for output_index, item in enumerate(selected_payload):
+            if not isinstance(item, dict):
+                raise ValueError("Gemini selection fact is not an object.")
+            candidate_index = int(item.get("candidateIndex", -1))
+            if candidate_index < 0 or candidate_index >= len(candidates) or candidate_index in seen_indexes:
+                raise ValueError("Gemini selection candidate index is invalid.")
+            seen_indexes.add(candidate_index)
+            source_fact = dict(candidates[candidate_index])
+            selected_fact = {
+                **source_fact,
+                "title": str(item.get("title") or source_fact.get("title") or "").strip() or str(source_fact.get("title") or "Local fact"),
+                "text": str(item.get("text") or source_fact.get("text") or "").strip() or str(source_fact.get("text") or ""),
+            }
+            index_map[candidate_index] = output_index
+            selected_facts.append(selected_fact)
+            selected_for_critique.append(
+                {
+                    "candidateIndex": candidate_index,
+                    "title": selected_fact["title"],
+                    "text": selected_fact["text"],
+                    "theme": selected_fact.get("theme"),
+                }
+            )
+
+        critique_prompt = (
+            "You are the critic for a live local facts page.\n\n"
+            f"Place: {place_title}\n"
+            f"Original candidates:\n{json.dumps(candidate_payload, ensure_ascii=True, indent=2)}\n"
+            f"Selected facts:\n{json.dumps(selected_for_critique, ensure_ascii=True, indent=2)}\n"
+            f"Recent facts already used for this place:\n{json.dumps(recent_texts[:6], ensure_ascii=True, indent=2)}\n"
+            f"Previous failed selections and feedback:\n{json.dumps(failed_attempts, ensure_ascii=True, indent=2)}\n\n"
+            "Critique the selected facts for place relevance and interestingness.\n"
+            "A fact should pass only if it is clearly about the named place, says something distinctive, "
+            "and stays faithful to its original candidate fact.\n"
+            "Use the recent facts list to penalise repetition.\n"
+            "Set overallPassed to true only if every fact passes."
+        )
+        critique_result = facts_ai_json_response(
+            model=FACTS_AI_CRITIC_MODEL,
+            schema=ai_fact_critique_schema(limit),
+            prompt=critique_prompt,
+        )
+        critique_items = critique_result.get("facts", [])
+        if not critique_result.get("overallPassed") or not isinstance(critique_items, list):
+            raise ValueError("Gemini critique rejected the selected facts.")
+
+        critique_map: dict[int, dict[str, Any]] = {}
+        for critique_item in critique_items:
+            if not isinstance(critique_item, dict):
+                raise ValueError("Gemini critique fact is not an object.")
+            candidate_index = int(critique_item.get("candidateIndex", -1))
+            if candidate_index not in index_map:
+                raise ValueError("Gemini critique referenced an unknown candidate.")
+            if not bool(critique_item.get("passed")):
+                raise ValueError("Gemini critique failed a selected fact.")
+            if any(
+                int(critique_item.get(field, 0)) < threshold
+                for field, threshold in FACT_CRITIC_THRESHOLDS.items()
+            ):
+                raise ValueError("Gemini critique scores did not meet the thresholds.")
+            critique_map[index_map[candidate_index]] = {
+                "relevance": int(critique_item.get("relevance", 0)),
+                "interestingness": int(critique_item.get("interestingness", 0)),
+                "placeSpecificity": int(critique_item.get("placeSpecificity", 0)),
+                "summary": str(critique_item.get("summary") or "").strip(),
+            }
+
+        if len(critique_map) != len(selected_facts):
+            raise ValueError("Gemini critique did not cover every selected fact.")
+        return attach_fact_critiques(selected_facts, place_title, critique_map)
+    except Exception as error:
+        store_history_fact_review_failure(
+            rotation_key,
+            selection=selection_result,
+            critique=critique_result,
+            failure_reason=str(error),
+        )
+        safe_log(f"Interesting fact review fell back to heuristics: {error}")
+        return fallback
+
+
 def history_year_value(value: object) -> int | None:
     raw = str(value or "").strip()
     match = re.search(r"\d+", raw)
@@ -2987,7 +3735,33 @@ def history_payload(
                     safe_log(f"History Wikidata fetch failed: {error}")
 
             title = str(wiki.get("title") or location)
+            rotation_key = history_fact_rotation_key(title, lang)
             location_images = fetch_wikipedia_images(wiki, lang, article_url)
+            rotated_facts = current_rotated_history_facts(rotation_key)
+            if rotated_facts is None:
+                candidate_limit = max(6, limit_facts * 4)
+                candidate_facts = build_location_facts(
+                    wiki,
+                    plain_extract,
+                    candidate_limit,
+                    article_url,
+                )
+                rotated_facts = reviewed_location_facts(
+                    rotation_key,
+                    title,
+                    candidate_facts,
+                    limit=limit_facts,
+                    recent_texts=recent_rotated_history_texts(rotation_key),
+                )
+                rotated_facts = fetch_missing_fact_images(
+                    attach_fact_images(
+                        rotated_facts,
+                        location_images,
+                        title,
+                    ),
+                    title,
+                )
+                store_rotated_history_facts(rotation_key, rotated_facts)
             location_payload = {
                 "title": title,
                 "description": wiki.get("description"),
@@ -2996,19 +3770,7 @@ def history_payload(
                     lang,
                     title,
                 ),
-                "facts": fetch_missing_fact_images(
-                    attach_fact_images(
-                        build_location_facts(
-                            wiki,
-                            plain_extract,
-                            limit_facts,
-                            article_url,
-                        ),
-                        location_images,
-                        title,
-                    ),
-                    title,
-                ),
+                "facts": rotated_facts[:limit_facts],
                 "articleUrl": article_url,
                 "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
                 "images": location_images,
@@ -3102,6 +3864,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
     def client_ip(self) -> str:
         return self.client_address[0] if self.client_address else "unknown"
+
+    def is_loopback_request(self) -> bool:
+        return is_loopback_ip(self.client_ip())
 
     def request_origin_allowed(self) -> bool:
         origin = self.headers.get("Origin")
@@ -3206,6 +3971,101 @@ class FultonsHandler(SimpleHTTPRequestHandler):
     def route_api(self, method: str, path: str, query: str = "") -> None:
         params = parse_qs(query)
 
+        if path == "/api/health" and method == "GET":
+            storage = runtime_storage_health()
+            status = HTTPStatus.OK if storage["ok"] else HTTPStatus.SERVICE_UNAVAILABLE
+            self.send_json(
+                status,
+                {
+                    "ok": storage["ok"],
+                    "date": today_game_date(),
+                    "storage": health_storage_payload(storage),
+                },
+            )
+            return
+
+        if path == "/api/local/ops-monitor" and method == "GET":
+            if not LOCAL_OPS_ENABLED:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Local ops dashboard is disabled.",
+                )
+                return
+            if not self.is_loopback_request():
+                self.send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    "Local ops dashboard is available only from localhost.",
+                )
+                return
+            force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+            self.send_json(HTTPStatus.OK, ops_monitor.collect_dashboard_snapshot(force=force))
+            return
+
+        if path == "/api/local/ops-config" and method == "GET":
+            if not LOCAL_OPS_ENABLED:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Local ops dashboard is disabled.",
+                )
+                return
+            if not self.is_loopback_request():
+                self.send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    "Local ops dashboard is available only from localhost.",
+                )
+                return
+            self.send_json(HTTPStatus.OK, local_ops_settings.monitor_settings_response())
+            return
+
+        if path == "/api/local/ops-config" and method == "POST":
+            if not LOCAL_OPS_ENABLED:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Local ops dashboard is disabled.",
+                )
+                return
+            if not self.is_loopback_request():
+                self.send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    "Local ops dashboard is available only from localhost.",
+                )
+                return
+            payload = self.read_json()
+            saved = local_ops_settings.save_monitor_settings(payload)
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "config": saved,
+                    "settingsPath": str(local_ops_settings.SETTINGS_PATH),
+                },
+            )
+            return
+
+        if path == "/api/local/ops-action" and method == "POST":
+            if not LOCAL_OPS_ENABLED:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Local ops dashboard is disabled.",
+                )
+                return
+            if not self.is_loopback_request():
+                self.send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    "Local ops dashboard is available only from localhost.",
+                )
+                return
+            payload = self.read_json()
+            action = str(payload.get("action") or "").strip()
+            params_payload = payload.get("params")
+            params = params_payload if isinstance(params_payload, dict) else None
+            try:
+                self.send_json(HTTPStatus.OK, ops_monitor.run_local_action(action, params=params))
+            except ValueError as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+            except RuntimeError as error:
+                self.send_error_json(HTTPStatus.BAD_GATEWAY, str(error))
+            return
+
         if path == "/api/news/stream" and method == "GET":
             with connect_db() as conn:
                 token = get_cookie_value(self.headers, SESSION_COOKIE)
@@ -3216,13 +4076,72 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             self.handle_news_stream()
             return
 
+        if path == "/internal/generate-daily-quiz" and method == "POST":
+            configured_token = DAILY_QUIZ_CONFIG.internal_token
+            submitted_token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not configured_token:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Internal quiz generation token is not configured.",
+                )
+                return
+            if not hmac.compare_digest(submitted_token, configured_token):
+                self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")
+                return
+            payload = self.read_json()
+            quiz_date = str(payload.get("date") or today_game_date())
+            with connect_db() as conn:
+                result = daily_quiz.generate_daily_quiz(
+                    conn,
+                    quiz_date=quiz_date,
+                    force=bool(payload.get("force", False)),
+                    config=DAILY_QUIZ_CONFIG,
+                    log=safe_log,
+                )
+            status = (
+                HTTPStatus.OK
+                if result.get("status") == "published"
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            self.send_json(status, result)
+            return
+
+        if path == "/internal/regenerate-daily-quiz-question" and method == "POST":
+            configured_token = DAILY_QUIZ_CONFIG.internal_token
+            submitted_token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not configured_token:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Internal quiz generation token is not configured.",
+                )
+                return
+            if not hmac.compare_digest(submitted_token, configured_token):
+                self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")
+                return
+            payload = self.read_json()
+            quiz_date = str(payload.get("date") or today_game_date()).strip()
+            subject = str(payload.get("subject") or "").strip()
+            difficulty = str(payload.get("difficulty") or "").strip()
+            with connect_db() as conn:
+                result = daily_quiz.regenerate_question(
+                    conn,
+                    quiz_date=quiz_date,
+                    subject=subject,
+                    difficulty=difficulty,
+                    config=DAILY_QUIZ_CONFIG,
+                    log=safe_log,
+                )
+            status = (
+                HTTPStatus.OK
+                if result.get("status") == "published"
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            self.send_json(status, result)
+            return
+
         with connect_db() as conn:
             token = get_cookie_value(self.headers, SESSION_COOKIE)
             user = current_user(conn, token)
-
-            if path == "/api/health" and method == "GET":
-                self.send_json(HTTPStatus.OK, {"ok": True, "date": today_game_date()})
-                return
 
             if path == "/api/auth/login" and method == "POST":
                 self.handle_login(conn)
@@ -3265,8 +4184,24 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 )
                 return
 
-            if path == "/api/daily-questions" and method == "GET":
-                self.send_json(HTTPStatus.OK, ensure_daily_questions())
+            if path == "/api/wordle/definition" and method == "GET":
+                game = ensure_daily_game(conn)
+                result = get_or_create_wordle_result(conn, user["id"], game["id"])
+                if result["status"] == "in_progress":
+                    self.send_error_json(
+                        HTTPStatus.CONFLICT,
+                        "Finish today's Wordle before requesting its definition.",
+                    )
+                    return
+                self.send_json(HTTPStatus.OK, word_definition(game["secret_word"]))
+                return
+
+            if path == "/api/daily-quiz" and method == "GET":
+                quiz_date = str(params.get("date", [today_game_date()])[0]).strip()
+                try:
+                    self.send_json(HTTPStatus.OK, daily_quiz.quiz_payload(conn, quiz_date))
+                except LookupError:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "No published quiz exists for that date.")
                 return
 
             if path == "/api/daily-quiz/result" and method == "POST":
@@ -3296,7 +4231,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 location = str(params.get("location", [""])[0]).strip()
                 date_value = str(params.get("date", [today_game_date()])[0]).strip()
                 lang = normalise_history_lang(params.get("lang", ["en"])[0])
-                limit_facts = self.query_int(params, "limitFacts", 6, 1, 8)
+                limit_facts = self.query_int(params, "limitFacts", 2, 2, 2)
                 limit_events = self.query_int(params, "limitEvents", 5, 1, 10)
                 payload, status = history_payload(
                     location,
@@ -3306,16 +4241,6 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     limit_events,
                 )
                 self.send_json(status, payload)
-                return
-
-            category_match = re.fullmatch(r"/api/daily-questions/(football|general)", path)
-            if category_match is not None and method == "GET":
-                payload = ensure_daily_questions()
-                category = category_match.group(1)
-                self.send_json(
-                    HTTPStatus.OK,
-                    {"date": payload["date"], "questions": payload[category]},
-                )
                 return
 
             if path == "/api/news" and method == "GET":
@@ -3337,6 +4262,55 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/wordle/guess" and method == "POST":
                 self.handle_wordle_guess(conn, user)
+                return
+
+            if path == "/api/admin/daily-quiz-status" and method == "GET":
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                quiz_date = str(params.get("date", [today_game_date()])[0]).strip()
+                self.send_json(HTTPStatus.OK, daily_quiz.quiz_status(conn, quiz_date))
+                return
+
+            if path == "/api/admin/question-attempts" and method == "GET":
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                quiz_date = str(params.get("date", [today_game_date()])[0]).strip()
+                self.send_json(HTTPStatus.OK, daily_quiz.question_attempts(conn, quiz_date))
+                return
+
+            if path == "/api/admin/ops-monitor" and method == "GET":
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                self.send_json(HTTPStatus.OK, ops_monitor.collect_dashboard_snapshot(force=force))
+                return
+
+            if path == "/api/admin/regenerate-question" and method == "POST":
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                payload = self.read_json()
+                result = daily_quiz.regenerate_question(
+                    conn,
+                    quiz_date=str(payload.get("date") or today_game_date()),
+                    subject=str(payload.get("subject") or ""),
+                    difficulty=str(payload.get("difficulty") or ""),
+                    config=DAILY_QUIZ_CONFIG,
+                    log=safe_log,
+                )
+                self.send_json(HTTPStatus.OK, result)
+                return
+
+            if path == "/api/admin/publish-quiz" and method == "POST":
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                payload = self.read_json()
+                quiz_date = str(payload.get("date") or today_game_date())
+                self.send_json(HTTPStatus.OK, daily_quiz.publish_quiz(conn, quiz_date))
                 return
 
             if path.startswith("/api/admin/"):
@@ -3679,12 +4653,11 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
 
 def run() -> None:
+    assert_runtime_storage_ready("before database initialization")
     initialize_database()
-    try:
-        ensure_daily_questions()
-    except Exception as error:  # pragma: no cover - startup logging guard
-        safe_log(f"Daily quiz preload failed: {error}")
+    assert_runtime_storage_ready("after database initialization")
     start_news_monitor()
+    start_daily_quiz_scheduler()
     host = os.environ.get("FULTONS_HOST", "127.0.0.1")
     port = int(os.environ.get("FULTONS_PORT", "8000"))
     server = ThreadingHTTPServer((host, port), FultonsHandler)

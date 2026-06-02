@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -27,6 +30,526 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn("HttpOnly", header)
         self.assertIn("SameSite=Lax", header)
         self.assertIn("Secure", header)
+
+    def test_ops_monitor_returns_disabled_payload_when_feature_is_off(self) -> None:
+        import ops_monitor
+
+        disabled = ops_monitor.MonitorConfig(
+            enabled=False,
+            cache_ttl_sec=15,
+            ssh_target="",
+            ssh_port=22,
+            ssh_key_path="",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+
+        with patch.object(ops_monitor.MonitorConfig, "from_env", return_value=disabled):
+            payload = ops_monitor.collect_dashboard_snapshot()
+
+        self.assertFalse(payload["enabled"])
+        self.assertEqual(payload["status"], "disabled")
+        self.assertIn("FULTONS_MONITOR_ENABLED", payload["reason"])
+
+    def test_admin_ops_monitor_route_requires_admin(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1, "role": "mod"}),
+            patch("ops_monitor.collect_dashboard_snapshot") as collect_snapshot,
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/api/admin/ops-monitor",
+                "",
+            )
+
+        self.assertEqual(sent_errors, [(HTTPStatus.FORBIDDEN, "Admin access required.")])
+        collect_snapshot.assert_not_called()
+
+    def test_admin_ops_monitor_route_returns_snapshot_for_admin(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+        snapshot = {"enabled": True, "status": "healthy"}
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1, "role": "admin"}),
+            patch("ops_monitor.collect_dashboard_snapshot", return_value=snapshot) as collect_snapshot,
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/api/admin/ops-monitor",
+                "force=1",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, snapshot)])
+        collect_snapshot.assert_called_once_with(force=True)
+
+    def test_local_ops_config_route_returns_saved_settings(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            client_address = ("127.0.0.1", 12345)
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        response = {"config": {"sshTarget": "ste@192.168.0.15"}, "settingsPath": "C:/temp.json"}
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("local_ops_settings.monitor_settings_response", return_value=response),
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/api/local/ops-config",
+                "",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, response)])
+
+    def test_local_ops_config_route_saves_settings(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            client_address = ("127.0.0.1", 12345)
+
+            def read_json(self) -> dict[str, object]:
+                return {"sshTarget": "ste@192.168.0.22", "sshPort": 2222}
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        saved = {"sshTarget": "ste@192.168.0.22", "sshPort": 2222}
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("local_ops_settings.save_monitor_settings", return_value=saved),
+            patch("local_ops_settings.SETTINGS_PATH", "C:/temp.json"),
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/local/ops-config",
+                "",
+            )
+
+        self.assertEqual(
+            sent,
+            [(HTTPStatus.OK, {"config": saved, "settingsPath": "C:/temp.json"})],
+        )
+
+    def test_local_ops_monitor_route_requires_loopback(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            client_address = ("192.168.0.9", 12345)
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("ops_monitor.collect_dashboard_snapshot") as collect_snapshot,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/api/local/ops-monitor",
+                "",
+            )
+
+        self.assertEqual(
+            sent_errors,
+            [(HTTPStatus.FORBIDDEN, "Local ops dashboard is available only from localhost.")],
+        )
+        collect_snapshot.assert_not_called()
+
+    def test_local_ops_monitor_route_returns_snapshot_for_loopback(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            client_address = ("127.0.0.1", 12345)
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        snapshot = {"enabled": True, "status": "healthy"}
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("ops_monitor.collect_dashboard_snapshot", return_value=snapshot) as collect_snapshot,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/api/local/ops-monitor",
+                "force=1",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, snapshot)])
+        collect_snapshot.assert_called_once_with(force=True)
+
+    def test_local_ops_action_route_requires_loopback(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            client_address = ("192.168.0.9", 12345)
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("ops_monitor.run_local_action") as run_local_action,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/local/ops-action",
+                "",
+            )
+
+        self.assertEqual(
+            sent_errors,
+            [(HTTPStatus.FORBIDDEN, "Local ops dashboard is available only from localhost.")],
+        )
+        run_local_action.assert_not_called()
+
+    def test_local_ops_action_route_runs_requested_action(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            client_address = ("127.0.0.1", 12345)
+
+            def read_json(self) -> dict[str, object]:
+                return {"action": "remove_orphaned_networks"}
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        response = {
+            "action": "remove_orphaned_networks",
+            "message": "Removed 2 orphaned network(s).",
+            "details": {"removedNetworks": ["fultons-quiz_app"]},
+            "snapshot": {"enabled": True, "status": "healthy"},
+        }
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("ops_monitor.run_local_action", return_value=response) as run_local_action,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/local/ops-action",
+                "",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, response)])
+        run_local_action.assert_called_once_with("remove_orphaned_networks", params=None)
+
+    def test_local_ops_action_route_passes_action_params(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            client_address = ("127.0.0.1", 12345)
+
+            def read_json(self) -> dict[str, object]:
+                return {
+                    "action": "regenerate_question",
+                    "params": {
+                        "date": "2026-06-03",
+                        "subject": "football",
+                        "difficulty": "hard",
+                    },
+                }
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        response = {
+            "action": "regenerate_question",
+            "message": "Regenerated football / hard for 2026-06-03.",
+            "details": {"difficulty": "hard"},
+            "snapshot": {"enabled": True, "status": "healthy"},
+        }
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("ops_monitor.run_local_action", return_value=response) as run_local_action,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/local/ops-action",
+                "",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, response)])
+        run_local_action.assert_called_once_with(
+            "regenerate_question",
+            params={"date": "2026-06-03", "subject": "football", "difficulty": "hard"},
+        )
+
+    def test_local_ops_action_route_rejects_invalid_action(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            client_address = ("127.0.0.1", 12345)
+
+            def read_json(self) -> dict[str, object]:
+                return {"action": "drop_database"}
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                raise AssertionError("send_json should not be called for invalid actions")
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("ops_monitor.run_local_action", side_effect=ValueError("Unsupported ops action: drop_database")),
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/local/ops-action",
+                "",
+            )
+
+        self.assertEqual(
+            sent_errors,
+            [(HTTPStatus.BAD_REQUEST, "Unsupported ops action: drop_database")],
+        )
+
+    def test_internal_regenerate_daily_quiz_question_requires_valid_token(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers = {"Authorization": "Bearer wrong-token"}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+        with patch("server.DAILY_QUIZ_CONFIG", SimpleNamespace(internal_token="expected-token")):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/internal/regenerate-daily-quiz-question",
+                "",
+            )
+
+        self.assertEqual(sent_errors, [(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")])
+
+    def test_internal_regenerate_daily_quiz_question_returns_payload(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            headers = {"Authorization": "Bearer expected-token"}
+
+            def read_json(self) -> dict[str, object]:
+                return {
+                    "date": "2026-06-03",
+                    "subject": "football",
+                    "difficulty": "easy",
+                }
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+        published = {
+            "date": "2026-06-03",
+            "status": "published",
+            "questions": [],
+        }
+        with (
+            patch("server.DAILY_QUIZ_CONFIG", SimpleNamespace(internal_token="expected-token")),
+            patch("server.connect_db") as connect_db,
+            patch("server.daily_quiz.regenerate_question", return_value=published) as regenerate,
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/internal/regenerate-daily-quiz-question",
+                "",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, published)])
+        regenerate.assert_called_once()
+
+    def test_local_generate_quiz_action_uses_https_not_ssh(self) -> None:
+        import ops_monitor
+
+        config = ops_monitor.MonitorConfig(
+            enabled=True,
+            cache_ttl_sec=15,
+            ssh_target="ste@192.168.0.15",
+            ssh_port=22,
+            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+        starting_snapshot = {
+            "enabled": True,
+            "status": "degraded",
+            "ok": False,
+            "generatedAt": "2026-06-02T12:00:00Z",
+            "cacheAgeSec": 0,
+            "stale": True,
+            "publicProbe": {"ok": True},
+            "remote": {
+                "host": {"power": {"acOnline": True, "batteries": []}},
+                "resources": {"memory": {}, "disks": []},
+                "docker": {"containers": [], "volumes": [], "networks": []},
+                "application": {
+                    "health": {"ok": True},
+                    "sqlite": {"tomorrowQuiz": {"date": "2026-06-03", "status": "missing"}},
+                },
+                "quiz": {"today": None, "tomorrow": {"date": "2026-06-03", "status": "missing"}},
+                "tests": [],
+                "errors": [],
+            },
+            "alerts": ["Tomorrow quiz is missing."],
+            "errors": ["ssh timeout"],
+        }
+        generated = {
+            "ok": True,
+            "generatedDate": "2026-06-03",
+            "result": {
+                "date": "2026-06-03",
+                "status": "published",
+                "questions": [
+                    {
+                        "subject": "football",
+                        "difficulty": "easy",
+                        "question": "Who won?",
+                        "choices": ["A", "B", "C", "D"],
+                        "correct_answer": "A",
+                        "explanation": "Because.",
+                    }
+                ],
+            },
+            "message": "Tomorrow quiz generated for 2026-06-03.",
+        }
+
+        with (
+            patch.object(ops_monitor.MonitorConfig, "from_env", return_value=config),
+            patch("ops_monitor.generate_tomorrow_quiz_action", return_value=generated) as generate_action,
+            patch("ops_monitor.run_remote_action") as run_remote_action,
+            patch("ops_monitor.collect_dashboard_snapshot", return_value=starting_snapshot),
+        ):
+            response = ops_monitor.run_local_action("generate_tomorrow_quiz")
+
+        generate_action.assert_called_once_with(config)
+        run_remote_action.assert_not_called()
+        self.assertEqual(response["snapshot"]["remote"]["quiz"]["tomorrow"]["status"], "published")
+        self.assertEqual(
+            response["snapshot"]["remote"]["quiz"]["tomorrow"]["questions"][0]["question"],
+            "Who won?",
+        )
 
     def test_fact_image_route_requires_login(self) -> None:
         import production_server
@@ -115,12 +638,10 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         original_data_dir = server.DATA_DIR
         original_db_path = server.DB_PATH
-        original_quiz_data_dir = server.QUIZ_DATA_DIR
         try:
             data_dir = Path(self.temp_dir.name)
             server.DATA_DIR = data_dir
             server.DB_PATH = data_dir / "fultons.db"
-            server.QUIZ_DATA_DIR = data_dir / "quizzes"
             server.initialize_database()
 
             with closing(server.connect_db()) as conn:
@@ -129,38 +650,53 @@ class ProductionServerHardeningTests(unittest.TestCase):
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
-            server.QUIZ_DATA_DIR = original_quiz_data_dir
 
-    def test_daily_quiz_generation_does_not_use_report_placeholder_questions(self) -> None:
+    def test_runtime_storage_health_detects_missing_required_database(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
         original_db_path = server.DB_PATH
-        original_quiz_data_dir = server.QUIZ_DATA_DIR
-        original_api_key = server.QUIZ_OPENAI_API_KEY
         try:
-            data_dir = Path(self.temp_dir.name)
+            data_dir = Path(self.temp_dir.name) / "missing-db"
             server.DATA_DIR = data_dir
             server.DB_PATH = data_dir / "fultons.db"
-            server.QUIZ_DATA_DIR = data_dir / "quizzes"
-            server.QUIZ_OPENAI_API_KEY = ""
 
-            payload = server.ensure_daily_questions()
-            question_texts = {
-                question["question"]
-                for category in ("football", "general")
-                for question in payload[category]
-            }
-
-            self.assertFalse(
-                server.LEGACY_PLACEHOLDER_QUESTION_TEXTS.intersection(question_texts)
+            payload = server.runtime_storage_health(
+                write_check=True,
+                require_existing_db=True,
             )
-            self.assertTrue(server.validate_daily_questions(payload))
+
+            self.assertFalse(payload["ok"])
+            self.assertFalse(payload["dbExists"])
+            self.assertTrue(
+                any("Required database is missing" in error for error in payload["errors"])
+            )
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
-            server.QUIZ_DATA_DIR = original_quiz_data_dir
-            server.QUIZ_OPENAI_API_KEY = original_api_key
+
+    def test_runtime_storage_health_checks_sqlite_user_count(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name) / "runtime-db"
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            payload = server.runtime_storage_health(write_check=True, min_users=1)
+
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["quickCheck"], "ok")
+            self.assertEqual(payload["userCount"], 0)
+            self.assertTrue(
+                any("Database user count is 0" in error for error in payload["errors"])
+            )
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
 
     def test_wikipedia_summary_prefers_paisley_town_alias(self) -> None:
         import server
@@ -228,6 +764,173 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertTrue({"history", "landmark", "industry", "culture"}.intersection(
             {fact["theme"] for fact in facts}
         ))
+
+    def test_reviewed_location_facts_use_openai_selection_and_critique(self) -> None:
+        import server
+
+        candidates = [
+            {
+                "title": "History",
+                "text": "Paisley Abbey was founded in the 12th century and remains one of the town's best-known landmarks.",
+                "theme": "history",
+                "sourceName": "Wikipedia",
+                "sourceUrl": "https://example.com/abbey",
+                "confidence": "medium",
+            },
+            {
+                "title": "Industry",
+                "text": "Paisley gave its name to the Paisley pattern through the town's textile industry.",
+                "theme": "industry",
+                "sourceName": "Wikipedia",
+                "sourceUrl": "https://example.com/pattern",
+                "confidence": "medium",
+            },
+            {
+                "title": "Culture",
+                "text": "Paisley has hosted major cultural events and arts activity in its town centre.",
+                "theme": "culture",
+                "sourceName": "Wikipedia",
+                "sourceUrl": "https://example.com/culture",
+                "confidence": "medium",
+            },
+        ]
+        selection = {
+            "facts": [
+                {
+                    "candidateIndex": 0,
+                    "title": "Paisley Abbey",
+                    "text": "Paisley Abbey dates from the 12th century and remains one of the town's defining landmarks.",
+                },
+                {
+                    "candidateIndex": 1,
+                    "title": "Paisley pattern",
+                    "text": "The town's textile trade made the Paisley pattern famous far beyond Renfrewshire.",
+                },
+            ]
+        }
+        critique = {
+            "overallPassed": True,
+            "notes": "Both facts are specific and distinctive.",
+            "facts": [
+                {
+                    "candidateIndex": 0,
+                    "passed": True,
+                    "relevance": 10,
+                    "interestingness": 8,
+                    "placeSpecificity": 10,
+                    "summary": "It names a landmark strongly associated with Paisley.",
+                },
+                {
+                    "candidateIndex": 1,
+                    "passed": True,
+                    "relevance": 9,
+                    "interestingness": 8,
+                    "placeSpecificity": 9,
+                    "summary": "It links Paisley to a distinctive export and identity marker.",
+                },
+            ],
+        }
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name) / "runtime-db"
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+            rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
+
+            with (
+                patch("server.FACTS_GEMINI_API_KEY", "test-key"),
+                patch("server.facts_ai_json_response", side_effect=[selection, critique]) as gemini_request,
+            ):
+                facts = server.reviewed_location_facts(
+                    rotation_key,
+                    "Paisley, Renfrewshire",
+                    candidates,
+                    limit=2,
+                    recent_texts=["Paisley Abbey is a medieval landmark in the town."],
+                )
+
+            self.assertEqual(len(facts), 2)
+            self.assertEqual(facts[0]["title"], "Paisley Abbey")
+            self.assertEqual(facts[0]["sourceUrl"], "https://example.com/abbey")
+            self.assertEqual(facts[1]["title"], "Paisley pattern")
+            self.assertEqual(facts[1]["critique"]["relevance"], 9)
+            self.assertIn("distinctive export", facts[1]["critique"]["summary"])
+            self.assertEqual(gemini_request.call_count, 2)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_history_fact_review_failures_are_cached_for_future_attempts(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name) / "runtime-db"
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+            rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
+
+            server.store_history_fact_review_failure(
+                rotation_key,
+                selection={"facts": [{"candidateIndex": 2, "title": "Generic fact", "text": "Paisley is a town in Scotland."}]},
+                critique={"overallPassed": False, "notes": "Too generic."},
+                failure_reason="Gemini critique rejected the selected facts.",
+            )
+
+            failures = server.recent_history_fact_review_failures(rotation_key)
+
+            self.assertEqual(len(failures), 1)
+            self.assertEqual(failures[0]["failureReason"], "Gemini critique rejected the selected facts.")
+            self.assertEqual(failures[0]["selection"]["facts"][0]["candidateIndex"], 2)
+            self.assertEqual(failures[0]["critique"]["notes"], "Too generic.")
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_history_fact_rotation_expires_after_24_hours(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name) / "runtime-db"
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
+            facts = [
+                {
+                    "title": "Paisley Abbey",
+                    "text": "Paisley Abbey is a medieval landmark in the town.",
+                    "theme": "landmark",
+                    "sourceName": "Wikipedia",
+                    "sourceUrl": "https://example.com/abbey",
+                    "confidence": "medium",
+                }
+            ]
+            created_at = (datetime.now(timezone.utc) - timedelta(hours=23)).replace(microsecond=0).isoformat()
+            server.store_rotated_history_facts(rotation_key, facts, created_at=created_at)
+
+            active = server.current_rotated_history_facts(
+                rotation_key,
+                now=datetime.now(timezone.utc),
+            )
+            expired = server.current_rotated_history_facts(
+                rotation_key,
+                now=datetime.now(timezone.utc) + timedelta(hours=2),
+            )
+
+            self.assertEqual(active, facts)
+            self.assertIsNone(expired)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
 
     def test_wikipedia_images_keep_location_photos_and_skip_badges(self) -> None:
         import server
@@ -377,60 +1080,155 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(score, 0)
 
-    def test_quiz_order_and_scoring_use_difficulty_weights(self) -> None:
-        import server
-
-        questions = [
-            {"difficulty": "hard", "correct_answer": "H"},
-            {"difficulty": "easy", "correct_answer": "E"},
-            {"difficulty": "medium", "correct_answer": "M"},
-        ]
-        payload = {"date": "2026-05-22", "football": questions, "general": questions}
-        ordered = server.order_daily_questions(payload)
-
-        self.assertEqual(
-            [question["difficulty"] for question in ordered["football"]],
-            ["easy", "medium", "hard"],
-        )
-        self.assertEqual(
-            server.score_quiz_answers(ordered["football"], ["E", "wrong", "H"]),
-            {"score": 6, "maxScore": 9, "correctCount": 2},
-        )
-        leaky_questions = [
-            {"difficulty": "easy", "correct_answer": "E", "explanation": "Easy."},
-            {
-                "difficulty": "medium",
-                "correct_answer": "M",
-                "explanation": "The next answer is Hampden.",
-            },
-            {
-                "difficulty": "hard",
-                "correct_answer": "Hampden Park",
-                "explanation": "Hard.",
-            },
-        ]
-        safe_payload = server.order_daily_questions(
-            {"date": "2026-05-22", "football": leaky_questions, "general": leaky_questions}
-        )
-        self.assertNotIn("Hampden Park", safe_payload["football"][1]["explanation"])
-
     def test_wordle_points_curve(self) -> None:
         import server
 
         self.assertEqual([server.wordle_score("won", attempt) for attempt in range(1, 7)], [10, 5, 4, 3, 2, 1])
         self.assertEqual(server.wordle_score("lost", 6), 0)
 
+    def test_word_definition_uses_dictionary_api_first_definition(self) -> None:
+        import server
+
+        class DictionaryResponse:
+            def __enter__(self) -> "DictionaryResponse":
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    [
+                        {
+                            "meanings": [
+                                {
+                                    "partOfSpeech": "noun",
+                                    "definitions": [{"definition": "A person acknowledged as holy."}],
+                                }
+                            ]
+                        }
+                    ]
+                ).encode("utf-8")
+
+        server.WORD_DEFINITION_CACHE.clear()
+        self.addCleanup(server.WORD_DEFINITION_CACHE.clear)
+        with patch("server.urlopen", return_value=DictionaryResponse()) as urlopen:
+            result = server.word_definition("Saint")
+
+        self.assertEqual(result["word"], "saint")
+        self.assertEqual(result["partOfSpeech"], "noun")
+        self.assertEqual(result["definition"], "A person acknowledged as holy.")
+        urlopen.assert_called_once()
+
+    def test_quiz_scoring_adds_perfect_round_bonus(self) -> None:
+        import server
+
+        questions = [
+            {"difficulty": "easy", "correct_answer": "A"},
+            {"difficulty": "medium", "correct_answer": "B"},
+            {"difficulty": "hard", "correct_answer": "C"},
+        ]
+
+        self.assertEqual(
+            server.score_quiz_answers(questions, ["A", "B", "C"]),
+            {"score": 12, "maxScore": 12, "correctCount": 3, "bonusPoints": 3},
+        )
+        self.assertEqual(
+            server.score_quiz_answers(questions, ["A", "wrong", "C"]),
+            {"score": 6, "maxScore": 12, "correctCount": 2, "bonusPoints": 0},
+        )
+
+    def test_daily_quiz_result_scores_once_and_updates_leaderboard(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-01T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    quiz_set_id = conn.execute(
+                        """
+                        INSERT INTO daily_quiz_sets (quiz_date, status, published_at)
+                        VALUES ('2026-06-01', 'published', ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    for difficulty, answer in (("easy", "A"), ("medium", "B"), ("hard", "C")):
+                        conn.execute(
+                            """
+                            INSERT INTO daily_quiz_questions (
+                                quiz_set_id, subject, difficulty, question, choices_json,
+                                correct_answer, explanation, interesting_reason, tags_json,
+                                normalized_question, created_at
+                            )
+                            VALUES (?, 'football', ?, ?, ?, ?, 'Verified.', 'Memorable.', '[]', ?, ?)
+                            """,
+                            (
+                                quiz_set_id,
+                                difficulty,
+                                f"Which answer is correct for the {difficulty} football example?",
+                                json.dumps([answer, "X", "Y", "Z"]),
+                                answer,
+                                f"football {difficulty}",
+                                now,
+                            ),
+                        )
+                with patch("server.today_game_date", return_value="2026-06-01"):
+                    first, first_status = server.save_daily_quiz_result(
+                        conn,
+                        user_id,
+                        "2026-06-01",
+                        "football",
+                        ["A", "wrong", "C"],
+                    )
+                    repeated, repeated_status = server.save_daily_quiz_result(
+                        conn,
+                        user_id,
+                        "2026-06-01",
+                        "football",
+                        ["wrong", "wrong", "wrong"],
+                    )
+                    leaderboard = server.leaderboard_payload(conn)
+
+            self.assertEqual(first_status, HTTPStatus.CREATED)
+            self.assertEqual(repeated_status, HTTPStatus.OK)
+            self.assertEqual(first["result"]["score"], 6)
+            self.assertEqual(first["result"]["maxScore"], 12)
+            self.assertEqual(first["result"]["bonusPoints"], 0)
+            self.assertEqual(repeated["result"]["score"], 6)
+            self.assertEqual(leaderboard["players"][0]["totalPoints"], 6)
+            self.assertEqual(leaderboard["players"][0]["weeklyPoints"], 6)
+            self.assertEqual(leaderboard["players"][0]["quizPoints"], 6)
+            self.assertEqual(leaderboard["players"][0]["weeklyQuizPoints"], 6)
+            self.assertEqual(leaderboard["summary"]["quizPlays"], 1)
+            self.assertEqual(leaderboard["summary"]["periodStart"], "2026-05-26")
+            self.assertEqual(leaderboard["summary"]["periodEnd"], "2026-06-01")
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
     def test_leaderboard_excludes_admin_accounts(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
         original_db_path = server.DB_PATH
-        original_quiz_data_dir = server.QUIZ_DATA_DIR
         try:
             data_dir = Path(self.temp_dir.name)
             server.DATA_DIR = data_dir
             server.DB_PATH = data_dir / "fultons.db"
-            server.QUIZ_DATA_DIR = data_dir / "quizzes"
             server.initialize_database()
 
             with closing(server.connect_db()) as conn:
@@ -446,16 +1244,23 @@ class ProductionServerHardeningTests(unittest.TestCase):
                     )
                     rows = conn.execute("SELECT id, username FROM users").fetchall()
                     user_ids = {row["username"]: row["id"] for row in rows}
+                    game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-05-22', 'saint', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
                     for username, score in (("admin", 9), ("dad", 6)):
                         conn.execute(
                             """
-                            INSERT INTO daily_quiz_results (
-                                user_id, game_date, category, answers_json, score, max_score,
-                                correct_count, completed_at, created_at, updated_at
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
                             )
-                            VALUES (?, ?, 'football', '[]', ?, 9, 2, ?, ?, ?)
+                            VALUES (?, ?, 'won', 1, ?, ?, ?, ?)
                             """,
-                            (user_ids[username], "2026-05-22", score, now, now, now),
+                            (user_ids[username], game_id, score, now, now, now),
                         )
                 payload = server.leaderboard_payload(conn)
 
@@ -464,19 +1269,70 @@ class ProductionServerHardeningTests(unittest.TestCase):
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
-            server.QUIZ_DATA_DIR = original_quiz_data_dir
+
+    def test_leaderboard_ranks_recent_points_above_historic_points(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-02T12:00:00+00:00"
+                with conn:
+                    for username in ("dad", "mum"):
+                        conn.execute(
+                            "INSERT INTO users (username, password_hash, role, created_at, updated_at) VALUES (?, 'hash', 'user', ?, ?)",
+                            (username, now, now),
+                        )
+                    user_ids = {
+                        row["username"]: row["id"]
+                        for row in conn.execute("SELECT id, username FROM users").fetchall()
+                    }
+                    for username, game_date, score in (
+                        ("dad", "2026-05-01", 10),
+                        ("mum", "2026-06-02", 1),
+                    ):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                            VALUES (?, 'saint', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
+                            )
+                            VALUES (?, ?, 'won', 1, ?, ?, ?, ?)
+                            """,
+                            (user_ids[username], game_id, score, now, now, now),
+                        )
+                with patch("server.today_game_date", return_value="2026-06-02"):
+                    payload = server.leaderboard_payload(conn)
+
+            self.assertEqual([player["username"] for player in payload["players"]], ["mum", "dad"])
+            self.assertEqual([player["weeklyPoints"] for player in payload["players"]], [1, 0])
+            self.assertEqual([player["totalPoints"] for player in payload["players"]], [1, 10])
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
 
     def test_leaderboard_includes_score_day_streaks(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
         original_db_path = server.DB_PATH
-        original_quiz_data_dir = server.QUIZ_DATA_DIR
         try:
             data_dir = Path(self.temp_dir.name)
             server.DATA_DIR = data_dir
             server.DB_PATH = data_dir / "fultons.db"
-            server.QUIZ_DATA_DIR = data_dir / "quizzes"
             server.initialize_database()
 
             with closing(server.connect_db()) as conn:
@@ -490,15 +1346,22 @@ class ProductionServerHardeningTests(unittest.TestCase):
                         "SELECT id FROM users WHERE username = 'dad'"
                     ).fetchone()["id"]
                     for game_date in ("2026-05-18", "2026-05-19", "2026-05-21", "2026-05-22"):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                            VALUES (?, 'saint', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
                         conn.execute(
                             """
-                            INSERT INTO daily_quiz_results (
-                                user_id, game_date, category, answers_json, score, max_score,
-                                correct_count, completed_at, created_at, updated_at
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
                             )
-                            VALUES (?, ?, 'football', '[]', 1, 9, 1, ?, ?, ?)
+                            VALUES (?, ?, 'won', 6, 1, ?, ?, ?)
                             """,
-                            (dad_id, game_date, now, now, now),
+                            (dad_id, game_id, now, now, now),
                         )
                 with patch("server.today_game_date", return_value="2026-05-22"):
                     payload = server.leaderboard_payload(conn)
@@ -509,19 +1372,16 @@ class ProductionServerHardeningTests(unittest.TestCase):
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
-            server.QUIZ_DATA_DIR = original_quiz_data_dir
 
     def test_moderator_flag_exposes_mod_role_and_player_management(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
         original_db_path = server.DB_PATH
-        original_quiz_data_dir = server.QUIZ_DATA_DIR
         try:
             data_dir = Path(self.temp_dir.name)
             server.DATA_DIR = data_dir
             server.DB_PATH = data_dir / "fultons.db"
-            server.QUIZ_DATA_DIR = data_dir / "quizzes"
             server.initialize_database()
 
             with closing(server.connect_db()) as conn:
@@ -543,7 +1403,6 @@ class ProductionServerHardeningTests(unittest.TestCase):
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
-            server.QUIZ_DATA_DIR = original_quiz_data_dir
 
     def test_news_classifier_does_not_mark_routine_stories_as_breaking(self) -> None:
         import server
@@ -580,6 +1439,215 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn("breaking", breaking_tags)
         self.assertEqual(live_priority, "live-scores")
         self.assertIn("live-scores", live_tags)
+
+    def test_news_classifier_marks_major_result_stories_as_breaking(self) -> None:
+        import server
+
+        priority, tags = server.classify_news_item(
+            "St Mirren stay up after dramatic play-off win",
+            "The Buddies secured Premiership survival with a priceless victory.",
+            ["news"],
+        )
+
+        self.assertEqual(priority, "breaking")
+        self.assertIn("breaking", tags)
+
+    def test_news_classifier_marks_confirmed_club_change_as_breaking(self) -> None:
+        import server
+
+        priority, tags = server.classify_news_item(
+            "John Park leaves St Mirren as new recruitment chief named",
+            "",
+            ["news"],
+        )
+
+        self.assertEqual(priority, "breaking")
+        self.assertIn("breaking", tags)
+        self.assertNotIn("news", tags)
+
+    def test_news_payload_removes_source_suffix_and_repeated_summary(self) -> None:
+        import server
+
+        item = server.validate_news_payload(
+            {
+                "sourceKey": "bbc-story",
+                "title": "St Mirren remain in talks with captain Mark O'Hara and four others - BBC",
+                "url": "https://example.com/st-mirren-captain",
+                "source": "BBC",
+                "summary": "St Mirren remain in talks with captain Mark O'Hara and four others BBC",
+                "publishedAt": "2026-06-01T08:05:47+00:00",
+                "tags": ["st-mirren"],
+            }
+        )
+
+        self.assertEqual(
+            item["title"],
+            "St Mirren remain in talks with captain Mark O'Hara and four others",
+        )
+        self.assertEqual(item["summary"], "")
+        self.assertTrue(item["story_key"])
+
+    def test_news_duplicate_match_accepts_same_story_headline_rewrite(self) -> None:
+        import server
+
+        self.assertTrue(
+            server.news_titles_are_near_duplicates(
+                "Connor Ronan targeted for Aberdeen transfer as Stephen Robinson eyes reunion",
+                "Connor Ronan an Aberdeen transfer target as Stephen Robinson eyes St Mirren reunion at Pittodrie",
+            )
+        )
+        self.assertFalse(
+            server.news_titles_are_near_duplicates(
+                "St Mirren remain in talks with captain Mark O'Hara and four others",
+                "Premier Sports Cup group stage fixtures and TV selections",
+            )
+        )
+
+    def test_news_upsert_collapses_google_url_variants_for_same_story(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            base_payload = {
+                "title": "John Park leaves St Mirren as new recruitment chief named - The Herald",
+                "source": "The Herald",
+                "summary": "John Park leaves St Mirren as new recruitment chief named The Herald",
+                "publishedAt": "2026-05-31T18:49:43+00:00",
+                "tags": ["st-mirren", "scottish-football"],
+            }
+            with closing(server.connect_db()) as conn:
+                with conn:
+                    first, first_inserted = server.upsert_news_item(
+                        conn,
+                        {
+                            **base_payload,
+                            "sourceKey": "google-variant-one",
+                            "url": "https://news.google.com/rss/articles/one?oc=5",
+                        },
+                    )
+                    second, second_inserted = server.upsert_news_item(
+                        conn,
+                        {
+                            **base_payload,
+                            "sourceKey": "google-variant-two",
+                            "url": "https://news.google.com/rss/articles/two?oc=5",
+                        },
+                    )
+                count = conn.execute("SELECT COUNT(*) FROM news_items").fetchone()[0]
+
+            self.assertTrue(first_inserted)
+            self.assertFalse(second_inserted)
+            self.assertEqual(first["id"], second["id"])
+            self.assertEqual(second["summary"], "")
+            self.assertEqual(second["priority"], "breaking")
+            self.assertEqual(count, 1)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_news_backfill_removes_existing_duplicate_rows(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            now = "2026-06-01T10:00:00+00:00"
+            with closing(server.connect_db()) as conn:
+                with conn:
+                    for source_key, url in (
+                        ("variant-one", "https://news.google.com/rss/articles/one"),
+                        ("variant-two", "https://news.google.com/rss/articles/two"),
+                    ):
+                        conn.execute(
+                            """
+                            INSERT INTO news_items (
+                                source_key, story_key, kind, title, url, source, summary,
+                                published_at, host, priority, tags_json, created_at, updated_at
+                            )
+                            VALUES (?, '', 'article', ?, ?, 'BBC', ?, ?, 'news.google.com',
+                                'news', '[]', ?, ?)
+                            """,
+                            (
+                                source_key,
+                                "St Mirren appoint new manager - BBC",
+                                url,
+                                "St Mirren appoint new manager BBC",
+                                now,
+                                now,
+                                now,
+                            ),
+                        )
+                    server.backfill_news_items(conn)
+                rows = conn.execute("SELECT * FROM news_items").fetchall()
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["title"], "St Mirren appoint new manager")
+            self.assertEqual(rows[0]["summary"], "")
+            self.assertEqual(rows[0]["priority"], "breaking")
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_daily_quiz_scheduler_uses_next_configured_window(self) -> None:
+        import server
+
+        with (
+            patch("server.server_timezone", return_value=timezone.utc),
+            patch("server.DAILY_QUIZ_SCHEDULER_HOUR", 0),
+            patch("server.DAILY_QUIZ_SCHEDULER_MINUTE", 5),
+        ):
+            before_window = server.next_daily_quiz_run(
+                datetime(2026, 6, 1, 0, 4, tzinfo=timezone.utc)
+            )
+            after_window = server.next_daily_quiz_run(
+                datetime(2026, 6, 1, 0, 6, tzinfo=timezone.utc)
+            )
+
+        self.assertEqual(before_window, datetime(2026, 6, 1, 0, 5, tzinfo=timezone.utc))
+        self.assertEqual(after_window, datetime(2026, 6, 2, 0, 5, tzinfo=timezone.utc))
+
+    def test_daily_quiz_scheduler_skips_already_published_tomorrow(self) -> None:
+        import daily_quiz
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO daily_quiz_sets (quiz_date, status, published_at)
+                        VALUES ('2026-06-02', 'published', ?)
+                        """,
+                        ("2026-06-01T12:00:00+00:00",),
+                    )
+
+            with patch("daily_quiz.generate_daily_quiz") as generate_daily_quiz:
+                server.ensure_tomorrow_daily_quiz(
+                    datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+                )
+
+            generate_daily_quiz.assert_not_called()
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
 
     def test_history_events_prefer_recent_sport_and_birth_highlights(self) -> None:
         import server

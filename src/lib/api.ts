@@ -47,6 +47,239 @@ export type AdminUser = User & {
   losses: number;
 };
 
+export type AdminOpsStatus = "healthy" | "degraded" | "offline" | "disabled";
+
+export type AdminOpsTest = {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+};
+
+export type AdminOpsPublicProbe = {
+  url: string;
+  ok: boolean;
+  status: number | null;
+  responseTimeMs: number;
+  resolvedAddresses: string[];
+  payload: { ok?: boolean; date?: string; storage?: { ok?: boolean; errorCount?: number } } | null;
+  error: string | null;
+  checkedAt: string;
+};
+
+export type AdminOpsDisk = {
+  path: string;
+  exists: boolean;
+  totalBytes?: number;
+  usedBytes?: number;
+  freeBytes?: number;
+  usedPct?: number;
+  mountPoint?: string;
+  source?: string;
+  fsType?: string;
+};
+
+export type AdminOpsContainer = {
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  health?: string | null;
+  startedAt?: string | null;
+  restarts?: number | null;
+  ports: string[];
+  networks: string[];
+  mounts: Array<{
+    type?: string | null;
+    source?: string | null;
+    destination?: string | null;
+    rw?: boolean | null;
+  }>;
+  cpuPct?: number | null;
+  memory: {
+    usedBytes?: number | null;
+    limitBytes?: number | null;
+    usedPct?: number | null;
+  };
+  networkIO: {
+    inBytes?: number | null;
+    outBytes?: number | null;
+  };
+  blockIO: {
+    inBytes?: number | null;
+    outBytes?: number | null;
+  };
+  pids?: number | null;
+};
+
+export type AdminOpsVolume = {
+  name: string;
+  driver?: string | null;
+  mountpoint?: string | null;
+  scope?: string | null;
+  createdAt?: string | null;
+};
+
+export type AdminOpsNetwork = {
+  name: string;
+  driver?: string | null;
+  scope?: string | null;
+  builtin?: boolean;
+  composeProject?: string | null;
+  composeNetwork?: string | null;
+  orphaned?: boolean;
+  subnets: string[];
+  gateways: string[];
+  attachedContainers: string[];
+};
+
+export type AdminOpsQuizQuestion = {
+  subject: "football" | "general_knowledge";
+  difficulty: QuizDifficulty;
+  question: string;
+  choices: string[];
+  correctAnswer: string;
+  explanation: string;
+};
+
+export type AdminOpsQuizPreview = {
+  date: string;
+  status: string;
+  acceptedQuestions: number;
+  failedAttempts: number;
+  failureReason?: string | null;
+  updatedAt?: string | null;
+  questions: AdminOpsQuizQuestion[];
+};
+
+export type AdminOpsRemoteSnapshot = {
+  ok: boolean;
+  generatedAt: string;
+  responseTimeMs: number;
+  host: {
+    hostname?: string | null;
+    generatedAt: string;
+    uptimeSeconds?: number | null;
+    loadAverage?: number[] | null;
+    cpuCount?: number | null;
+    power: {
+      acOnline?: boolean | null;
+      batteries: Array<{
+        name: string;
+        status?: string | null;
+        capacityPct?: number | string | null;
+        energyNow?: number | string | null;
+        energyFull?: number | string | null;
+        energyFullDesign?: number | string | null;
+      }>;
+    };
+  };
+  resources: {
+    memory: {
+      totalBytes?: number | null;
+      availableBytes?: number | null;
+      usedBytes?: number | null;
+      usedPct?: number | null;
+    };
+    disks: AdminOpsDisk[];
+  };
+  docker: {
+    containers: AdminOpsContainer[];
+    volumes: AdminOpsVolume[];
+    networks: AdminOpsNetwork[];
+  };
+  application: {
+    composeFile: string;
+    envFile: string;
+    dataDir: string;
+    dbPath: string;
+    health: {
+      url: string;
+      ok: boolean;
+      status?: number | null;
+      responseTimeMs?: number | null;
+      payload?: { ok?: boolean; date?: string; storage?: { ok?: boolean; errorCount?: number } } | null;
+      error?: string | null;
+    };
+    sqlite: {
+      dbPath: string;
+      dbExists: boolean;
+      dbSizeBytes?: number | null;
+      quickCheck?: string | null;
+      userCount?: number | null;
+      tableCounts: Record<string, number>;
+      todayQuiz?: AdminOpsQuizPreview | null;
+      tomorrowQuiz?: AdminOpsQuizPreview | null;
+    };
+  };
+  quiz: {
+    today?: AdminOpsQuizPreview | null;
+    tomorrow?: AdminOpsQuizPreview | null;
+  };
+  tests: AdminOpsTest[];
+  errors: string[];
+};
+
+export type AdminOpsSnapshot = {
+  enabled: boolean;
+  status: AdminOpsStatus;
+  ok: boolean;
+  generatedAt: string;
+  cacheAgeSec: number;
+  stale: boolean;
+  reason?: string;
+  publicProbe: AdminOpsPublicProbe | null;
+  remote: AdminOpsRemoteSnapshot | null;
+  alerts: string[];
+  errors: string[];
+  lastError?: string;
+};
+
+export type LocalOpsConfig = {
+  cacheTtlSec: number;
+  sshTarget: string;
+  sshPort: number;
+  sshKeyPath: string;
+  sshConnectTimeoutSec: number;
+  publicHealthUrl: string;
+  internalBaseUrl: string;
+  internalQuizToken: string;
+  composeFile: string;
+  envFile: string;
+  dataDir: string;
+  dbPath: string;
+  appPort: number;
+};
+
+export type LocalOpsConfigResponse = {
+  config: LocalOpsConfig;
+  settingsPath: string;
+};
+
+export type LocalOpsActionName =
+  | "generate_tomorrow_quiz"
+  | "remove_orphaned_networks"
+  | "regenerate_question";
+
+export type LocalOpsActionRequest = {
+  action: LocalOpsActionName;
+  params?: Record<string, unknown>;
+};
+
+export type LocalOpsActionResponse = {
+  action: LocalOpsActionName;
+  message: string;
+  details: Record<string, unknown>;
+  snapshot: AdminOpsSnapshot;
+};
+
+export type WordleDefinition = {
+  word: string;
+  definition: string | null;
+  partOfSpeech: string | null;
+  sourceUrl: string;
+};
+
 export type QuizDifficulty = "easy" | "medium" | "hard";
 
 export type DailyQuizQuestion = {
@@ -61,6 +294,16 @@ export type DailyQuestionsResponse = {
   date: string;
   football: DailyQuizQuestion[];
   general: DailyQuizQuestion[];
+};
+
+export type DailyQuizResult = {
+  date: string;
+  category: "football" | "general";
+  score: number;
+  maxScore: number;
+  correctCount: number;
+  bonusPoints: number;
+  completedAt: string;
 };
 
 export type NewsItem = {
@@ -94,19 +337,13 @@ export type HistoryEvent = {
   label?: string;
 };
 
-export type DailyQuizResult = {
-  date: string;
-  category: "football" | "general";
-  score: number;
-  maxScore: number;
-  correctCount: number;
-  completedAt: string;
-};
-
 export type LeaderboardPlayer = {
   rank: number;
   id: number;
   username: string;
+  weeklyPoints: number;
+  weeklyWordlePoints: number;
+  weeklyQuizPoints: number;
   totalPoints: number;
   wordlePoints: number;
   wordlePlayed: number;
@@ -122,7 +359,10 @@ export type LeaderboardPlayer = {
 export type LeaderboardResponse = {
   players: LeaderboardPlayer[];
   summary: {
+    periodStart: string;
+    periodEnd: string;
     playerCount: number;
+    weeklyPoints: number;
     totalPoints: number;
     quizPlays: number;
     wordlePlays: number;
@@ -146,6 +386,12 @@ export type HistoryFact = {
   sourceName: string;
   sourceUrl: string | null;
   confidence: "high" | "medium" | "low";
+  critique?: {
+    summary: string;
+    relevance: number;
+    interestingness: number;
+    placeSpecificity: number;
+  };
   image?: HistoryLocationImage | null;
 };
 
@@ -193,6 +439,21 @@ export type HistoryResponse = {
 };
 
 type JsonBody = Record<string, unknown>;
+
+type PublishedQuizQuestion = {
+  subject: "football" | "general_knowledge";
+  difficulty: QuizDifficulty;
+  question: string;
+  choices: string[];
+  correct_answer: string;
+  explanation: string;
+};
+
+type PublishedQuizResponse = {
+  date: string;
+  status: "published";
+  questions: PublishedQuizQuestion[];
+};
 
 let dailyQuestionsPromise: Promise<DailyQuestionsResponse> | undefined;
 const newsPromises = new Map<string, Promise<NewsResponse>>();
@@ -245,6 +506,42 @@ function historyCacheKey(params: { location: string; date: string; lang?: string
   return `${params.lang ?? "en"}:${params.location.trim().toLowerCase()}:${params.date}`;
 }
 
+function fetchDailyQuestions(options: { force?: boolean } = {}) {
+  if (!options.force && dailyQuestionsPromise !== undefined) {
+    return dailyQuestionsPromise;
+  }
+
+  const promise = request<PublishedQuizResponse>("/api/daily-quiz")
+    .then((payload) => {
+      const questions: DailyQuestionsResponse = {
+        date: payload.date,
+        football: [],
+        general: [],
+      };
+      for (const question of payload.questions) {
+        const item: DailyQuizQuestion = {
+          difficulty: question.difficulty,
+          question: question.question,
+          answers: question.choices,
+          correct_answer: question.correct_answer,
+          explanation: question.explanation,
+        };
+        if (question.subject === "football") {
+          questions.football.push(item);
+        } else if (question.subject === "general_knowledge") {
+          questions.general.push(item);
+        }
+      }
+      return questions;
+    })
+    .catch((error) => {
+      dailyQuestionsPromise = undefined;
+      throw error;
+    });
+  dailyQuestionsPromise = promise;
+  return promise;
+}
+
 function fetchNews(
   limit = 50,
   category: NewsCategory = "all",
@@ -266,23 +563,6 @@ function fetchNews(
   });
   newsPromises.set(cacheKey, promise);
   return promise;
-}
-
-function fetchDailyQuestions(options: { force?: boolean } = {}) {
-  if (options.force) {
-    dailyQuestionsPromise = undefined;
-  }
-
-  if (dailyQuestionsPromise === undefined) {
-    dailyQuestionsPromise = request<DailyQuestionsResponse>("/api/daily-questions").catch(
-      (error) => {
-        dailyQuestionsPromise = undefined;
-        throw error;
-      },
-    );
-  }
-
-  return dailyQuestionsPromise;
 }
 
 function fetchHistory(params: { location: string; date: string; lang?: string }) {
@@ -346,6 +626,10 @@ export const api = {
     return request<WordleState>("/api/wordle/today");
   },
 
+  wordleDefinition() {
+    return request<WordleDefinition>("/api/wordle/definition");
+  },
+
   validateWordleGuess(guess: string) {
     return request<{ valid: boolean }>(`/api/wordle/validate/${guess}`);
   },
@@ -355,6 +639,10 @@ export const api = {
       method: "POST",
       body: jsonBody({ guess }),
     });
+  },
+
+  leaderboard() {
+    return request<LeaderboardResponse>("/api/leaderboard");
   },
 
   dailyQuestions(options?: { force?: boolean }) {
@@ -372,10 +660,6 @@ export const api = {
     });
   },
 
-  leaderboard() {
-    return request<LeaderboardResponse>("/api/leaderboard");
-  },
-
   news(limit = 50, category: NewsCategory = "all", options?: { force?: boolean }) {
     return fetchNews(limit, category, options);
   },
@@ -384,7 +668,7 @@ export const api = {
     void fetchNews(50, "all").catch(() => undefined);
     void fetchNews(50, "breaking").catch(() => undefined);
     void fetchNews(50, "live-scores").catch(() => undefined);
-    void fetchNews(12, "breaking").catch(() => undefined);
+    void fetchNews(12, "all").catch(() => undefined);
   },
 
   history(params: { location: string; date: string; lang?: string }) {
@@ -398,7 +682,6 @@ export const api = {
   warmCoreData() {
     this.warmNews();
     this.warmHistory();
-    void fetchDailyQuestions().catch(() => undefined);
   },
 
   adminUsers() {
@@ -422,6 +705,46 @@ export const api = {
   deleteUser(userId: number) {
     return request<{ ok: boolean }>(`/api/admin/users/${userId}`, {
       method: "DELETE",
+    });
+  },
+
+  adminOpsMonitor(options?: { force?: boolean }) {
+    const params = new URLSearchParams();
+    if (options?.force) {
+      params.set("force", "1");
+    }
+    const query = params.toString();
+    return request<AdminOpsSnapshot>(
+      `/api/admin/ops-monitor${query ? `?${query}` : ""}`,
+    );
+  },
+
+  localOpsMonitor(options?: { force?: boolean }) {
+    const params = new URLSearchParams();
+    if (options?.force) {
+      params.set("force", "1");
+    }
+    const query = params.toString();
+    return request<AdminOpsSnapshot>(
+      `/api/local/ops-monitor${query ? `?${query}` : ""}`,
+    );
+  },
+
+  localOpsConfig() {
+    return request<LocalOpsConfigResponse>("/api/local/ops-config");
+  },
+
+  updateLocalOpsConfig(payload: LocalOpsConfig) {
+    return request<LocalOpsConfigResponse>("/api/local/ops-config", {
+      method: "POST",
+      body: jsonBody(payload),
+    });
+  },
+
+  localOpsAction(requestPayload: LocalOpsActionRequest) {
+    return request<LocalOpsActionResponse>("/api/local/ops-action", {
+      method: "POST",
+      body: jsonBody(requestPayload),
     });
   },
 };

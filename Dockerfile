@@ -17,7 +17,7 @@ WORKDIR /app
 RUN apk add --no-cache tzdata \
   && adduser -D -u 1000 appuser
 
-COPY --chown=appuser:appuser server.py production_server.py wordle_game.py wordle_words.txt ./
+COPY --chown=appuser:appuser server.py production_server.py daily_quiz.py local_ops_settings.py ops_monitor.py wordle_game.py wordle_words.txt ./
 COPY --chown=appuser:appuser --from=frontend /app/dist ./dist
 
 ENV FULTONS_HOST=0.0.0.0

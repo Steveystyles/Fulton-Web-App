@@ -293,7 +293,7 @@ export function HistoryKnowledge() {
     };
   }, [history]);
   const facts = useMemo(
-    () => (history?.location?.facts ?? []).map((fact, index) => normaliseFact(fact, index)),
+    () => (history?.location?.facts ?? []).map((fact, index) => normaliseFact(fact, index)).slice(0, 2),
     [history],
   );
   const placeTitle = history?.location?.title ?? submittedLocation.location;
@@ -440,6 +440,19 @@ export function HistoryKnowledge() {
                           <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
                             {fact.text}
                           </p>
+                          {fact.critique ? (
+                            <div className="mt-2 rounded-2xl bg-slate-50 px-3 py-2">
+                              <p className="text-[0.7rem] font-black uppercase tracking-normal text-slate-500">
+                                Review
+                              </p>
+                              <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
+                                {fact.critique.summary}
+                              </p>
+                              <p className="mt-1 text-[0.7rem] font-black uppercase tracking-normal text-saints-red">
+                                Relevant {fact.critique.relevance}/10 · Interesting {fact.critique.interestingness}/10
+                              </p>
+                            </div>
+                          ) : null}
                           {fact.sourceUrl ? (
                             <a
                               href={fact.sourceUrl}
