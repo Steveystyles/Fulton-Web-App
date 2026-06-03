@@ -5,12 +5,12 @@ import os
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Callable, Protocol
 from urllib.parse import quote
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 SUBJECTS = ("general_knowledge", "football")
@@ -78,6 +78,18 @@ GENERIC_TOPIC_TAGS = {
     "quiz",
 }
 
+DEFAULT_COMPATIBLE_BASE_URLS = {
+    "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+
+def default_compatible_base_url(provider: str, explicit_base_url: str) -> str:
+    value = explicit_base_url.strip().rstrip("/")
+    if value:
+        return value
+    return DEFAULT_COMPATIBLE_BASE_URLS.get(provider.strip().lower(), "")
+
 
 @dataclass(frozen=True)
 class QuizConfig:
@@ -87,6 +99,18 @@ class QuizConfig:
     gemini_api_key: str
     compatible_api_key: str
     compatible_base_url: str
+    fallback_provider: str
+    fallback_generator_model: str
+    fallback_critic_model: str
+    fallback_gemini_api_key: str
+    fallback_compatible_api_key: str
+    fallback_compatible_base_url: str
+    fallback2_provider: str
+    fallback2_generator_model: str
+    fallback2_critic_model: str
+    fallback2_gemini_api_key: str
+    fallback2_compatible_api_key: str
+    fallback2_compatible_base_url: str
     timeout_sec: int
     request_delay_sec: float
     transient_retries: int
@@ -96,8 +120,11 @@ class QuizConfig:
 
     @classmethod
     def from_env(cls) -> "QuizConfig":
+        provider = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
+        fallback_provider = os.environ.get("AI_FALLBACK_PROVIDER", "").strip().lower()
+        fallback2_provider = os.environ.get("AI_FALLBACK2_PROVIDER", "").strip().lower()
         return cls(
-            provider=os.environ.get("AI_PROVIDER", "gemini").strip().lower(),
+            provider=provider,
             generator_model=os.environ.get(
                 "AI_GENERATOR_MODEL",
                 "gemini-3.5-flash",
@@ -108,7 +135,28 @@ class QuizConfig:
             ).strip(),
             gemini_api_key=os.environ.get("GEMINI_API_KEY", "").strip(),
             compatible_api_key=os.environ.get("AI_API_KEY", "").strip(),
-            compatible_base_url=os.environ.get("AI_BASE_URL", "").rstrip("/"),
+            compatible_base_url=default_compatible_base_url(
+                provider,
+                os.environ.get("AI_BASE_URL", ""),
+            ),
+            fallback_provider=fallback_provider,
+            fallback_generator_model=os.environ.get("AI_FALLBACK_GENERATOR_MODEL", "").strip(),
+            fallback_critic_model=os.environ.get("AI_FALLBACK_CRITIC_MODEL", "").strip(),
+            fallback_gemini_api_key=os.environ.get("AI_FALLBACK_GEMINI_API_KEY", "").strip(),
+            fallback_compatible_api_key=os.environ.get("AI_FALLBACK_API_KEY", "").strip(),
+            fallback_compatible_base_url=default_compatible_base_url(
+                fallback_provider,
+                os.environ.get("AI_FALLBACK_BASE_URL", ""),
+            ),
+            fallback2_provider=fallback2_provider,
+            fallback2_generator_model=os.environ.get("AI_FALLBACK2_GENERATOR_MODEL", "").strip(),
+            fallback2_critic_model=os.environ.get("AI_FALLBACK2_CRITIC_MODEL", "").strip(),
+            fallback2_gemini_api_key=os.environ.get("AI_FALLBACK2_GEMINI_API_KEY", "").strip(),
+            fallback2_compatible_api_key=os.environ.get("AI_FALLBACK2_API_KEY", "").strip(),
+            fallback2_compatible_base_url=default_compatible_base_url(
+                fallback2_provider,
+                os.environ.get("AI_FALLBACK2_BASE_URL", ""),
+            ),
             timeout_sec=max(5, int(os.environ.get("AI_TIMEOUT_SEC", "90"))),
             request_delay_sec=max(
                 0.0,
@@ -172,6 +220,79 @@ class QuizAIProvider(Protocol):
         ...
 
 
+def configured_provider_config(config: QuizConfig, *, stage: int = 0) -> QuizConfig | None:
+    if stage == 0:
+        provider = config.provider
+        generator_model = config.generator_model
+        critic_model = config.critic_model
+        gemini_api_key = config.gemini_api_key
+        compatible_api_key = config.compatible_api_key
+        compatible_base_url = config.compatible_base_url
+    elif stage == 1:
+        provider = config.fallback_provider
+        generator_model = config.fallback_generator_model
+        critic_model = config.fallback_critic_model
+        gemini_api_key = config.fallback_gemini_api_key
+        compatible_api_key = config.fallback_compatible_api_key
+        compatible_base_url = config.fallback_compatible_base_url
+    elif stage == 2:
+        provider = config.fallback2_provider
+        generator_model = config.fallback2_generator_model
+        critic_model = config.fallback2_critic_model
+        gemini_api_key = config.fallback2_gemini_api_key
+        compatible_api_key = config.fallback2_compatible_api_key
+        compatible_base_url = config.fallback2_compatible_base_url
+    else:
+        return None
+
+    provider = provider.strip().lower()
+    if not provider:
+        return None
+
+    generator_model = generator_model.strip()
+    critic_model = critic_model.strip()
+    if stage > 0 and provider == config.provider:
+        generator_model = generator_model or config.generator_model
+        critic_model = critic_model or config.critic_model
+    if not generator_model or not critic_model:
+        return None
+
+    gemini_api_key = gemini_api_key.strip()
+    compatible_api_key = compatible_api_key.strip()
+    compatible_base_url = default_compatible_base_url(provider, compatible_base_url)
+
+    if stage > 0:
+        if provider == "gemini" and not gemini_api_key:
+            gemini_api_key = config.gemini_api_key
+        if provider in {"groq", "openrouter", "openai-compatible"}:
+            if not compatible_api_key:
+                compatible_api_key = config.compatible_api_key
+            if not compatible_base_url:
+                compatible_base_url = default_compatible_base_url(provider, config.compatible_base_url)
+
+    candidate = replace(
+        config,
+        provider=provider,
+        generator_model=generator_model,
+        critic_model=critic_model,
+        gemini_api_key=gemini_api_key,
+        compatible_api_key=compatible_api_key,
+        compatible_base_url=compatible_base_url,
+    )
+    return candidate if candidate.provider_is_configured() else None
+
+
+def attempt_provider_label(generator_provider: str, critic_provider: str | None = None) -> str:
+    critic_provider = (critic_provider or "").strip()
+    if not critic_provider or critic_provider == generator_provider:
+        return generator_provider
+    return f"generator:{generator_provider};critic:{critic_provider}"
+
+
+def current_provider_name(provider: QuizAIProvider) -> str:
+    return str(getattr(provider, "last_provider_name", getattr(provider, "name", "unknown")))
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -179,6 +300,7 @@ class GeminiProvider:
         if not config.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not configured.")
         self.config = config
+        self.name = config.provider or self.name
         self._next_request_at = 0.0
 
     def _wait_for_request_slot(self) -> None:
@@ -292,6 +414,7 @@ class OpenAICompatibleProvider:
         if not config.compatible_api_key or not config.compatible_base_url:
             raise ValueError("AI_API_KEY and AI_BASE_URL must be configured.")
         self.config = config
+        self.name = config.provider or self.name
         self._next_request_at = 0.0
 
     def _wait_for_request_slot(self) -> None:
@@ -300,7 +423,29 @@ class OpenAICompatibleProvider:
             time.sleep(wait_sec)
         self._next_request_at = time.monotonic() + self.config.request_delay_sec
 
+    def _defer_retry(self, attempt: int, error: HTTPError | None = None) -> None:
+        retry_after_sec = 0.0
+        if error is not None:
+            retry_after = error.headers.get("Retry-After", "").strip()
+            try:
+                retry_after_sec = float(retry_after)
+            except ValueError:
+                retry_after_sec = 0.0
+        delay = max(
+            self.config.request_delay_sec,
+            retry_after_sec,
+            min(60.0, 5.0 * (2**attempt)),
+        )
+        self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
+
     def _request(self, model: str, prompt: str) -> dict[str, Any]:
+        headers = {
+            "Authorization": f"Bearer {self.config.compatible_api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.name == "openrouter":
+            headers["HTTP-Referer"] = "https://fultons-quiz.co.uk"
+            headers["X-Title"] = "Fultons Quiz"
         request = Request(
             f"{self.config.compatible_base_url}/chat/completions",
             data=json.dumps(
@@ -319,15 +464,27 @@ class OpenAICompatibleProvider:
                     "response_format": {"type": "json_object"},
                 }
             ).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.config.compatible_api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
-        self._wait_for_request_slot()
-        with urlopen(request, timeout=self.config.timeout_sec) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
+        for attempt in range(self.config.transient_retries + 1):
+            self._wait_for_request_slot()
+            try:
+                with urlopen(request, timeout=self.config.timeout_sec) as response:
+                    response_payload = json.loads(response.read().decode("utf-8"))
+                break
+            except HTTPError as error:
+                if error.code in {408, 429, 500, 502, 503, 504} and attempt < self.config.transient_retries:
+                    self._defer_retry(attempt, error)
+                    continue
+                raise RuntimeError(f"{self.name} request failed with HTTP {error.code}.") from error
+            except (TimeoutError, URLError, OSError) as error:
+                if attempt < self.config.transient_retries:
+                    self._defer_retry(attempt)
+                    continue
+                raise RuntimeError(f"{self.name} request timed out or failed: {error}") from error
+        else:  # pragma: no cover - loop always exits through break or raise
+            raise RuntimeError(f"{self.name} request failed.")
         try:
             text = response_payload["choices"][0]["message"]["content"]
         except (IndexError, KeyError, TypeError) as error:
@@ -361,12 +518,91 @@ class OpenAICompatibleProvider:
         )
 
 
+class FallbackQuizProvider:
+    def __init__(self, providers: list[QuizAIProvider]) -> None:
+        if not providers:
+            raise ValueError("At least one quiz AI provider is required.")
+        self.providers = providers
+        self.name = " -> ".join(provider.name for provider in providers)
+        self.last_provider_name = providers[0].name
+
+    def _call(self, method_name: str, **kwargs: Any) -> dict[str, Any]:
+        errors: list[str] = []
+        for provider in self.providers:
+            self.last_provider_name = provider.name
+            try:
+                return getattr(provider, method_name)(**kwargs)
+            except Exception as error:
+                errors.append(f"{provider.name}: {error}")
+                continue
+        raise RuntimeError(f"All AI providers failed for {method_name}: {' | '.join(errors)}")
+
+    def generate_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        recent_questions: list[dict[str, Any]],
+        feedback: list[str],
+    ) -> dict[str, Any]:
+        return self._call(
+            "generate_question",
+            subject=subject,
+            difficulty=difficulty,
+            recent_questions=recent_questions,
+            feedback=feedback,
+        )
+
+    def critique_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        question: dict[str, Any],
+        recent_questions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._call(
+            "critique_question",
+            subject=subject,
+            difficulty=difficulty,
+            question=question,
+            recent_questions=recent_questions,
+        )
+
+
 def provider_from_config(config: QuizConfig) -> QuizAIProvider:
     if config.provider == "gemini":
         return GeminiProvider(config)
     if config.provider in {"groq", "openrouter", "openai-compatible"}:
         return OpenAICompatibleProvider(config)
     raise ValueError(f"Unsupported AI_PROVIDER: {config.provider}")
+
+
+def provider_chain_from_config(config: QuizConfig) -> QuizAIProvider:
+    providers: list[QuizAIProvider] = []
+    seen_configs: set[tuple[str, str, str, str, str, str]] = set()
+    for stage in (0, 1, 2):
+        candidate = configured_provider_config(config, stage=stage)
+        if candidate is None:
+            continue
+        signature = (
+            candidate.provider,
+            candidate.generator_model,
+            candidate.critic_model,
+            candidate.gemini_api_key,
+            candidate.compatible_api_key,
+            candidate.compatible_base_url,
+        )
+        if signature in seen_configs:
+            continue
+        seen_configs.add(signature)
+        providers.append(provider_from_config(candidate))
+
+    if not providers:
+        raise ValueError("No configured AI providers are available.")
+    if len(providers) == 1:
+        return providers[0]
+    return FallbackQuizProvider(providers)
 
 
 def question_schema() -> dict[str, Any]:
@@ -965,6 +1201,7 @@ def generate_slot(
                 recent_questions=context_questions,
                 feedback=feedback,
             )
+            generator_provider_name = current_provider_name(provider)
         except Exception as error:
             reason = f"Generator request failed: {error}"
             save_attempt(
@@ -995,7 +1232,7 @@ def generate_slot(
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=provider.name,
+                provider=generator_provider_name,
                 generated=generated,
                 critic=None,
                 passed=False,
@@ -1022,7 +1259,7 @@ def generate_slot(
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=provider.name,
+                provider=generator_provider_name,
                 generated=validation.question,
                 critic=None,
                 passed=False,
@@ -1039,15 +1276,17 @@ def generate_slot(
                 question=validation.question,
                 recent_questions=context_questions,
             )
+            critic_provider_name = current_provider_name(provider)
         except Exception as error:
             reason = f"Critic request failed: {error}"
+            critic_provider_name = current_provider_name(provider)
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=provider.name,
+                provider=attempt_provider_label(generator_provider_name, critic_provider_name),
                 generated=validation.question,
                 critic=None,
                 passed=False,
@@ -1066,7 +1305,7 @@ def generate_slot(
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=provider.name,
+                provider=attempt_provider_label(generator_provider_name, critic_provider_name),
                 generated=validation.question,
                 critic=critic,
                 passed=False,
@@ -1085,7 +1324,7 @@ def generate_slot(
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=provider.name,
+                provider=attempt_provider_label(generator_provider_name, critic_provider_name),
                 generated=validation.question,
                 critic=critic,
                 passed=False,
@@ -1102,7 +1341,7 @@ def generate_slot(
             subject=subject,
             difficulty=difficulty,
             attempt_number=attempt_number,
-            provider=provider.name,
+            provider=attempt_provider_label(generator_provider_name, critic_provider_name),
             generated=validation.question,
             critic=critic,
             passed=True,
@@ -1133,11 +1372,15 @@ def generate_daily_quiz(
     set_quiz_status(conn, quiz_date, "generating")
 
     if provider is None:
-        if not config.provider_is_configured():
-            reason = f"AI provider {config.provider!r} is not configured."
+        try:
+            provider = provider_chain_from_config(config)
+        except ValueError:
+            reason = (
+                f"AI provider {config.provider!r} is not configured, "
+                "and no configured fallback provider is available."
+            )
             set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)
             return quiz_status(conn, quiz_date)
-        provider = provider_from_config(config)
 
     log(f"Starting daily quiz generation for {quiz_date} using {provider.name}")
     existing_slots = {

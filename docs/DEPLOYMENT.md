@@ -32,7 +32,7 @@ FULTONS_LOGIN_MAX_ATTEMPTS=5
 FULTONS_LOGIN_WINDOW_SECONDS=300
 FULTONS_LOGIN_BACKOFF_SECONDS=60
 FULTONS_NEWS_MONITOR_KEY=<generate-a-long-random-value>
-FULTONS_NEWS_MONITOR_INTERVAL_SEC=600
+FULTONS_NEWS_MONITOR_INTERVAL_SEC=3600
 FULTONS_WORD_DEFINITION_TIMEOUT_SEC=5
 FULTONS_EXPECT_DATA_DIR=/app/data
 FULTONS_REQUIRE_EXISTING_DB=1
@@ -41,6 +41,13 @@ AI_PROVIDER=gemini
 AI_GENERATOR_MODEL=gemini-3.5-flash
 AI_CRITIC_MODEL=gemini-3.1-flash-lite
 GEMINI_API_KEY=<private-gemini-api-key>
+AI_FALLBACK_PROVIDER=openrouter
+AI_FALLBACK_GENERATOR_MODEL=google/gemini-2.5-flash
+AI_FALLBACK_CRITIC_MODEL=google/gemini-2.5-flash
+AI_FALLBACK_API_KEY=<private-openrouter-api-key>
+AI_FALLBACK2_PROVIDER=openrouter
+AI_FALLBACK2_GENERATOR_MODEL=openrouter/free
+AI_FALLBACK2_CRITIC_MODEL=openrouter/free
 AI_TIMEOUT_SEC=90
 AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
@@ -54,6 +61,12 @@ FULTONS_FACTS_AI_CRITIC_MODEL=gemini-3.1-flash-lite
 FULTONS_FACTS_AI_TIMEOUT_SEC=20
 FULTONS_FACTS_AI_REQUEST_DELAY_SEC=2
 FULTONS_FACTS_AI_TRANSIENT_RETRIES=2
+FULTONS_FACTS_FALLBACK_PROVIDER=openrouter
+FULTONS_FACTS_FALLBACK_GENERATOR_MODEL=google/gemini-2.5-flash
+FULTONS_FACTS_FALLBACK_CRITIC_MODEL=google/gemini-2.5-flash
+FULTONS_FACTS_FALLBACK2_PROVIDER=openrouter
+FULTONS_FACTS_FALLBACK2_GENERATOR_MODEL=openrouter/free
+FULTONS_FACTS_FALLBACK2_CRITIC_MODEL=openrouter/free
 ```
 
 Generate the news monitor key with:
@@ -131,7 +144,7 @@ ls -la /srv/storage/appdata/fultons-quiz
 docker exec fultons-quiz python -c "import sqlite3; c=sqlite3.connect('/app/data/fultons.db'); print(c.execute('PRAGMA quick_check').fetchone()[0]); print(c.execute('SELECT COUNT(*) FROM users').fetchone()[0])"
 ```
 
-The interesting-facts cards now use Gemini selection plus critique on top of the Wikipedia/Wikidata source data. On the free Gemini tier, keep the fact-specific timeout and retry settings shorter than the quiz generator so the page can fall back cleanly instead of stalling. Successful reviewed facts are reused for 24 hours per place, and failed review attempts are cached in SQLite so later selections can avoid the same generic or low-quality ideas.
+The interesting-facts cards now use Gemini selection plus critique on top of the Wikipedia/Wikidata source data. On the free Gemini tier, keep the fact-specific timeout and retry settings shorter than the quiz generator so the page can fall back cleanly instead of stalling. If `FULTONS_FACTS_FALLBACK_*` or `FULTONS_FACTS_FALLBACK2_*` is left blank, the facts path reuses the main `AI_FALLBACK_*` and `AI_FALLBACK2_*` OpenRouter-compatible settings. Successful reviewed facts are reused for 24 hours per place, and failed review attempts are cached in SQLite so later selections can avoid the same generic or low-quality ideas.
 
 ## 7. Daily Quiz Generation
 
@@ -144,6 +157,13 @@ AI_PROVIDER=gemini
 AI_GENERATOR_MODEL=gemini-3.5-flash
 AI_CRITIC_MODEL=gemini-3.1-flash-lite
 GEMINI_API_KEY=<private-gemini-api-key>
+AI_FALLBACK_PROVIDER=openrouter
+AI_FALLBACK_GENERATOR_MODEL=google/gemini-2.5-flash
+AI_FALLBACK_CRITIC_MODEL=google/gemini-2.5-flash
+AI_FALLBACK_API_KEY=<private-openrouter-api-key>
+AI_FALLBACK2_PROVIDER=openrouter
+AI_FALLBACK2_GENERATOR_MODEL=openrouter/free
+AI_FALLBACK2_CRITIC_MODEL=openrouter/free
 AI_TIMEOUT_SEC=90
 AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
@@ -160,7 +180,7 @@ From a Windows workstation, the setup helper prompts for the Gemini key securely
 
 The system generates one question at a time for six slots: easy, medium, and hard general knowledge plus easy, medium, and hard football. Each candidate passes local validation, recent-question repetition checks, and a separate AI critic before it is stored. A quiz is published only after all six slots are approved. Failed attempts and critic feedback are retained in SQLite for review.
 
-Generation and critique use separate Gemini models so their free-tier request quotas are independent. Keep `gemini-3.5-flash` for writing questions and the stable `gemini-3.1-flash-lite` model for the narrower critic task.
+Generation and critique use separate Gemini models so their free-tier request quotas are independent. Keep `gemini-3.5-flash` for writing questions and the stable `gemini-3.1-flash-lite` model for the narrower critic task. When Gemini hits quota or times out, the server now supports a two-stage OpenRouter-compatible chain through `AI_FALLBACK_*` and `AI_FALLBACK2_*`, for example `google/gemini-2.5-flash` first and `openrouter/free` second.
 
 Generate a quiz through the protected internal endpoint:
 
@@ -212,7 +232,7 @@ The public read endpoint only returns published content and omits prompts, criti
 GET /api/daily-quiz?date=2026-06-02
 ```
 
-To switch to an OpenAI-compatible provider such as Groq or OpenRouter later, set `AI_PROVIDER=groq`, `AI_PROVIDER=openrouter`, or `AI_PROVIDER=openai-compatible`, then provide `AI_BASE_URL` and `AI_API_KEY`. Gemini remains the default because its API supports structured JSON output directly.
+To switch fully to an OpenAI-compatible provider such as Groq or OpenRouter later, set `AI_PROVIDER=groq`, `AI_PROVIDER=openrouter`, or `AI_PROVIDER=openai-compatible`, then provide `AI_BASE_URL` and `AI_API_KEY`. Gemini remains the default because its API supports structured JSON output directly, while `AI_FALLBACK_*` lets you keep Gemini primary and OpenRouter-compatible routing as a backup.
 
 ## 8. Unexpected Shutdown Checks
 If the server powers off or must be unplugged before it will restart, inspect the host before running heavy workloads:
