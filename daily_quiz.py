@@ -105,6 +105,12 @@ class QuizConfig:
     fallback_gemini_api_key: str
     fallback_compatible_api_key: str
     fallback_compatible_base_url: str
+    fallback2_provider: str
+    fallback2_generator_model: str
+    fallback2_critic_model: str
+    fallback2_gemini_api_key: str
+    fallback2_compatible_api_key: str
+    fallback2_compatible_base_url: str
     timeout_sec: int
     request_delay_sec: float
     transient_retries: int
@@ -116,6 +122,7 @@ class QuizConfig:
     def from_env(cls) -> "QuizConfig":
         provider = os.environ.get("AI_PROVIDER", "gemini").strip().lower()
         fallback_provider = os.environ.get("AI_FALLBACK_PROVIDER", "").strip().lower()
+        fallback2_provider = os.environ.get("AI_FALLBACK2_PROVIDER", "").strip().lower()
         return cls(
             provider=provider,
             generator_model=os.environ.get(
@@ -140,6 +147,15 @@ class QuizConfig:
             fallback_compatible_base_url=default_compatible_base_url(
                 fallback_provider,
                 os.environ.get("AI_FALLBACK_BASE_URL", ""),
+            ),
+            fallback2_provider=fallback2_provider,
+            fallback2_generator_model=os.environ.get("AI_FALLBACK2_GENERATOR_MODEL", "").strip(),
+            fallback2_critic_model=os.environ.get("AI_FALLBACK2_CRITIC_MODEL", "").strip(),
+            fallback2_gemini_api_key=os.environ.get("AI_FALLBACK2_GEMINI_API_KEY", "").strip(),
+            fallback2_compatible_api_key=os.environ.get("AI_FALLBACK2_API_KEY", "").strip(),
+            fallback2_compatible_base_url=default_compatible_base_url(
+                fallback2_provider,
+                os.environ.get("AI_FALLBACK2_BASE_URL", ""),
             ),
             timeout_sec=max(5, int(os.environ.get("AI_TIMEOUT_SEC", "90"))),
             request_delay_sec=max(
@@ -204,29 +220,48 @@ class QuizAIProvider(Protocol):
         ...
 
 
-def configured_provider_config(config: QuizConfig, *, fallback: bool = False) -> QuizConfig | None:
-    provider = (config.fallback_provider if fallback else config.provider).strip().lower()
+def configured_provider_config(config: QuizConfig, *, stage: int = 0) -> QuizConfig | None:
+    if stage == 0:
+        provider = config.provider
+        generator_model = config.generator_model
+        critic_model = config.critic_model
+        gemini_api_key = config.gemini_api_key
+        compatible_api_key = config.compatible_api_key
+        compatible_base_url = config.compatible_base_url
+    elif stage == 1:
+        provider = config.fallback_provider
+        generator_model = config.fallback_generator_model
+        critic_model = config.fallback_critic_model
+        gemini_api_key = config.fallback_gemini_api_key
+        compatible_api_key = config.fallback_compatible_api_key
+        compatible_base_url = config.fallback_compatible_base_url
+    elif stage == 2:
+        provider = config.fallback2_provider
+        generator_model = config.fallback2_generator_model
+        critic_model = config.fallback2_critic_model
+        gemini_api_key = config.fallback2_gemini_api_key
+        compatible_api_key = config.fallback2_compatible_api_key
+        compatible_base_url = config.fallback2_compatible_base_url
+    else:
+        return None
+
+    provider = provider.strip().lower()
     if not provider:
         return None
 
-    generator_model = (config.fallback_generator_model if fallback else config.generator_model).strip()
-    critic_model = (config.fallback_critic_model if fallback else config.critic_model).strip()
-    if fallback and provider == config.provider:
+    generator_model = generator_model.strip()
+    critic_model = critic_model.strip()
+    if stage > 0 and provider == config.provider:
         generator_model = generator_model or config.generator_model
         critic_model = critic_model or config.critic_model
     if not generator_model or not critic_model:
         return None
 
-    gemini_api_key = (config.fallback_gemini_api_key if fallback else config.gemini_api_key).strip()
-    compatible_api_key = (
-        config.fallback_compatible_api_key if fallback else config.compatible_api_key
-    ).strip()
-    compatible_base_url = default_compatible_base_url(
-        provider,
-        config.fallback_compatible_base_url if fallback else config.compatible_base_url,
-    )
+    gemini_api_key = gemini_api_key.strip()
+    compatible_api_key = compatible_api_key.strip()
+    compatible_base_url = default_compatible_base_url(provider, compatible_base_url)
 
-    if fallback:
+    if stage > 0:
         if provider == "gemini" and not gemini_api_key:
             gemini_api_key = config.gemini_api_key
         if provider in {"groq", "openrouter", "openai-compatible"}:
@@ -546,8 +581,8 @@ def provider_from_config(config: QuizConfig) -> QuizAIProvider:
 def provider_chain_from_config(config: QuizConfig) -> QuizAIProvider:
     providers: list[QuizAIProvider] = []
     seen_configs: set[tuple[str, str, str, str, str, str]] = set()
-    for use_fallback in (False, True):
-        candidate = configured_provider_config(config, fallback=use_fallback)
+    for stage in (0, 1, 2):
+        candidate = configured_provider_config(config, stage=stage)
         if candidate is None:
             continue
         signature = (

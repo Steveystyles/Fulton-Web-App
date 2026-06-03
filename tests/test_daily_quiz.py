@@ -22,6 +22,12 @@ def config(max_attempts: int = 3) -> daily_quiz.QuizConfig:
         fallback_gemini_api_key="",
         fallback_compatible_api_key="",
         fallback_compatible_base_url="",
+        fallback2_provider="",
+        fallback2_generator_model="",
+        fallback2_critic_model="",
+        fallback2_gemini_api_key="",
+        fallback2_compatible_api_key="",
+        fallback2_compatible_base_url="",
         timeout_sec=5,
         request_delay_sec=0,
         transient_retries=0,
@@ -354,6 +360,31 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
         self.assertEqual([provider.name for provider in chain.providers], ["gemini", "openrouter"])
+
+    def test_provider_chain_from_config_includes_second_fallback(self) -> None:
+        chain = daily_quiz.provider_chain_from_config(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "fallback_provider": "openrouter",
+                    "fallback_generator_model": "google/gemini-2.5-flash",
+                    "fallback_critic_model": "google/gemini-2.5-flash",
+                    "fallback_compatible_api_key": "or-key",
+                    "fallback_compatible_base_url": "https://openrouter.ai/api/v1",
+                    "fallback2_provider": "openrouter",
+                    "fallback2_generator_model": "openrouter/free",
+                    "fallback2_critic_model": "openrouter/free",
+                    "fallback2_compatible_api_key": "or-key",
+                    "fallback2_compatible_base_url": "https://openrouter.ai/api/v1",
+                }
+            )
+        )
+
+        self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
+        self.assertEqual(
+            [provider.name for provider in chain.providers],
+            ["gemini", "openrouter", "openrouter"],
+        )
 
     def test_gemini_retry_uses_structured_retry_delay(self) -> None:
         class RateLimitError:

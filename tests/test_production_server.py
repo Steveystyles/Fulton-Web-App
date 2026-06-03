@@ -1133,6 +1133,45 @@ class ProductionServerHardeningTests(unittest.TestCase):
             prompt="Prompt",
         )
 
+    def test_facts_ai_json_response_uses_second_fallback_after_first_fails(self) -> None:
+        import server
+
+        fallback_payload = {
+            "facts": [
+                {
+                    "title": "Paisley Book Festival",
+                    "text": "Paisley hosts a book festival in the town centre.",
+                    "theme": "culture",
+                    "sourceEvidenceIndex": 1,
+                }
+            ]
+        }
+
+        with (
+            patch("server.FACTS_GEMINI_API_KEY", ""),
+            patch("server.FACTS_FALLBACK_PROVIDER", "openrouter"),
+            patch("server.FACTS_FALLBACK_API_KEY", "fallback-key"),
+            patch("server.FACTS_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1"),
+            patch("server.FACTS_FALLBACK_GENERATOR_MODEL", "google/gemini-2.5-flash"),
+            patch("server.FACTS_FALLBACK2_PROVIDER", "openrouter"),
+            patch("server.FACTS_FALLBACK2_API_KEY", "fallback2-key"),
+            patch("server.FACTS_FALLBACK2_BASE_URL", "https://openrouter.ai/api/v1"),
+            patch("server.FACTS_FALLBACK2_GENERATOR_MODEL", "openrouter/free"),
+            patch(
+                "server.facts_compatible_json_response",
+                side_effect=[RuntimeError("primary fallback unavailable"), fallback_payload],
+            ) as compatible_request,
+        ):
+            payload = server.facts_ai_json_response(
+                task="generator",
+                model=server.FACTS_AI_GENERATOR_MODEL,
+                prompt="Prompt",
+                schema={"type": "object"},
+            )
+
+        self.assertEqual(payload, fallback_payload)
+        self.assertEqual(compatible_request.call_count, 2)
+
     def test_public_history_fact_hides_internal_critique(self) -> None:
         import server
 

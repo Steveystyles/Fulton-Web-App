@@ -108,6 +108,23 @@ FACTS_FALLBACK_BASE_URL = daily_quiz.default_compatible_base_url(
         os.environ.get("AI_FALLBACK_BASE_URL", os.environ.get("AI_BASE_URL", "")),
     ),
 )
+FACTS_FALLBACK2_PROVIDER = os.environ.get(
+    "FULTONS_FACTS_FALLBACK2_PROVIDER",
+    os.environ.get("AI_FALLBACK2_PROVIDER", ""),
+).strip().lower()
+FACTS_FALLBACK2_API_KEY = (
+    os.environ.get("FULTONS_FACTS_FALLBACK2_API_KEY")
+    or os.environ.get("AI_FALLBACK2_API_KEY")
+    or os.environ.get("AI_API_KEY")
+    or ""
+)
+FACTS_FALLBACK2_BASE_URL = daily_quiz.default_compatible_base_url(
+    FACTS_FALLBACK2_PROVIDER,
+    os.environ.get(
+        "FULTONS_FACTS_FALLBACK2_BASE_URL",
+        os.environ.get("AI_FALLBACK2_BASE_URL", os.environ.get("AI_BASE_URL", "")),
+    ),
+)
 FACTS_AI_GENERATOR_MODEL = os.environ.get(
     "FULTONS_FACTS_AI_GENERATOR_MODEL",
     os.environ.get("AI_GENERATOR_MODEL", "gemini-3.5-flash"),
@@ -123,6 +140,14 @@ FACTS_FALLBACK_GENERATOR_MODEL = os.environ.get(
 FACTS_FALLBACK_CRITIC_MODEL = os.environ.get(
     "FULTONS_FACTS_FALLBACK_CRITIC_MODEL",
     os.environ.get("AI_FALLBACK_CRITIC_MODEL", ""),
+).strip()
+FACTS_FALLBACK2_GENERATOR_MODEL = os.environ.get(
+    "FULTONS_FACTS_FALLBACK2_GENERATOR_MODEL",
+    os.environ.get("AI_FALLBACK2_GENERATOR_MODEL", ""),
+).strip()
+FACTS_FALLBACK2_CRITIC_MODEL = os.environ.get(
+    "FULTONS_FACTS_FALLBACK2_CRITIC_MODEL",
+    os.environ.get("AI_FALLBACK2_CRITIC_MODEL", ""),
 ).strip()
 FACTS_AI_TIMEOUT_SEC = max(
     5,
@@ -3717,25 +3742,36 @@ def facts_ai_defer_retry(attempt: int, error: HTTPError | None = None) -> None:
         FACTS_AI_NEXT_REQUEST_AT = max(FACTS_AI_NEXT_REQUEST_AT, time.monotonic() + delay)
 
 
-def facts_fallback_model(task: str) -> str:
-    if task == "critic":
-        return FACTS_FALLBACK_CRITIC_MODEL
-    return FACTS_FALLBACK_GENERATOR_MODEL
+def facts_fallback_spec(stage: int, task: str) -> tuple[str, str, str, str]:
+    if stage == 1:
+        provider = FACTS_FALLBACK_PROVIDER
+        api_key = FACTS_FALLBACK_API_KEY
+        base_url = FACTS_FALLBACK_BASE_URL
+        model = FACTS_FALLBACK_CRITIC_MODEL if task == "critic" else FACTS_FALLBACK_GENERATOR_MODEL
+        return provider, api_key, base_url, model
+    if stage == 2:
+        provider = FACTS_FALLBACK2_PROVIDER
+        api_key = FACTS_FALLBACK2_API_KEY
+        base_url = FACTS_FALLBACK2_BASE_URL
+        model = FACTS_FALLBACK2_CRITIC_MODEL if task == "critic" else FACTS_FALLBACK2_GENERATOR_MODEL
+        return provider, api_key, base_url, model
+    return "", "", "", ""
 
 
-def facts_fallback_configured(task: str) -> bool:
+def facts_fallback_configured(stage: int, task: str) -> bool:
+    provider, api_key, base_url, model = facts_fallback_spec(stage, task)
     return bool(
-        FACTS_FALLBACK_PROVIDER in {"groq", "openrouter", "openai-compatible"}
-        and FACTS_FALLBACK_API_KEY
-        and FACTS_FALLBACK_BASE_URL
-        and facts_fallback_model(task)
+        provider in {"groq", "openrouter", "openai-compatible"}
+        and api_key
+        and base_url
+        and model
     )
 
 
 def facts_ai_available() -> bool:
     return bool(FACTS_GEMINI_API_KEY) or (
-        facts_fallback_configured("generator")
-        and facts_fallback_configured("critic")
+        (facts_fallback_configured(1, "generator") and facts_fallback_configured(1, "critic"))
+        or (facts_fallback_configured(2, "generator") and facts_fallback_configured(2, "critic"))
     )
 
 
@@ -3885,21 +3921,35 @@ def facts_ai_json_response(
             )
         except Exception as error:
             primary_error = error
-            if not facts_fallback_configured(task):
+            if not facts_fallback_configured(1, task) and not facts_fallback_configured(2, task):
                 raise
-            safe_log(f"Facts AI falling back from Gemini to {FACTS_FALLBACK_PROVIDER}: {error}")
+            safe_log(f"Facts AI falling back from Gemini: {error}")
 
-    if facts_fallback_configured(task):
-        return facts_compatible_json_response(
-            provider_name=FACTS_FALLBACK_PROVIDER,
-            base_url=FACTS_FALLBACK_BASE_URL,
-            api_key=FACTS_FALLBACK_API_KEY,
-            model=facts_fallback_model(task),
-            prompt=prompt,
-        )
+    fallback_errors: list[str] = []
+    for stage in (1, 2):
+        if not facts_fallback_configured(stage, task):
+            continue
+        provider_name, api_key, base_url, model = facts_fallback_spec(stage, task)
+        try:
+            return facts_compatible_json_response(
+                provider_name=provider_name,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                prompt=prompt,
+            )
+        except Exception as error:
+            fallback_errors.append(f"{provider_name}:{model}: {error}")
+            continue
 
     if primary_error is not None:
+        if fallback_errors:
+            raise RuntimeError(
+                f"{primary_error} | Fallback failures: {' | '.join(fallback_errors)}"
+            ) from primary_error
         raise primary_error
+    if fallback_errors:
+        raise RuntimeError(f"Fallback failures: {' | '.join(fallback_errors)}")
     raise ValueError("No facts AI provider is configured.")
 
 
