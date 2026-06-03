@@ -586,7 +586,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             "Who won?",
         )
 
-    def test_collect_dashboard_snapshot_uses_https_fallback_when_ssh_fails(self) -> None:
+    def test_collect_dashboard_snapshot_returns_https_fallback_without_waiting_for_ssh(self) -> None:
         import ops_monitor
 
         config = ops_monitor.MonitorConfig(
@@ -642,22 +642,100 @@ class ProductionServerHardeningTests(unittest.TestCase):
             "partial": True,
             "responseTimeMs": 42,
         }
+        cache_path = Path(self.temp_dir.name) / "local-ops-snapshot.json"
 
         with (
             patch.object(ops_monitor.MonitorConfig, "from_env", return_value=config),
+            patch.object(ops_monitor, "CACHE_FILE_PATH", cache_path),
             patch.object(ops_monitor, "_CACHED_SNAPSHOT", None),
             patch.object(ops_monitor, "_CACHED_AT_MONOTONIC", 0.0),
             patch("ops_monitor.probe_public_health", return_value={"ok": True}),
             patch("ops_monitor.collect_remote_snapshot_via_internal_api", return_value=internal_remote),
-            patch("ops_monitor.collect_remote_snapshot", side_effect=RuntimeError("ssh timeout")),
+            patch("ops_monitor.schedule_background_ssh_refresh", return_value=True) as schedule_refresh,
+            patch("ops_monitor.collect_remote_snapshot") as collect_remote_snapshot,
+        ):
+            payload = ops_monitor.collect_dashboard_snapshot(force=True)
+
+        schedule_refresh.assert_called_once()
+        collect_remote_snapshot.assert_not_called()
+        self.assertFalse(payload["stale"])
+        self.assertEqual(payload["status"], "degraded")
+        self.assertTrue(payload["hostRefreshInProgress"])
+        self.assertEqual(payload["remote"]["quiz"]["tomorrow"]["status"], "published")
+        self.assertIn("HTTPS fallback", " ".join(payload["alerts"]))
+
+    def test_collect_dashboard_snapshot_loads_persisted_cache_when_live_paths_fail(self) -> None:
+        import ops_monitor
+
+        cache_path = Path(self.temp_dir.name) / "local-ops-snapshot.json"
+        cached_snapshot = {
+            "enabled": True,
+            "generatedAt": "2026-06-03T11:00:00Z",
+            "publicProbe": {"ok": True},
+            "remote": {
+                "ok": True,
+                "generatedAt": "2026-06-03T11:00:00Z",
+                "application": {"health": {"ok": True}, "sqlite": {}},
+                "docker": {"containers": [], "volumes": [], "networks": []},
+                "errors": [],
+                "host": {"hostname": "homeserver", "power": {"acOnline": None, "batteries": []}},
+                "quiz": {
+                    "today": None,
+                    "tomorrow": {
+                        "date": "2026-06-04",
+                        "status": "published",
+                        "acceptedQuestions": 6,
+                        "failedAttempts": 0,
+                        "failureReason": None,
+                        "questions": [],
+                    },
+                },
+                "resources": {"memory": {}, "disks": []},
+                "responseTimeMs": 50,
+                "tests": [],
+            },
+            "alerts": [],
+            "errors": [],
+            "status": "healthy",
+            "ok": True,
+        }
+        cache_path.write_text(json.dumps(ops_monitor.snapshot_cache_payload(cached_snapshot)), encoding="utf-8")
+
+        config = ops_monitor.MonitorConfig(
+            enabled=True,
+            cache_ttl_sec=15,
+            ssh_target="",
+            ssh_port=22,
+            ssh_key_path="",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+
+        with (
+            patch.object(ops_monitor.MonitorConfig, "from_env", return_value=config),
+            patch.object(ops_monitor, "CACHE_FILE_PATH", cache_path),
+            patch.object(ops_monitor, "_CACHED_SNAPSHOT", None),
+            patch.object(ops_monitor, "_CACHED_AT_MONOTONIC", 0.0),
+            patch("ops_monitor.probe_public_health", return_value={"ok": True}),
+            patch(
+                "ops_monitor.collect_remote_snapshot_via_internal_api",
+                side_effect=RuntimeError("Remote HTTPS summary endpoint is not live on the server yet."),
+            ),
+            patch("ops_monitor.schedule_background_ssh_refresh", return_value=False),
         ):
             payload = ops_monitor.collect_dashboard_snapshot(force=True)
 
         self.assertTrue(payload["stale"])
-        self.assertEqual(payload["status"], "degraded")
-        self.assertEqual(payload["lastError"], "ssh timeout")
+        self.assertEqual(payload["lastError"], "Remote HTTPS summary endpoint is not live on the server yet.")
         self.assertEqual(payload["remote"]["quiz"]["tomorrow"]["status"], "published")
-        self.assertIn("HTTPS fallback", " ".join(payload["alerts"]))
+        self.assertGreaterEqual(payload["cacheAgeSec"], 0)
 
     def test_fact_image_route_requires_login(self) -> None:
         import production_server

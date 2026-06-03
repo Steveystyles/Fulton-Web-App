@@ -87,7 +87,7 @@ def load_monitor_settings() -> dict[str, Any]:
     if not SETTINGS_PATH.exists():
         return default_monitor_settings()
     try:
-        payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return default_monitor_settings()
     return normalize_monitor_settings(payload)

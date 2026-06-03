@@ -1131,6 +1131,9 @@ class MonitorConfig:
 _CACHE_LOCK = threading.Lock()
 _CACHED_SNAPSHOT: dict[str, Any] | None = None
 _CACHED_AT_MONOTONIC = 0.0
+_SSH_REFRESH_LOCK = threading.Lock()
+_SSH_REFRESH_IN_PROGRESS = False
+CACHE_FILE_PATH = Path(__file__).resolve().parent / "data" / "local-ops-snapshot.json"
 SSH_RETRY_ATTEMPTS = 3
 
 
@@ -1164,6 +1167,12 @@ def is_retryable_ssh_error(message: str) -> bool:
             "could not resolve hostname",
         )
     )
+
+
+def can_attempt_ssh_snapshot(config: MonitorConfig) -> bool:
+    if not config.ssh_target or not config.ssh_key_path:
+        return False
+    return Path(config.ssh_key_path).exists()
 
 
 def ssh_python_command(config: MonitorConfig, encoded_payload: str) -> list[str]:
@@ -1421,6 +1430,61 @@ def internal_quiz_request(
     return decoded
 
 
+def internal_ops_request(
+    config: MonitorConfig,
+    path: str,
+    *,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    base_url = config.internal_base_url.rstrip("/")
+    if not base_url:
+        raise RuntimeError("Internal base URL is not configured in local ops settings.")
+    if not config.internal_quiz_token:
+        raise RuntimeError("Internal quiz token is not configured in local ops settings.")
+
+    request = Request(
+        f"{base_url}{path}",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {config.internal_quiz_token}",
+            "User-Agent": "FultonsOpsMonitor/1.0 (+https://fultons-quiz.co.uk)",
+        },
+        method="GET",
+    )
+    started = time.perf_counter()
+    try:
+        with urlopen(request, timeout=timeout_sec) as response:
+            body = response.read().decode("utf-8")
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+    except HTTPError as error:
+        detail = f"HTTP {error.code}"
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                detail = str(payload.get("error") or payload)
+        except Exception:
+            reason = getattr(error, "reason", None)
+            if reason:
+                detail = f"{detail}: {reason}"
+        raise RuntimeError(f"Internal ops request failed: {detail}") from error
+    except (OSError, URLError, TimeoutError) as error:
+        raise RuntimeError(f"Internal ops request failed: {error}") from error
+
+    try:
+        decoded = json.loads(body)
+    except json.JSONDecodeError as error:
+        trimmed = body.lstrip().lower()
+        if trimmed.startswith("<!doctype") or trimmed.startswith("<html"):
+            raise RuntimeError(
+                "Remote HTTPS summary endpoint is not live on the server yet."
+            ) from error
+        raise RuntimeError("Internal ops request returned invalid JSON.") from error
+    if not isinstance(decoded, dict):
+        raise RuntimeError("Internal ops request returned an unexpected payload.")
+    decoded["responseTimeMs"] = elapsed_ms
+    return decoded
+
+
 def quiz_preview_from_payload(
     payload: dict[str, Any],
     *,
@@ -1509,6 +1573,37 @@ def empty_remote_snapshot() -> dict[str, Any]:
     }
 
 
+def merge_internal_remote_summary(
+    existing_remote: dict[str, Any] | None,
+    summary_remote: dict[str, Any],
+) -> dict[str, Any]:
+    remote = copy.deepcopy(existing_remote) if isinstance(existing_remote, dict) else empty_remote_snapshot()
+    for section in ("application", "quiz", "tests", "errors"):
+        if isinstance(summary_remote.get(section), (dict, list)):
+            remote[section] = copy.deepcopy(summary_remote[section])
+    for section in ("host", "resources", "docker"):
+        current_value = remote.get(section)
+        if not current_value:
+            remote[section] = copy.deepcopy(summary_remote.get(section))
+    remote["ok"] = bool(summary_remote.get("ok"))
+    remote["generatedAt"] = str(summary_remote.get("generatedAt") or utc_now_iso())
+    remote["responseTimeMs"] = summary_remote.get("responseTimeMs")
+    remote["partial"] = True
+    remote["transport"] = str(summary_remote.get("transport") or "https-fallback")
+    return remote
+
+
+def collect_remote_snapshot_via_internal_api(config: MonitorConfig) -> dict[str, Any]:
+    payload = internal_ops_request(
+        config,
+        "/internal/ops-summary",
+        timeout_sec=12,
+    )
+    payload["partial"] = True
+    payload["transport"] = str(payload.get("transport") or "https-fallback")
+    return payload
+
+
 def merge_quiz_action_snapshot(
     snapshot: dict[str, Any],
     action: str,
@@ -1588,7 +1683,30 @@ def snapshot_cache_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
     payload.pop("cacheAgeSec", None)
     payload.pop("stale", None)
     payload.pop("lastError", None)
+    payload.pop("hostRefreshInProgress", None)
+    payload.pop("reason", None)
     return payload
+
+
+def load_persisted_snapshot() -> tuple[dict[str, Any] | None, int]:
+    try:
+        raw = json.loads(CACHE_FILE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None, 0
+        age_sec = max(0, int(time.time() - CACHE_FILE_PATH.stat().st_mtime))
+        return raw, age_sec
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None, 0
+
+
+def persist_cached_snapshot(snapshot: dict[str, Any]) -> None:
+    try:
+        CACHE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = CACHE_FILE_PATH.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(snapshot, ensure_ascii=True), encoding="utf-8")
+        temp_path.replace(CACHE_FILE_PATH)
+    except OSError:
+        return
 
 
 def update_cached_snapshot(snapshot: dict[str, Any]) -> None:
@@ -1596,6 +1714,7 @@ def update_cached_snapshot(snapshot: dict[str, Any]) -> None:
     with _CACHE_LOCK:
         _CACHED_SNAPSHOT = snapshot_cache_payload(snapshot)
         _CACHED_AT_MONOTONIC = time.monotonic()
+        persist_cached_snapshot(_CACHED_SNAPSHOT)
 
 
 def generate_tomorrow_quiz_action(config: MonitorConfig) -> dict[str, Any]:
@@ -1656,6 +1775,9 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
     if remote is None:
         alerts.append("SSH monitor could not collect a live server snapshot.")
         return alerts
+
+    if remote.get("partial"):
+        alerts.append("Using HTTPS fallback for app state; host and Docker metrics may be stale.")
 
     application = remote.get("application") if isinstance(remote.get("application"), dict) else {}
     health = application.get("health") if isinstance(application.get("health"), dict) else {}
@@ -1734,9 +1856,45 @@ def summarize_status(remote: dict[str, Any] | None, public_probe: dict[str, Any]
         return "degraded"
     if remote is None:
         return "degraded"
+    if remote.get("partial"):
+        return "degraded"
     if remote.get("errors"):
         return "degraded"
     return "healthy"
+
+
+def build_snapshot(
+    public_probe: dict[str, Any],
+    remote: dict[str, Any] | None,
+    *,
+    errors: list[str] | None = None,
+    stale: bool = False,
+) -> dict[str, Any]:
+    if remote is None:
+        snapshot = {
+            "enabled": True,
+            "generatedAt": utc_now_iso(),
+            "publicProbe": public_probe,
+            "remote": None,
+            "alerts": build_alerts(None, public_probe),
+            "errors": errors or [],
+        }
+    else:
+        snapshot = {
+            "enabled": True,
+            "generatedAt": utc_now_iso(),
+            "publicProbe": public_probe,
+            "remote": remote,
+            "alerts": build_alerts(remote, public_probe),
+            "errors": errors
+            if errors is not None
+            else list(remote.get("errors", []))
+            if isinstance(remote.get("errors"), list)
+            else [],
+        }
+    snapshot["status"] = summarize_status(remote, public_probe, stale)
+    snapshot["ok"] = snapshot["status"] == "healthy" and not snapshot["alerts"]
+    return snapshot
 
 
 def attach_runtime_metadata(
@@ -1754,6 +1912,44 @@ def attach_runtime_metadata(
     return payload
 
 
+def _background_ssh_refresh_worker(
+    config: MonitorConfig,
+    public_probe: dict[str, Any],
+) -> None:
+    global _SSH_REFRESH_IN_PROGRESS
+
+    try:
+        remote = collect_remote_snapshot(config)
+        snapshot = build_snapshot(public_probe, remote, stale=False)
+        update_cached_snapshot(snapshot)
+    finally:
+        with _SSH_REFRESH_LOCK:
+            _SSH_REFRESH_IN_PROGRESS = False
+
+
+def schedule_background_ssh_refresh(
+    config: MonitorConfig,
+    public_probe: dict[str, Any],
+) -> bool:
+    global _SSH_REFRESH_IN_PROGRESS
+
+    if not can_attempt_ssh_snapshot(config):
+        return False
+
+    with _SSH_REFRESH_LOCK:
+        if _SSH_REFRESH_IN_PROGRESS:
+            return False
+        _SSH_REFRESH_IN_PROGRESS = True
+
+    thread = threading.Thread(
+        target=_background_ssh_refresh_worker,
+        args=(config, copy.deepcopy(public_probe)),
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
 def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
     global _CACHED_AT_MONOTONIC, _CACHED_SNAPSHOT
 
@@ -1763,6 +1959,11 @@ def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
 
     now_monotonic = time.monotonic()
     with _CACHE_LOCK:
+        if _CACHED_SNAPSHOT is None:
+            persisted_snapshot, persisted_age_sec = load_persisted_snapshot()
+            if persisted_snapshot is not None:
+                _CACHED_SNAPSHOT = persisted_snapshot
+                _CACHED_AT_MONOTONIC = now_monotonic - persisted_age_sec
         if (
             not force
             and _CACHED_SNAPSHOT is not None
@@ -1777,49 +1978,68 @@ def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
         cached_age = int(now_monotonic - _CACHED_AT_MONOTONIC) if _CACHED_SNAPSHOT else 0
 
     public_probe = probe_public_health(config.public_health_url)
+    internal_remote: dict[str, Any] | None = None
+    internal_error: str | None = None
     try:
-        remote = collect_remote_snapshot(config)
+        internal_remote = collect_remote_snapshot_via_internal_api(config)
     except Exception as error:
-        if cached_snapshot is not None:
-            cached_snapshot["status"] = summarize_status(None, public_probe, True)
-            cached_snapshot["ok"] = False
-            cached_snapshot["publicProbe"] = public_probe
-            cached_snapshot["alerts"] = build_alerts(None, public_probe)
-            cached_snapshot["errors"] = [str(error)]
-            return attach_runtime_metadata(
-                cached_snapshot,
-                cache_age_sec=cached_age,
-                stale=True,
-                last_error=str(error),
-            )
-        return {
-            "enabled": True,
-            "status": summarize_status(None, public_probe, True),
-            "ok": False,
-            "generatedAt": utc_now_iso(),
-            "cacheAgeSec": 0,
-            "stale": True,
-            "publicProbe": public_probe,
-            "remote": None,
-            "alerts": build_alerts(None, public_probe),
-            "errors": [str(error)],
-            "reason": "Initial SSH snapshot failed.",
-        }
+        internal_error = str(error)
+    if internal_remote is not None:
+        existing_remote = cached_snapshot.get("remote") if isinstance(cached_snapshot, dict) else None
+        merged_remote = merge_internal_remote_summary(
+            existing_remote if isinstance(existing_remote, dict) else None,
+            internal_remote,
+        )
+        snapshot = build_snapshot(
+            public_probe,
+            merged_remote,
+            errors=[internal_error] if internal_error else [],
+            stale=False,
+        )
+        if schedule_background_ssh_refresh(config, public_probe):
+            snapshot["hostRefreshInProgress"] = True
+        update_cached_snapshot(snapshot)
+        return attach_runtime_metadata(
+            snapshot,
+            cache_age_sec=0,
+            stale=False,
+            last_error=internal_error,
+        )
+    refresh_started = schedule_background_ssh_refresh(config, public_probe)
+    if cached_snapshot is not None:
+        remote = cached_snapshot.get("remote") if isinstance(cached_snapshot.get("remote"), dict) else None
+        snapshot = build_snapshot(
+            public_probe,
+            remote,
+            errors=[internal_error] if internal_error else [],
+            stale=True,
+        )
+        if refresh_started:
+            snapshot["hostRefreshInProgress"] = True
+        return attach_runtime_metadata(
+            snapshot,
+            cache_age_sec=cached_age,
+            stale=True,
+            last_error=internal_error,
+        )
 
-    snapshot = {
-        "enabled": True,
-        "generatedAt": utc_now_iso(),
-        "publicProbe": public_probe,
-        "remote": remote,
-        "alerts": build_alerts(remote, public_probe),
-        "errors": list(remote.get("errors", [])) if isinstance(remote.get("errors"), list) else [],
-    }
-    snapshot["status"] = summarize_status(remote, public_probe, False)
-    snapshot["ok"] = snapshot["status"] == "healthy" and not snapshot["alerts"]
-
-    update_cached_snapshot(snapshot)
-
-    return attach_runtime_metadata(snapshot, cache_age_sec=0, stale=False)
+    snapshot = build_snapshot(
+        public_probe,
+        None,
+        errors=[internal_error] if internal_error else [],
+        stale=True,
+    )
+    if refresh_started:
+        snapshot["hostRefreshInProgress"] = True
+        snapshot["reason"] = "Live host snapshot is refreshing in the background."
+    else:
+        snapshot["reason"] = "Live remote summary was unavailable and no cached host snapshot exists."
+    return attach_runtime_metadata(
+        snapshot,
+        cache_age_sec=0,
+        stale=True,
+        last_error=internal_error,
+    )
 
 
 def run_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
