@@ -91,6 +91,23 @@ FACTS_GEMINI_API_KEY = (
     or os.environ.get("GEMINI_API_KEY")
     or ""
 )
+FACTS_FALLBACK_PROVIDER = os.environ.get(
+    "FULTONS_FACTS_FALLBACK_PROVIDER",
+    os.environ.get("AI_FALLBACK_PROVIDER", ""),
+).strip().lower()
+FACTS_FALLBACK_API_KEY = (
+    os.environ.get("FULTONS_FACTS_FALLBACK_API_KEY")
+    or os.environ.get("AI_FALLBACK_API_KEY")
+    or os.environ.get("AI_API_KEY")
+    or ""
+)
+FACTS_FALLBACK_BASE_URL = daily_quiz.default_compatible_base_url(
+    FACTS_FALLBACK_PROVIDER,
+    os.environ.get(
+        "FULTONS_FACTS_FALLBACK_BASE_URL",
+        os.environ.get("AI_FALLBACK_BASE_URL", os.environ.get("AI_BASE_URL", "")),
+    ),
+)
 FACTS_AI_GENERATOR_MODEL = os.environ.get(
     "FULTONS_FACTS_AI_GENERATOR_MODEL",
     os.environ.get("AI_GENERATOR_MODEL", "gemini-3.5-flash"),
@@ -98,6 +115,14 @@ FACTS_AI_GENERATOR_MODEL = os.environ.get(
 FACTS_AI_CRITIC_MODEL = os.environ.get(
     "FULTONS_FACTS_AI_CRITIC_MODEL",
     os.environ.get("AI_CRITIC_MODEL", "gemini-3.1-flash-lite"),
+).strip()
+FACTS_FALLBACK_GENERATOR_MODEL = os.environ.get(
+    "FULTONS_FACTS_FALLBACK_GENERATOR_MODEL",
+    os.environ.get("AI_FALLBACK_GENERATOR_MODEL", ""),
+).strip()
+FACTS_FALLBACK_CRITIC_MODEL = os.environ.get(
+    "FULTONS_FACTS_FALLBACK_CRITIC_MODEL",
+    os.environ.get("AI_FALLBACK_CRITIC_MODEL", ""),
 ).strip()
 FACTS_AI_TIMEOUT_SEC = max(
     5,
@@ -3692,7 +3717,29 @@ def facts_ai_defer_retry(attempt: int, error: HTTPError | None = None) -> None:
         FACTS_AI_NEXT_REQUEST_AT = max(FACTS_AI_NEXT_REQUEST_AT, time.monotonic() + delay)
 
 
-def facts_ai_json_response(
+def facts_fallback_model(task: str) -> str:
+    if task == "critic":
+        return FACTS_FALLBACK_CRITIC_MODEL
+    return FACTS_FALLBACK_GENERATOR_MODEL
+
+
+def facts_fallback_configured(task: str) -> bool:
+    return bool(
+        FACTS_FALLBACK_PROVIDER in {"groq", "openrouter", "openai-compatible"}
+        and FACTS_FALLBACK_API_KEY
+        and FACTS_FALLBACK_BASE_URL
+        and facts_fallback_model(task)
+    )
+
+
+def facts_ai_available() -> bool:
+    return bool(FACTS_GEMINI_API_KEY) or (
+        facts_fallback_configured("generator")
+        and facts_fallback_configured("critic")
+    )
+
+
+def facts_gemini_json_response(
     *,
     model: str,
     prompt: str,
@@ -3752,6 +3799,110 @@ def facts_ai_json_response(
     return parse_json_object(text)
 
 
+def facts_compatible_json_response(
+    *,
+    provider_name: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+) -> dict[str, Any]:
+    if not api_key or not base_url:
+        raise ValueError("Compatible fallback provider is not configured.")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if provider_name == "openrouter":
+        headers["HTTP-Referer"] = "https://fultons-quiz.co.uk"
+        headers["X-Title"] = "Fultons Quiz"
+
+    request = Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(
+            {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Return one valid JSON object only. Do not use markdown.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.4,
+                "max_tokens": 1000,
+                "stream": False,
+                "response_format": {"type": "json_object"},
+            }
+        ).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    for attempt in range(FACTS_AI_TRANSIENT_RETRIES + 1):
+        facts_ai_wait_for_request_slot()
+        try:
+            with urlopen(request, timeout=FACTS_AI_TIMEOUT_SEC) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as error:
+            if error.code in {408, 429, 500, 502, 503, 504} and attempt < FACTS_AI_TRANSIENT_RETRIES:
+                facts_ai_defer_retry(attempt, error)
+                continue
+            raise RuntimeError(f"{provider_name} request failed with HTTP {error.code}.") from error
+        except (TimeoutError, URLError, OSError) as error:
+            if attempt < FACTS_AI_TRANSIENT_RETRIES:
+                facts_ai_defer_retry(attempt)
+                continue
+            raise RuntimeError(f"{provider_name} request timed out or failed: {error}") from error
+    else:  # pragma: no cover - loop exits through break or raise
+        raise RuntimeError(f"{provider_name} request failed.")
+
+    try:
+        text = payload["choices"][0]["message"]["content"]
+    except (IndexError, KeyError, TypeError) as error:
+        raise ValueError(f"{provider_name} returned no chat completion content.") from error
+    return parse_json_object(text)
+
+
+def facts_ai_json_response(
+    *,
+    task: str,
+    model: str,
+    prompt: str,
+    schema: dict[str, Any],
+    google_search: bool = False,
+) -> dict[str, Any]:
+    primary_error: Exception | None = None
+    if FACTS_GEMINI_API_KEY:
+        try:
+            return facts_gemini_json_response(
+                model=model,
+                prompt=prompt,
+                schema=schema,
+                google_search=google_search,
+            )
+        except Exception as error:
+            primary_error = error
+            if not facts_fallback_configured(task):
+                raise
+            safe_log(f"Facts AI falling back from Gemini to {FACTS_FALLBACK_PROVIDER}: {error}")
+
+    if facts_fallback_configured(task):
+        return facts_compatible_json_response(
+            provider_name=FACTS_FALLBACK_PROVIDER,
+            base_url=FACTS_FALLBACK_BASE_URL,
+            api_key=FACTS_FALLBACK_API_KEY,
+            model=facts_fallback_model(task),
+            prompt=prompt,
+        )
+
+    if primary_error is not None:
+        raise primary_error
+    raise ValueError("No facts AI provider is configured.")
+
+
 def reviewed_location_facts(
     rotation_key: str,
     place_title: str,
@@ -3764,7 +3915,7 @@ def reviewed_location_facts(
         rotated_location_facts(candidates, limit=limit, recent_texts=recent_texts),
         place_title,
     )
-    if not FACTS_GEMINI_API_KEY:
+    if not facts_ai_available():
         return fallback
 
     failed_attempts = recent_history_fact_review_failures(rotation_key)
@@ -3821,6 +3972,7 @@ def reviewed_location_facts(
 
     try:
         selection_result = facts_ai_json_response(
+            task="generator",
             model=FACTS_AI_GENERATOR_MODEL,
             schema=ai_fact_generation_schema(limit),
             prompt=selector_prompt,
@@ -3894,6 +4046,7 @@ def reviewed_location_facts(
             "Set overallPassed to true only if every fact passes."
         )
         critique_result = facts_ai_json_response(
+            task="critic",
             model=FACTS_AI_CRITIC_MODEL,
             schema=ai_fact_critique_schema(limit),
             prompt=critique_prompt,

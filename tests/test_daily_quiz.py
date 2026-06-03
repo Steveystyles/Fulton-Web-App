@@ -16,6 +16,12 @@ def config(max_attempts: int = 3) -> daily_quiz.QuizConfig:
         gemini_api_key="test-key",
         compatible_api_key="",
         compatible_base_url="",
+        fallback_provider="",
+        fallback_generator_model="",
+        fallback_critic_model="",
+        fallback_gemini_api_key="",
+        fallback_compatible_api_key="",
+        fallback_compatible_base_url="",
         timeout_sec=5,
         request_delay_sec=0,
         transient_retries=0,
@@ -119,6 +125,45 @@ class AlwaysInvalidProvider:
 
     def critique_question(self, **_: object) -> dict[str, object]:
         raise AssertionError("Invalid questions must not reach the critic.")
+
+
+class AlwaysFailingProvider:
+    def __init__(self, name: str, reason: str = "rate limited") -> None:
+        self.name = name
+        self.reason = reason
+
+    def generate_question(self, **_: object) -> dict[str, object]:
+        raise RuntimeError(self.reason)
+
+    def critique_question(self, **_: object) -> dict[str, object]:
+        raise RuntimeError(self.reason)
+
+
+class PassingProvider:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def generate_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        recent_questions: list[dict[str, object]],
+        feedback: list[str],
+    ) -> dict[str, object]:
+        return valid_question(subject, difficulty)
+
+    def critique_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        question: dict[str, object],
+        recent_questions: list[dict[str, object]],
+    ) -> dict[str, object]:
+        critic = passing_critic()
+        critic["corrected_difficulty"] = difficulty
+        return critic
 
 
 class DailyQuizTests(unittest.TestCase):
@@ -266,6 +311,49 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("not configured", result["failure_reason"])
+
+    def test_provider_chain_uses_fallback_provider_after_primary_failure(self) -> None:
+        provider = daily_quiz.FallbackQuizProvider(
+            [
+                AlwaysFailingProvider("gemini", "Gemini request failed with HTTP 429."),
+                PassingProvider("openrouter"),
+            ]
+        )
+
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-05",
+            config=config(),
+            provider=provider,
+            log=lambda _: None,
+        )
+
+        self.assertEqual(payload["status"], "published")
+        providers = {
+            row["provider"]
+            for row in self.conn.execute(
+                "SELECT DISTINCT provider FROM daily_quiz_attempts WHERE quiz_date = ? AND passed = 1",
+                ("2026-06-05",),
+            )
+        }
+        self.assertEqual(providers, {"openrouter"})
+
+    def test_provider_chain_from_config_includes_openrouter_fallback(self) -> None:
+        chain = daily_quiz.provider_chain_from_config(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "fallback_provider": "openrouter",
+                    "fallback_generator_model": "openai/gpt-4.1-mini",
+                    "fallback_critic_model": "openai/gpt-4.1-mini",
+                    "fallback_compatible_api_key": "or-key",
+                    "fallback_compatible_base_url": "https://openrouter.ai/api/v1",
+                }
+            )
+        )
+
+        self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
+        self.assertEqual([provider.name for provider in chain.providers], ["gemini", "openrouter"])
 
     def test_gemini_retry_uses_structured_retry_delay(self) -> None:
         class RateLimitError:

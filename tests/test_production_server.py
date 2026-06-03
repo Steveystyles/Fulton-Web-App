@@ -1088,6 +1088,51 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_facts_ai_json_response_uses_openrouter_fallback_after_gemini_failure(self) -> None:
+        import server
+
+        fallback_payload = {
+            "facts": [
+                {
+                    "title": "Paisley Abbey",
+                    "text": "Paisley Abbey remains one of the town's defining landmarks.",
+                    "theme": "history",
+                    "sourceEvidenceIndex": 0,
+                }
+            ]
+        }
+
+        with (
+            patch("server.FACTS_GEMINI_API_KEY", "test-key"),
+            patch("server.FACTS_FALLBACK_PROVIDER", "openrouter"),
+            patch("server.FACTS_FALLBACK_API_KEY", "fallback-key"),
+            patch("server.FACTS_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1"),
+            patch("server.FACTS_FALLBACK_GENERATOR_MODEL", "openai/gpt-4.1-mini"),
+            patch(
+                "server.facts_gemini_json_response",
+                side_effect=RuntimeError("Gemini request failed with HTTP 429."),
+            ),
+            patch(
+                "server.facts_compatible_json_response",
+                return_value=fallback_payload,
+            ) as compatible_request,
+        ):
+            payload = server.facts_ai_json_response(
+                task="generator",
+                model=server.FACTS_AI_GENERATOR_MODEL,
+                prompt="Prompt",
+                schema={"type": "object"},
+            )
+
+        self.assertEqual(payload, fallback_payload)
+        compatible_request.assert_called_once_with(
+            provider_name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="fallback-key",
+            model="openai/gpt-4.1-mini",
+            prompt="Prompt",
+        )
+
     def test_public_history_fact_hides_internal_critique(self) -> None:
         import server
 
