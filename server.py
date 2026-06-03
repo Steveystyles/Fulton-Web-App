@@ -9,6 +9,7 @@ import os
 import queue
 import re
 import secrets
+import socket
 import sqlite3
 import sys
 import threading
@@ -119,6 +120,10 @@ FACTS_AI_TRANSIENT_RETRIES = max(
             os.environ.get("AI_TRANSIENT_RETRIES", "2"),
         )
     ),
+)
+FACTS_WEB_SEARCH_TIMEOUT_SEC = max(
+    4,
+    int(os.environ.get("FULTONS_FACTS_WEB_SEARCH_TIMEOUT_SEC", "8")),
 )
 DAILY_QUIZ_CONFIG = daily_quiz.QuizConfig.from_env()
 EXPECTED_DATA_DIR = os.environ.get("FULTONS_EXPECT_DATA_DIR", "").strip()
@@ -350,6 +355,11 @@ FACT_CRITIC_THRESHOLDS = {
     "interestingness": 7,
     "placeSpecificity": 8,
 }
+FACT_SEARCH_BLOCKED_DOMAINS = (
+    "wikipedia.org",
+    "wikidata.org",
+    "wikimedia.org",
+)
 
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
@@ -357,7 +367,9 @@ HISTORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOGIN_ATTEMPTS: dict[str, tuple[int, float]] = {}
 LOGIN_ATTEMPTS_LOCK = threading.Lock()
 FACTS_AI_LOCK = threading.Lock()
+DAILY_QUIZ_OPERATION_LOCK = threading.Lock()
 FACTS_AI_NEXT_REQUEST_AT = 0.0
+HISTORY_FACT_ROTATION_VERSION = "v3"
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -544,6 +556,156 @@ def health_storage_payload(storage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def ops_quiz_preview(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
+    status = daily_quiz.quiz_status(conn, quiz_date)
+    preview = {
+        "date": quiz_date,
+        "status": status["status"],
+        "acceptedQuestions": int(status.get("accepted_questions") or 0),
+        "failedAttempts": int(status.get("failed_attempts") or 0),
+        "failureReason": status.get("failure_reason"),
+        "questions": [],
+        "updatedAt": None,
+    }
+    if status["status"] != "published":
+        return preview
+    try:
+        payload = daily_quiz.quiz_payload(conn, quiz_date)
+    except LookupError:
+        return preview
+    preview["questions"] = [
+        {
+            "subject": str(question.get("subject") or ""),
+            "difficulty": str(question.get("difficulty") or ""),
+            "question": str(question.get("question") or ""),
+            "choices": [str(choice) for choice in question.get("choices", [])],
+            "correctAnswer": str(question.get("correct_answer") or ""),
+            "explanation": str(question.get("explanation") or ""),
+        }
+        for question in payload.get("questions", [])
+        if isinstance(question, dict)
+    ]
+    preview["acceptedQuestions"] = len(preview["questions"])
+    return preview
+
+
+def internal_ops_summary_payload() -> dict[str, Any]:
+    tz = server_timezone()
+    local_now = datetime.now(tz)
+    today_date = local_now.date().isoformat()
+    tomorrow_date = (local_now.date() + timedelta(days=1)).isoformat()
+    storage = runtime_storage_health()
+    tests: list[dict[str, Any]] = []
+    with connect_db() as conn:
+        quick_check_row = conn.execute("PRAGMA quick_check").fetchone()
+        quick_check = quick_check_row[0] if quick_check_row is not None else None
+        table_counts: dict[str, int] = {}
+        for table in (
+            "users",
+            "news_items",
+            "daily_quiz_sets",
+            "daily_quiz_questions",
+            "daily_quiz_attempts",
+            "quiz_results",
+            "wordle_results",
+        ):
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table,),
+            ).fetchone()
+            if row and row["count"]:
+                table_counts[table] = int(
+                    conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
+                )
+        today_quiz = ops_quiz_preview(conn, today_date)
+        tomorrow_quiz = ops_quiz_preview(conn, tomorrow_date)
+        user_count = db_user_count(conn)
+
+    health_payload = {
+        "ok": storage["ok"],
+        "date": today_game_date(),
+        "storage": health_storage_payload(storage),
+    }
+    tests.append(
+        {
+            "id": "sqlite_quick_check",
+            "label": "SQLite quick_check",
+            "status": "pass" if quick_check == "ok" else "fail",
+            "detail": str(quick_check),
+        }
+    )
+    tests.append(
+        {
+            "id": "internal_health",
+            "label": "Internal /api/health",
+            "status": "pass" if storage["ok"] else "fail",
+            "detail": "HTTP 200 in 0ms",
+        }
+    )
+    tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
+    tests.append(
+        {
+            "id": "tomorrow_quiz",
+            "label": "Tomorrow quiz",
+            "status": "pass"
+            if tomorrow_status == "published"
+            else "warn"
+            if tomorrow_status in {"generating", "ready", "draft"}
+            else "fail",
+            "detail": f"{tomorrow_status} / accepted {tomorrow_quiz.get('acceptedQuestions', 0)}",
+        }
+    )
+    return {
+        "ok": bool(storage["ok"]),
+        "generatedAt": utc_now(),
+        "transport": "https-fallback",
+        "host": {
+            "hostname": socket.gethostname(),
+            "power": {"acOnline": None, "batteries": []},
+        },
+        "resources": {
+            "memory": {},
+            "disks": [],
+        },
+        "docker": {
+            "containers": [],
+            "volumes": [],
+            "networks": [],
+        },
+        "application": {
+            "composeFile": "",
+            "envFile": "",
+            "dataDir": str(DATA_DIR),
+            "dbPath": str(DB_PATH),
+            "health": {
+                "url": "internal://api/health",
+                "status": 200,
+                "responseTimeMs": 0,
+                "payload": health_payload,
+                "ok": bool(storage["ok"]),
+                "probeSource": "in-process",
+            },
+            "sqlite": {
+                "dbExists": DB_PATH.exists(),
+                "dbPath": str(DB_PATH),
+                "dbSizeBytes": DB_PATH.stat().st_size if DB_PATH.exists() else None,
+                "quickCheck": quick_check,
+                "tableCounts": table_counts,
+                "todayQuiz": today_quiz,
+                "tomorrowQuiz": tomorrow_quiz,
+                "userCount": user_count,
+            },
+        },
+        "quiz": {
+            "today": today_quiz,
+            "tomorrow": tomorrow_quiz,
+        },
+        "tests": tests,
+        "errors": [],
+        "partial": True,
+    }
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac(
@@ -597,6 +759,7 @@ def connect_db() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -2070,17 +2233,18 @@ def ensure_tomorrow_daily_quiz(now: datetime | None = None) -> None:
     tz = server_timezone()
     local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
     quiz_date = (local_now.date() + timedelta(days=1)).isoformat()
-    with closing(connect_db()) as conn:
-        status = daily_quiz.quiz_status(conn, quiz_date)
-        if status["status"] == "published":
-            safe_log(f"Daily quiz for {quiz_date} is already published")
-            return
-        daily_quiz.generate_daily_quiz(
-            conn,
-            quiz_date=quiz_date,
-            config=DAILY_QUIZ_CONFIG,
-            log=lambda message: safe_log(f"Daily quiz: {message}"),
-        )
+    with DAILY_QUIZ_OPERATION_LOCK:
+        with closing(connect_db()) as conn:
+            status = daily_quiz.quiz_status(conn, quiz_date)
+            if status["status"] == "published":
+                safe_log(f"Daily quiz for {quiz_date} is already published")
+                return
+            daily_quiz.generate_daily_quiz(
+                conn,
+                quiz_date=quiz_date,
+                config=DAILY_QUIZ_CONFIG,
+                log=lambda message: safe_log(f"Daily quiz: {message}"),
+            )
 
 
 def daily_quiz_scheduler_loop() -> None:
@@ -2157,6 +2321,96 @@ def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
+def fetch_text_url(url: str, timeout: int = 8) -> str:
+    request = Request(url, headers={"User-Agent": HISTORY_USER_AGENT})
+    with urlopen(request, timeout=timeout) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset, errors="ignore")
+
+
+def clean_search_text(value: str, limit: int = 700) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def blocked_fact_source(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return any(blocked in host for blocked in FACT_SEARCH_BLOCKED_DOMAINS)
+
+
+def bing_rss_search_url(query: str) -> str:
+    return (
+        "https://www.bing.com/search?format=rss&mkt=en-GB&q="
+        f"{quote_plus(query)}"
+    )
+
+
+def fetch_web_page_excerpt(url: str) -> str:
+    if blocked_fact_source(url):
+        return ""
+    try:
+        return clean_search_text(
+            fetch_text_url(url, timeout=FACTS_WEB_SEARCH_TIMEOUT_SEC),
+            900,
+        )
+    except Exception:
+        return ""
+
+
+def search_web_fact_evidence(place_title: str, limit: int = 8) -> list[dict[str, str]]:
+    place_name = place_title.split(",", 1)[0].strip()
+    queries = [
+        f'"{place_title}" history landmark culture industry',
+        f'"{place_name}" local history museum official',
+        f'"{place_name}" textile abbey festival council',
+    ]
+    evidence: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+
+    for query in queries:
+        try:
+            payload = fetch_text_url(
+                bing_rss_search_url(query),
+                timeout=FACTS_WEB_SEARCH_TIMEOUT_SEC,
+            )
+            root = ElementTree.fromstring(payload)
+        except Exception as error:
+            safe_log(f"Fact web search failed: {error}")
+            continue
+
+        for item in root.findall(".//item"):
+            title = clean_search_text(item.findtext("title", default=""), 160)
+            url = str(item.findtext("link", default="") or "").strip()
+            snippet = clean_search_text(item.findtext("description", default=""), 320)
+            if not title or not url.startswith(("http://", "https://")):
+                continue
+            if blocked_fact_source(url):
+                continue
+            normalized_url = url.split("#", 1)[0]
+            if normalized_url in seen_urls:
+                continue
+            seen_urls.add(normalized_url)
+            host = urlparse(url).netloc.lower().removeprefix("www.")
+            excerpt = fetch_web_page_excerpt(url)
+            evidence.append(
+                {
+                    "title": title,
+                    "sourceName": host or "web",
+                    "sourceUrl": normalized_url,
+                    "snippet": snippet,
+                    "excerpt": excerpt or snippet,
+                }
+            )
+            if len(evidence) >= limit:
+                return evidence
+
+    return evidence
+
+
 def parse_json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -2191,7 +2445,10 @@ def history_fact_text_key(value: str) -> str:
 
 
 def history_fact_rotation_key(title: str, lang: str) -> str:
-    return f"{normalise_history_lang(lang)}:{history_fact_text_key(resolve_place_alias(title))}"
+    return (
+        f"{HISTORY_FACT_ROTATION_VERSION}:"
+        f"{normalise_history_lang(lang)}:{history_fact_text_key(resolve_place_alias(title))}"
+    )
 
 
 def history_fact_rotation_limit(now: datetime | None = None) -> datetime:
@@ -3066,15 +3323,83 @@ def wikidata_profile(
     }
 
 
+def wikidata_facts(
+    entity: dict[str, Any] | None,
+    lang: str,
+    fallback_title: str,
+) -> list[dict[str, Any]]:
+    profile = wikidata_profile(entity, lang, fallback_title)
+    if profile is None:
+        return []
+
+    title = str(profile.get("title") or fallback_title)
+    source_url = profile.get("sourceUrl")
+    facts: list[dict[str, Any]] = []
+    place_parts = [str(area).strip() for area in profile.get("areas", []) if str(area).strip()]
+    country = str(profile.get("country") or "").strip()
+    if country and country not in place_parts:
+        place_parts.append(country)
+
+    if profile.get("types"):
+        type_label = str(profile["types"][0]).strip()
+        if type_label:
+            place_text = f" in {', '.join(place_parts)}" if place_parts else ""
+            facts.append(
+                make_history_fact(
+                    title="Wikidata record",
+                    text=f"Wikidata lists {title} as a {type_label}{place_text}.",
+                    theme="general",
+                    source_name="Wikidata",
+                    source_url=source_url,
+                    confidence="high",
+                )
+            )
+
+    population = str(profile.get("population") or "").strip()
+    if population:
+        facts.append(
+            make_history_fact(
+                title="Population",
+                text=f"Wikidata records a population of about {population} for {title}.",
+                theme="general",
+                source_name="Wikidata",
+                source_url=source_url,
+                confidence="high",
+            )
+        )
+
+    inception = str(profile.get("inception") or "").strip()
+    if inception:
+        facts.append(
+            make_history_fact(
+                title="Recorded in Wikidata",
+                text=f"Wikidata traces {title} to {inception}.",
+                theme="history",
+                source_name="Wikidata",
+                source_url=source_url,
+                confidence="high",
+            )
+        )
+
+    return facts
+
+
 def build_location_facts(
     summary: dict[str, Any],
     plain_extract: str,
     limit: int,
     article_url: str | None,
+    wikidata_entity: dict[str, Any] | None = None,
+    lang: str = "en",
 ) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
     existing_texts: set[str] = set()
-    for fact in wikipedia_facts(summary, plain_extract, limit, article_url):
+    title = str(summary.get("title") or "")
+    candidate_facts = [
+        *wikipedia_facts(summary, plain_extract, max(limit, 6), article_url),
+        *wikidata_facts(wikidata_entity, lang, title),
+    ]
+    for fact in candidate_facts:
         text = str(fact.get("text", "")).lower()
         if text in existing_texts:
             continue
@@ -3129,6 +3454,14 @@ def attach_fact_critiques(
         next_fact["critique"] = critique or fallback_fact_critique(fact, place_title)
         enriched.append(next_fact)
     return enriched
+
+
+def public_history_fact(fact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in fact.items()
+        if key != "critique"
+    }
 
 
 def rotated_location_facts(
@@ -3254,7 +3587,7 @@ def recent_history_fact_review_failures(
     return failures
 
 
-def ai_fact_selection_schema(limit: int) -> dict[str, Any]:
+def ai_fact_generation_schema(limit: int) -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
@@ -3265,11 +3598,12 @@ def ai_fact_selection_schema(limit: int) -> dict[str, Any]:
                 "items": {
                     "type": "object",
                     "properties": {
-                        "candidateIndex": {"type": "integer", "minimum": 0},
                         "title": {"type": "string"},
                         "text": {"type": "string"},
+                        "theme": {"type": "string", "enum": list(FACT_THEME_LABELS)},
+                        "sourceEvidenceIndex": {"type": "integer", "minimum": 0},
                     },
-                    "required": ["candidateIndex", "title", "text"],
+                    "required": ["title", "text", "theme", "sourceEvidenceIndex"],
                     "additionalProperties": False,
                 },
             },
@@ -3363,6 +3697,7 @@ def facts_ai_json_response(
     model: str,
     prompt: str,
     schema: dict[str, Any],
+    google_search: bool = False,
 ) -> dict[str, Any]:
     if not FACTS_GEMINI_API_KEY:
         raise ValueError("Gemini API key is not configured.")
@@ -3376,6 +3711,7 @@ def facts_ai_json_response(
         data=json.dumps(
             {
                 "contents": [{"parts": [{"text": prompt}]}],
+                "tools": [{"google_search": {}}] if google_search else [],
                 "generationConfig": {
                     "temperature": 0.4,
                     "responseMimeType": "application/json",
@@ -3428,10 +3764,18 @@ def reviewed_location_facts(
         rotated_location_facts(candidates, limit=limit, recent_texts=recent_texts),
         place_title,
     )
-    if not FACTS_GEMINI_API_KEY or len(candidates) < limit:
+    if not FACTS_GEMINI_API_KEY:
         return fallback
 
     failed_attempts = recent_history_fact_review_failures(rotation_key)
+    web_evidence = search_web_fact_evidence(place_title, limit=max(limit * 4, 8))
+    if len(web_evidence) < limit:
+        safe_log(
+            "Interesting fact review fell back to heuristics: "
+            f"only {len(web_evidence)} web evidence items found for {place_title}."
+        )
+        return fallback
+
     candidate_payload = [
         {
             "candidateIndex": index,
@@ -3444,71 +3788,108 @@ def reviewed_location_facts(
         }
         for index, candidate in enumerate(candidates)
     ]
+    evidence_payload = [
+        {
+            "evidenceIndex": index,
+            "title": str(item.get("title") or ""),
+            "sourceName": str(item.get("sourceName") or ""),
+            "sourceUrl": str(item.get("sourceUrl") or ""),
+            "snippet": str(item.get("snippet") or ""),
+            "excerpt": str(item.get("excerpt") or ""),
+        }
+        for index, item in enumerate(web_evidence)
+    ]
     selection_result: dict[str, Any] | None = None
     critique_result: dict[str, Any] | None = None
     selector_prompt = (
-        "You are choosing two reviewed local-interest facts for a live facts page.\n\n"
+        "You are writing two reviewed local-interest facts for a live facts page.\n\n"
         f"Place: {place_title}\n"
-        f"Candidates:\n{json.dumps(candidate_payload, ensure_ascii=True, indent=2)}\n"
+        f"Web evidence gathered for this place:\n{json.dumps(evidence_payload, ensure_ascii=True, indent=2)}\n"
+        f"Local reference context:\n{json.dumps(candidate_payload, ensure_ascii=True, indent=2)}\n"
         f"Recent facts to avoid repeating in the next 24-hour rotation:\n"
         f"{json.dumps(recent_texts[:6], ensure_ascii=True, indent=2)}\n"
         f"Previous failed selections and feedback:\n{json.dumps(failed_attempts, ensure_ascii=True, indent=2)}\n\n"
-        "Choose exactly two facts.\n"
-        "Use only the supplied candidate facts.\n"
-        "Do not merge multiple candidates into one fact.\n"
-        "Pick facts that are specific to the place, genuinely interesting, and distinct from each other.\n"
+        f"Write exactly {limit} facts.\n"
+        "Use the web evidence as the source base and the local reference context only as background support.\n"
+        "Each fact must be clearly about the named place, genuinely interesting, and distinct from the other fact.\n"
+        "Prefer evidence from local councils, museums, universities, tourism boards, official organisations, or reputable reporting.\n"
         "Avoid generic summary lines and avoid repeating the recent facts or prior failed ideas.\n"
-        "Rewrite the title and text lightly for clarity, but do not add unsupported claims."
+        "The output text should feel freshly written by the AI, not copied from one source sentence.\n"
+        "Do not add unsupported claims.\n"
+        "For each fact, return the sourceEvidenceIndex for the best single supporting evidence item from the web evidence list."
     )
 
     try:
         selection_result = facts_ai_json_response(
             model=FACTS_AI_GENERATOR_MODEL,
-            schema=ai_fact_selection_schema(limit),
+            schema=ai_fact_generation_schema(limit),
             prompt=selector_prompt,
         )
         selected_payload = selection_result.get("facts", [])
         if not isinstance(selected_payload, list) or len(selected_payload) != limit:
-            raise ValueError("Gemini selection did not return the expected number of facts.")
+            raise ValueError("Gemini fact generation did not return the expected number of facts.")
 
         selected_facts: list[dict[str, Any]] = []
         selected_for_critique: list[dict[str, Any]] = []
-        seen_indexes: set[int] = set()
-        index_map: dict[int, int] = {}
+        seen_fact_keys: set[str] = set()
+        recent_fact_keys = {history_fact_text_key(text) for text in recent_texts}
         for output_index, item in enumerate(selected_payload):
             if not isinstance(item, dict):
-                raise ValueError("Gemini selection fact is not an object.")
-            candidate_index = int(item.get("candidateIndex", -1))
-            if candidate_index < 0 or candidate_index >= len(candidates) or candidate_index in seen_indexes:
-                raise ValueError("Gemini selection candidate index is invalid.")
-            seen_indexes.add(candidate_index)
-            source_fact = dict(candidates[candidate_index])
+                raise ValueError("Gemini generated fact is not an object.")
+            evidence_index = int(item.get("sourceEvidenceIndex", -1))
+            if evidence_index < 0 or evidence_index >= len(web_evidence):
+                raise ValueError("Gemini generated fact referenced an unknown web evidence item.")
+            evidence_item = web_evidence[evidence_index]
+            source_name = str(evidence_item.get("sourceName") or "").strip()
+            source_url = str(evidence_item.get("sourceUrl") or "").strip()
+            if not source_name or not source_url.startswith(("http://", "https://")):
+                raise ValueError("Web evidence is missing a valid source.")
+            if blocked_fact_source(source_url):
+                raise ValueError("Gemini selected blocked evidence from Wikipedia or Wikidata.")
+            fact_text = str(item.get("text") or "").strip()
+            if not fact_text:
+                raise ValueError("Gemini generated fact text is empty.")
+            fact_key = history_fact_text_key(fact_text)
+            if fact_key in seen_fact_keys:
+                raise ValueError("Gemini generated duplicate facts.")
+            if fact_key in recent_fact_keys:
+                raise ValueError("Gemini repeated a recent fact.")
+            seen_fact_keys.add(fact_key)
             selected_fact = {
-                **source_fact,
-                "title": str(item.get("title") or source_fact.get("title") or "").strip() or str(source_fact.get("title") or "Local fact"),
-                "text": str(item.get("text") or source_fact.get("text") or "").strip() or str(source_fact.get("text") or ""),
+                "title": str(item.get("title") or "").strip() or "Local fact",
+                "text": fact_text,
+                "theme": str(item.get("theme") or "general"),
+                "sourceName": source_name,
+                "sourceUrl": source_url,
+                "confidence": "medium",
             }
-            index_map[candidate_index] = output_index
             selected_facts.append(selected_fact)
             selected_for_critique.append(
                 {
-                    "candidateIndex": candidate_index,
+                    "factIndex": output_index,
                     "title": selected_fact["title"],
                     "text": selected_fact["text"],
                     "theme": selected_fact.get("theme"),
+                    "sourceName": source_name,
+                    "sourceUrl": source_url,
+                    "evidenceTitle": str(evidence_item.get("title") or ""),
+                    "evidenceSnippet": str(evidence_item.get("snippet") or ""),
+                    "evidenceExcerpt": str(evidence_item.get("excerpt") or ""),
                 }
             )
 
         critique_prompt = (
             "You are the critic for a live local facts page.\n\n"
             f"Place: {place_title}\n"
-            f"Original candidates:\n{json.dumps(candidate_payload, ensure_ascii=True, indent=2)}\n"
-            f"Selected facts:\n{json.dumps(selected_for_critique, ensure_ascii=True, indent=2)}\n"
+            f"Web evidence gathered for this place:\n{json.dumps(evidence_payload, ensure_ascii=True, indent=2)}\n"
+            f"Local reference context:\n{json.dumps(candidate_payload, ensure_ascii=True, indent=2)}\n"
+            f"Generated facts:\n{json.dumps(selected_for_critique, ensure_ascii=True, indent=2)}\n"
             f"Recent facts already used for this place:\n{json.dumps(recent_texts[:6], ensure_ascii=True, indent=2)}\n"
             f"Previous failed selections and feedback:\n{json.dumps(failed_attempts, ensure_ascii=True, indent=2)}\n\n"
-            "Critique the selected facts for place relevance and interestingness.\n"
+            "Critique the generated facts for place relevance and interestingness.\n"
             "A fact should pass only if it is clearly about the named place, says something distinctive, "
-            "and stays faithful to its original candidate fact.\n"
+            "and stays faithful to its cited source evidence.\n"
+            "Fail facts if the cited evidence does not support them, if they are too generic, or if they repeat recent ideas.\n"
             "Use the recent facts list to penalise repetition.\n"
             "Set overallPassed to true only if every fact passes."
         )
@@ -3525,9 +3906,9 @@ def reviewed_location_facts(
         for critique_item in critique_items:
             if not isinstance(critique_item, dict):
                 raise ValueError("Gemini critique fact is not an object.")
-            candidate_index = int(critique_item.get("candidateIndex", -1))
-            if candidate_index not in index_map:
-                raise ValueError("Gemini critique referenced an unknown candidate.")
+            fact_index = int(critique_item.get("candidateIndex", critique_item.get("factIndex", -1)))
+            if fact_index < 0 or fact_index >= len(selected_facts):
+                raise ValueError("Gemini critique referenced an unknown generated fact.")
             if not bool(critique_item.get("passed")):
                 raise ValueError("Gemini critique failed a selected fact.")
             if any(
@@ -3535,7 +3916,7 @@ def reviewed_location_facts(
                 for field, threshold in FACT_CRITIC_THRESHOLDS.items()
             ):
                 raise ValueError("Gemini critique scores did not meet the thresholds.")
-            critique_map[index_map[candidate_index]] = {
+            critique_map[fact_index] = {
                 "relevance": int(critique_item.get("relevance", 0)),
                 "interestingness": int(critique_item.get("interestingness", 0)),
                 "placeSpecificity": int(critique_item.get("placeSpecificity", 0)),
@@ -3743,8 +4124,10 @@ def history_payload(
                 candidate_facts = build_location_facts(
                     wiki,
                     plain_extract,
-                    candidate_limit,
+                    max(10, candidate_limit),
                     article_url,
+                    wikidata_entity,
+                    lang,
                 )
                 rotated_facts = reviewed_location_facts(
                     rotation_key,
@@ -3770,7 +4153,7 @@ def history_payload(
                     lang,
                     title,
                 ),
-                "facts": rotated_facts[:limit_facts],
+                "facts": [public_history_fact(fact) for fact in rotated_facts[:limit_facts]],
                 "articleUrl": article_url,
                 "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
                 "images": location_images,
@@ -4090,20 +4473,36 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
             payload = self.read_json()
             quiz_date = str(payload.get("date") or today_game_date())
-            with connect_db() as conn:
-                result = daily_quiz.generate_daily_quiz(
-                    conn,
-                    quiz_date=quiz_date,
-                    force=bool(payload.get("force", False)),
-                    config=DAILY_QUIZ_CONFIG,
-                    log=safe_log,
-                )
+            with DAILY_QUIZ_OPERATION_LOCK:
+                with connect_db() as conn:
+                    result = daily_quiz.generate_daily_quiz(
+                        conn,
+                        quiz_date=quiz_date,
+                        force=bool(payload.get("force", False)),
+                        config=DAILY_QUIZ_CONFIG,
+                        log=safe_log,
+                    )
             status = (
                 HTTPStatus.OK
                 if result.get("status") == "published"
                 else HTTPStatus.SERVICE_UNAVAILABLE
             )
             self.send_json(status, result)
+            return
+
+        if path == "/internal/ops-summary" and method == "GET":
+            configured_token = DAILY_QUIZ_CONFIG.internal_token
+            submitted_token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not configured_token:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Internal quiz generation token is not configured.",
+                )
+                return
+            if not hmac.compare_digest(submitted_token, configured_token):
+                self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")
+                return
+            self.send_json(HTTPStatus.OK, internal_ops_summary_payload())
             return
 
         if path == "/internal/regenerate-daily-quiz-question" and method == "POST":
@@ -4122,17 +4521,18 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             quiz_date = str(payload.get("date") or today_game_date()).strip()
             subject = str(payload.get("subject") or "").strip()
             difficulty = str(payload.get("difficulty") or "").strip()
-            with connect_db() as conn:
-                result = daily_quiz.regenerate_question(
-                    conn,
-                    quiz_date=quiz_date,
-                    subject=subject,
-                    difficulty=difficulty,
-                    config=DAILY_QUIZ_CONFIG,
-                    log=safe_log,
-                )
-                if result.get("status") == "published" and "questions" not in result:
-                    result = daily_quiz.quiz_payload(conn, quiz_date)
+            with DAILY_QUIZ_OPERATION_LOCK:
+                with connect_db() as conn:
+                    result = daily_quiz.regenerate_question(
+                        conn,
+                        quiz_date=quiz_date,
+                        subject=subject,
+                        difficulty=difficulty,
+                        config=DAILY_QUIZ_CONFIG,
+                        log=safe_log,
+                    )
+                    if result.get("status") == "published" and "questions" not in result:
+                        result = daily_quiz.quiz_payload(conn, quiz_date)
             status = (
                 HTTPStatus.OK
                 if result.get("status") == "published"
@@ -4296,16 +4696,17 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     return
                 payload = self.read_json()
                 quiz_date = str(payload.get("date") or today_game_date())
-                result = daily_quiz.regenerate_question(
-                    conn,
-                    quiz_date=quiz_date,
-                    subject=str(payload.get("subject") or ""),
-                    difficulty=str(payload.get("difficulty") or ""),
-                    config=DAILY_QUIZ_CONFIG,
-                    log=safe_log,
-                )
-                if result.get("status") == "published" and "questions" not in result:
-                    result = daily_quiz.quiz_payload(conn, quiz_date)
+                with DAILY_QUIZ_OPERATION_LOCK:
+                    result = daily_quiz.regenerate_question(
+                        conn,
+                        quiz_date=quiz_date,
+                        subject=str(payload.get("subject") or ""),
+                        difficulty=str(payload.get("difficulty") or ""),
+                        config=DAILY_QUIZ_CONFIG,
+                        log=safe_log,
+                    )
+                    if result.get("status") == "published" and "questions" not in result:
+                        result = daily_quiz.quiz_payload(conn, quiz_date)
                 self.send_json(HTTPStatus.OK, result)
                 return
 
@@ -4315,7 +4716,8 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     return
                 payload = self.read_json()
                 quiz_date = str(payload.get("date") or today_game_date())
-                self.send_json(HTTPStatus.OK, daily_quiz.publish_quiz(conn, quiz_date))
+                with DAILY_QUIZ_OPERATION_LOCK:
+                    self.send_json(HTTPStatus.OK, daily_quiz.publish_quiz(conn, quiz_date))
                 return
 
             if path.startswith("/api/admin/"):

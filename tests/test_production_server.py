@@ -482,6 +482,32 @@ class ProductionServerHardeningTests(unittest.TestCase):
         regenerate.assert_called_once()
         quiz_payload.assert_called_once_with(connect_db.return_value.__enter__.return_value, "2026-06-03")
 
+    def test_internal_ops_summary_route_returns_payload(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            headers = {"Authorization": "Bearer expected-token"}
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+        summary = {"ok": True, "transport": "https-fallback"}
+        with (
+            patch("server.DAILY_QUIZ_CONFIG", SimpleNamespace(internal_token="expected-token")),
+            patch("server.internal_ops_summary_payload", return_value=summary) as internal_ops_summary,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/internal/ops-summary",
+                "",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, summary)])
+        internal_ops_summary.assert_called_once_with()
+
     def test_local_generate_quiz_action_uses_https_not_ssh(self) -> None:
         import ops_monitor
 
@@ -559,6 +585,79 @@ class ProductionServerHardeningTests(unittest.TestCase):
             response["snapshot"]["remote"]["quiz"]["tomorrow"]["questions"][0]["question"],
             "Who won?",
         )
+
+    def test_collect_dashboard_snapshot_uses_https_fallback_when_ssh_fails(self) -> None:
+        import ops_monitor
+
+        config = ops_monitor.MonitorConfig(
+            enabled=True,
+            cache_ttl_sec=15,
+            ssh_target="ste@192.168.0.15",
+            ssh_port=22,
+            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+        internal_remote = {
+            "ok": True,
+            "generatedAt": "2026-06-03T11:00:00Z",
+            "transport": "https-fallback",
+            "host": {"hostname": "fultons-quiz", "power": {"acOnline": None, "batteries": []}},
+            "resources": {"memory": {}, "disks": []},
+            "docker": {"containers": [], "volumes": [], "networks": []},
+            "application": {
+                "health": {"ok": True},
+                "sqlite": {
+                    "todayQuiz": None,
+                    "tomorrowQuiz": {
+                        "date": "2026-06-04",
+                        "status": "published",
+                        "acceptedQuestions": 6,
+                        "failedAttempts": 0,
+                        "failureReason": None,
+                        "questions": [],
+                    },
+                },
+            },
+            "quiz": {
+                "today": None,
+                "tomorrow": {
+                    "date": "2026-06-04",
+                    "status": "published",
+                    "acceptedQuestions": 6,
+                    "failedAttempts": 0,
+                    "failureReason": None,
+                    "questions": [],
+                },
+            },
+            "tests": [],
+            "errors": [],
+            "partial": True,
+            "responseTimeMs": 42,
+        }
+
+        with (
+            patch.object(ops_monitor.MonitorConfig, "from_env", return_value=config),
+            patch.object(ops_monitor, "_CACHED_SNAPSHOT", None),
+            patch.object(ops_monitor, "_CACHED_AT_MONOTONIC", 0.0),
+            patch("ops_monitor.probe_public_health", return_value={"ok": True}),
+            patch("ops_monitor.collect_remote_snapshot_via_internal_api", return_value=internal_remote),
+            patch("ops_monitor.collect_remote_snapshot", side_effect=RuntimeError("ssh timeout")),
+        ):
+            payload = ops_monitor.collect_dashboard_snapshot(force=True)
+
+        self.assertTrue(payload["stale"])
+        self.assertEqual(payload["status"], "degraded")
+        self.assertEqual(payload["lastError"], "ssh timeout")
+        self.assertEqual(payload["remote"]["quiz"]["tomorrow"]["status"], "published")
+        self.assertIn("HTTPS fallback", " ".join(payload["alerts"]))
 
     def test_fact_image_route_requires_login(self) -> None:
         import production_server
@@ -761,6 +860,8 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 extract,
                 8,
                 "https://en.wikipedia.org/wiki/Paisley,_Renfrewshire",
+                entity,
+                "en",
             )
 
         self.assertEqual(profile["population"], "77,220")
@@ -769,12 +870,12 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertTrue(all(isinstance(fact, dict) for fact in facts))
         self.assertTrue(all(fact["sourceName"] and fact["sourceUrl"] for fact in facts))
         self.assertTrue(all(fact["confidence"] in {"high", "medium", "low"} for fact in facts))
-        self.assertEqual({fact["sourceName"] for fact in facts}, {"Wikipedia"})
+        self.assertEqual({fact["sourceName"] for fact in facts}, {"Wikipedia", "Wikidata"})
         self.assertTrue({"history", "landmark", "industry", "culture"}.intersection(
             {fact["theme"] for fact in facts}
         ))
 
-    def test_reviewed_location_facts_use_openai_selection_and_critique(self) -> None:
+    def test_reviewed_location_facts_generate_ai_text_and_attach_internal_critique(self) -> None:
         import server
 
         candidates = [
@@ -806,14 +907,16 @@ class ProductionServerHardeningTests(unittest.TestCase):
         selection = {
             "facts": [
                 {
-                    "candidateIndex": 0,
                     "title": "Paisley Abbey",
-                    "text": "Paisley Abbey dates from the 12th century and remains one of the town's defining landmarks.",
+                    "text": "Paisley Abbey remains one of the town's defining landmarks, with roots going back to the 12th century.",
+                    "theme": "history",
+                    "sourceEvidenceIndex": 0,
                 },
                 {
-                    "candidateIndex": 1,
-                    "title": "Paisley pattern",
-                    "text": "The town's textile trade made the Paisley pattern famous far beyond Renfrewshire.",
+                    "title": "Paisley's textile legacy",
+                    "text": "Paisley's textile trade made its famous pattern known far beyond Renfrewshire.",
+                    "theme": "industry",
+                    "sourceEvidenceIndex": 1,
                 },
             ]
         }
@@ -822,7 +925,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             "notes": "Both facts are specific and distinctive.",
             "facts": [
                 {
-                    "candidateIndex": 0,
+                    "factIndex": 0,
                     "passed": True,
                     "relevance": 10,
                     "interestingness": 8,
@@ -830,7 +933,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                     "summary": "It names a landmark strongly associated with Paisley.",
                 },
                 {
-                    "candidateIndex": 1,
+                    "factIndex": 1,
                     "passed": True,
                     "relevance": 9,
                     "interestingness": 8,
@@ -848,9 +951,26 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DB_PATH = data_dir / "fultons.db"
             server.initialize_database()
             rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
+            evidence = [
+                {
+                    "title": "Paisley Abbey history",
+                    "sourceName": "Paisley Abbey",
+                    "sourceUrl": "https://paisleyabbey.org.uk/history",
+                    "snippet": "Paisley Abbey traces its origins to the 12th century.",
+                    "excerpt": "Paisley Abbey traces its origins to the 12th century and remains central to the town's story.",
+                },
+                {
+                    "title": "Paisley Pattern",
+                    "sourceName": "Renfrewshire Council",
+                    "sourceUrl": "https://www.renfrewshire.gov.uk/article/12345/paisley-pattern-history",
+                    "snippet": "Paisley's textile trade spread the paisley pattern widely.",
+                    "excerpt": "Paisley's textile trade spread the paisley pattern far beyond Renfrewshire.",
+                },
+            ]
 
             with (
                 patch("server.FACTS_GEMINI_API_KEY", "test-key"),
+                patch("server.search_web_fact_evidence", return_value=evidence),
                 patch("server.facts_ai_json_response", side_effect=[selection, critique]) as gemini_request,
             ):
                 facts = server.reviewed_location_facts(
@@ -863,14 +983,37 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
             self.assertEqual(len(facts), 2)
             self.assertEqual(facts[0]["title"], "Paisley Abbey")
-            self.assertEqual(facts[0]["sourceUrl"], "https://example.com/abbey")
-            self.assertEqual(facts[1]["title"], "Paisley pattern")
+            self.assertEqual(facts[0]["sourceUrl"], "https://paisleyabbey.org.uk/history")
+            self.assertEqual(facts[1]["title"], "Paisley's textile legacy")
             self.assertEqual(facts[1]["critique"]["relevance"], 9)
             self.assertIn("distinctive export", facts[1]["critique"]["summary"])
             self.assertEqual(gemini_request.call_count, 2)
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
+
+    def test_public_history_fact_hides_internal_critique(self) -> None:
+        import server
+
+        public_fact = server.public_history_fact(
+            {
+                "title": "Paisley Abbey",
+                "text": "Paisley Abbey is a medieval landmark in the town.",
+                "theme": "landmark",
+                "sourceName": "Wikipedia + Wikidata",
+                "sourceUrl": "https://example.com/abbey",
+                "confidence": "high",
+                "critique": {
+                    "summary": "Internal only",
+                    "relevance": 10,
+                    "interestingness": 9,
+                    "placeSpecificity": 10,
+                },
+            }
+        )
+
+        self.assertNotIn("critique", public_fact)
+        self.assertEqual(public_fact["sourceName"], "Wikipedia + Wikidata")
 
     def test_history_fact_review_failures_are_cached_for_future_attempts(self) -> None:
         import server
