@@ -115,6 +115,24 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(sent, [(HTTPStatus.OK, snapshot)])
         collect_snapshot.assert_called_once_with(force=True)
 
+    def test_internal_get_routes_through_api_handler(self) -> None:
+        import server
+
+        calls: list[tuple[str, ...]] = []
+
+        class DummyHandler:
+            path = "/internal/ops-summary?force=1"
+
+            def handle_api(self, method: str, path: str, query: str = "") -> None:
+                calls.append((method, path, query))
+
+            def serve_static(self) -> None:
+                calls.append(("static",))
+
+        server.FultonsHandler.do_GET(DummyHandler())  # type: ignore[arg-type]
+
+        self.assertEqual(calls, [("GET", "/internal/ops-summary", "force=1")])
+
     def test_local_ops_config_route_returns_saved_settings(self) -> None:
         import server
 

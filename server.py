@@ -4270,7 +4270,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path.startswith("/api/"):
+        if parsed.path.startswith("/api/") or parsed.path.startswith("/internal/"):
             self.handle_api("GET", parsed.path, parsed.query)
             return
 
