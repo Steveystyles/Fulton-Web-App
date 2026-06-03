@@ -37,7 +37,7 @@ if [ ! -f "${ENV_FILE}" ]; then
 # Private container environment for Fulton Web App.
 # Keep this file out of Git.
 FULTONS_NEWS_MONITOR_KEY=
-FULTONS_NEWS_MONITOR_INTERVAL_SEC=3600
+FULTONS_NEWS_MONITOR_INTERVAL_SEC=600
 FULTONS_WORD_DEFINITION_TIMEOUT_SEC=5
 FULTONS_COOKIE_SECURE=1
 FULTONS_SEED_DEMO_USERS=0
@@ -58,6 +58,29 @@ ensure_env_var() {
   fi
 }
 
+migrate_env_var_value() {
+  local key="${1:?key required}"
+  local old_value="${2:-}"
+  local new_value="${3:-}"
+  if grep -q "^${key}=${old_value}$" "${ENV_FILE}"; then
+    python3 - "${ENV_FILE}" "${key}" "${new_value}" <<'PY'
+import sys
+from pathlib import Path
+
+env_path = Path(sys.argv[1])
+key = sys.argv[2]
+new_value = sys.argv[3]
+prefix = f"{key}="
+
+lines = env_path.read_text(encoding="utf-8").splitlines()
+env_path.write_text(
+    "\n".join((f"{prefix}{new_value}" if line.startswith(prefix) else line) for line in lines) + "\n",
+    encoding="utf-8",
+)
+PY
+  fi
+}
+
 ensure_env_var "FULTONS_COOKIE_SECURE" "1"
 ensure_env_var "FULTONS_SEED_DEMO_USERS" "0"
 ensure_env_var "FULTONS_ALLOWED_ORIGINS" "https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk"
@@ -65,7 +88,8 @@ ensure_env_var "FULTONS_MIN_PASSWORD_LENGTH" "12"
 ensure_env_var "FULTONS_LOGIN_MAX_ATTEMPTS" "5"
 ensure_env_var "FULTONS_LOGIN_WINDOW_SECONDS" "300"
 ensure_env_var "FULTONS_LOGIN_BACKOFF_SECONDS" "60"
-ensure_env_var "FULTONS_NEWS_MONITOR_INTERVAL_SEC" "3600"
+ensure_env_var "FULTONS_NEWS_MONITOR_INTERVAL_SEC" "600"
+migrate_env_var_value "FULTONS_NEWS_MONITOR_INTERVAL_SEC" "3600" "600"
 ensure_env_var "FULTONS_WORD_DEFINITION_TIMEOUT_SEC" "5"
 ensure_env_var "FULTONS_EXPECT_DATA_DIR" "/app/data"
 ensure_env_var "FULTONS_REQUIRE_EXISTING_DB" "1"

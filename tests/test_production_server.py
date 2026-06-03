@@ -1608,6 +1608,150 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_news_feed_supplements_with_other_sports_when_recent_scoped_items_are_thin(self) -> None:
+        import server
+
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+
+        def payload(title: str, source: str, published_at: datetime, url: str, tags: list[str]) -> dict[str, object]:
+            return {
+                "sourceKey": url,
+                "kind": "article",
+                "title": title,
+                "url": f"https://news.example.com/{url}",
+                "source": source,
+                "summary": title,
+                "publishedAt": published_at.isoformat(),
+                "host": "news.example.com",
+                "priority": "media",
+                "tags": tags,
+            }
+
+        def fake_fetch(query: str, tags: tuple[str, ...] | list[str] | None = None) -> list[dict[str, object]]:
+            if query == "scoped-one":
+                return [
+                    payload(
+                        "St Mirren end-of-season review",
+                        "Club site",
+                        now - timedelta(hours=96),
+                        "scoped-one",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "scoped-two":
+                return [
+                    payload(
+                        "Scottish Premiership contract latest",
+                        "BBC",
+                        now - timedelta(hours=120),
+                        "scoped-two",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "snooker-fallback":
+                return [
+                    payload(
+                        "World Snooker Tour final heads for deciding frame",
+                        "Eurosport",
+                        now - timedelta(hours=6),
+                        "snooker-fallback",
+                        ["sport", "snooker"],
+                    )
+                ]
+            return []
+
+        with (
+            patch("server.NEWS_SCOPED_QUERY_CONFIGS", ({"query": "scoped-one", "tags": ("st-mirren",)}, {"query": "scoped-two", "tags": ("st-mirren",)})),
+            patch("server.NEWS_SUPPLEMENTAL_QUERY_CONFIGS", ({"query": "snooker-fallback", "tags": ("sport", "snooker")},)),
+            patch("server.NEWS_MIN_RECENT_SCOPED_ITEMS", 1),
+            patch("server.fetch_news_feed", side_effect=fake_fetch),
+            patch("server.safe_log"),
+        ):
+            items, recent_scoped_count = server.collect_news_feed_items()
+
+        self.assertEqual(recent_scoped_count, 0)
+        self.assertEqual(
+            [item["title"] for item in items],
+            [
+                "St Mirren end-of-season review",
+                "Scottish Premiership contract latest",
+                "World Snooker Tour final heads for deciding frame",
+            ],
+        )
+
+    def test_news_feed_skips_other_sports_when_recent_scoped_items_are_sufficient(self) -> None:
+        import server
+
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        seen_queries: list[str] = []
+
+        def payload(title: str, source: str, published_at: datetime, url: str, tags: list[str]) -> dict[str, object]:
+            return {
+                "sourceKey": url,
+                "kind": "article",
+                "title": title,
+                "url": f"https://news.example.com/{url}",
+                "source": source,
+                "summary": title,
+                "publishedAt": published_at.isoformat(),
+                "host": "news.example.com",
+                "priority": "media",
+                "tags": tags,
+            }
+
+        def fake_fetch(query: str, tags: tuple[str, ...] | list[str] | None = None) -> list[dict[str, object]]:
+            seen_queries.append(query)
+            if query == "scoped-one":
+                return [
+                    payload(
+                        "St Mirren captain discusses new deal",
+                        "BBC",
+                        now - timedelta(hours=4),
+                        "scoped-one",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "scoped-two":
+                return [
+                    payload(
+                        "St Mirren transfer target linked again",
+                        "Sky Sports",
+                        now - timedelta(hours=8),
+                        "scoped-two",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "snooker-fallback":
+                return [
+                    payload(
+                        "This should not be fetched",
+                        "Eurosport",
+                        now - timedelta(hours=2),
+                        "snooker-fallback",
+                        ["sport", "snooker"],
+                    )
+                ]
+            return []
+
+        with (
+            patch("server.NEWS_SCOPED_QUERY_CONFIGS", ({"query": "scoped-one", "tags": ("st-mirren",)}, {"query": "scoped-two", "tags": ("st-mirren",)})),
+            patch("server.NEWS_SUPPLEMENTAL_QUERY_CONFIGS", ({"query": "snooker-fallback", "tags": ("sport", "snooker")},)),
+            patch("server.NEWS_MIN_RECENT_SCOPED_ITEMS", 2),
+            patch("server.fetch_news_feed", side_effect=fake_fetch),
+            patch("server.safe_log"),
+        ):
+            items, recent_scoped_count = server.collect_news_feed_items()
+
+        self.assertEqual(recent_scoped_count, 2)
+        self.assertEqual(
+            [item["title"] for item in items],
+            [
+                "St Mirren captain discusses new deal",
+                "St Mirren transfer target linked again",
+            ],
+        )
+        self.assertEqual(seen_queries, ["scoped-one", "scoped-two"])
+
     def test_daily_quiz_scheduler_uses_next_configured_window(self) -> None:
         import server
 
