@@ -207,53 +207,29 @@ export function DailyQuiz({
 
   if (isComplete) {
     return (
-      <div className="space-y-3">
-        <Card>
-          <div className="text-center">
-            <p className="text-xs font-black uppercase text-saints-red">{formattedDate(quizDate)}</p>
-            <h2 className="mt-2 text-2xl font-black text-slate-950">Final score</h2>
-            <p className="mt-2 text-5xl font-black text-saints-black">
-              {savedResult?.score ?? score} / {savedResult?.maxScore ?? maxScore}
+      <Card>
+        <div className="text-center">
+          <p className="text-xs font-black uppercase text-saints-red">{formattedDate(quizDate)}</p>
+          <h2 className="mt-2 text-2xl font-black text-slate-950">Final score</h2>
+          <p className="mt-2 text-5xl font-black text-saints-black">
+            {savedResult?.score ?? score} / {savedResult?.maxScore ?? maxScore}
+          </p>
+          <p className="mt-3 text-sm font-semibold leading-relaxed text-slate-600">
+            Easy questions are worth 1 point, medium 3, and hard 5. A perfect round earns 3 bonus points.
+          </p>
+          {(savedResult?.bonusPoints ?? bonusPoints) > 0 ? (
+            <p className="mx-auto mt-3 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-sm font-black text-amber-700 ring-1 ring-amber-200">
+              <Sparkles aria-hidden="true" className="h-4 w-4" />
+              Perfect round +{savedResult?.bonusPoints ?? bonusPoints}
             </p>
-            <p className="mt-3 text-sm font-semibold leading-relaxed text-slate-600">
-              Easy questions are worth 1 point, medium 3, and hard 5. A perfect round earns 3 bonus points.
+          ) : null}
+          {scoreError ? (
+            <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
+              {scoreError}
             </p>
-            {(savedResult?.bonusPoints ?? bonusPoints) > 0 ? (
-              <p className="mx-auto mt-3 inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-sm font-black text-amber-700 ring-1 ring-amber-200">
-                <Sparkles aria-hidden="true" className="h-4 w-4" />
-                Perfect round +{savedResult?.bonusPoints ?? bonusPoints}
-              </p>
-            ) : null}
-            {scoreError ? (
-              <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
-                {scoreError}
-              </p>
-            ) : null}
-          </div>
-        </Card>
-        {questions.map((question, index) => {
-          const answer = quizState.answers[index];
-          const correct = answer === question.correct_answer;
-          return (
-            <Card key={`${category}-${question.question}`} className="p-3">
-              <div className="flex items-start gap-2">
-                <span
-                  className={[
-                    "mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white",
-                    correct ? "bg-emerald-600" : "bg-saints-red",
-                  ].join(" ")}
-                >
-                  {correct ? <Check aria-hidden="true" className="h-4 w-4" /> : <X aria-hidden="true" className="h-4 w-4" />}
-                </span>
-                <div>
-                  <p className="text-sm font-black leading-tight text-slate-950">{question.question}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-600">{question.explanation}</p>
-                </div>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
+          ) : null}
+        </div>
+      </Card>
     );
   }
 
