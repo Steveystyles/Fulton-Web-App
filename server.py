@@ -1072,6 +1072,7 @@ def create_session(conn: sqlite3.Connection, user_id: int) -> str:
     token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc).replace(microsecond=0)
     expires_at = now + timedelta(days=SESSION_DAYS)
+    cleanup_expired_sessions(conn, now=now.isoformat())
     conn.execute(
         """
         INSERT INTO sessions (token, user_id, created_at, expires_at)
@@ -1109,12 +1110,15 @@ def clear_session_header() -> str:
     return f"{SESSION_COOKIE}=; {cookie_attributes(0)}"
 
 
+def cleanup_expired_sessions(conn: sqlite3.Connection, now: str | None = None) -> None:
+    conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now or utc_now(),))
+
+
 def current_user(conn: sqlite3.Connection, token: str | None) -> sqlite3.Row | None:
     if token is None:
         return None
 
     now = utc_now()
-    conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
     return conn.execute(
         """
         SELECT users.*

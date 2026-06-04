@@ -31,6 +31,33 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn("SameSite=Lax", header)
         self.assertIn("Secure", header)
 
+    def test_current_user_avoids_session_cleanup_write_on_read_path(self) -> None:
+        import server
+
+        row = object()
+
+        class DummyCursor:
+            def fetchone(self) -> object:
+                return row
+
+        class DummyConnection:
+            def __init__(self) -> None:
+                self.statements: list[str] = []
+
+            def execute(self, statement: str, _params: object = None) -> DummyCursor:
+                self.statements.append(statement)
+                if statement.lstrip().upper().startswith("DELETE FROM SESSIONS"):
+                    raise AssertionError("current_user should not delete sessions during reads")
+                return DummyCursor()
+
+        conn = DummyConnection()
+
+        user = server.current_user(conn, "token-123")
+
+        self.assertIs(user, row)
+        self.assertEqual(len(conn.statements), 1)
+        self.assertIn("SELECT users.*", conn.statements[0])
+
     def test_ops_monitor_returns_disabled_payload_when_feature_is_off(self) -> None:
         import ops_monitor
 
