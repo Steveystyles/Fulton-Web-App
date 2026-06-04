@@ -111,7 +111,14 @@ export function News() {
       }
     }
 
-    void loadLatest("live");
+    function refreshWhenVisible() {
+      if (document.visibilityState === "visible") {
+        void loadLatest("live", true);
+      }
+    }
+
+    void loadLatest("live", true);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
 
     try {
       stream = new EventSource("/api/news/stream");
@@ -146,6 +153,7 @@ export function News() {
     return () => {
       active = false;
       stream?.close();
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
       if (pollTimer !== undefined) {
         window.clearInterval(pollTimer);
       }

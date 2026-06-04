@@ -567,9 +567,10 @@ function fetchNews(
 
   const promise = request<NewsResponse>(
     `/api/news?limit=${boundedLimit}&category=${category}`,
-  ).catch((error) => {
-    newsPromises.delete(cacheKey);
-    throw error;
+  ).finally(() => {
+    if (newsPromises.get(cacheKey) === promise) {
+      newsPromises.delete(cacheKey);
+    }
   });
   newsPromises.set(cacheKey, promise);
   return promise;
