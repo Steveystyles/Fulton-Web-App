@@ -342,7 +342,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(sent, [(HTTPStatus.OK, response)])
         run_local_action.assert_called_once_with("remove_orphaned_networks", params=None)
 
-    def test_local_ops_action_route_passes_action_params(self) -> None:
+    def test_local_ops_action_route_starts_async_job_for_regenerate_question(self) -> None:
         import server
 
         sent: list[tuple[HTTPStatus, dict[str, object]]] = []
@@ -371,13 +371,15 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         response = {
             "action": "regenerate_question",
-            "message": "Regenerated football / hard for 2026-06-03.",
-            "details": {"difficulty": "hard"},
-            "snapshot": {"enabled": True, "status": "healthy"},
+            "status": "queued",
+            "done": False,
+            "jobId": "ops-123",
+            "message": "Refreshing football / hard for 2026-06-03.",
         }
         with (
             patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.run_local_action", return_value=response) as run_local_action,
+            patch("ops_monitor.start_local_action_job", return_value=response) as start_local_action_job,
+            patch("ops_monitor.run_local_action") as run_local_action,
         ):
             server.FultonsHandler.route_api(  # type: ignore[arg-type]
                 DummyHandler(),
@@ -386,11 +388,50 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 "",
             )
 
-        self.assertEqual(sent, [(HTTPStatus.OK, response)])
-        run_local_action.assert_called_once_with(
+        self.assertEqual(sent, [(HTTPStatus.ACCEPTED, response)])
+        start_local_action_job.assert_called_once_with(
             "regenerate_question",
             params={"date": "2026-06-03", "subject": "football", "difficulty": "hard"},
         )
+        run_local_action.assert_not_called()
+
+    def test_local_ops_action_status_route_returns_job(self) -> None:
+        import server
+
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            client_address = ("127.0.0.1", 12345)
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+            def client_ip(self) -> str:
+                return self.client_address[0]
+
+            def is_loopback_request(self) -> bool:
+                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+
+        response = {
+            "action": "regenerate_question",
+            "status": "running",
+            "done": False,
+            "jobId": "ops-123",
+            "message": "Refreshing football / hard for 2026-06-03.",
+        }
+        with (
+            patch("server.LOCAL_OPS_ENABLED", True),
+            patch("ops_monitor.get_local_action_job", return_value=response) as get_local_action_job,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/api/local/ops-action-status",
+                "jobId=ops-123",
+            )
+
+        self.assertEqual(sent, [(HTTPStatus.OK, response)])
+        get_local_action_job.assert_called_once_with("ops-123")
 
     def test_local_ops_action_route_rejects_invalid_action(self) -> None:
         import server
@@ -1264,6 +1305,89 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_history_cache_get_discards_cached_payload_without_location(self) -> None:
+        import server
+
+        server.HISTORY_CACHE.clear()
+        self.addCleanup(server.HISTORY_CACHE.clear)
+        server.HISTORY_CACHE["history:test"] = (
+            server.time.time(),
+            {
+                "request": {"location": "Paisley", "date": "2026-06-04", "lang": "en"},
+                "location": None,
+                "globalEvents": [],
+                "partial": True,
+                "warnings": [
+                    {
+                        "source": "wikipedia",
+                        "code": "upstream_unavailable",
+                        "detail": "Location facts are currently unavailable.",
+                    }
+                ],
+                "meta": {"cached": False, "generatedAt": "2026-06-04T10:00:00+00:00"},
+            },
+        )
+
+        cached = server.history_cache_get("history:test")
+
+        self.assertIsNone(cached)
+        self.assertNotIn("history:test", server.HISTORY_CACHE)
+
+    def test_history_payload_does_not_cache_partial_result_without_location(self) -> None:
+        import server
+
+        server.HISTORY_CACHE.clear()
+        self.addCleanup(server.HISTORY_CACHE.clear)
+        fetch_summary_calls = 0
+
+        def fake_fetch_summary(_location: str, _lang: str) -> dict[str, object]:
+            nonlocal fetch_summary_calls
+            fetch_summary_calls += 1
+            if fetch_summary_calls == 1:
+                raise RuntimeError("Temporary upstream failure")
+            return {
+                "title": "Paisley",
+                "description": "Town in Scotland",
+                "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Paisley"}},
+                "thumbnail": {"source": "https://example.com/paisley.jpg"},
+            }
+
+        rotated_facts = [
+            {
+                "title": "Paisley Abbey",
+                "text": "Paisley Abbey is one of the town's best-known landmarks.",
+                "theme": "history",
+                "sourceName": "Paisley Abbey",
+                "sourceUrl": "https://paisleyabbey.org.uk/history",
+                "confidence": "high",
+            }
+        ]
+        events = [{"year": "1163", "description": "A notable event."}]
+
+        with (
+            patch("server.fetch_wikipedia_summary", side_effect=fake_fetch_summary),
+            patch("server.fetch_history_events", return_value=events),
+            patch("server.fetch_wikipedia_plain_extract", return_value="Paisley is a town in Scotland."),
+            patch("server.fetch_wikipedia_images", return_value=[]),
+            patch("server.current_rotated_history_facts", return_value=rotated_facts),
+            patch("server.wikidata_profile", return_value={}),
+        ):
+            first_payload, first_status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
+            self.assertEqual(first_status, HTTPStatus.OK)
+            self.assertIsNone(first_payload["location"])
+            self.assertEqual(first_payload["globalEvents"], events)
+            self.assertNotIn("en:paisley:2026-06-04:2:5", server.HISTORY_CACHE)
+
+            second_payload, second_status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
+
+        self.assertEqual(second_status, HTTPStatus.OK)
+        self.assertEqual(fetch_summary_calls, 2)
+        self.assertIsInstance(second_payload["location"], dict)
+        self.assertEqual(second_payload["location"]["title"], "Paisley")
+        self.assertEqual(second_payload["location"]["facts"][0]["title"], "Paisley Abbey")
+        self.assertFalse(second_payload["meta"]["cached"])
+        self.assertIn("en:paisley:2026-06-04:2:5", server.HISTORY_CACHE)
+
     def test_wikipedia_images_keep_location_photos_and_skip_badges(self) -> None:
         import server
 
@@ -1930,6 +2054,150 @@ class ProductionServerHardeningTests(unittest.TestCase):
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
+
+    def test_news_feed_supplements_with_other_sports_when_recent_scoped_items_are_thin(self) -> None:
+        import server
+
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+
+        def payload(title: str, source: str, published_at: datetime, url: str, tags: list[str]) -> dict[str, object]:
+            return {
+                "sourceKey": url,
+                "kind": "article",
+                "title": title,
+                "url": f"https://news.example.com/{url}",
+                "source": source,
+                "summary": title,
+                "publishedAt": published_at.isoformat(),
+                "host": "news.example.com",
+                "priority": "media",
+                "tags": tags,
+            }
+
+        def fake_fetch(query: str, tags: tuple[str, ...] | list[str] | None = None) -> list[dict[str, object]]:
+            if query == "scoped-one":
+                return [
+                    payload(
+                        "St Mirren end-of-season review",
+                        "Club site",
+                        now - timedelta(hours=96),
+                        "scoped-one",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "scoped-two":
+                return [
+                    payload(
+                        "Scottish Premiership contract latest",
+                        "BBC",
+                        now - timedelta(hours=120),
+                        "scoped-two",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "snooker-fallback":
+                return [
+                    payload(
+                        "World Snooker Tour final heads for deciding frame",
+                        "Eurosport",
+                        now - timedelta(hours=6),
+                        "snooker-fallback",
+                        ["sport", "snooker"],
+                    )
+                ]
+            return []
+
+        with (
+            patch("server.NEWS_SCOPED_QUERY_CONFIGS", ({"query": "scoped-one", "tags": ("st-mirren",)}, {"query": "scoped-two", "tags": ("st-mirren",)})),
+            patch("server.NEWS_SUPPLEMENTAL_QUERY_CONFIGS", ({"query": "snooker-fallback", "tags": ("sport", "snooker")},)),
+            patch("server.NEWS_MIN_RECENT_SCOPED_ITEMS", 1),
+            patch("server.fetch_news_feed", side_effect=fake_fetch),
+            patch("server.safe_log"),
+        ):
+            items, recent_scoped_count = server.collect_news_feed_items()
+
+        self.assertEqual(recent_scoped_count, 0)
+        self.assertEqual(
+            [item["title"] for item in items],
+            [
+                "St Mirren end-of-season review",
+                "Scottish Premiership contract latest",
+                "World Snooker Tour final heads for deciding frame",
+            ],
+        )
+
+    def test_news_feed_skips_other_sports_when_recent_scoped_items_are_sufficient(self) -> None:
+        import server
+
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        seen_queries: list[str] = []
+
+        def payload(title: str, source: str, published_at: datetime, url: str, tags: list[str]) -> dict[str, object]:
+            return {
+                "sourceKey": url,
+                "kind": "article",
+                "title": title,
+                "url": f"https://news.example.com/{url}",
+                "source": source,
+                "summary": title,
+                "publishedAt": published_at.isoformat(),
+                "host": "news.example.com",
+                "priority": "media",
+                "tags": tags,
+            }
+
+        def fake_fetch(query: str, tags: tuple[str, ...] | list[str] | None = None) -> list[dict[str, object]]:
+            seen_queries.append(query)
+            if query == "scoped-one":
+                return [
+                    payload(
+                        "St Mirren captain discusses new deal",
+                        "BBC",
+                        now - timedelta(hours=4),
+                        "scoped-one",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "scoped-two":
+                return [
+                    payload(
+                        "St Mirren transfer target linked again",
+                        "Sky Sports",
+                        now - timedelta(hours=8),
+                        "scoped-two",
+                        ["st-mirren", "scottish-football"],
+                    )
+                ]
+            if query == "snooker-fallback":
+                return [
+                    payload(
+                        "This should not be fetched",
+                        "Eurosport",
+                        now - timedelta(hours=2),
+                        "snooker-fallback",
+                        ["sport", "snooker"],
+                    )
+                ]
+            return []
+
+        with (
+            patch("server.NEWS_SCOPED_QUERY_CONFIGS", ({"query": "scoped-one", "tags": ("st-mirren",)}, {"query": "scoped-two", "tags": ("st-mirren",)})),
+            patch("server.NEWS_SUPPLEMENTAL_QUERY_CONFIGS", ({"query": "snooker-fallback", "tags": ("sport", "snooker")},)),
+            patch("server.NEWS_MIN_RECENT_SCOPED_ITEMS", 2),
+            patch("server.fetch_news_feed", side_effect=fake_fetch),
+            patch("server.safe_log"),
+        ):
+            items, recent_scoped_count = server.collect_news_feed_items()
+
+        self.assertEqual(recent_scoped_count, 2)
+        self.assertEqual(
+            [item["title"] for item in items],
+            [
+                "St Mirren captain discusses new deal",
+                "St Mirren transfer target linked again",
+            ],
+        )
+        self.assertEqual(seen_queries, ["scoped-one", "scoped-two"])
 
     def test_daily_quiz_scheduler_uses_next_configured_window(self) -> None:
         import server

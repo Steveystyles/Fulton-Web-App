@@ -266,11 +266,21 @@ export type LocalOpsActionRequest = {
   params?: Record<string, unknown>;
 };
 
+export type LocalOpsActionJobStatus = "queued" | "running" | "succeeded" | "failed";
+
 export type LocalOpsActionResponse = {
   action: LocalOpsActionName;
+  status: LocalOpsActionJobStatus;
+  done: boolean;
   message: string;
-  details: Record<string, unknown>;
-  snapshot: AdminOpsSnapshot;
+  jobId?: string;
+  details?: Record<string, unknown>;
+  snapshot?: AdminOpsSnapshot;
+  error?: string;
+  createdAt?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  reused?: boolean;
 };
 
 export type WordleDefinition = {
@@ -746,5 +756,10 @@ export const api = {
       method: "POST",
       body: jsonBody(requestPayload),
     });
+  },
+
+  localOpsActionStatus(jobId: string) {
+    const params = new URLSearchParams({ jobId });
+    return request<LocalOpsActionResponse>(`/api/local/ops-action-status?${params.toString()}`);
   },
 };

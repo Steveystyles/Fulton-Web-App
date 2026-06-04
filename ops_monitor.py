@@ -1133,8 +1133,12 @@ _CACHED_SNAPSHOT: dict[str, Any] | None = None
 _CACHED_AT_MONOTONIC = 0.0
 _SSH_REFRESH_LOCK = threading.Lock()
 _SSH_REFRESH_IN_PROGRESS = False
+_LOCAL_ACTION_JOBS_LOCK = threading.Lock()
+_LOCAL_ACTION_JOBS: dict[str, dict[str, Any]] = {}
 CACHE_FILE_PATH = Path(__file__).resolve().parent / "data" / "local-ops-snapshot.json"
 SSH_RETRY_ATTEMPTS = 3
+ASYNC_LOCAL_ACTIONS = frozenset({"generate_tomorrow_quiz", "regenerate_question"})
+LOCAL_ACTION_JOB_LIMIT = 32
 
 
 def utc_now_iso() -> str:
@@ -1717,6 +1721,171 @@ def update_cached_snapshot(snapshot: dict[str, Any]) -> None:
         persist_cached_snapshot(_CACHED_SNAPSHOT)
 
 
+def local_action_response_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    response = copy.deepcopy(payload)
+    response["done"] = response.get("status") in {"succeeded", "failed"}
+    return response
+
+
+def is_async_local_action(action: str) -> bool:
+    return action in ASYNC_LOCAL_ACTIONS
+
+
+def create_local_action_job_id() -> str:
+    token = base64.urlsafe_b64encode(os.urandom(9)).decode("ascii").rstrip("=")
+    return f"ops-{token}"
+
+
+def prune_local_action_jobs_locked() -> None:
+    if len(_LOCAL_ACTION_JOBS) <= LOCAL_ACTION_JOB_LIMIT:
+        return
+    completed_jobs = sorted(
+        (
+            (job_id, job)
+            for job_id, job in _LOCAL_ACTION_JOBS.items()
+            if job.get("status") in {"succeeded", "failed"}
+        ),
+        key=lambda item: str(item[1].get("finishedAt") or item[1].get("createdAt") or ""),
+    )
+    while len(_LOCAL_ACTION_JOBS) > LOCAL_ACTION_JOB_LIMIT and completed_jobs:
+        job_id, _ = completed_jobs.pop(0)
+        _LOCAL_ACTION_JOBS.pop(job_id, None)
+
+
+def queued_local_action_message(action: str, params: dict[str, Any] | None) -> str:
+    if action == "regenerate_question":
+        question_date = str((params or {}).get("date") or "the selected quiz")
+        subject = str((params or {}).get("subject") or "question").replace("_", " ")
+        difficulty = str((params or {}).get("difficulty") or "").strip()
+        if difficulty:
+            return f"Refreshing {subject} / {difficulty} for {question_date}."
+        return f"Refreshing {subject} for {question_date}."
+    if action == "generate_tomorrow_quiz":
+        return "Generating tomorrow's quiz in the background."
+    return "Running action in the background."
+
+
+def execute_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = MonitorConfig.from_env()
+    if not config.enabled:
+        raise RuntimeError("Local ops actions are disabled because the monitor is off.")
+    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
+        raise ValueError(f"Unsupported ops action: {action}")
+    if action == "generate_tomorrow_quiz":
+        details = generate_tomorrow_quiz_action(config)
+    elif action == "regenerate_question":
+        details = regenerate_question_action(config, params or {})
+    else:
+        details = run_remote_action(config, action, params=params)
+    snapshot = collect_dashboard_snapshot(force=True)
+    snapshot = merge_quiz_action_snapshot(snapshot, action, details)
+    update_cached_snapshot(snapshot)
+    return {
+        "action": action,
+        "status": "succeeded",
+        "done": True,
+        "message": str(details.get("message") or "Action completed."),
+        "details": details,
+        "snapshot": snapshot,
+    }
+
+
+def run_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    return execute_local_action(action, params=params)
+
+
+def local_action_job_response(job: dict[str, Any]) -> dict[str, Any]:
+    return local_action_response_payload(job)
+
+
+def _run_local_action_job(job_id: str) -> None:
+    with _LOCAL_ACTION_JOBS_LOCK:
+        job = _LOCAL_ACTION_JOBS.get(job_id)
+        if job is None:
+            return
+        action = str(job["action"])
+        params = copy.deepcopy(job.get("params")) if isinstance(job.get("params"), dict) else None
+        job["status"] = "running"
+        job["startedAt"] = utc_now_iso()
+        job["message"] = queued_local_action_message(action, params)
+
+    try:
+        result = execute_local_action(action, params=params)
+    except Exception as error:
+        with _LOCAL_ACTION_JOBS_LOCK:
+            current = _LOCAL_ACTION_JOBS.get(job_id)
+            if current is None:
+                return
+            current["status"] = "failed"
+            current["error"] = str(error)
+            current["message"] = str(error)
+            current["finishedAt"] = utc_now_iso()
+            prune_local_action_jobs_locked()
+        return
+
+    with _LOCAL_ACTION_JOBS_LOCK:
+        current = _LOCAL_ACTION_JOBS.get(job_id)
+        if current is None:
+            return
+        current["status"] = "succeeded"
+        current["message"] = str(result.get("message") or "Action completed.")
+        current["details"] = copy.deepcopy(result.get("details") or {})
+        current["snapshot"] = copy.deepcopy(result.get("snapshot"))
+        current["finishedAt"] = utc_now_iso()
+        prune_local_action_jobs_locked()
+
+
+def start_local_action_job(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = MonitorConfig.from_env()
+    if not config.enabled:
+        raise RuntimeError("Local ops actions are disabled because the monitor is off.")
+    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
+        raise ValueError(f"Unsupported ops action: {action}")
+    if not is_async_local_action(action):
+        return execute_local_action(action, params=params)
+
+    normalized_params = copy.deepcopy(params) if isinstance(params, dict) else None
+    with _LOCAL_ACTION_JOBS_LOCK:
+        for existing in _LOCAL_ACTION_JOBS.values():
+            if (
+                existing.get("action") == action
+                and existing.get("params") == normalized_params
+                and existing.get("status") in {"queued", "running"}
+            ):
+                payload = local_action_job_response(existing)
+                payload["reused"] = True
+                return payload
+
+        job_id = create_local_action_job_id()
+        job = {
+            "jobId": job_id,
+            "action": action,
+            "status": "queued",
+            "message": queued_local_action_message(action, normalized_params),
+            "params": normalized_params,
+            "createdAt": utc_now_iso(),
+            "startedAt": None,
+            "finishedAt": None,
+        }
+        _LOCAL_ACTION_JOBS[job_id] = job
+        prune_local_action_jobs_locked()
+
+    thread = threading.Thread(target=_run_local_action_job, args=(job_id,), daemon=True)
+    thread.start()
+    return local_action_job_response(job)
+
+
+def get_local_action_job(job_id: str) -> dict[str, Any]:
+    job_key = str(job_id or "").strip()
+    if not job_key:
+        raise ValueError("jobId is required.")
+    with _LOCAL_ACTION_JOBS_LOCK:
+        job = _LOCAL_ACTION_JOBS.get(job_key)
+        if job is None:
+            raise LookupError(f"Local ops job {job_key} was not found.")
+        return local_action_job_response(job)
+
+
 def generate_tomorrow_quiz_action(config: MonitorConfig) -> dict[str, Any]:
     _, tomorrow_date = london_dates()
     payload = internal_quiz_request(
@@ -2041,25 +2210,3 @@ def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
         last_error=internal_error,
     )
 
-
-def run_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    config = MonitorConfig.from_env()
-    if not config.enabled:
-        raise RuntimeError("Local ops actions are disabled because the monitor is off.")
-    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
-        raise ValueError(f"Unsupported ops action: {action}")
-    if action == "generate_tomorrow_quiz":
-        details = generate_tomorrow_quiz_action(config)
-    elif action == "regenerate_question":
-        details = regenerate_question_action(config, params or {})
-    else:
-        details = run_remote_action(config, action, params=params)
-    snapshot = collect_dashboard_snapshot(force=True)
-    snapshot = merge_quiz_action_snapshot(snapshot, action, details)
-    update_cached_snapshot(snapshot)
-    return {
-        "action": action,
-        "message": str(details.get("message") or "Action completed."),
-        "details": details,
-        "snapshot": snapshot,
-    }

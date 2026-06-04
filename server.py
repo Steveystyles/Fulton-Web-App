@@ -55,7 +55,7 @@ NEWS_LIMIT_MAX = 100
 NEWS_MONITOR_ENABLED = os.environ.get("FULTONS_NEWS_MONITOR_ENABLED", "1") != "0"
 NEWS_MONITOR_INTERVAL_SEC = max(
     300,
-    int(os.environ.get("FULTONS_NEWS_MONITOR_INTERVAL_SEC", "3600")),
+    int(os.environ.get("FULTONS_NEWS_MONITOR_INTERVAL_SEC", "600")),
 )
 DAILY_QUIZ_SCHEDULER_ENABLED = (
     os.environ.get("FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED", "1") != "0"
@@ -208,14 +208,29 @@ WORD_DEFINITION_TIMEOUT_SEC = max(
     int(os.environ.get("FULTONS_WORD_DEFINITION_TIMEOUT_SEC", "5")),
 )
 WORD_DEFINITION_CACHE: dict[str, dict[str, str | None]] = {}
-NEWS_QUERIES = (
-    '"St Mirren"',
-    '"St Mirren" football',
-    '"St Mirren" transfer',
-    '"St Mirren" Scottish Premiership',
-    '"St Mirren" live score',
-    '"Scottish Premiership" live scores',
+NEWS_MIN_RECENT_SCOPED_ITEMS = 8
+NEWS_RECENT_WINDOW_HOURS = 72
+NEWS_SCOPED_QUERY_CONFIGS = (
+    {"query": '"St Mirren" when:7d', "tags": ("st-mirren", "scottish-football")},
+    {"query": '"St Mirren" football when:7d', "tags": ("st-mirren", "scottish-football")},
+    {"query": '"St Mirren" transfer when:30d', "tags": ("st-mirren", "scottish-football")},
+    {
+        "query": '"St Mirren" Scottish Premiership when:30d',
+        "tags": ("st-mirren", "scottish-football"),
+    },
+    {"query": '"St Mirren" live score when:7d', "tags": ("st-mirren", "scottish-football")},
+    {
+        "query": '"Scottish Premiership" live scores when:7d',
+        "tags": ("st-mirren", "scottish-football"),
+    },
 )
+NEWS_SUPPLEMENTAL_QUERY_CONFIGS = (
+    {"query": '"snooker" when:7d', "tags": ("sport", "snooker")},
+    {"query": '"World Snooker Tour" when:7d', "tags": ("sport", "snooker")},
+    {"query": '"darts" when:7d', "tags": ("sport", "darts")},
+    {"query": '"Scottish sport" when:3d', "tags": ("sport", "scotland")},
+)
+NEWS_QUERIES = tuple(config["query"] for config in NEWS_SCOPED_QUERY_CONFIGS)
 SUPPORTED_HISTORY_LANGS = {"en", "fr", "de", "es", "it"}
 HISTORY_INTEREST_KEYWORDS = (
     "first",
@@ -2162,7 +2177,10 @@ def google_news_rss_url(query: str) -> str:
     )
 
 
-def fetch_news_feed(query: str) -> list[dict[str, Any]]:
+def fetch_news_feed(
+    query: str,
+    tags: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
     request = Request(
         google_news_rss_url(query),
         headers={"User-Agent": NEWS_USER_AGENT},
@@ -2196,40 +2214,101 @@ def fetch_news_feed(query: str) -> list[dict[str, Any]]:
                 "publishedAt": published_at,
                 "host": host,
                 "priority": "media",
-                "tags": ["st-mirren", "scottish-football"],
+                "tags": list(tags or ("st-mirren", "scottish-football")),
             }
         )
 
     return items
 
 
-def ingest_news_once() -> int:
-    inserted_count = 0
-    seen_keys: set[str] = set()
+def news_feed_identity(payload: dict[str, Any]) -> tuple[str, str]:
+    source = bounded_text(payload.get("source"), 120) or "Unknown source"
+    title = clean_news_title(bounded_text(payload.get("title"), 220), source)
+    url = bounded_text(payload.get("url"), 600)
+    source_key = bounded_text(payload.get("sourceKey"), 160)
+    if not source_key and url:
+        source_key = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    return source_key, news_story_key(title)
 
-    with connect_db() as conn:
-        for query in NEWS_QUERIES:
+
+def is_recent_news_payload(
+    payload: dict[str, Any],
+    now: datetime | None = None,
+) -> bool:
+    published_at = bounded_text(payload.get("publishedAt"), 80)
+    if not published_at:
+        return False
+    try:
+        published = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=timezone.utc)
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=NEWS_RECENT_WINDOW_HOURS)
+    return published.astimezone(timezone.utc) >= cutoff
+
+
+def collect_news_feed_items() -> tuple[list[dict[str, Any]], int]:
+    collected: list[dict[str, Any]] = []
+    seen_source_keys: set[str] = set()
+    seen_story_keys: set[str] = set()
+    recent_scoped_count = 0
+
+    def extend_feed(
+        query_configs: tuple[dict[str, Any], ...],
+        *,
+        track_recent_scoped: bool,
+    ) -> None:
+        nonlocal recent_scoped_count
+
+        for query_config in query_configs:
+            query = str(query_config["query"])
+            tags = query_config.get("tags", ())
             try:
-                items = fetch_news_feed(query)
+                items = fetch_news_feed(query, tags=tags)
             except Exception as error:
                 safe_log(f"News monitor fetch failed for {query}: {error}")
                 continue
 
             for payload in items:
-                source_key = str(payload.get("sourceKey", ""))
-                if source_key in seen_keys:
+                source_key, story_key = news_feed_identity(payload)
+                dedupe_key = story_key or source_key
+                if not source_key or not dedupe_key:
                     continue
-                seen_keys.add(source_key)
-
-                try:
-                    item, inserted = upsert_news_item(conn, payload)
-                except ValueError as error:
-                    safe_log(f"News monitor skipped item: {error}")
+                if source_key in seen_source_keys or dedupe_key in seen_story_keys:
                     continue
+                seen_source_keys.add(source_key)
+                seen_story_keys.add(dedupe_key)
+                collected.append(payload)
+                if track_recent_scoped and is_recent_news_payload(payload):
+                    recent_scoped_count += 1
 
-                if inserted:
-                    inserted_count += 1
-                    broadcast_news_item(item)
+    extend_feed(NEWS_SCOPED_QUERY_CONFIGS, track_recent_scoped=True)
+    if recent_scoped_count < NEWS_MIN_RECENT_SCOPED_ITEMS:
+        safe_log(
+            "News monitor supplementing wider sports feed "
+            f"({recent_scoped_count} recent scoped item(s))"
+        )
+        extend_feed(NEWS_SUPPLEMENTAL_QUERY_CONFIGS, track_recent_scoped=False)
+
+    return collected, recent_scoped_count
+
+
+def ingest_news_once() -> int:
+    inserted_count = 0
+    items, _recent_scoped_count = collect_news_feed_items()
+
+    with connect_db() as conn:
+        for payload in items:
+            try:
+                item, inserted = upsert_news_item(conn, payload)
+            except ValueError as error:
+                safe_log(f"News monitor skipped item: {error}")
+                continue
+
+            if inserted:
+                inserted_count += 1
+                broadcast_news_item(item)
 
     return inserted_count
 
@@ -2355,6 +2434,9 @@ def history_cache_get(key: str) -> dict[str, Any] | None:
     if time.time() - stored_at > HISTORY_CACHE_TTL_SEC:
         HISTORY_CACHE.pop(key, None)
         return None
+    if not history_payload_is_cacheable(payload):
+        HISTORY_CACHE.pop(key, None)
+        return None
 
     result = dict(payload)
     result["meta"] = {**payload.get("meta", {}), "cached": True}
@@ -2363,6 +2445,10 @@ def history_cache_get(key: str) -> dict[str, Any] | None:
 
 def history_cache_set(key: str, payload: dict[str, Any]) -> None:
     HISTORY_CACHE[key] = (time.time(), payload)
+
+
+def history_payload_is_cacheable(payload: dict[str, Any]) -> bool:
+    return isinstance(payload.get("location"), dict)
 
 
 def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
@@ -4400,7 +4486,8 @@ def history_payload(
             "generatedAt": utc_now(),
         },
     }
-    history_cache_set(cache_key, payload)
+    if history_payload_is_cacheable(payload):
+        history_cache_set(cache_key, payload)
     return payload, HTTPStatus.OK
 
 
@@ -4645,11 +4732,39 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             params_payload = payload.get("params")
             params = params_payload if isinstance(params_payload, dict) else None
             try:
-                self.send_json(HTTPStatus.OK, ops_monitor.run_local_action(action, params=params))
+                if ops_monitor.is_async_local_action(action):
+                    self.send_json(
+                        HTTPStatus.ACCEPTED,
+                        ops_monitor.start_local_action_job(action, params=params),
+                    )
+                else:
+                    self.send_json(HTTPStatus.OK, ops_monitor.run_local_action(action, params=params))
             except ValueError as error:
                 self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
             except RuntimeError as error:
                 self.send_error_json(HTTPStatus.BAD_GATEWAY, str(error))
+            return
+
+        if path == "/api/local/ops-action-status" and method == "GET":
+            if not LOCAL_OPS_ENABLED:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Local ops dashboard is disabled.",
+                )
+                return
+            if not self.is_loopback_request():
+                self.send_error_json(
+                    HTTPStatus.FORBIDDEN,
+                    "Local ops dashboard is available only from localhost.",
+                )
+                return
+            job_id = str(params.get("jobId", [""])[0] or "").strip()
+            try:
+                self.send_json(HTTPStatus.OK, ops_monitor.get_local_action_job(job_id))
+            except ValueError as error:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+            except LookupError as error:
+                self.send_error_json(HTTPStatus.NOT_FOUND, str(error))
             return
 
         if path == "/api/news/stream" and method == "GET":

@@ -23,6 +23,7 @@ import {
   api,
   type AdminOpsSnapshot,
   type AdminOpsStatus,
+  type LocalOpsActionResponse,
   type AdminOpsTest,
   type LocalOpsActionName,
 } from "../lib/api";
@@ -31,6 +32,15 @@ type AdminOpsDashboardProps = {
   source?: "admin" | "local";
   standalone?: boolean;
 };
+
+const LOCAL_ACTION_POLL_INTERVAL_MS = 1500;
+const LOCAL_ACTION_POLL_ATTEMPTS = 180;
+
+function waitForDelay(milliseconds: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
 
 function formatBytes(value?: number | null) {
   if (value === undefined || value === null || Number.isNaN(value)) {
@@ -290,6 +300,35 @@ export function AdminOpsDashboard({
   const canRemoveOrphanedNetworks = source === "local" && orphanedNetworks.length > 0;
   const hasAvailableFixes = canGenerateTomorrowQuiz || canRemoveOrphanedNetworks;
 
+  async function waitForLocalActionJob(jobId: string) {
+    let latestResponse: LocalOpsActionResponse | null = null;
+    for (let attempt = 0; attempt < LOCAL_ACTION_POLL_ATTEMPTS; attempt += 1) {
+      await waitForDelay(LOCAL_ACTION_POLL_INTERVAL_MS);
+      latestResponse = await api.localOpsActionStatus(jobId);
+      if (latestResponse.message) {
+        setActionMessage(latestResponse.message);
+      }
+      if (latestResponse.done) {
+        return latestResponse;
+      }
+    }
+    throw new Error("The action is still running. Reload the board in a moment.");
+  }
+
+  async function performLocalAction(
+    action: LocalOpsActionName,
+    params?: Record<string, unknown>,
+  ) {
+    const response = await api.localOpsAction({ action, params });
+    if (response.done || !response.jobId) {
+      return response;
+    }
+    if (response.message) {
+      setActionMessage(response.message);
+    }
+    return waitForLocalActionJob(response.jobId);
+  }
+
   async function runLocalAction(
     action: LocalOpsActionName,
     params?: Record<string, unknown>,
@@ -301,8 +340,13 @@ export function AdminOpsDashboard({
     setActionMessage("");
     setActionError("");
     try {
-      const response = await api.localOpsAction({ action, params });
-      setSnapshot(response.snapshot);
+      const response = await performLocalAction(action, params);
+      if (response.status !== "succeeded") {
+        throw new Error(response.error || response.message || "The requested fix action failed.");
+      }
+      if (response.snapshot) {
+        setSnapshot(response.snapshot);
+      }
       setActionMessage(response.message);
       setError("");
     } catch (caughtError) {
@@ -335,8 +379,13 @@ export function AdminOpsDashboard({
       let latestSnapshot: AdminOpsSnapshot | null = snapshot;
       const messages: string[] = [];
       for (const action of actions) {
-        const response = await api.localOpsAction({ action });
-        latestSnapshot = response.snapshot;
+        const response = await performLocalAction(action);
+        if (response.status !== "succeeded") {
+          throw new Error(response.error || response.message || "The requested fix action failed.");
+        }
+        if (response.snapshot) {
+          latestSnapshot = response.snapshot;
+        }
         messages.push(response.message);
       }
       if (latestSnapshot) {
