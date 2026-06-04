@@ -2150,16 +2150,17 @@ def ensure_tomorrow_daily_quiz(now: datetime | None = None) -> None:
     local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
     quiz_date = (local_now.date() + timedelta(days=1)).isoformat()
     with closing(connect_db()) as conn:
-        status = daily_quiz.quiz_status(conn, quiz_date)
-        if status["status"] == "published":
-            safe_log(f"Daily quiz for {quiz_date} is already published")
-            return
-        daily_quiz.generate_daily_quiz(
-            conn,
-            quiz_date=quiz_date,
-            config=DAILY_QUIZ_CONFIG,
-            log=lambda message: safe_log(f"Daily quiz: {message}"),
-        )
+        with conn:
+            status = daily_quiz.quiz_status(conn, quiz_date)
+            if status["status"] == "published":
+                safe_log(f"Daily quiz for {quiz_date} is already published")
+                return
+            daily_quiz.generate_daily_quiz(
+                conn,
+                quiz_date=quiz_date,
+                config=DAILY_QUIZ_CONFIG,
+                log=lambda message: safe_log(f"Daily quiz: {message}"),
+            )
 
 
 def daily_quiz_scheduler_loop() -> None:

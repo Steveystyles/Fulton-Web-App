@@ -1802,6 +1802,45 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_daily_quiz_scheduler_commits_generated_tomorrow_quiz(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            def fake_generate_daily_quiz(conn, quiz_date, config, log):
+                conn.execute(
+                    """
+                    INSERT INTO daily_quiz_sets (quiz_date, status, published_at)
+                    VALUES (?, 'published', ?)
+                    """,
+                    (quiz_date, "2026-06-04T00:05:00+00:00"),
+                )
+                return {"date": quiz_date, "status": "published"}
+
+            with patch("daily_quiz.generate_daily_quiz", side_effect=fake_generate_daily_quiz):
+                server.ensure_tomorrow_daily_quiz(
+                    datetime(2026, 6, 4, 12, 0, tzinfo=timezone.utc)
+                )
+
+            with closing(server.connect_db()) as conn:
+                row = conn.execute(
+                    "SELECT quiz_date, status, published_at FROM daily_quiz_sets WHERE quiz_date = ?",
+                    ("2026-06-05",),
+                ).fetchone()
+
+            self.assertIsNotNone(row)
+            self.assertEqual(row["quiz_date"], "2026-06-05")
+            self.assertEqual(row["status"], "published")
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
     def test_history_events_prefer_recent_sport_and_birth_highlights(self) -> None:
         import server
 
