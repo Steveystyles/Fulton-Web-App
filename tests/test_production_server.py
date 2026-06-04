@@ -2323,6 +2323,64 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_daily_quiz_write_helpers_commit_immediately(self) -> None:
+        import daily_quiz
+
+        class DummyCursor:
+            def __init__(self, row: dict[str, object] | None = None) -> None:
+                self._row = row
+
+            def fetchone(self) -> dict[str, object] | None:
+                return self._row
+
+        class DummyConnection:
+            def __init__(self) -> None:
+                self.in_transaction = False
+                self.commit_calls = 0
+
+            def execute(self, statement: str, _params: object = None) -> DummyCursor:
+                if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                    self.in_transaction = True
+                if "SELECT * FROM daily_quiz_sets" in statement:
+                    return DummyCursor({"id": 1, "status": "generating"})
+                return DummyCursor()
+
+            def commit(self) -> None:
+                self.commit_calls += 1
+                self.in_transaction = False
+
+        conn = DummyConnection()
+        question = {
+            "subject": "football",
+            "difficulty": "easy",
+            "question": "Who scored?",
+            "choices": ["A", "B", "C", "D"],
+            "correct_answer": "A",
+            "explanation": "Because.",
+            "interesting_reason": "Memorable.",
+            "tags": ["football"],
+        }
+
+        quiz_set = daily_quiz.get_or_create_quiz_set(conn, "2026-06-05")
+        daily_quiz.set_quiz_status(conn, "2026-06-05", "generating")
+        daily_quiz.save_attempt(
+            conn,
+            quiz_date="2026-06-05",
+            subject="football",
+            difficulty="easy",
+            attempt_number=1,
+            provider="gemini",
+            generated=question,
+            critic=None,
+            passed=False,
+            failure_reason="Retry",
+        )
+        daily_quiz.save_question(conn, quiz_set_id=int(quiz_set["id"]), question=question)
+
+        self.assertEqual(int(quiz_set["id"]), 1)
+        self.assertEqual(conn.commit_calls, 4)
+        self.assertFalse(conn.in_transaction)
+
     def test_history_events_prefer_recent_sport_and_birth_highlights(self) -> None:
         import server
 

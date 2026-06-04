@@ -959,6 +959,11 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def commit_if_needed(conn: sqlite3.Connection) -> None:
+    if conn.in_transaction:
+        conn.commit()
+
+
 def get_or_create_quiz_set(conn: sqlite3.Connection, quiz_date: str) -> sqlite3.Row:
     conn.execute(
         """
@@ -967,6 +972,7 @@ def get_or_create_quiz_set(conn: sqlite3.Connection, quiz_date: str) -> sqlite3.
         """,
         (quiz_date,),
     )
+    commit_if_needed(conn)
     return conn.execute(
         "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?",
         (quiz_date,),
@@ -992,6 +998,7 @@ def set_quiz_status(
         """,
         (status, status, now, status, now, failure_reason, quiz_date),
     )
+    commit_if_needed(conn)
 
 
 def recent_questions(
@@ -1130,6 +1137,7 @@ def save_attempt(
             utc_now(),
         ),
     )
+    commit_if_needed(conn)
 
 
 def save_question(
@@ -1161,6 +1169,7 @@ def save_question(
             utc_now(),
         ),
     )
+    commit_if_needed(conn)
 
 
 def critic_failure_reason(critic: dict[str, Any]) -> str:
@@ -1369,6 +1378,7 @@ def generate_daily_quiz(
 
     if force:
         conn.execute("DELETE FROM daily_quiz_questions WHERE quiz_set_id = ?", (quiz_set["id"],))
+        commit_if_needed(conn)
     set_quiz_status(conn, quiz_date, "generating")
 
     if provider is None:
@@ -1543,6 +1553,7 @@ def regenerate_question(
         """,
         (quiz_set["id"], subject, difficulty),
     )
+    commit_if_needed(conn)
     set_quiz_status(conn, quiz_date, "generating")
     generated = generate_slot(
         conn,
