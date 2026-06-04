@@ -2434,8 +2434,8 @@ def history_cache_get(key: str) -> dict[str, Any] | None:
     if cached is None:
         return None
 
-    stored_at, payload = cached
-    if time.time() - stored_at > HISTORY_CACHE_TTL_SEC:
+    expires_at, payload = cached
+    if time.time() > expires_at:
         HISTORY_CACHE.pop(key, None)
         return None
     if not history_payload_is_cacheable(payload):
@@ -2448,11 +2448,39 @@ def history_cache_get(key: str) -> dict[str, Any] | None:
 
 
 def history_cache_set(key: str, payload: dict[str, Any]) -> None:
-    HISTORY_CACHE[key] = (time.time(), payload)
+    history_cache_set_with_expiry(
+        key,
+        payload,
+        expires_at=time.time() + HISTORY_CACHE_TTL_SEC,
+    )
+
+
+def history_cache_set_with_expiry(
+    key: str,
+    payload: dict[str, Any],
+    *,
+    expires_at: float,
+) -> None:
+    HISTORY_CACHE[key] = (expires_at, payload)
 
 
 def history_payload_is_cacheable(payload: dict[str, Any]) -> bool:
     return isinstance(payload.get("location"), dict)
+
+
+def history_cache_expiry_timestamp(
+    *,
+    rotation_created_at: datetime | None = None,
+    now_ts: float | None = None,
+) -> float:
+    reference_now = now_ts if now_ts is not None else time.time()
+    expires_at = reference_now + HISTORY_CACHE_TTL_SEC
+    if rotation_created_at is not None:
+        expires_at = min(
+            expires_at,
+            rotation_created_at.astimezone(timezone.utc).timestamp() + FACT_ROTATION_TTL_SEC,
+        )
+    return expires_at
 
 
 def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
@@ -2606,10 +2634,10 @@ def deserialize_history_facts(value: str) -> list[dict[str, Any]]:
     return facts
 
 
-def current_rotated_history_facts(
+def current_rotated_history_facts_record(
     rotation_key: str,
     now: datetime | None = None,
-) -> list[dict[str, Any]] | None:
+) -> tuple[list[dict[str, Any]], datetime] | None:
     cutoff = history_fact_rotation_limit(now)
     with closing(connect_db()) as conn:
         row = conn.execute(
@@ -2630,10 +2658,21 @@ def current_rotated_history_facts(
         return None
 
     try:
-        return deserialize_history_facts(str(row["facts_json"]))
+        return deserialize_history_facts(str(row["facts_json"])), created_at
     except Exception as error:
         safe_log(f"History fact rotation read failed: {error}")
         return None
+
+
+def current_rotated_history_facts(
+    rotation_key: str,
+    now: datetime | None = None,
+) -> list[dict[str, Any]] | None:
+    record = current_rotated_history_facts_record(rotation_key, now=now)
+    if record is None:
+        return None
+    facts, _created_at = record
+    return facts
 
 
 def recent_rotated_history_texts(
@@ -4382,6 +4421,7 @@ def history_payload(
     warnings: list[dict[str, str]] = []
     location_payload: dict[str, Any] | None = None
     global_events: list[dict[str, Any]] = []
+    cache_rotation_created_at: datetime | None = None
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         wiki_future = executor.submit(fetch_wikipedia_summary, location, lang)
@@ -4411,8 +4451,8 @@ def history_payload(
             title = str(wiki.get("title") or location)
             rotation_key = history_fact_rotation_key(title, lang)
             location_images = fetch_wikipedia_images(wiki, lang, article_url)
-            rotated_facts = current_rotated_history_facts(rotation_key)
-            if rotated_facts is None:
+            rotated_record = current_rotated_history_facts_record(rotation_key)
+            if rotated_record is None:
                 candidate_limit = max(6, limit_facts * 4)
                 candidate_facts = build_location_facts(
                     wiki,
@@ -4437,7 +4477,11 @@ def history_payload(
                     ),
                     title,
                 )
-                store_rotated_history_facts(rotation_key, rotated_facts)
+                created_at = utc_now()
+                store_rotated_history_facts(rotation_key, rotated_facts, created_at=created_at)
+                cache_rotation_created_at = parse_utc_timestamp(created_at)
+            else:
+                rotated_facts, cache_rotation_created_at = rotated_record
             location_payload = {
                 "title": title,
                 "description": wiki.get("description"),
@@ -4491,7 +4535,13 @@ def history_payload(
         },
     }
     if history_payload_is_cacheable(payload):
-        history_cache_set(cache_key, payload)
+        history_cache_set_with_expiry(
+            cache_key,
+            payload,
+            expires_at=history_cache_expiry_timestamp(
+                rotation_created_at=cache_rotation_created_at,
+            ),
+        )
     return payload, HTTPStatus.OK
 
 

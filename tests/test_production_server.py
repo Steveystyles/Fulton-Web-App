@@ -1338,7 +1338,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
         server.HISTORY_CACHE.clear()
         self.addCleanup(server.HISTORY_CACHE.clear)
         server.HISTORY_CACHE["history:test"] = (
-            server.time.time(),
+            server.time.time() + 60,
             {
                 "request": {"location": "Paisley", "date": "2026-06-04", "lang": "en"},
                 "location": None,
@@ -1396,7 +1396,10 @@ class ProductionServerHardeningTests(unittest.TestCase):
             patch("server.fetch_history_events", return_value=events),
             patch("server.fetch_wikipedia_plain_extract", return_value="Paisley is a town in Scotland."),
             patch("server.fetch_wikipedia_images", return_value=[]),
-            patch("server.current_rotated_history_facts", return_value=rotated_facts),
+            patch(
+                "server.current_rotated_history_facts_record",
+                return_value=(rotated_facts, datetime.now(timezone.utc).replace(microsecond=0)),
+            ),
             patch("server.wikidata_profile", return_value={}),
         ):
             first_payload, first_status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
@@ -1414,6 +1417,50 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(second_payload["location"]["facts"][0]["title"], "Paisley Abbey")
         self.assertFalse(second_payload["meta"]["cached"])
         self.assertIn("en:paisley:2026-06-04:2:5", server.HISTORY_CACHE)
+
+    def test_history_payload_cache_expires_when_fact_rotation_expires(self) -> None:
+        import server
+
+        server.HISTORY_CACHE.clear()
+        self.addCleanup(server.HISTORY_CACHE.clear)
+
+        rotation_created_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=23)
+        rotated_facts = [
+            {
+                "title": "Paisley Abbey",
+                "text": "Paisley Abbey is one of the town's best-known landmarks.",
+                "theme": "history",
+                "sourceName": "Paisley Abbey",
+                "sourceUrl": "https://paisleyabbey.org.uk/history",
+                "confidence": "high",
+            }
+        ]
+
+        with (
+            patch(
+                "server.fetch_wikipedia_summary",
+                return_value={
+                    "title": "Paisley",
+                    "description": "Town in Scotland",
+                    "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Paisley"}},
+                    "thumbnail": {"source": "https://example.com/paisley.jpg"},
+                },
+            ),
+            patch("server.fetch_history_events", return_value=[]),
+            patch("server.fetch_wikipedia_plain_extract", return_value="Paisley is a town in Scotland."),
+            patch("server.fetch_wikipedia_images", return_value=[]),
+            patch(
+                "server.current_rotated_history_facts_record",
+                return_value=(rotated_facts, rotation_created_at),
+            ),
+            patch("server.wikidata_profile", return_value={}),
+        ):
+            _payload, status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
+
+        self.assertEqual(status, HTTPStatus.OK)
+        expires_at, _cached_payload = server.HISTORY_CACHE["en:paisley:2026-06-04:2:5"]
+        expected_expiry = rotation_created_at.timestamp() + server.FACT_ROTATION_TTL_SEC
+        self.assertAlmostEqual(expires_at, expected_expiry, delta=1.0)
 
     def test_wikipedia_images_keep_location_photos_and_skip_badges(self) -> None:
         import server
