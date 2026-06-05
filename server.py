@@ -2579,6 +2579,155 @@ def search_web_fact_evidence(place_title: str, limit: int = 8) -> list[dict[str,
     return evidence
 
 
+def fact_source_quality_bonus(source_name: str, source_url: str) -> int:
+    host = (source_name or urlparse(source_url).netloc or "").lower()
+    path = urlparse(source_url).path.lower()
+    score = 0
+    if host.endswith(".gov.uk") or any(token in host for token in ("council", "museum", "university", "ac.uk")):
+        score += 14
+    elif host.endswith(".org") or host.endswith(".org.uk"):
+        score += 8
+    elif host.endswith(".co.uk"):
+        score += 3
+    if path in {"", "/"}:
+        score -= 12
+    if any(token in path for token in ("/category/", "/categories/", "/tag/", "/tags/", "/all-about/")):
+        score -= 10
+    return score
+
+
+def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title: str) -> bool:
+    cleaned = clean_fact_sentence(sentence)
+    if cleaned is None:
+        return False
+    lower = cleaned.lower()
+    if any(
+        phrase in lower
+        for phrase in (
+            "you are using an outdated browser",
+            "skip to main content",
+            "search for:",
+            "find out more",
+            "all the latest news",
+            "this page brings together the latest news",
+            "what's on in ",
+            "planning to visit",
+            "things to do in ",
+        )
+    ):
+        return False
+    place_name = place_title.split(",", 1)[0].strip().lower()
+    title_lower = str(evidence_title or "").lower()
+    theme = classify_fact_theme(cleaned)
+    score = fact_candidate_score(cleaned, theme)
+    mentions_place = place_name in lower or place_name in title_lower
+    if not mentions_place and theme == "general":
+        return False
+    if not mentions_place and score < 34:
+        return False
+    return True
+
+
+def web_evidence_fact_candidates(
+    place_title: str,
+    evidence_items: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    seen_sentences: set[str] = set()
+    place_name = place_title.split(",", 1)[0].strip().lower()
+
+    for item in evidence_items:
+        source_name = str(item.get("sourceName") or "").strip()
+        source_url = str(item.get("sourceUrl") or "").strip()
+        evidence_title = str(item.get("title") or "").strip()
+        if not source_name or not source_url.startswith(("http://", "https://")):
+            continue
+        if blocked_fact_source(source_url):
+            continue
+        source_bonus = fact_source_quality_bonus(source_name, source_url)
+        raw_text = " ".join(
+            part
+            for part in (
+                str(item.get("excerpt") or "").strip(),
+                str(item.get("snippet") or "").strip(),
+            )
+            if part
+        )
+        for sentence in split_fact_sentences(raw_text):
+            if not web_fact_sentence_is_useful(sentence, place_title, evidence_title):
+                continue
+            cleaned = clean_fact_sentence(sentence)
+            if cleaned is None:
+                continue
+            sentence_key = history_fact_text_key(cleaned)
+            if sentence_key in seen_sentences:
+                continue
+            seen_sentences.add(sentence_key)
+            theme = classify_fact_theme(cleaned)
+            score = fact_candidate_score(cleaned, theme) + source_bonus
+            if place_name in cleaned.lower():
+                score += 10
+            fact = make_history_fact(
+                title=FACT_THEME_LABELS.get(theme, "Local fact"),
+                text=cleaned,
+                theme=theme,
+                source_name=source_name,
+                source_url=source_url,
+                confidence="medium",
+            )
+            candidates.append((score, fact))
+
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    return [fact for _score, fact in candidates]
+
+
+def web_evidence_fallback_facts(
+    place_title: str,
+    evidence_items: list[dict[str, str]],
+    *,
+    limit: int,
+    recent_texts: list[str],
+) -> list[dict[str, Any]]:
+    selected = rotated_location_facts(
+        web_evidence_fact_candidates(place_title, evidence_items),
+        limit=limit,
+        recent_texts=recent_texts,
+    )
+    if len(selected) < limit:
+        return []
+    return attach_fact_critiques(selected, place_title)
+
+
+def extract_first_json_object_text(text: str) -> str:
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("AI response does not contain a JSON object.")
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+            continue
+        if char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    raise ValueError("AI response does not contain a complete JSON object.")
+
+
 def parse_json_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -2588,11 +2737,7 @@ def parse_json_object(value: Any) -> dict[str, Any]:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
         text = re.sub(r"\s*```$", "", text)
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end < start:
-        raise ValueError("AI response does not contain a JSON object.")
-    payload = json.loads(text[start : end + 1])
+    payload = json.loads(extract_first_json_object_text(text))
     if not isinstance(payload, dict):
         raise ValueError("AI response JSON is not an object.")
     return payload
@@ -4028,6 +4173,14 @@ def facts_compatible_json_response(
         text = payload["choices"][0]["message"]["content"]
     except (IndexError, KeyError, TypeError) as error:
         raise ValueError(f"{provider_name} returned no chat completion content.") from error
+    if isinstance(text, list):
+        parts: list[str] = []
+        for part in text:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(str(part["text"]))
+        text = "\n".join(part for part in parts if part.strip())
     return parse_json_object(text)
 
 
@@ -4094,15 +4247,21 @@ def reviewed_location_facts(
         rotated_location_facts(candidates, limit=limit, recent_texts=recent_texts),
         place_title,
     )
+    web_evidence = search_web_fact_evidence(place_title, limit=max(limit * 4, 8))
+    web_fallback = web_evidence_fallback_facts(
+        place_title,
+        web_evidence,
+        limit=limit,
+        recent_texts=recent_texts,
+    )
     if not facts_ai_available():
-        return fallback
+        return web_fallback or fallback
 
     failed_attempts = recent_history_fact_review_failures(rotation_key)
-    web_evidence = search_web_fact_evidence(place_title, limit=max(limit * 4, 8))
-    if len(web_evidence) < limit:
+    if not web_fallback:
         safe_log(
             "Interesting fact review fell back to heuristics: "
-            f"only {len(web_evidence)} web evidence items found for {place_title}."
+            f"insufficient usable web evidence found for {place_title}."
         )
         return fallback
 
@@ -4265,8 +4424,8 @@ def reviewed_location_facts(
             critique=critique_result,
             failure_reason=str(error),
         )
-        safe_log(f"Interesting fact review fell back to heuristics: {error}")
-        return fallback
+        safe_log(f"Interesting fact review fell back to web evidence heuristics: {error}")
+        return web_fallback or fallback
 
 
 def history_year_value(value: object) -> int | None:
