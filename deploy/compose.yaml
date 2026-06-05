@@ -14,7 +14,7 @@ services:
       FULTONS_PORT: 3000
       FULTONS_TIMEZONE: Europe/London
     volumes:
-      - /srv/storage/appdata/fultons-quiz:/app/data
+      - ${FULTONS_HOST_DATA_DIR:-/srv/storage/appdata/fultons-quiz}:/app/data
     read_only: true
     tmpfs:
       - /tmp

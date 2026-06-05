@@ -21,6 +21,20 @@ chmod 600 /srv/storage/appdata/fultons-quiz/app.env
 nano /srv/storage/appdata/fultons-quiz/app.env
 ```
 
+Create the compose-side path overrides once so restarts and helper scripts always target the intended host paths:
+
+```bash
+mkdir -p ~/fulton-web-app-deploy
+cat > ~/fulton-web-app-deploy/.env <<'EOF'
+FULTONS_SRC_DIR=/opt/src/fulton-web-app
+FULTONS_ENV_FILE=/srv/storage/appdata/fultons-quiz/app.env
+FULTONS_HOST_DATA_DIR=/srv/storage/appdata/fultons-quiz
+EOF
+chmod 600 ~/fulton-web-app-deploy/.env
+```
+
+If your private env file and SQLite data live on different mounts, set `FULTONS_ENV_FILE` and `FULTONS_HOST_DATA_DIR` to those exact host paths instead of keeping both under `/srv/storage`.
+
 Recommended production settings:
 
 ```env
@@ -93,9 +107,10 @@ For throwaway local development only, `FULTONS_SEED_DEMO_USERS=1` creates demo u
 ## 4. Build And Start
 
 ```bash
-docker compose --env-file /srv/storage/appdata/fultons-quiz/app.env -f deploy/compose.yaml build --pull
-docker compose --env-file /srv/storage/appdata/fultons-quiz/app.env -f deploy/compose.yaml up -d
-docker compose --env-file /srv/storage/appdata/fultons-quiz/app.env -f deploy/compose.yaml ps
+cd ~/fulton-web-app-deploy
+docker compose -f compose.yaml build --pull
+docker compose -f compose.yaml up -d
+docker compose -f compose.yaml ps
 ```
 
 ## 5. Update Deployment
@@ -106,19 +121,21 @@ Preferred home-server update:
 bash deploy/homeserver-update.sh <commit-sha>
 ```
 
+The update script writes the resolved source, env-file, and data paths into `~/fulton-web-app-deploy/.env`, builds `local/fulton-web-app:latest` directly from that resolved source tree, and refuses the rollout if the running container revision label does not match the requested commit.
+
 Manual update:
 
 ```bash
 cd /opt/src/fulton-web-app
 git pull --ff-only
-docker compose --env-file /srv/storage/appdata/fultons-quiz/app.env -f deploy/compose.yaml build --pull
-docker compose --env-file /srv/storage/appdata/fultons-quiz/app.env -f deploy/compose.yaml up -d
+bash deploy/homeserver-update.sh "$(git rev-parse HEAD)"
 ```
 
 ## 6. Health And Logs
 
 ```bash
-docker compose --env-file /srv/storage/appdata/fultons-quiz/app.env -f deploy/compose.yaml logs --tail=100 quiz-app
+cd ~/fulton-web-app-deploy
+docker compose -f compose.yaml logs --tail=100 quiz-app
 docker exec fultons-quiz python -c "import json,urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:3000/api/health')), indent=2))"
 ```
 

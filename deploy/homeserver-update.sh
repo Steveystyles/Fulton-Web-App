@@ -5,13 +5,56 @@ APP_COMMIT="${1:?Usage: homeserver-update.sh <commit-sha>}"
 APP_REPO_URL="${APP_REPO_URL:-https://github.com/Steveystyles/Fulton-Web-App.git}"
 SRC_DIR="${SRC_DIR:-${HOME}/fulton-web-app}"
 COMPOSE_DIR="${COMPOSE_DIR:-${HOME}/fulton-web-app-deploy}"
-DATA_DIR="${DATA_DIR:-/srv/storage/appdata/fultons-quiz}"
+COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${COMPOSE_DIR}/.env}"
+if [ -f "${COMPOSE_ENV_FILE}" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${COMPOSE_ENV_FILE}"
+  set +a
+fi
+DATA_DIR="${DATA_DIR:-${FULTONS_HOST_DATA_DIR:-/srv/storage/appdata/fultons-quiz}}"
 BACKUP_ROOT="${BACKUP_ROOT:-/srv/storage/backups}"
 COMPOSE_FILE="${COMPOSE_DIR}/compose.yaml"
-ENV_FILE="${ENV_FILE:-${DATA_DIR}/app.env}"
+ENV_FILE="${ENV_FILE:-${FULTONS_ENV_FILE:-${DATA_DIR}/app.env}}"
 
 log() {
   printf '[fultons-deploy] %s\n' "$*"
+}
+
+resolve_abs_path() {
+  python3 - "${1:?path required}" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+upsert_env_var() {
+  local file="${1:?file required}"
+  local key="${2:?key required}"
+  local value="${3-}"
+  python3 - "${file}" "${key}" "${value}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+prefix = f"{key}="
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+updated = False
+result = []
+for line in lines:
+    if line.startswith(prefix):
+        result.append(prefix + value)
+        updated = True
+    else:
+        result.append(line)
+if not updated:
+    result.append(prefix + value)
+path.write_text("\n".join(result).rstrip("\n") + "\n", encoding="utf-8")
+PY
 }
 
 if [ -d "${SRC_DIR}/.git" ]; then
@@ -29,7 +72,15 @@ else
   git -C "${SRC_DIR}" checkout --detach "${APP_COMMIT}"
 fi
 
-mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}"
+SRC_DIR="$(resolve_abs_path "${SRC_DIR}")"
+DATA_DIR="$(resolve_abs_path "${DATA_DIR}")"
+BACKUP_ROOT="$(resolve_abs_path "${BACKUP_ROOT}")"
+COMPOSE_DIR="$(resolve_abs_path "${COMPOSE_DIR}")"
+ENV_FILE="$(resolve_abs_path "${ENV_FILE}")"
+COMPOSE_FILE="${COMPOSE_DIR}/compose.yaml"
+COMPOSE_ENV_FILE="${COMPOSE_DIR}/.env"
+
+mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}" "$(dirname "${ENV_FILE}")"
 
 if [ ! -f "${ENV_FILE}" ]; then
   log "Creating private app env file at ${ENV_FILE}"
@@ -157,6 +208,10 @@ except sqlite3.Error as exc:
 PY
 
 cp "${SRC_DIR}/deploy/compose.yaml" "${COMPOSE_FILE}"
+upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_SRC_DIR" "${SRC_DIR}"
+upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_ENV_FILE" "${ENV_FILE}"
+upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_HOST_DATA_DIR" "${DATA_DIR}"
+chmod 600 "${COMPOSE_ENV_FILE}"
 
 log "Normalizing data ownership"
 docker run --rm -v "${DATA_DIR}:/data" alpine:3.22 sh -c \
@@ -167,10 +222,28 @@ if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
   docker rm -f fultons-quiz
 fi
 
-log "Building and starting fultons-quiz"
+log "Building local/fulton-web-app:latest from ${SRC_DIR}"
+docker build \
+  --pull \
+  --build-arg "FULTONS_BUILD_COMMIT=${APP_COMMIT}" \
+  --build-arg "FULTONS_BUILD_SOURCE=${SRC_DIR}" \
+  -t local/fulton-web-app:latest \
+  "${SRC_DIR}"
+
+log "Starting fultons-quiz"
 export FULTONS_SRC_DIR="${SRC_DIR}"
 export FULTONS_ENV_FILE="${ENV_FILE}"
-docker compose -f "${COMPOSE_FILE}" up -d --build
+export FULTONS_HOST_DATA_DIR="${DATA_DIR}"
+cd "${COMPOSE_DIR}"
+docker compose -f "${COMPOSE_FILE}" up -d --no-build
+
+log "Verifying running container revision"
+running_revision="$(docker inspect fultons-quiz --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+if [ "${running_revision}" != "${APP_COMMIT}" ]; then
+  log "Running revision ${running_revision:-unknown} does not match expected ${APP_COMMIT}"
+  docker logs --tail 80 fultons-quiz || true
+  exit 1
+fi
 
 log "Waiting for health endpoint"
 for attempt in $(seq 1 30); do
