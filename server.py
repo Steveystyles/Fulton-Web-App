@@ -3113,6 +3113,7 @@ def web_evidence_fallback_facts(
         web_evidence_fact_candidates(place_title, evidence_items),
         limit=limit,
         recent_texts=recent_texts,
+        place_title=place_title,
     )
     if len(selected) < limit:
         return []
@@ -4209,7 +4210,20 @@ def public_history_fact(fact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def history_fact_diversity_key(fact: dict[str, Any]) -> str:
+def history_fact_diversity_key(fact: dict[str, Any], place_title: str) -> str:
+    subject = extract_fact_subject(
+        " ".join(
+            part
+            for part in (
+                str(fact.get("title") or "").strip(),
+                str(fact.get("text") or "").strip(),
+            )
+            if part
+        ),
+        place_title,
+    )
+    if subject:
+        return history_fact_text_key(subject)
     title = str(fact.get("title") or "").strip()
     if title and title.casefold() not in FACT_GENERIC_FACT_TITLES:
         return history_fact_text_key(title)
@@ -4233,18 +4247,19 @@ def rotated_location_facts(
     *,
     limit: int,
     recent_texts: list[str],
+    place_title: str,
 ) -> list[dict[str, Any]]:
     recent_keys = {history_fact_text_key(text) for text in recent_texts}
 
     def choose(pool: list[dict[str, Any]], selected: list[dict[str, Any]], require_new_theme: bool) -> None:
         selected_keys = {history_fact_text_key(str(item.get("text") or "")) for item in selected}
         selected_themes = {str(item.get("theme") or "general") for item in selected}
-        selected_diversity = {history_fact_diversity_key(item) for item in selected}
+        selected_diversity = {history_fact_diversity_key(item, place_title) for item in selected}
         selected_sources = {history_fact_source_key(item) for item in selected}
         for fact in pool:
             text_key = history_fact_text_key(str(fact.get("text") or ""))
             theme = str(fact.get("theme") or "general")
-            diversity_key = history_fact_diversity_key(fact)
+            diversity_key = history_fact_diversity_key(fact, place_title)
             source_key = history_fact_source_key(fact)
             if text_key in selected_keys:
                 continue
@@ -4747,7 +4762,12 @@ def reviewed_location_facts(
     recent_texts: list[str],
 ) -> list[dict[str, Any]]:
     fallback = attach_fact_critiques(
-        rotated_location_facts(candidates, limit=limit, recent_texts=recent_texts),
+        rotated_location_facts(
+            candidates,
+            limit=limit,
+            recent_texts=recent_texts,
+            place_title=place_title,
+        ),
         place_title,
     )
     web_evidence = search_web_fact_evidence(
