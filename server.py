@@ -505,6 +505,10 @@ FACT_GENERIC_PAGE_TERMS = (
     "business directory",
     "community stories",
     "all-about",
+    "what's on in",
+    "discover what's on",
+    "best places to stay",
+    "eat, and explore",
 )
 FACT_GENERIC_FACT_TITLES = {
     value.casefold()
@@ -2611,6 +2615,10 @@ def bing_rss_search_url(query: str) -> str:
     )
 
 
+def fact_text_match_key(value: str) -> str:
+    return str(value or "").lower().replace("’", "'")
+
+
 class FactExcerptHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -2653,7 +2661,7 @@ class FactExcerptHTMLParser(HTMLParser):
 
 def clean_web_excerpt_candidate(value: str, limit: int = 320) -> str:
     cleaned = clean_search_text(value, limit)
-    lower = cleaned.lower()
+    lower = fact_text_match_key(cleaned)
     if len(cleaned) < 40:
         return ""
     if any(phrase in lower for phrase in FACT_GENERIC_PAGE_TERMS):
@@ -2661,6 +2669,22 @@ def clean_web_excerpt_candidate(value: str, limit: int = 320) -> str:
     if lower.count("|") >= 2:
         return ""
     return cleaned
+
+
+def web_search_result_is_promising(title: str, source_url: str, snippet: str) -> bool:
+    combined = fact_text_match_key(" ".join((title, source_url, snippet)))
+    specific_signal = bool(
+        re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b", combined)
+        or any(
+            token in combined
+            for token in ("born", "founded", "abbey", "pattern", "festival", "museum", "castle", "royal", "king", "queen")
+        )
+    )
+    if any(term in combined for term in FACT_GENERIC_PAGE_TERMS) and not specific_signal:
+        return False
+    if any(token in combined for token in FACT_LOW_QUALITY_SOURCE_TOKENS) and not specific_signal:
+        return False
+    return True
 
 
 def extract_web_page_excerpt(html_text: str) -> str:
@@ -2745,6 +2769,8 @@ def search_web_fact_evidence(place_title: str, limit: int = 8) -> list[dict[str,
                 continue
             if blocked_fact_source(url):
                 continue
+            if not web_search_result_is_promising(title, url, snippet):
+                continue
             normalized_url = url.split("#", 1)[0]
             if normalized_url in seen_urls:
                 continue
@@ -2794,8 +2820,8 @@ def web_evidence_item_is_useful(
     evidence_title: str,
     snippet: str,
 ) -> bool:
-    metadata = " ".join((source_name, source_url, evidence_title)).lower()
-    snippet_lower = snippet.lower()
+    metadata = fact_text_match_key(" ".join((source_name, source_url, evidence_title)))
+    snippet_lower = fact_text_match_key(snippet)
     snippet_has_specific_signal = bool(
         re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b", snippet_lower)
         or any(
@@ -2909,7 +2935,7 @@ def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title:
     cleaned = clean_fact_sentence(sentence)
     if cleaned is None:
         return False
-    lower = cleaned.lower()
+    lower = fact_text_match_key(cleaned)
     if any(
         phrase in lower
         for phrase in (
@@ -2953,7 +2979,7 @@ def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title:
     ):
         return False
     place_name = place_title.split(",", 1)[0].strip().lower()
-    title_lower = str(evidence_title or "").lower()
+    title_lower = fact_text_match_key(evidence_title)
     theme = classify_fact_theme(cleaned)
     score = fact_candidate_score(cleaned, theme)
     mentions_place = place_name in lower or place_name in title_lower
