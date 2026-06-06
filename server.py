@@ -150,15 +150,15 @@ FACTS_FALLBACK2_CRITIC_MODEL = os.environ.get(
     os.environ.get("AI_FALLBACK2_CRITIC_MODEL", ""),
 ).strip()
 FACTS_AI_TIMEOUT_SEC = max(
-    5,
-    int(os.environ.get("FULTONS_FACTS_AI_TIMEOUT_SEC", os.environ.get("AI_TIMEOUT_SEC", "20"))),
+    3,
+    int(os.environ.get("FULTONS_FACTS_AI_TIMEOUT_SEC", "8")),
 )
 FACTS_AI_REQUEST_DELAY_SEC = max(
     0.0,
     float(
         os.environ.get(
             "FULTONS_FACTS_AI_REQUEST_DELAY_SEC",
-            os.environ.get("AI_REQUEST_DELAY_SEC", "2"),
+            "0.5",
         )
     ),
 )
@@ -167,7 +167,25 @@ FACTS_AI_TRANSIENT_RETRIES = max(
     int(
         os.environ.get(
             "FULTONS_FACTS_AI_TRANSIENT_RETRIES",
-            os.environ.get("AI_TRANSIENT_RETRIES", "2"),
+            "0",
+        )
+    ),
+)
+FACTS_AI_GENERATOR_BUDGET_SEC = max(
+    4.0,
+    float(
+        os.environ.get(
+            "FULTONS_FACTS_AI_GENERATOR_BUDGET_SEC",
+            os.environ.get("FULTONS_FACTS_AI_TOTAL_BUDGET_SEC", "12"),
+        )
+    ),
+)
+FACTS_AI_CRITIC_BUDGET_SEC = max(
+    2.0,
+    float(
+        os.environ.get(
+            "FULTONS_FACTS_AI_CRITIC_BUDGET_SEC",
+            os.environ.get("FULTONS_FACTS_AI_TOTAL_BUDGET_SEC", "6"),
         )
     ),
 )
@@ -432,6 +450,7 @@ HISTORY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 LOGIN_ATTEMPTS: dict[str, tuple[int, float]] = {}
 LOGIN_ATTEMPTS_LOCK = threading.Lock()
 FACTS_AI_LOCK = threading.Lock()
+FACTS_AI_CONTEXT = threading.local()
 DAILY_QUIZ_OPERATION_LOCK = threading.Lock()
 FACTS_AI_NEXT_REQUEST_AT = 0.0
 HISTORY_FACT_ROTATION_VERSION = "v3"
@@ -3973,17 +3992,58 @@ def ai_fact_critique_schema(limit: int) -> dict[str, Any]:
         "additionalProperties": False,
     }
 
+def facts_ai_budget_deadline(task: str) -> float:
+    budget_sec = FACTS_AI_CRITIC_BUDGET_SEC if task == "critic" else FACTS_AI_GENERATOR_BUDGET_SEC
+    return time.monotonic() + budget_sec
 
-def facts_ai_wait_for_request_slot() -> None:
+
+def set_facts_ai_deadline(deadline_monotonic: float | None) -> None:
+    FACTS_AI_CONTEXT.deadline_monotonic = deadline_monotonic
+
+
+def current_facts_ai_deadline() -> float | None:
+    deadline = getattr(FACTS_AI_CONTEXT, "deadline_monotonic", None)
+    return deadline if isinstance(deadline, (int, float)) else None
+
+
+def facts_ai_remaining_budget_sec(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        return None
+    return deadline_monotonic - time.monotonic()
+
+
+def facts_ai_request_timeout(deadline_monotonic: float | None) -> float:
+    remaining = facts_ai_remaining_budget_sec(deadline_monotonic)
+    if remaining is None:
+        return float(FACTS_AI_TIMEOUT_SEC)
+    if remaining <= 0.25:
+        raise TimeoutError("Facts AI budget exceeded.")
+    return min(float(FACTS_AI_TIMEOUT_SEC), remaining)
+
+
+def facts_ai_wait_for_request_slot(deadline_monotonic: float | None = None) -> None:
     global FACTS_AI_NEXT_REQUEST_AT
     with FACTS_AI_LOCK:
-        wait_sec = FACTS_AI_NEXT_REQUEST_AT - time.monotonic()
+        now = time.monotonic()
+        wait_sec = FACTS_AI_NEXT_REQUEST_AT - now
+        if deadline_monotonic is not None:
+            remaining_sec = deadline_monotonic - now
+            if remaining_sec <= 0:
+                raise TimeoutError("Facts AI budget exceeded.")
+            wait_sec = min(wait_sec, remaining_sec)
         if wait_sec > 0:
             time.sleep(wait_sec)
-        FACTS_AI_NEXT_REQUEST_AT = time.monotonic() + FACTS_AI_REQUEST_DELAY_SEC
+        now = time.monotonic()
+        if deadline_monotonic is not None and now >= deadline_monotonic:
+            raise TimeoutError("Facts AI budget exceeded.")
+        FACTS_AI_NEXT_REQUEST_AT = now + FACTS_AI_REQUEST_DELAY_SEC
 
 
-def facts_ai_defer_retry(attempt: int, error: HTTPError | None = None) -> None:
+def facts_ai_defer_retry(
+    attempt: int,
+    error: HTTPError | None = None,
+    deadline_monotonic: float | None = None,
+) -> None:
     global FACTS_AI_NEXT_REQUEST_AT
     retry_after_sec = 0.0
     if error is not None:
@@ -4012,6 +4072,11 @@ def facts_ai_defer_retry(attempt: int, error: HTTPError | None = None) -> None:
         retry_after_sec,
         min(45.0, 3.0 * (2**attempt)),
     )
+    remaining = facts_ai_remaining_budget_sec(deadline_monotonic)
+    if remaining is not None:
+        if remaining <= 0:
+            return
+        delay = min(delay, remaining)
     with FACTS_AI_LOCK:
         FACTS_AI_NEXT_REQUEST_AT = max(FACTS_AI_NEXT_REQUEST_AT, time.monotonic() + delay)
 
@@ -4084,19 +4149,20 @@ def facts_gemini_json_response(
     )
 
     for attempt in range(FACTS_AI_TRANSIENT_RETRIES + 1):
-        facts_ai_wait_for_request_slot()
+        deadline_monotonic = current_facts_ai_deadline()
+        facts_ai_wait_for_request_slot(deadline_monotonic)
         try:
-            with urlopen(request, timeout=FACTS_AI_TIMEOUT_SEC) as response:
+            with urlopen(request, timeout=facts_ai_request_timeout(deadline_monotonic)) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             break
         except HTTPError as error:
             if error.code in {429, 500, 502, 503, 504} and attempt < FACTS_AI_TRANSIENT_RETRIES:
-                facts_ai_defer_retry(attempt, error)
+                facts_ai_defer_retry(attempt, error, deadline_monotonic)
                 continue
             raise RuntimeError(f"Gemini request failed with HTTP {error.code}.") from error
         except (TimeoutError, URLError, OSError) as error:
             if attempt < FACTS_AI_TRANSIENT_RETRIES:
-                facts_ai_defer_retry(attempt)
+                facts_ai_defer_retry(attempt, deadline_monotonic=deadline_monotonic)
                 continue
             raise RuntimeError(f"Gemini request timed out or failed: {error}") from error
     else:  # pragma: no cover - loop exits through break or raise
@@ -4151,19 +4217,20 @@ def facts_compatible_json_response(
     )
 
     for attempt in range(FACTS_AI_TRANSIENT_RETRIES + 1):
-        facts_ai_wait_for_request_slot()
+        deadline_monotonic = current_facts_ai_deadline()
+        facts_ai_wait_for_request_slot(deadline_monotonic)
         try:
-            with urlopen(request, timeout=FACTS_AI_TIMEOUT_SEC) as response:
+            with urlopen(request, timeout=facts_ai_request_timeout(deadline_monotonic)) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             break
         except HTTPError as error:
             if error.code in {408, 429, 500, 502, 503, 504} and attempt < FACTS_AI_TRANSIENT_RETRIES:
-                facts_ai_defer_retry(attempt, error)
+                facts_ai_defer_retry(attempt, error, deadline_monotonic)
                 continue
             raise RuntimeError(f"{provider_name} request failed with HTTP {error.code}.") from error
         except (TimeoutError, URLError, OSError) as error:
             if attempt < FACTS_AI_TRANSIENT_RETRIES:
-                facts_ai_defer_retry(attempt)
+                facts_ai_defer_retry(attempt, deadline_monotonic=deadline_monotonic)
                 continue
             raise RuntimeError(f"{provider_name} request timed out or failed: {error}") from error
     else:  # pragma: no cover - loop exits through break or raise
@@ -4192,47 +4259,52 @@ def facts_ai_json_response(
     schema: dict[str, Any],
     google_search: bool = False,
 ) -> dict[str, Any]:
+    deadline_monotonic = facts_ai_budget_deadline(task)
     primary_error: Exception | None = None
-    if FACTS_GEMINI_API_KEY:
-        try:
-            return facts_gemini_json_response(
-                model=model,
-                prompt=prompt,
-                schema=schema,
-                google_search=google_search,
-            )
-        except Exception as error:
-            primary_error = error
-            if not facts_fallback_configured(1, task) and not facts_fallback_configured(2, task):
-                raise
-            safe_log(f"Facts AI falling back from Gemini: {error}")
+    set_facts_ai_deadline(deadline_monotonic)
+    try:
+        if FACTS_GEMINI_API_KEY:
+            try:
+                return facts_gemini_json_response(
+                    model=model,
+                    prompt=prompt,
+                    schema=schema,
+                    google_search=google_search,
+                )
+            except Exception as error:
+                primary_error = error
+                if not facts_fallback_configured(1, task) and not facts_fallback_configured(2, task):
+                    raise
+                safe_log(f"Facts AI falling back from Gemini: {error}")
 
-    fallback_errors: list[str] = []
-    for stage in (1, 2):
-        if not facts_fallback_configured(stage, task):
-            continue
-        provider_name, api_key, base_url, model = facts_fallback_spec(stage, task)
-        try:
-            return facts_compatible_json_response(
-                provider_name=provider_name,
-                base_url=base_url,
-                api_key=api_key,
-                model=model,
-                prompt=prompt,
-            )
-        except Exception as error:
-            fallback_errors.append(f"{provider_name}:{model}: {error}")
-            continue
+        fallback_errors: list[str] = []
+        for stage in (1, 2):
+            if not facts_fallback_configured(stage, task):
+                continue
+            provider_name, api_key, base_url, model = facts_fallback_spec(stage, task)
+            try:
+                return facts_compatible_json_response(
+                    provider_name=provider_name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    prompt=prompt,
+                )
+            except Exception as error:
+                fallback_errors.append(f"{provider_name}:{model}: {error}")
+                continue
 
-    if primary_error is not None:
+        if primary_error is not None:
+            if fallback_errors:
+                raise RuntimeError(
+                    f"{primary_error} | Fallback failures: {' | '.join(fallback_errors)}"
+                ) from primary_error
+            raise primary_error
         if fallback_errors:
-            raise RuntimeError(
-                f"{primary_error} | Fallback failures: {' | '.join(fallback_errors)}"
-            ) from primary_error
-        raise primary_error
-    if fallback_errors:
-        raise RuntimeError(f"Fallback failures: {' | '.join(fallback_errors)}")
-    raise ValueError("No facts AI provider is configured.")
+            raise RuntimeError(f"Fallback failures: {' | '.join(fallback_errors)}")
+        raise ValueError("No facts AI provider is configured.")
+    finally:
+        set_facts_ai_deadline(None)
 
 
 def reviewed_location_facts(
@@ -4290,6 +4362,7 @@ def reviewed_location_facts(
     ]
     selection_result: dict[str, Any] | None = None
     critique_result: dict[str, Any] | None = None
+    selected_facts: list[dict[str, Any]] = []
     selector_prompt = (
         "You are writing two reviewed local-interest facts for a live facts page.\n\n"
         f"Place: {place_title}\n"
@@ -4319,7 +4392,6 @@ def reviewed_location_facts(
         if not isinstance(selected_payload, list) or len(selected_payload) != limit:
             raise ValueError("Gemini fact generation did not return the expected number of facts.")
 
-        selected_facts: list[dict[str, Any]] = []
         selected_for_critique: list[dict[str, Any]] = []
         seen_fact_keys: set[str] = set()
         recent_fact_keys = {history_fact_text_key(text) for text in recent_texts}
@@ -4424,6 +4496,12 @@ def reviewed_location_facts(
             critique=critique_result,
             failure_reason=str(error),
         )
+        if selected_facts:
+            safe_log(
+                "Interesting fact review kept generated facts with heuristic critiques: "
+                f"{error}"
+            )
+            return attach_fact_critiques(selected_facts, place_title)
         safe_log(f"Interesting fact review fell back to web evidence heuristics: {error}")
         return web_fallback or fallback
 

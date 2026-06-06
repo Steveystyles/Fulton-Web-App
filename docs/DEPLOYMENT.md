@@ -72,9 +72,11 @@ FULTONS_FACT_ROTATION_TTL_SEC=86400
 FULTONS_FACTS_GEMINI_API_KEY=<optional-separate-key-or-leave-blank-to-reuse-GEMINI_API_KEY>
 FULTONS_FACTS_AI_GENERATOR_MODEL=gemini-3.5-flash
 FULTONS_FACTS_AI_CRITIC_MODEL=gemini-3.1-flash-lite
-FULTONS_FACTS_AI_TIMEOUT_SEC=20
-FULTONS_FACTS_AI_REQUEST_DELAY_SEC=2
-FULTONS_FACTS_AI_TRANSIENT_RETRIES=2
+FULTONS_FACTS_AI_TIMEOUT_SEC=8
+FULTONS_FACTS_AI_REQUEST_DELAY_SEC=0.5
+FULTONS_FACTS_AI_TRANSIENT_RETRIES=0
+FULTONS_FACTS_AI_GENERATOR_BUDGET_SEC=12
+FULTONS_FACTS_AI_CRITIC_BUDGET_SEC=6
 FULTONS_FACTS_FALLBACK_PROVIDER=openrouter
 FULTONS_FACTS_FALLBACK_GENERATOR_MODEL=google/gemini-2.5-flash
 FULTONS_FACTS_FALLBACK_CRITIC_MODEL=google/gemini-2.5-flash
@@ -161,7 +163,7 @@ ls -la /srv/storage/appdata/fultons-quiz
 docker exec fultons-quiz python -c "import sqlite3; c=sqlite3.connect('/app/data/fultons.db'); print(c.execute('PRAGMA quick_check').fetchone()[0]); print(c.execute('SELECT COUNT(*) FROM users').fetchone()[0])"
 ```
 
-The interesting-facts cards now use Gemini selection plus critique on top of the Wikipedia/Wikidata source data. On the free Gemini tier, keep the fact-specific timeout and retry settings shorter than the quiz generator so the page can fall back cleanly instead of stalling. If `FULTONS_FACTS_FALLBACK_*` or `FULTONS_FACTS_FALLBACK2_*` is left blank, the facts path reuses the main `AI_FALLBACK_*` and `AI_FALLBACK2_*` OpenRouter-compatible settings. Successful reviewed facts are reused for 24 hours per place, and failed review attempts are cached in SQLite so later selections can avoid the same generic or low-quality ideas.
+The interesting-facts cards now use Gemini selection plus critique on top of public web evidence. Do not let this path inherit the quiz generator's long retry settings. On the free Gemini tier, keep the fact-specific timeout and retry settings short and set explicit generator/critic budgets so the page can fall back cleanly instead of stalling. If `FULTONS_FACTS_FALLBACK_*` or `FULTONS_FACTS_FALLBACK2_*` is left blank, the facts path reuses the main `AI_FALLBACK_*` and `AI_FALLBACK2_*` OpenRouter-compatible settings for provider and model selection, but its own timeout, retry, and budget values should still be set explicitly. Successful reviewed facts are reused for 24 hours per place, and failed review attempts are cached in SQLite so later selections can avoid the same generic or low-quality ideas.
 
 ## 7. Daily Quiz Generation
 
