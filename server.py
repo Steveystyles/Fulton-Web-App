@@ -510,6 +510,7 @@ FACT_GENERIC_PAGE_TERMS = (
     "discover what's on",
     "best places to stay",
     "eat, and explore",
+    "a great place to visit",
 )
 FACT_GENERIC_FACT_TITLES = {
     value.casefold()
@@ -2741,15 +2742,59 @@ def fetch_web_page_excerpt(url: str) -> str:
         return ""
 
 
-def search_web_fact_evidence(place_title: str, limit: int = 8) -> list[dict[str, str]]:
+def candidate_fact_search_queries(
+    place_title: str,
+    candidates: list[dict[str, Any]] | None,
+) -> list[str]:
+    if not candidates:
+        return []
     place_name = place_title.split(",", 1)[0].strip()
-    queries = [
+    queries: list[str] = []
+    seen_queries: set[str] = set()
+
+    for candidate in candidates[:6]:
+        text = str(candidate.get("text") or "").strip()
+        title = str(candidate.get("title") or "").strip()
+        theme = str(candidate.get("theme") or "general")
+        lower = text.lower()
+        subject = extract_fact_subject(text, place_title)
+        candidate_queries = []
+        if subject:
+            candidate_queries.append(f'"{place_name}" "{subject}"')
+        if fact_title_is_specific(title, place_title):
+            candidate_queries.append(f'"{place_name}" "{trim_fact_title(title)}"')
+        if theme == "history" or "abbey" in lower:
+            candidate_queries.append(f'"{place_name}" abbey history')
+        if theme == "industry" or any(token in lower for token in ("pattern", "textile", "weav")):
+            candidate_queries.append(f'"{place_name}" pattern textile history')
+        if theme == "people" and subject:
+            candidate_queries.append(f'"{subject}" "{place_name}" born')
+        if theme == "culture" and any(token in lower for token in ("festival", "museum", "arts")):
+            candidate_queries.append(f'"{place_name}" festival museum heritage')
+
+        for query in candidate_queries:
+            if query in seen_queries:
+                continue
+            seen_queries.add(query)
+            queries.append(query)
+    return queries[:8]
+
+
+def search_web_fact_evidence(
+    place_title: str,
+    *,
+    candidates: list[dict[str, Any]] | None = None,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    place_name = place_title.split(",", 1)[0].strip()
+    base_queries = [
         f'"{place_name}" local history heritage museum',
         f'"{place_name}" abbey castle landmark founded',
         f'"{place_name}" textile pattern industry',
         f'"{place_name}" born here king queen notable',
         f'"{place_title}" council heritage festival',
     ]
+    queries = candidate_fact_search_queries(place_title, candidates) + base_queries
     evidence: list[dict[str, str]] = []
     seen_urls: set[str] = set()
 
@@ -4676,7 +4721,11 @@ def reviewed_location_facts(
         rotated_location_facts(candidates, limit=limit, recent_texts=recent_texts),
         place_title,
     )
-    web_evidence = search_web_fact_evidence(place_title, limit=max(limit * 6, 12))
+    web_evidence = search_web_fact_evidence(
+        place_title,
+        candidates=candidates,
+        limit=max(limit * 6, 12),
+    )
     web_fallback = web_evidence_fallback_facts(
         place_title,
         web_evidence,
