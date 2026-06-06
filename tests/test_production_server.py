@@ -750,6 +750,109 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(payload["remote"]["quiz"]["tomorrow"]["status"], "published")
         self.assertIn("HTTPS fallback", " ".join(payload["alerts"]))
 
+    def test_collect_dashboard_snapshot_uses_recent_full_cache_without_fallback_alert(self) -> None:
+        import ops_monitor
+
+        config = ops_monitor.MonitorConfig(
+            enabled=True,
+            cache_ttl_sec=15,
+            ssh_target="ste@192.168.0.15",
+            ssh_port=22,
+            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+        cached_remote = {
+            "ok": True,
+            "generatedAt": "2026-06-05T10:50:39Z",
+            "host": {"hostname": "homeserver", "power": {"acOnline": None, "batteries": []}},
+            "resources": {"memory": {}, "disks": []},
+            "docker": {"containers": [{"name": "fultons-quiz"}], "volumes": [], "networks": [{"name": "proxy"}]},
+            "application": {"health": {"ok": True}, "sqlite": {"todayQuiz": None, "tomorrowQuiz": None}},
+            "quiz": {"today": None, "tomorrow": {"date": "2026-06-06", "status": "published", "acceptedQuestions": 6, "failedAttempts": 0, "failureReason": None, "questions": []}},
+            "tests": [],
+            "errors": [],
+            "responseTimeMs": 41,
+        }
+        cached_snapshot = {
+            "enabled": True,
+            "generatedAt": "2026-06-05T10:50:39Z",
+            "publicProbe": {"ok": True},
+            "remote": cached_remote,
+            "alerts": [],
+            "errors": [],
+            "status": "healthy",
+            "ok": True,
+        }
+        internal_remote = {
+            "ok": True,
+            "generatedAt": "2026-06-05T10:50:45Z",
+            "transport": "https-fallback",
+            "host": {"hostname": "homeserver", "power": {"acOnline": None, "batteries": []}},
+            "resources": {"memory": {}, "disks": []},
+            "docker": {"containers": [], "volumes": [], "networks": []},
+            "application": {
+                "health": {"ok": True},
+                "sqlite": {
+                    "todayQuiz": None,
+                    "tomorrowQuiz": {
+                        "date": "2026-06-06",
+                        "status": "published",
+                        "acceptedQuestions": 6,
+                        "failedAttempts": 0,
+                        "failureReason": None,
+                        "questions": [],
+                    },
+                },
+            },
+            "quiz": {
+                "today": None,
+                "tomorrow": {
+                    "date": "2026-06-06",
+                    "status": "published",
+                    "acceptedQuestions": 6,
+                    "failedAttempts": 0,
+                    "failureReason": None,
+                    "questions": [],
+                },
+            },
+            "tests": [],
+            "errors": [],
+            "partial": True,
+            "responseTimeMs": 15,
+        }
+        fake_now = 1000.0
+        cached_at = fake_now - 16.0
+
+        with (
+            patch.object(ops_monitor.MonitorConfig, "from_env", return_value=config),
+            patch.object(ops_monitor, "CACHE_FILE_PATH", Path(self.temp_dir.name) / "ops-cache.json"),
+            patch.object(ops_monitor, "_CACHED_SNAPSHOT", cached_snapshot),
+            patch.object(ops_monitor, "_CACHED_AT_MONOTONIC", cached_at),
+            patch("ops_monitor.probe_public_health", return_value={"ok": True}),
+            patch("ops_monitor.collect_remote_snapshot_via_internal_api", return_value=internal_remote),
+            patch("ops_monitor.schedule_background_ssh_refresh", return_value=True),
+            patch("ops_monitor.time.monotonic", return_value=fake_now),
+            patch("ops_monitor.datetime") as mocked_datetime,
+        ):
+            mocked_datetime.now.return_value = datetime(2026, 6, 5, 10, 50, 50, tzinfo=timezone.utc)
+            mocked_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            payload = ops_monitor.collect_dashboard_snapshot(force=False)
+
+        self.assertFalse(payload["stale"])
+        self.assertEqual(payload["status"], "healthy")
+        self.assertFalse(payload["remote"]["partial"])
+        self.assertEqual(payload["remote"]["transport"], "hybrid-cache")
+        self.assertEqual(payload["remote"]["docker"]["containers"][0]["name"], "fultons-quiz")
+        self.assertFalse(any("HTTPS fallback" in alert for alert in payload["alerts"]))
+
     def test_collect_dashboard_snapshot_loads_persisted_cache_when_live_paths_fail(self) -> None:
         import ops_monitor
 

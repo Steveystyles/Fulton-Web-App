@@ -1139,10 +1139,28 @@ CACHE_FILE_PATH = Path(__file__).resolve().parent / "data" / "local-ops-snapshot
 SSH_RETRY_ATTEMPTS = 3
 ASYNC_LOCAL_ACTIONS = frozenset({"generate_tomorrow_quiz", "regenerate_question"})
 LOCAL_ACTION_JOB_LIMIT = 32
+FALLBACK_HOST_CACHE_MAX_AGE_SEC = 300
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def london_dates() -> tuple[str, str]:
@@ -1577,6 +1595,20 @@ def empty_remote_snapshot() -> dict[str, Any]:
     }
 
 
+def cached_full_remote_is_recent(existing_remote: dict[str, Any] | None) -> bool:
+    if not isinstance(existing_remote, dict):
+        return False
+    if existing_remote.get("partial"):
+        return False
+    generated_at = parse_iso_datetime(str(existing_remote.get("generatedAt") or ""))
+    if generated_at is None:
+        return False
+    age_sec = (datetime.now(timezone.utc) - generated_at).total_seconds()
+    if age_sec < 0:
+        age_sec = 0
+    return age_sec <= FALLBACK_HOST_CACHE_MAX_AGE_SEC
+
+
 def merge_internal_remote_summary(
     existing_remote: dict[str, Any] | None,
     summary_remote: dict[str, Any],
@@ -1589,11 +1621,18 @@ def merge_internal_remote_summary(
         current_value = remote.get(section)
         if not current_value:
             remote[section] = copy.deepcopy(summary_remote.get(section))
+    using_recent_full_cache = cached_full_remote_is_recent(existing_remote)
     remote["ok"] = bool(summary_remote.get("ok"))
     remote["generatedAt"] = str(summary_remote.get("generatedAt") or utc_now_iso())
     remote["responseTimeMs"] = summary_remote.get("responseTimeMs")
-    remote["partial"] = True
-    remote["transport"] = str(summary_remote.get("transport") or "https-fallback")
+    remote["partial"] = not using_recent_full_cache
+    remote["transport"] = (
+        "hybrid-cache"
+        if using_recent_full_cache
+        else str(summary_remote.get("transport") or "https-fallback")
+    )
+    if using_recent_full_cache and isinstance(existing_remote, dict):
+        remote["hostSnapshotGeneratedAt"] = existing_remote.get("generatedAt")
     return remote
 
 
@@ -2209,4 +2248,3 @@ def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
         stale=True,
         last_error=internal_error,
     )
-

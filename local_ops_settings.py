@@ -39,9 +39,9 @@ def default_monitor_settings() -> dict[str, Any]:
         "internalBaseUrl": _default_internal_base_url(public_health_url),
         "internalQuizToken": "",
         "composeFile": "/home/ste/fulton-web-app-deploy/compose.yaml",
-        "envFile": "/srv/storage/appdata/fultons-quiz/app.env",
-        "dataDir": "/srv/storage/appdata/fultons-quiz",
-        "dbPath": "/srv/storage/appdata/fultons-quiz/fultons.db",
+        "envFile": "/disk3/appdata/fultons-quiz/app.env",
+        "dataDir": "/disk4/appdata/fultons-quiz",
+        "dbPath": "/disk4/appdata/fultons-quiz/fultons.db",
         "appPort": 3000,
     }
 

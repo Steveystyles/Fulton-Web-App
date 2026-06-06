@@ -40,7 +40,7 @@ That launcher starts a localhost-only board at `http://127.0.0.1:8765/ops`, enab
 
 ## Homeserver Deployment
 
-The production container is built with `Dockerfile` and served through the Traefik-facing compose file at `deploy/compose.yaml`. Runtime data is mounted at `/srv/storage/appdata/fultons-quiz`.
+The production container is built with `Dockerfile` and served through the Traefik-facing compose file at `deploy/compose.yaml`. The host runtime paths come from `~/fulton-web-app-deploy/.env`, which sets `FULTONS_ENV_FILE` and `FULTONS_HOST_DATA_DIR` for the live container.
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full server clone, environment, build, and update process.
 

@@ -27,8 +27,14 @@ finally {
 $remoteScript = @'
 set -Eeuo pipefail
 
-ENV_FILE="/srv/storage/appdata/fultons-quiz/app.env"
 COMPOSE_FILE="/home/ste/fulton-web-app-deploy/compose.yaml"
+COMPOSE_ENV_FILE="/home/ste/fulton-web-app-deploy/.env"
+if [ -f "$COMPOSE_ENV_FILE" ]; then
+  set -a
+  . "$COMPOSE_ENV_FILE"
+  set +a
+fi
+ENV_FILE="${FULTONS_ENV_FILE:-/srv/storage/appdata/fultons-quiz/app.env}"
 
 python3 - "$ENV_FILE" <<'PY'
 import base64

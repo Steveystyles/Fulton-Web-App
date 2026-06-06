@@ -180,7 +180,7 @@ function CurrentPlayerCard({
               <Medal aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
               Your 7-day score
             </p>
-            <h1 className="mt-1 truncate text-2xl font-black">{player.username}</h1>
+            <h1 className="mt-1 break-words text-2xl font-black leading-tight">{player.username}</h1>
           </div>
           <div className="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-right">
             <p className="text-[0.68rem] font-black uppercase tracking-normal text-white/60">
@@ -342,14 +342,17 @@ function PlayerDetailDialog({
         aria-modal="true"
         aria-labelledby="player-stats-title"
         onMouseDown={(event) => event.stopPropagation()}
-        className="max-h-[85dvh] w-full max-w-[430px] overflow-y-auto p-4"
+        className="max-h-[85dvh] w-full max-w-[460px] overflow-y-auto p-4"
       >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-xs font-black uppercase tracking-normal text-saints-red">
               Player stats
             </p>
-            <h2 id="player-stats-title" className="mt-1 truncate text-2xl font-black text-slate-950">
+            <h2
+              id="player-stats-title"
+              className="mt-1 break-words text-2xl font-black leading-tight text-slate-950"
+            >
               {player.username}
             </h2>
           </div>
@@ -363,7 +366,7 @@ function PlayerDetailDialog({
           </button>
         </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-2">
+        <div className="mt-4 grid grid-cols-3 gap-3">
           <StatFigure label="Rank" value={`#${player.rank}`} />
           <StatFigure label="This week" value={player.weeklyPoints} />
           <StatFigure label="Streak" value={player.currentStreak} />
@@ -374,21 +377,31 @@ function PlayerDetailDialog({
             quizPoints={player.weeklyQuizPoints}
             wordlePoints={player.weeklyWordlePoints}
           />
-          <div className="grid grid-cols-2 gap-2">
-            <ScoreFigure
+          <div className="space-y-2">
+            <DetailMetricRow
               icon={Hash}
               label="Wordle points"
-              value={player.wordlePoints}
-              detail={`${player.wordleWins} wins from ${player.wordlePlayed}`}
+              value={`${player.wordlePoints} pts`}
+              detail={`${player.wordleWins} wins from ${player.wordlePlayed} games`}
             />
-            <ScoreFigure
+            <DetailMetricRow
               icon={CircleHelp}
               label="Quiz points"
-              value={player.quizPoints}
-              detail={`${quizAccuracy(player)} accuracy`}
+              value={`${player.quizPoints} pts`}
+              detail={`${quizAccuracy(player)} accuracy from ${player.quizCorrect} correct answers`}
             />
-            <StatFigure label="All-time" value={player.totalPoints} />
-            <StatFigure label="Best streak" value={player.bestStreak} />
+            <DetailMetricRow
+              icon={Hash}
+              label="All-time total"
+              value={`${player.totalPoints} pts`}
+              detail="Permanent score across all games"
+            />
+            <DetailMetricRow
+              icon={Flame}
+              label="Best streak"
+              value={dayLabel(player.bestStreak)}
+              detail="Longest run of consecutive active days"
+            />
           </div>
         </div>
       </Card>
@@ -418,9 +431,9 @@ function ScoreGuide() {
 
 function StatFigure({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="min-w-0 rounded-2xl bg-slate-50 px-2.5 py-3 text-center">
-      <p className="truncate text-lg font-black leading-none text-slate-950">{value}</p>
-      <p className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+    <div className="min-w-0 rounded-2xl bg-slate-50 px-3 py-3 text-center">
+      <p className="break-words text-2xl font-black leading-none text-slate-950">{value}</p>
+      <p className="mt-1 text-[0.72rem] font-black uppercase tracking-normal text-slate-600">
         {label}
       </p>
     </div>
@@ -444,11 +457,38 @@ function ScoreFigure({
         <Icon aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
       </span>
       <div className="min-w-0">
-        <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+        <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
           {label}
         </p>
-        <p className="truncate text-sm font-black text-slate-950">{value}</p>
-        <p className="truncate text-xs font-bold text-slate-500">{detail}</p>
+        <p className="break-words text-base font-black leading-tight text-slate-950">{value}</p>
+        <p className="mt-1 break-words text-sm font-semibold leading-snug text-slate-600">{detail}</p>
+      </div>
+    </div>
+  );
+}
+
+function DetailMetricRow({
+  detail,
+  icon: Icon,
+  label,
+  value,
+}: {
+  detail: string;
+  icon: typeof Hash | typeof CircleHelp | typeof Flame;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 rounded-2xl bg-slate-50 px-3 py-3">
+      <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white text-saints-red">
+        <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-col gap-1 min-[360px]:flex-row min-[360px]:items-baseline min-[360px]:justify-between">
+          <p className="text-sm font-black uppercase tracking-normal text-slate-600">{label}</p>
+          <p className="break-words text-xl font-black leading-tight text-slate-950">{value}</p>
+        </div>
+        <p className="mt-1 break-words text-sm font-semibold leading-snug text-slate-600">{detail}</p>
       </div>
     </div>
   );

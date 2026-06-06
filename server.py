@@ -20,6 +20,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -469,6 +470,46 @@ FACT_SEARCH_BLOCKED_DOMAINS = (
     "wikidata.org",
     "wikimedia.org",
 )
+FACT_LOW_QUALITY_SOURCE_TOKENS = (
+    "choosewhere",
+    "tripadvisor",
+    "wanderlog",
+    "visitacity",
+    "thecrazytourist",
+    "traveltriangle",
+    "holidays",
+    "hotels",
+    "booking.com",
+    "expedia",
+)
+FACT_GENERIC_PAGE_TERMS = (
+    "skip to content",
+    "british broadcasting corporation",
+    "travel guide",
+    "visitor guide",
+    "visit guide",
+    "things to do",
+    "where to stay",
+    "where to eat",
+    "top attractions",
+    "must-see",
+    "perfect for visitors",
+    "plan your visit",
+    "offers visitors",
+    "vibrant cultural scene",
+)
+FACT_GENERIC_FACT_TITLES = {
+    value.casefold()
+    for value in (
+        "History",
+        "Landmark",
+        "Industry",
+        "Culture",
+        "People",
+        "Anniversary",
+        "Local fact",
+    )
+}
 
 NEWS_STREAMS: set[queue.Queue[dict[str, Any]]] = set()
 NEWS_STREAMS_LOCK = threading.Lock()
@@ -479,7 +520,7 @@ FACTS_AI_LOCK = threading.Lock()
 FACTS_AI_CONTEXT = threading.local()
 DAILY_QUIZ_OPERATION_LOCK = threading.Lock()
 FACTS_AI_NEXT_REQUEST_AT = 0.0
-HISTORY_FACT_ROTATION_VERSION = "v3"
+HISTORY_FACT_ROTATION_VERSION = "v4"
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -2562,13 +2603,106 @@ def bing_rss_search_url(query: str) -> str:
     )
 
 
+class FactExcerptHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.meta_descriptions: list[str] = []
+        self.page_title = ""
+        self.blocks: list[str] = []
+        self._active_tag: str | None = None
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {str(key).lower(): str(value or "") for key, value in attrs}
+        if tag == "meta":
+            name = attr_map.get("name", "").lower()
+            prop = attr_map.get("property", "").lower()
+            if name in {"description", "twitter:description"} or prop in {"og:description"}:
+                content = clean_search_text(attr_map.get("content", ""), 420)
+                if content:
+                    self.meta_descriptions.append(content)
+            return
+        if tag in {"title", "p", "li"}:
+            self._active_tag = tag
+            self._parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._active_tag is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag != self._active_tag:
+            return
+        text = clean_search_text(" ".join(self._parts), 700)
+        if text:
+            if tag == "title" and not self.page_title:
+                self.page_title = text
+            elif tag in {"p", "li"}:
+                self.blocks.append(text)
+        self._active_tag = None
+        self._parts = []
+
+
+def clean_web_excerpt_candidate(value: str, limit: int = 320) -> str:
+    cleaned = clean_search_text(value, limit)
+    lower = cleaned.lower()
+    if len(cleaned) < 40:
+        return ""
+    if any(phrase in lower for phrase in FACT_GENERIC_PAGE_TERMS):
+        return ""
+    if lower.count("|") >= 2:
+        return ""
+    return cleaned
+
+
+def extract_web_page_excerpt(html_text: str) -> str:
+    parser = FactExcerptHTMLParser()
+    try:
+        parser.feed(html_text)
+    except Exception:
+        parser = FactExcerptHTMLParser()
+
+    candidates: list[str] = []
+    for value in parser.meta_descriptions[:2]:
+        cleaned = clean_web_excerpt_candidate(value)
+        if cleaned:
+            candidates.append(cleaned)
+    for value in parser.blocks[:8]:
+        cleaned = clean_web_excerpt_candidate(value)
+        if cleaned:
+            candidates.append(cleaned)
+
+    if not candidates:
+        cleaned = clean_web_excerpt_candidate(html_text, 900)
+        return cleaned
+
+    sentences: list[str] = []
+    seen_sentences: set[str] = set()
+    for candidate in candidates:
+        for sentence in split_fact_sentences(candidate):
+            cleaned_sentence = clean_fact_sentence(sentence)
+            if cleaned_sentence is None:
+                continue
+            sentence_key = history_fact_text_key(cleaned_sentence)
+            if sentence_key in seen_sentences:
+                continue
+            seen_sentences.add(sentence_key)
+            sentences.append(cleaned_sentence)
+            if len(sentences) >= 3:
+                break
+        if len(sentences) >= 3:
+            break
+
+    excerpt = " ".join(sentences[:2]).strip()
+    return excerpt[:900] if excerpt else ""
+
+
 def fetch_web_page_excerpt(url: str) -> str:
     if blocked_fact_source(url):
         return ""
     try:
-        return clean_search_text(
+        return extract_web_page_excerpt(
             fetch_text_url(url, timeout=FACTS_WEB_SEARCH_TIMEOUT_SEC),
-            900,
         )
     except Exception:
         return ""
@@ -2627,6 +2761,7 @@ def search_web_fact_evidence(place_title: str, limit: int = 8) -> list[dict[str,
 def fact_source_quality_bonus(source_name: str, source_url: str) -> int:
     host = (source_name or urlparse(source_url).netloc or "").lower()
     path = urlparse(source_url).path.lower()
+    title_hint = f"{host} {path}"
     score = 0
     if host.endswith(".gov.uk") or any(token in host for token in ("council", "museum", "university", "ac.uk")):
         score += 14
@@ -2634,11 +2769,103 @@ def fact_source_quality_bonus(source_name: str, source_url: str) -> int:
         score += 8
     elif host.endswith(".co.uk"):
         score += 3
+    if any(token in title_hint for token in FACT_LOW_QUALITY_SOURCE_TOKENS):
+        score -= 18
     if path in {"", "/"}:
         score -= 12
     if any(token in path for token in ("/category/", "/categories/", "/tag/", "/tags/", "/all-about/")):
         score -= 10
+    if any(token in title_hint for token in ("/visit/", "travel-guide", "visitor-guide", "things-to-do")):
+        score -= 8
     return score
+
+
+def fact_title_is_specific(title: str, place_title: str) -> bool:
+    cleaned = clean_search_text(title, 72).strip(" -|:")
+    if len(cleaned) < 4:
+        return False
+    lower = cleaned.casefold()
+    place_name = place_title.split(",", 1)[0].strip().casefold()
+    place_full = place_title.casefold()
+    if lower in FACT_GENERIC_FACT_TITLES:
+        return False
+    if lower in {place_name, place_full}:
+        return False
+    if any(term in lower for term in FACT_GENERIC_PAGE_TERMS):
+        return False
+    return True
+
+
+def trim_fact_title(value: str) -> str:
+    cleaned = clean_search_text(value, 72).strip(" -|:")
+    cleaned = re.sub(
+        r"\b(history|heritage|visitor guide|visit guide|travel guide|official guide|official site)\b$",
+        "",
+        cleaned,
+        flags=re.I,
+    ).strip(" -|:")
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def extract_fact_subject(sentence: str, place_title: str) -> str:
+    place_name = place_title.split(",", 1)[0].strip().casefold()
+    candidates: list[tuple[int, int, str]] = []
+    for match in re.finditer(r"\b([A-Z][A-Za-z0-9'&.-]+(?:\s+[A-Z0-9][A-Za-z0-9'&.-]+){0,3})\b", sentence):
+        candidate = match.group(1).strip(" -|:")
+        if candidate.casefold() == place_name:
+            continue
+        if candidate.casefold() in {"the", "a", "an"}:
+            continue
+        token_count = len(candidate.split())
+        score = 0
+        if token_count >= 2:
+            score += 4
+        if any(character.isdigit() for character in candidate):
+            score += 4
+        if any(
+            token in candidate.casefold()
+            for token in ("abbey", "pattern", "festival", "museum", "castle", "cathedral", "hall")
+        ):
+            score += 2
+        candidates.append((score, token_count, candidate))
+    if not candidates:
+        return ""
+    candidates.sort(reverse=True)
+    return candidates[0][2]
+
+
+def meaningful_fact_title(
+    suggested_title: str,
+    sentence: str,
+    evidence_title: str,
+    place_title: str,
+    theme: str,
+) -> str:
+    place_name = place_title.split(",", 1)[0].strip()
+    title_prefix_pattern = rf"^{re.escape(place_name)}\s*(?:[:|\-])\s*"
+
+    trimmed_suggested = re.sub(title_prefix_pattern, "", trim_fact_title(suggested_title), flags=re.I)
+    if fact_title_is_specific(trimmed_suggested, place_title):
+        return trimmed_suggested
+
+    trimmed_evidence = re.sub(title_prefix_pattern, "", trim_fact_title(evidence_title), flags=re.I)
+    if fact_title_is_specific(trimmed_evidence, place_title):
+        return trimmed_evidence
+
+    subject = extract_fact_subject(sentence, place_title)
+    if fact_title_is_specific(subject, place_title):
+        return subject
+
+    lower = sentence.lower()
+    if theme == "industry" and any(token in lower for token in ("pattern", "textile", "weav")):
+        return "Textile legacy"
+    if theme == "culture" and "festival" in lower:
+        return "Festival scene"
+    if theme == "history" and "abbey" in lower:
+        return "Abbey history"
+    if theme == "people" and any(token in lower for token in ("born", "birthplace", "king", "queen")):
+        return "Notable connection"
+    return FACT_THEME_LABELS.get(theme, "Local fact")
 
 
 def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title: str) -> bool:
@@ -2658,6 +2885,26 @@ def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title:
             "what's on in ",
             "planning to visit",
             "things to do in ",
+            "british broadcasting corporation",
+            "cookie policy",
+            "privacy policy",
+            "sign up for",
+            "newsletter",
+            "where to stay",
+            "where to eat",
+        )
+    ):
+        return False
+    if any(
+        phrase in lower
+        for phrase in (
+            "with its ",
+            "offers visitors",
+            "perfect for visitors",
+            "must-see",
+            "plan your visit",
+            "top attractions",
+            "vibrant cultural scene",
         )
     ):
         return False
@@ -2713,7 +2960,7 @@ def web_evidence_fact_candidates(
             if place_name in cleaned.lower():
                 score += 10
             fact = make_history_fact(
-                title=FACT_THEME_LABELS.get(theme, "Local fact"),
+                title=meaningful_fact_title("", cleaned, evidence_title, place_title, theme),
                 text=cleaned,
                 theme=theme,
                 source_name=source_name,
@@ -4443,10 +4690,17 @@ def reviewed_location_facts(
             if fact_key in recent_fact_keys:
                 raise ValueError("Gemini repeated a recent fact.")
             seen_fact_keys.add(fact_key)
+            theme = str(item.get("theme") or "general")
             selected_fact = {
-                "title": str(item.get("title") or "").strip() or "Local fact",
+                "title": meaningful_fact_title(
+                    str(item.get("title") or ""),
+                    fact_text,
+                    str(evidence_item.get("title") or ""),
+                    place_title,
+                    theme,
+                ),
                 "text": fact_text,
-                "theme": str(item.get("theme") or "general"),
+                "theme": theme,
                 "sourceName": source_name,
                 "sourceUrl": source_url,
                 "confidence": "medium",

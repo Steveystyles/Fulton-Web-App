@@ -20,7 +20,13 @@ if ($Date -notmatch "^\d{4}-\d{2}-\d{2}$") {
 $remoteScript = @'
 set -Eeuo pipefail
 
-ENV_FILE="/srv/storage/appdata/fultons-quiz/app.env"
+COMPOSE_ENV_FILE="/home/ste/fulton-web-app-deploy/.env"
+if [ -f "$COMPOSE_ENV_FILE" ]; then
+  set -a
+  . "$COMPOSE_ENV_FILE"
+  set +a
+fi
+ENV_FILE="${FULTONS_ENV_FILE:-/srv/storage/appdata/fultons-quiz/app.env}"
 quiz_date="${QUIZ_DATE:?QUIZ_DATE is required}"
 force="${QUIZ_FORCE:-false}"
 token="$(grep '^INTERNAL_QUIZ_TOKEN=' "$ENV_FILE" | tail -1 | cut -d= -f2-)"

@@ -12,6 +12,76 @@ class FactsFallbackTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
 
+    def test_fetch_web_page_excerpt_discards_page_chrome(self) -> None:
+        import server
+
+        html = """
+        <html>
+          <head>
+            <title>Paisley: The story of a classic bohemian print</title>
+            <meta property="og:description" content="Skip to content British Broadcasting Corporation Home" />
+          </head>
+          <body>
+            <nav>Skip to content British Broadcasting Corporation Home</nav>
+            <p>Paisley gave its name to the paisley pattern through the town's textile industry.</p>
+            <p>Robert II, the first Stewart king of Scotland, was born in Paisley in 1316.</p>
+          </body>
+        </html>
+        """
+
+        with patch("server.fetch_text_url", return_value=html):
+            excerpt = server.fetch_web_page_excerpt("https://www.bbc.com/travel/article/paisley-pattern")
+
+        self.assertIn("Paisley gave its name to the paisley pattern", excerpt)
+        self.assertIn("Robert II", excerpt)
+        self.assertNotIn("Skip to content", excerpt)
+        self.assertNotIn("British Broadcasting Corporation", excerpt)
+
+    def test_web_evidence_fallback_facts_uses_specific_titles(self) -> None:
+        import server
+
+        evidence = [
+            {
+                "title": "Paisley travel guide",
+                "sourceName": "choosewhere.com",
+                "sourceUrl": "https://www.choosewhere.com/paisley",
+                "snippet": "With its magnificent abbey and vibrant cultural scene, Paisley offers visitors a rewarding stop.",
+                "excerpt": (
+                    "With its magnificent abbey, impressive Victorian architecture, and vibrant cultural "
+                    "scene, Paisley offers visitors a rewarding stop in the west of Scotland."
+                ),
+            },
+            {
+                "title": "Paisley Abbey history",
+                "sourceName": "paisleyabbey.org.uk",
+                "sourceUrl": "https://paisleyabbey.org.uk/history",
+                "snippet": "Paisley Abbey traces its origins to the 12th century.",
+                "excerpt": (
+                    "Paisley Abbey traces its origins to the 12th century and remains central to the town's story."
+                ),
+            },
+            {
+                "title": "Paisley visit guide",
+                "sourceName": "paisley.is",
+                "sourceUrl": "https://paisley.is/visit/paisley/",
+                "snippet": "Robert II, the first Stewart king of Scotland, was born here in 1316.",
+                "excerpt": "Robert II, the first Stewart king of Scotland, was born in Paisley in 1316.",
+            },
+        ]
+
+        facts = server.web_evidence_fallback_facts(
+            "Paisley, Renfrewshire",
+            evidence,
+            limit=2,
+            recent_texts=[],
+        )
+
+        self.assertEqual(len(facts), 2)
+        self.assertTrue(all(fact["title"].casefold() not in server.FACT_GENERIC_FACT_TITLES for fact in facts))
+        self.assertTrue(all(fact["sourceName"] != "choosewhere.com" for fact in facts))
+        self.assertIn("Paisley Abbey", {fact["title"] for fact in facts})
+        self.assertTrue(any("Robert II" in fact["title"] or "Robert II" in fact["text"] for fact in facts))
+
     def test_reviewed_location_facts_use_web_evidence_when_ai_fails(self) -> None:
         import server
 

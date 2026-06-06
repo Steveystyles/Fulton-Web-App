@@ -62,20 +62,54 @@ VOLATILE_FACT_TERMS = (
     "currently",
     "latest",
     "this season",
-    "today",
-    "tomorrow",
-    "yesterday",
     "right now",
     "most recent",
+)
+VOLATILE_FACT_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bas of (?:today|now)\b",
+        r"\b(?:today|yesterday|tomorrow)\b.{0,40}\b(?:match|game|score|standings|table|fixture|transfer|manager|captain|owner|president|leader|champion|holder)\b",
+        r"\b(?:match|game|score|standings|table|fixture|transfer|manager|captain|owner|president|leader|champion|holder)\b.{0,40}\b(?:today|yesterday|tomorrow)\b",
+    )
 )
 GENERIC_TOPIC_TAGS = {
     "football",
     "general",
     "general knowledge",
+    "history",
+    "geography",
+    "science",
+    "technology",
+    "nature",
+    "architecture",
+    "landmarks",
+    "archaeology",
+    "art",
+    "biology",
+    "books",
+    "chemistry",
+    "culture",
     "easy",
+    "engineering",
+    "film",
     "medium",
     "hard",
+    "language",
+    "linguistics",
+    "literature",
+    "math",
+    "mathematics",
+    "music",
+    "philosophy",
+    "physics",
+    "politics",
     "quiz",
+    "religion",
+    "space",
+    "sport",
+    "sports",
+    "television",
 }
 
 DEFAULT_COMPATIBLE_BASE_URLS = {
@@ -782,6 +816,17 @@ def normalize_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
+def question_uses_volatile_fact(question: str) -> bool:
+    question_lower = question.casefold()
+    if any(term in question_lower for term in VOLATILE_FACT_TERMS):
+        return True
+    return any(pattern.search(question) for pattern in VOLATILE_FACT_PATTERNS)
+
+
+def is_generic_topic_tag(value: str) -> bool:
+    return normalize_text(value) in GENERIC_TOPIC_TAGS
+
+
 def validate_question(
     value: Any,
     *,
@@ -818,7 +863,7 @@ def validate_question(
     question_lower = question.casefold()
     if not any(re.search(rf"\b{re.escape(cue)}\b", question_lower) for cue in QUESTION_CUES):
         return ValidationResult(False, "Question does not look interrogative.")
-    if any(term in question_lower for term in VOLATILE_FACT_TERMS):
+    if question_uses_volatile_fact(question):
         return ValidationResult(False, "Question relies on a volatile current fact.")
 
     choices = value.get("choices")
@@ -1089,7 +1134,7 @@ def check_repetition(
             answer_count += 1
         for tag in previous.get("tags", []):
             clean_tag = normalize_text(str(tag))
-            if clean_tag and clean_tag not in GENERIC_TOPIC_TAGS:
+            if clean_tag and not is_generic_topic_tag(clean_tag):
                 topic_counts[clean_tag] = topic_counts.get(clean_tag, 0) + 1
 
     if reject_any_repeated_answer and answer_count >= 1:
@@ -1098,7 +1143,7 @@ def check_repetition(
         return RepetitionResult(False, "Correct answer has already appeared too often recently.")
     for tag in question["tags"]:
         clean_tag = normalize_text(tag)
-        if clean_tag not in GENERIC_TOPIC_TAGS and topic_counts.get(clean_tag, 0) >= 5:
+        if not is_generic_topic_tag(clean_tag) and topic_counts.get(clean_tag, 0) >= 5:
             return RepetitionResult(False, f"Topic tag {tag!r} has appeared too often recently.")
     return RepetitionResult(True, "OK")
 

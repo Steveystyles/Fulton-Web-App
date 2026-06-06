@@ -212,6 +212,29 @@ class DailyQuizTests(unittest.TestCase):
                 self.assertFalse(result.passed)
                 self.assertIn(expected_reason, result.reason)
 
+    def test_validator_allows_stable_today_wording(self) -> None:
+        question = valid_question(difficulty="hard")
+        question["question"] = (
+            "Which ancient wonder of the world is the only one still largely intact and standing today?"
+        )
+
+        result = daily_quiz.validate_question(
+            question,
+            expected_subject="general_knowledge",
+            expected_difficulty="hard",
+        )
+
+        self.assertTrue(result.passed)
+
+    def test_validator_rejects_explicit_current_fact_language(self) -> None:
+        question = valid_question()
+        question["question"] = "Which football manager is currently top of the league this season?"
+
+        result = daily_quiz.validate_question(question)
+
+        self.assertFalse(result.passed)
+        self.assertIn("volatile current fact", result.reason)
+
     def test_repetition_detects_normalized_duplicates(self) -> None:
         question = valid_question()
         previous = [{**question, "question": question["question"].upper().rstrip("?") + "!!!"}]
@@ -259,6 +282,39 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertIn("quiz set", result.reason)
+
+    def test_repetition_ignores_broad_topic_tags(self) -> None:
+        question = valid_question(difficulty="hard")
+        question["tags"] = ["history", "landmarks"]
+        previous = [
+            {
+                "question": f"Which documented event is associated with archive entry {index}?",
+                "correct_answer": f"Archive answer {index}",
+                "tags": ["history"],
+            }
+            for index in range(6)
+        ]
+
+        result = daily_quiz.check_repetition(question, previous)
+
+        self.assertTrue(result.passed)
+
+    def test_repetition_rejects_specific_overused_topic_tags(self) -> None:
+        question = valid_question(difficulty="hard")
+        question["tags"] = ["mesopotamia", "history"]
+        previous = [
+            {
+                "question": f"Which ruler is associated with Mesopotamian record {index}?",
+                "correct_answer": f"Different answer {index}",
+                "tags": ["mesopotamia"],
+            }
+            for index in range(5)
+        ]
+
+        result = daily_quiz.check_repetition(question, previous)
+
+        self.assertFalse(result.passed)
+        self.assertIn("mesopotamia", result.reason.lower())
 
     def test_generation_retries_and_publishes_only_after_six_approved_slots(self) -> None:
         provider = FakeProvider()
