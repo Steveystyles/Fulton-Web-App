@@ -1470,6 +1470,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
         server.HISTORY_CACHE.clear()
         self.addCleanup(server.HISTORY_CACHE.clear)
         fetch_summary_calls = 0
+        rotation_created_at = datetime(2026, 6, 4, 11, 30, 0, tzinfo=timezone.utc)
 
         def fake_fetch_summary(_location: str, _lang: str) -> dict[str, object]:
             nonlocal fetch_summary_calls
@@ -1502,7 +1503,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             patch("server.fetch_wikipedia_images", return_value=[]),
             patch(
                 "server.current_rotated_history_facts_record",
-                return_value=(rotated_facts, datetime.now(timezone.utc).replace(microsecond=0)),
+                return_value=(rotated_facts, rotation_created_at),
             ),
             patch("server.wikidata_profile", return_value={}),
         ):
@@ -1520,6 +1521,8 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(second_payload["location"]["title"], "Paisley")
         self.assertEqual(second_payload["location"]["facts"][0]["title"], "Paisley Abbey")
         self.assertFalse(second_payload["meta"]["cached"])
+        self.assertEqual(second_payload["meta"]["rotationCreatedAt"], "2026-06-04T11:30:00+00:00")
+        self.assertEqual(second_payload["meta"]["rotationExpiresAt"], "2026-06-05T11:30:00+00:00")
         self.assertIn("en:paisley:2026-06-04:2:5", server.HISTORY_CACHE)
 
     def test_history_payload_cache_expires_when_fact_rotation_expires(self) -> None:
@@ -1562,9 +1565,13 @@ class ProductionServerHardeningTests(unittest.TestCase):
             _payload, status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
 
         self.assertEqual(status, HTTPStatus.OK)
-        expires_at, _cached_payload = server.HISTORY_CACHE["en:paisley:2026-06-04:2:5"]
+        expires_at, cached_payload = server.HISTORY_CACHE["en:paisley:2026-06-04:2:5"]
         expected_expiry = rotation_created_at.timestamp() + server.FACT_ROTATION_TTL_SEC
         self.assertAlmostEqual(expires_at, expected_expiry, delta=1.0)
+        self.assertEqual(
+            cached_payload["meta"]["rotationExpiresAt"],
+            (rotation_created_at + timedelta(seconds=server.FACT_ROTATION_TTL_SEC)).isoformat(),
+        )
 
     def test_wikipedia_images_keep_location_photos_and_skip_badges(self) -> None:
         import server

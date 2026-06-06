@@ -3,6 +3,7 @@ import {
   BookOpen,
   Cake,
   CalendarDays,
+  Clock3,
   ExternalLink,
   Factory,
   Landmark,
@@ -78,6 +79,38 @@ function todayIsoDate() {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatFactRefreshCountdown(expiresAt: string | null, nowMs: number): string | null {
+  if (!expiresAt) {
+    return null;
+  }
+
+  const expiresMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresMs)) {
+    return null;
+  }
+
+  const remainingSeconds = Math.max(0, Math.ceil((expiresMs - nowMs) / 1000));
+  if (remainingSeconds <= 0) {
+    return "Refreshing now";
+  }
+
+  const days = Math.floor(remainingSeconds / 86400);
+  const hours = Math.floor((remainingSeconds % 86400) / 3600);
+  const minutes = Math.floor((remainingSeconds % 3600) / 60);
+  const seconds = remainingSeconds % 60;
+
+  if (days > 0) {
+    return `${days}d ${String(hours).padStart(2, "0")}h`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
 }
 
 function isFactObject(fact: string | HistoryFact): fact is HistoryFact {
@@ -296,7 +329,28 @@ export function HistoryKnowledge() {
     () => (history?.location?.facts ?? []).map((fact, index) => normaliseFact(fact, index)).slice(0, 2),
     [history],
   );
+  const rotationExpiresAt = history?.meta.rotationExpiresAt ?? null;
+  const [countdownNow, setCountdownNow] = useState(() => Date.now());
+  const factRefreshCountdown = useMemo(
+    () => formatFactRefreshCountdown(rotationExpiresAt, countdownNow),
+    [countdownNow, rotationExpiresAt],
+  );
   const placeTitle = history?.location?.title ?? submittedLocation.location;
+
+  useEffect(() => {
+    if (!rotationExpiresAt) {
+      return undefined;
+    }
+
+    setCountdownNow(Date.now());
+    const timerId = window.setInterval(() => {
+      setCountdownNow(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [rotationExpiresAt]);
 
   function submitLocation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -409,9 +463,17 @@ export function HistoryKnowledge() {
 
           {facts.length > 0 ? (
             <section className="space-y-2" aria-label="Location facts">
-              <p className="px-1 text-sm font-black uppercase tracking-normal text-saints-red">
-                Interesting facts
-              </p>
+              <div className="flex items-center justify-between gap-2 px-1">
+                <p className="text-sm font-black uppercase tracking-normal text-saints-red">
+                  Interesting facts
+                </p>
+                {factRefreshCountdown ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[0.7rem] font-black uppercase tracking-normal text-slate-700">
+                    <Clock3 aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
+                    Refresh in {factRefreshCountdown}
+                  </span>
+                ) : null}
+              </div>
               <div className="grid gap-2">
                 {facts.map((fact, index) => {
                   const meta = themeMeta[fact.theme] ?? themeMeta.general;
@@ -431,9 +493,17 @@ export function HistoryKnowledge() {
                           <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
                         </span>
                         <div className="min-w-0 flex-1">
-                          <span className={`inline-flex rounded-full px-2.5 py-1 text-[0.7rem] font-black uppercase tracking-normal ${meta.className}`}>
-                            {meta.label}
-                          </span>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-[0.7rem] font-black uppercase tracking-normal ${meta.className}`}>
+                              {meta.label}
+                            </span>
+                            {factRefreshCountdown ? (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[0.7rem] font-black uppercase tracking-normal text-slate-700">
+                                <Clock3 aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
+                                Refresh in {factRefreshCountdown}
+                              </span>
+                            ) : null}
+                          </div>
                           <p className="mt-2 text-sm font-black leading-snug text-slate-950">
                             {fact.title}
                           </p>

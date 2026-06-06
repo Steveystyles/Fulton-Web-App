@@ -2716,6 +2716,13 @@ def history_cache_expiry_timestamp(
     return expires_at
 
 
+def history_rotation_expiry_isoformat(rotation_created_at: datetime | None) -> str | None:
+    if rotation_created_at is None:
+        return None
+    expires_at = rotation_created_at.astimezone(timezone.utc) + timedelta(seconds=FACT_ROTATION_TTL_SEC)
+    return expires_at.replace(microsecond=0).isoformat()
+
+
 def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
     request = Request(url, headers={"User-Agent": HISTORY_USER_AGENT})
     with urlopen(request, timeout=timeout) as response:
@@ -5616,6 +5623,12 @@ def history_payload(
             "cached": False,
             "eventsLanguage": "en",
             "generatedAt": utc_now(),
+            "rotationCreatedAt": (
+                cache_rotation_created_at.replace(microsecond=0).astimezone(timezone.utc).isoformat()
+                if cache_rotation_created_at is not None
+                else None
+            ),
+            "rotationExpiresAt": history_rotation_expiry_isoformat(cache_rotation_created_at),
         },
     }
     if history_payload_is_cacheable(payload):

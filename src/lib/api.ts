@@ -445,6 +445,8 @@ export type HistoryResponse = {
     cached: boolean;
     eventsLanguage: string;
     generatedAt: string;
+    rotationCreatedAt: string | null;
+    rotationExpiresAt: string | null;
   };
 };
 
