@@ -1302,6 +1302,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             api_key="fallback-key",
             model="openai/gpt-4.1-mini",
             prompt="Prompt",
+            schema={"type": "object"},
         )
 
     def test_facts_ai_json_response_uses_second_fallback_after_first_fails(self) -> None:
@@ -1752,6 +1753,35 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(result["partOfSpeech"], "noun")
         self.assertEqual(result["definition"], "A person acknowledged as holy.")
         urlopen.assert_called_once()
+
+    def test_word_definition_uses_wiktionary_when_dictionary_api_misses(self) -> None:
+        import server
+
+        payload = {
+            "parse": {
+                "wikitext": (
+                    "==English==\n"
+                    "===Noun===\n"
+                    "# [[A]] person officially recognised as [[holy]].\n"
+                    "==French==\n"
+                    "===Noun===\n"
+                    "# saint\n"
+                )
+            }
+        }
+
+        server.WORD_DEFINITION_CACHE.clear()
+        self.addCleanup(server.WORD_DEFINITION_CACHE.clear)
+        with (
+            patch("server.word_definition_from_dictionary_api", return_value=None),
+            patch("server.fetch_json_url", return_value=payload),
+        ):
+            result = server.word_definition("Saint")
+
+        self.assertEqual(result["word"], "saint")
+        self.assertEqual(result["partOfSpeech"], "noun")
+        self.assertEqual(result["definition"], "A person officially recognised as holy.")
+        self.assertEqual(result["sourceUrl"], "https://en.wiktionary.org/wiki/saint")
 
     def test_quiz_scoring_adds_perfect_round_bonus(self) -> None:
         import server

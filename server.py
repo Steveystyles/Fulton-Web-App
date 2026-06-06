@@ -1453,57 +1453,172 @@ def serialize_wordle_state(
     }
 
 
+def word_definition_from_dictionary_api(normalized_word: str) -> dict[str, str | None] | None:
+    request = Request(
+        f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(normalized_word, safe='')}",
+        headers={
+            "Accept": "application/json",
+            "User-Agent": NEWS_USER_AGENT,
+        },
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(payload, list):
+        return None
+
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        meanings = entry.get("meanings")
+        if not isinstance(meanings, list):
+            continue
+        for meaning in meanings:
+            if not isinstance(meaning, dict):
+                continue
+            part_of_speech = str(meaning.get("partOfSpeech") or "").strip() or None
+            definitions = meaning.get("definitions")
+            if not isinstance(definitions, list):
+                continue
+            for definition_entry in definitions:
+                if not isinstance(definition_entry, dict):
+                    continue
+                definition = str(definition_entry.get("definition") or "").strip()
+                if not definition:
+                    continue
+                return {
+                    "word": normalized_word,
+                    "definition": definition,
+                    "partOfSpeech": part_of_speech,
+                    "sourceUrl": "https://dictionaryapi.dev/",
+                }
+    return None
+
+
+def strip_wiktionary_markup(value: str) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<!--.*?-->", " ", text, flags=re.S)
+    text = re.sub(r"<ref[^>]*>.*?</ref>", " ", text, flags=re.I | re.S)
+    text = re.sub(r"<[^>]+>", " ", text)
+    previous = None
+    while previous != text:
+        previous = text
+        text = re.sub(r"\{\{[^{}]*\}\}", " ", text)
+    text = re.sub(r"\[\[(?:[^|\]]+\|)?([^\]]+)\]\]", r"\1", text)
+    text = re.sub(
+        r"\[https?://[^\s\]]+(?:\s+([^\]]+))?\]",
+        lambda match: match.group(1) or "",
+        text,
+    )
+    text = text.replace("'''", " ").replace("''", " ")
+    text = re.sub(r"^[#*:;]+\s*", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" ,;:-")
+
+
+def extract_wiktionary_english_section(wikitext: str) -> str | None:
+    headers = list(re.finditer(r"(?m)^==[^=].*?==\s*$", wikitext))
+    for index, header_match in enumerate(headers):
+        header = re.sub(r"^==\s*|\s*==\s*$", "", header_match.group(0)).strip().casefold()
+        if header != "english":
+            continue
+        start = header_match.end()
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(wikitext)
+        section = wikitext[start:end].strip()
+        return section or None
+    return None
+
+
+def word_definition_from_wiktionary(normalized_word: str) -> dict[str, str | None] | None:
+    try:
+        payload = fetch_json_url(
+            "https://en.wiktionary.org/w/api.php"
+            f"?action=parse&page={quote(normalized_word, safe='')}"
+            "&prop=wikitext&format=json&formatversion=2&redirects=1"
+        )
+    except Exception:
+        return None
+
+    parse_payload = payload.get("parse", {})
+    if not isinstance(parse_payload, dict):
+        return None
+    wikitext = parse_payload.get("wikitext")
+    if not isinstance(wikitext, str) or not wikitext.strip():
+        return None
+
+    english_section = extract_wiktionary_english_section(wikitext)
+    if not english_section:
+        return None
+
+    supported_parts_of_speech = {
+        "noun",
+        "verb",
+        "adjective",
+        "adverb",
+        "pronoun",
+        "proper noun",
+        "preposition",
+        "interjection",
+        "determiner",
+        "conjunction",
+        "phrase",
+        "proverb",
+        "abbreviation",
+        "article",
+        "letter",
+        "suffix",
+        "prefix",
+    }
+    part_of_speech: str | None = None
+    for raw_line in english_section.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading_match = re.match(r"^===+\s*([^=]+?)\s*===+$", line)
+        if heading_match:
+            heading = re.sub(r"\s+", " ", heading_match.group(1).strip()).casefold()
+            part_of_speech = heading if heading in supported_parts_of_speech else None
+            continue
+        if not line.startswith("#") or line.startswith(("#:", "#*", "#;")):
+            continue
+        definition = strip_wiktionary_markup(line)
+        if not definition:
+            continue
+        return {
+            "word": normalized_word,
+            "definition": definition,
+            "partOfSpeech": part_of_speech,
+            "sourceUrl": f"https://en.wiktionary.org/wiki/{quote(normalized_word, safe='')}",
+        }
+    return None
+
+
 def word_definition(word: str) -> dict[str, str | None]:
     normalized_word = re.sub(r"[^a-z]", "", word.casefold())
     cached = WORD_DEFINITION_CACHE.get(normalized_word)
     if cached is not None:
         return cached
 
-    source_url = "https://dictionaryapi.dev/"
     empty_result = {
         "word": normalized_word,
         "definition": None,
         "partOfSpeech": None,
-        "sourceUrl": source_url,
+        "sourceUrl": "https://dictionaryapi.dev/",
     }
     if not normalized_word:
         return empty_result
 
-    request = Request(
-        f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(normalized_word, safe='')}",
-        headers={"Accept": "application/json", "User-Agent": NEWS_USER_AGENT},
-    )
-    try:
-        with urlopen(request, timeout=WORD_DEFINITION_TIMEOUT_SEC) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, ValueError):
-        return empty_result
+    result = word_definition_from_dictionary_api(normalized_word)
+    if result is None:
+        result = word_definition_from_wiktionary(normalized_word)
+    if result is None:
+        result = empty_result
 
-    if not isinstance(payload, list):
-        WORD_DEFINITION_CACHE[normalized_word] = empty_result
-        return empty_result
-
-    for entry in payload:
-        meanings = entry.get("meanings", []) if isinstance(entry, dict) else []
-        for meaning in meanings:
-            if not isinstance(meaning, dict):
-                continue
-            for item in meaning.get("definitions", []):
-                if not isinstance(item, dict):
-                    continue
-                definition = bounded_text(item.get("definition"), 500)
-                if definition:
-                    result = {
-                        "word": normalized_word,
-                        "definition": definition,
-                        "partOfSpeech": bounded_text(meaning.get("partOfSpeech"), 60) or None,
-                        "sourceUrl": source_url,
-                    }
-                    WORD_DEFINITION_CACHE[normalized_word] = result
-                    return result
-
-    WORD_DEFINITION_CACHE[normalized_word] = empty_result
-    return empty_result
+    WORD_DEFINITION_CACHE[normalized_word] = result
+    return result
 
 
 
@@ -4434,6 +4549,20 @@ def ai_fact_generation_schema(limit: int) -> dict[str, Any]:
     }
 
 
+def ai_single_fact_generation_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "text": {"type": "string"},
+            "theme": {"type": "string", "enum": list(FACT_THEME_LABELS)},
+            "sourceEvidenceIndex": {"type": "integer", "minimum": 0},
+        },
+        "required": ["title", "text", "theme", "sourceEvidenceIndex"],
+        "additionalProperties": False,
+    }
+
+
 def ai_fact_critique_schema(limit: int) -> dict[str, Any]:
     return {
         "type": "object",
@@ -4660,6 +4789,7 @@ def facts_compatible_json_response(
     api_key: str,
     model: str,
     prompt: str,
+    schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not api_key or not base_url:
         raise ValueError("Compatible fallback provider is not configured.")
@@ -4687,7 +4817,18 @@ def facts_compatible_json_response(
                 "temperature": 0.4,
                 "max_tokens": 1000,
                 "stream": False,
-                "response_format": {"type": "json_object"},
+                "response_format": (
+                    {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "fultons_fact_response",
+                            "strict": True,
+                            "schema": schema,
+                        },
+                    }
+                    if schema is not None
+                    else {"type": "json_object"}
+                ),
             }
         ).encode("utf-8"),
         headers=headers,
@@ -4737,9 +4878,13 @@ def facts_ai_json_response(
     schema: dict[str, Any],
     google_search: bool = False,
 ) -> dict[str, Any]:
-    deadline_monotonic = facts_ai_budget_deadline(task)
+    deadline_monotonic = current_facts_ai_deadline()
+    created_deadline = deadline_monotonic is None
+    if deadline_monotonic is None:
+        deadline_monotonic = facts_ai_budget_deadline(task)
     primary_error: Exception | None = None
-    set_facts_ai_deadline(deadline_monotonic)
+    if created_deadline:
+        set_facts_ai_deadline(deadline_monotonic)
     try:
         if FACTS_GEMINI_API_KEY:
             try:
@@ -4767,6 +4912,7 @@ def facts_ai_json_response(
                     api_key=api_key,
                     model=model,
                     prompt=prompt,
+                    schema=schema,
                 )
             except Exception as error:
                 fallback_errors.append(f"{provider_name}:{model}: {error}")
@@ -4782,7 +4928,149 @@ def facts_ai_json_response(
             raise RuntimeError(f"Fallback failures: {' | '.join(fallback_errors)}")
         raise ValueError("No facts AI provider is configured.")
     finally:
-        set_facts_ai_deadline(None)
+        if created_deadline:
+            set_facts_ai_deadline(None)
+
+
+def normalize_ai_generated_fact_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_items: list[Any] = []
+    facts_value = payload.get("facts")
+    if isinstance(facts_value, list):
+        raw_items.extend(facts_value)
+    elif isinstance(facts_value, dict):
+        raw_items.append(facts_value)
+    elif isinstance(facts_value, str):
+        raw_items.append({"text": facts_value})
+
+    for field in ("items", "results"):
+        value = payload.get(field)
+        if not raw_items and isinstance(value, list):
+            raw_items.extend(value)
+
+    if not raw_items and any(
+        key in payload
+        for key in (
+            "title",
+            "text",
+            "fact",
+            "sentence",
+            "content",
+            "sourceEvidenceIndex",
+            "evidenceIndex",
+            "sourceIndex",
+        )
+    ):
+        raw_items.append(payload)
+
+    normalized: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if isinstance(raw_item, str):
+            item: dict[str, Any] = {"text": raw_item}
+        elif isinstance(raw_item, dict):
+            item = raw_item
+        else:
+            continue
+
+        text = str(
+            item.get("text")
+            or item.get("fact")
+            or item.get("sentence")
+            or item.get("content")
+            or ""
+        ).strip()
+        title = trim_fact_title(str(item.get("title") or item.get("headline") or item.get("label") or ""))
+        theme = str(item.get("theme") or "").strip().casefold()
+        if theme not in FACT_THEME_LABELS:
+            theme = classify_fact_theme(" ".join(part for part in (title, text) if part))
+        evidence_value = (
+            item.get("sourceEvidenceIndex")
+            if item.get("sourceEvidenceIndex") is not None
+            else item.get("evidenceIndex", item.get("sourceIndex"))
+        )
+        try:
+            source_evidence_index = int(str(evidence_value).strip())
+        except (TypeError, ValueError, AttributeError):
+            source_evidence_index = -1
+        normalized.append(
+            {
+                "title": title,
+                "text": text,
+                "theme": theme if theme in FACT_THEME_LABELS else "general",
+                "sourceEvidenceIndex": source_evidence_index,
+            }
+        )
+    return normalized
+
+
+def build_selected_ai_fact(
+    item: dict[str, Any],
+    *,
+    place_title: str,
+    web_evidence: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    evidence_index = int(item.get("sourceEvidenceIndex", -1))
+    if evidence_index < 0 or evidence_index >= len(web_evidence):
+        raise ValueError("Facts AI generated fact referenced an unknown web evidence item.")
+    evidence_item = web_evidence[evidence_index]
+    source_name = str(evidence_item.get("sourceName") or "").strip()
+    source_url = str(evidence_item.get("sourceUrl") or "").strip()
+    if not source_name or not source_url.startswith(("http://", "https://")):
+        raise ValueError("Web evidence is missing a valid source.")
+    if blocked_fact_source(source_url):
+        raise ValueError("Facts AI selected blocked evidence from Wikipedia or Wikidata.")
+    fact_text = str(item.get("text") or "").strip()
+    if not fact_text:
+        raise ValueError("Facts AI generated fact text is empty.")
+    theme = str(item.get("theme") or "general")
+    if theme not in FACT_THEME_LABELS:
+        theme = classify_fact_theme(" ".join(part for part in (str(item.get("title") or ""), fact_text) if part))
+    selected_fact = {
+        "title": meaningful_fact_title(
+            str(item.get("title") or ""),
+            fact_text,
+            str(evidence_item.get("title") or ""),
+            place_title,
+            theme,
+        ),
+        "text": fact_text,
+        "theme": theme,
+        "sourceName": source_name,
+        "sourceUrl": source_url,
+        "confidence": "medium",
+    }
+    critique_payload = {
+        "title": selected_fact["title"],
+        "text": selected_fact["text"],
+        "theme": selected_fact.get("theme"),
+        "sourceName": source_name,
+        "sourceUrl": source_url,
+        "evidenceTitle": str(evidence_item.get("title") or ""),
+        "evidenceSnippet": str(evidence_item.get("snippet") or ""),
+        "evidenceExcerpt": str(evidence_item.get("excerpt") or ""),
+    }
+    return selected_fact, critique_payload, history_fact_text_key(fact_text)
+
+
+def combine_distinct_history_facts(
+    preferred: list[dict[str, Any]],
+    supplemental: list[dict[str, Any]],
+    *,
+    place_title: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for fact in [*preferred, *supplemental]:
+        if not isinstance(fact, dict):
+            continue
+        fact_key = history_fact_diversity_key(fact, place_title)
+        if not fact_key or fact_key in seen_keys:
+            continue
+        seen_keys.add(fact_key)
+        merged.append({key: value for key, value in fact.items() if key != "critique"})
+        if len(merged) >= limit:
+            break
+    return merged
 
 
 def reviewed_location_facts(
@@ -4817,7 +5105,7 @@ def reviewed_location_facts(
         return web_fallback or fallback
 
     failed_attempts = recent_history_fact_review_failures(rotation_key)
-    if not web_fallback:
+    if not web_evidence:
         safe_log(
             "Interesting fact review fell back to heuristics: "
             f"insufficient usable web evidence found for {place_title}."
@@ -4849,7 +5137,10 @@ def reviewed_location_facts(
     ]
     selection_result: dict[str, Any] | None = None
     critique_result: dict[str, Any] | None = None
+    selection_attempts: list[dict[str, Any]] = []
+    normalized_selection_items: list[dict[str, Any]] = []
     selected_facts: list[dict[str, Any]] = []
+    selected_for_critique: list[dict[str, Any]] = []
     selector_prompt = (
         "You are writing two reviewed local-interest facts for a live facts page.\n\n"
         f"Place: {place_title}\n"
@@ -4869,70 +5160,97 @@ def reviewed_location_facts(
     )
 
     try:
-        selection_result = facts_ai_json_response(
-            task="generator",
-            model=FACTS_AI_GENERATOR_MODEL,
-            schema=ai_fact_generation_schema(limit),
-            prompt=selector_prompt,
-        )
-        selected_payload = selection_result.get("facts", [])
-        if not isinstance(selected_payload, list) or len(selected_payload) != limit:
-            raise ValueError("Gemini fact generation did not return the expected number of facts.")
-
-        selected_for_critique: list[dict[str, Any]] = []
+        generator_deadline = facts_ai_budget_deadline("generator")
+        set_facts_ai_deadline(generator_deadline)
         seen_fact_keys: set[str] = set()
         recent_fact_keys = {history_fact_text_key(text) for text in recent_texts}
-        for output_index, item in enumerate(selected_payload):
-            if not isinstance(item, dict):
-                raise ValueError("Gemini generated fact is not an object.")
-            evidence_index = int(item.get("sourceEvidenceIndex", -1))
-            if evidence_index < 0 or evidence_index >= len(web_evidence):
-                raise ValueError("Gemini generated fact referenced an unknown web evidence item.")
-            evidence_item = web_evidence[evidence_index]
-            source_name = str(evidence_item.get("sourceName") or "").strip()
-            source_url = str(evidence_item.get("sourceUrl") or "").strip()
-            if not source_name or not source_url.startswith(("http://", "https://")):
-                raise ValueError("Web evidence is missing a valid source.")
-            if blocked_fact_source(source_url):
-                raise ValueError("Gemini selected blocked evidence from Wikipedia or Wikidata.")
-            fact_text = str(item.get("text") or "").strip()
-            if not fact_text:
-                raise ValueError("Gemini generated fact text is empty.")
-            fact_key = history_fact_text_key(fact_text)
-            if fact_key in seen_fact_keys:
-                raise ValueError("Gemini generated duplicate facts.")
-            if fact_key in recent_fact_keys:
-                raise ValueError("Gemini repeated a recent fact.")
-            seen_fact_keys.add(fact_key)
-            theme = str(item.get("theme") or "general")
-            selected_fact = {
-                "title": meaningful_fact_title(
-                    str(item.get("title") or ""),
-                    fact_text,
-                    str(evidence_item.get("title") or ""),
-                    place_title,
-                    theme,
-                ),
-                "text": fact_text,
-                "theme": theme,
-                "sourceName": source_name,
-                "sourceUrl": source_url,
-                "confidence": "medium",
-            }
-            selected_facts.append(selected_fact)
-            selected_for_critique.append(
-                {
-                    "factIndex": output_index,
-                    "title": selected_fact["title"],
-                    "text": selected_fact["text"],
-                    "theme": selected_fact.get("theme"),
-                    "sourceName": source_name,
-                    "sourceUrl": source_url,
-                    "evidenceTitle": str(evidence_item.get("title") or ""),
-                    "evidenceSnippet": str(evidence_item.get("snippet") or ""),
-                    "evidenceExcerpt": str(evidence_item.get("excerpt") or ""),
-                }
+        try:
+            initial_selection = facts_ai_json_response(
+                task="generator",
+                model=FACTS_AI_GENERATOR_MODEL,
+                schema=ai_fact_generation_schema(limit),
+                prompt=selector_prompt,
             )
+            selection_attempts.append(initial_selection)
+            normalized_selection_items.extend(normalize_ai_generated_fact_items(initial_selection))
+
+            while len(selected_facts) < limit and normalized_selection_items:
+                item = normalized_selection_items.pop(0)
+                try:
+                    selected_fact, critique_fact, fact_key = build_selected_ai_fact(
+                        item,
+                        place_title=place_title,
+                        web_evidence=web_evidence,
+                    )
+                except ValueError:
+                    continue
+                if fact_key in seen_fact_keys or fact_key in recent_fact_keys:
+                    continue
+                seen_fact_keys.add(fact_key)
+                critique_fact["factIndex"] = len(selected_for_critique)
+                selected_facts.append(selected_fact)
+                selected_for_critique.append(critique_fact)
+
+            max_top_up_attempts = max(1, (limit - len(selected_facts)) * 2)
+            for _ in range(max_top_up_attempts):
+                if len(selected_facts) >= limit:
+                    break
+                top_up_prompt = (
+                    "You are filling one remaining fact slot for a live local facts page.\n\n"
+                    f"Place: {place_title}\n"
+                    f"Web evidence gathered for this place:\n{json.dumps(evidence_payload, ensure_ascii=True, indent=2)}\n"
+                    f"Already accepted facts:\n{json.dumps(selected_for_critique, ensure_ascii=True, indent=2)}\n"
+                    f"Recent facts to avoid repeating:\n{json.dumps(recent_texts[:6], ensure_ascii=True, indent=2)}\n"
+                    f"Previous failed selections and feedback:\n{json.dumps(failed_attempts, ensure_ascii=True, indent=2)}\n\n"
+                    "Return exactly one additional fact as one JSON object, not an array.\n"
+                    "It must be clearly about the named place, distinct from the accepted facts, and backed by one web evidence item.\n"
+                    "Use sourceEvidenceIndex for the strongest supporting evidence item."
+                )
+                top_up_selection = facts_ai_json_response(
+                    task="generator",
+                    model=FACTS_AI_GENERATOR_MODEL,
+                    schema=ai_single_fact_generation_schema(),
+                    prompt=top_up_prompt,
+                )
+                selection_attempts.append(top_up_selection)
+                top_up_items = normalize_ai_generated_fact_items(top_up_selection)
+                if not top_up_items:
+                    continue
+                for item in top_up_items:
+                    if len(selected_facts) >= limit:
+                        break
+                    try:
+                        selected_fact, critique_fact, fact_key = build_selected_ai_fact(
+                            item,
+                            place_title=place_title,
+                            web_evidence=web_evidence,
+                        )
+                    except ValueError:
+                        continue
+                    if fact_key in seen_fact_keys or fact_key in recent_fact_keys:
+                        continue
+                    seen_fact_keys.add(fact_key)
+                    critique_fact["factIndex"] = len(selected_for_critique)
+                    selected_facts.append(selected_fact)
+                    selected_for_critique.append(critique_fact)
+        finally:
+            set_facts_ai_deadline(None)
+
+        selection_result = {
+            "attempts": selection_attempts,
+            "facts": [
+                {
+                    "title": fact.get("title"),
+                    "text": fact.get("text"),
+                    "theme": fact.get("theme"),
+                    "sourceUrl": fact.get("sourceUrl"),
+                    "sourceName": fact.get("sourceName"),
+                }
+                for fact in selected_facts
+            ],
+        }
+        if len(selected_facts) != limit:
+            raise ValueError("Facts AI did not produce enough usable facts.")
 
         critique_prompt = (
             "You are the critic for a live local facts page.\n\n"
@@ -4991,6 +5309,18 @@ def reviewed_location_facts(
             failure_reason=str(error),
         )
         if selected_facts:
+            supplemented = combine_distinct_history_facts(
+                selected_facts,
+                web_fallback or fallback,
+                place_title=place_title,
+                limit=limit,
+            )
+            if len(supplemented) >= limit:
+                safe_log(
+                    "Interesting fact review kept generated facts and filled remaining slots heuristically: "
+                    f"{error}"
+                )
+                return attach_fact_critiques(supplemented, place_title)
             safe_log(
                 "Interesting fact review kept generated facts with heuristic critiques: "
                 f"{error}"

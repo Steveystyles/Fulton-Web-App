@@ -298,6 +298,109 @@ class FactsFallbackTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_reviewed_location_facts_normalizes_single_fact_payload_and_tops_up(self) -> None:
+        import server
+
+        candidates = [
+            {
+                "title": "History",
+                "text": "Paisley Abbey was founded in the 12th century and remains one of the town's best-known landmarks.",
+                "theme": "history",
+                "sourceName": "Wikipedia",
+                "sourceUrl": "https://example.com/abbey",
+                "confidence": "medium",
+            },
+            {
+                "title": "Industry",
+                "text": "Paisley gave its name to the Paisley pattern through the town's textile industry.",
+                "theme": "industry",
+                "sourceName": "Wikipedia",
+                "sourceUrl": "https://example.com/pattern",
+                "confidence": "medium",
+            },
+        ]
+        evidence = [
+            {
+                "title": "Paisley Abbey history",
+                "sourceName": "paisleyabbey.org.uk",
+                "sourceUrl": "https://paisleyabbey.org.uk/history",
+                "snippet": "Paisley Abbey traces its origins to the 12th century.",
+                "excerpt": "Paisley Abbey traces its origins to the 12th century and remains central to the town's story.",
+            },
+            {
+                "title": "Paisley visit guide",
+                "sourceName": "paisley.is",
+                "sourceUrl": "https://paisley.is/visit/paisley/",
+                "snippet": "Robert II, the first Stewart king of Scotland, was born here in 1316.",
+                "excerpt": "Robert II, the first Stewart king of Scotland, was born in Paisley in 1316.",
+            },
+        ]
+        selection = {
+            "fact": "Robert II, the first Stewart king of Scotland, was born in Paisley in 1316.",
+            "sourceEvidenceIndex": 1,
+        }
+        top_up = {
+            "title": "Abbey origins",
+            "text": "Paisley Abbey traces its origins to the 12th century and remains central to the town's story.",
+            "theme": "history",
+            "sourceEvidenceIndex": 0,
+        }
+        critique = {
+            "overallPassed": True,
+            "notes": "Both facts are specific and source-backed.",
+            "facts": [
+                {
+                    "factIndex": 0,
+                    "passed": True,
+                    "relevance": 9,
+                    "interestingness": 8,
+                    "placeSpecificity": 9,
+                    "summary": "It ties Paisley to a named royal birth.",
+                },
+                {
+                    "factIndex": 1,
+                    "passed": True,
+                    "relevance": 9,
+                    "interestingness": 7,
+                    "placeSpecificity": 9,
+                    "summary": "It anchors the town to a major medieval landmark.",
+                },
+            ],
+        }
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name) / "runtime-db"
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+            rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
+
+            with (
+                patch("server.FACTS_GEMINI_API_KEY", "test-key"),
+                patch("server.search_web_fact_evidence", return_value=evidence),
+                patch(
+                    "server.facts_ai_json_response",
+                    side_effect=[selection, top_up, critique],
+                ),
+            ):
+                facts = server.reviewed_location_facts(
+                    rotation_key,
+                    "Paisley, Renfrewshire",
+                    candidates,
+                    limit=2,
+                    recent_texts=[],
+                )
+
+            self.assertEqual(len(facts), 2)
+            self.assertTrue(any("Robert II" in fact["text"] for fact in facts))
+            self.assertTrue(any("Paisley Abbey traces its origins" in fact["text"] for fact in facts))
+            self.assertEqual({fact["sourceName"] for fact in facts}, {"paisley.is", "paisleyabbey.org.uk"})
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
 
 if __name__ == "__main__":
     unittest.main()
