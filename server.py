@@ -292,6 +292,32 @@ HISTORY_SPORT_KEYWORDS = (
     "racing",
     "sport",
 )
+HISTORY_SPORT_WEAK_KEYWORDS = (
+    "cup",
+    "league",
+    "match",
+)
+HISTORY_SPORT_STRONG_KEYWORDS = tuple(
+    keyword for keyword in HISTORY_SPORT_KEYWORDS if keyword not in HISTORY_SPORT_WEAK_KEYWORDS
+)
+HISTORY_MILITARY_KEYWORDS = (
+    "war",
+    "battle",
+    "troops",
+    "army",
+    "navy",
+    "military",
+    "offensive",
+    "siege",
+    "fleet",
+    "carrier",
+    "destroyer",
+    "cruiser",
+    "forces",
+    "campaign",
+    "artillery",
+    "bombardment",
+)
 HISTORY_FAMOUS_BIRTH_KEYWORDS = (
     "actor",
     "actress",
@@ -4555,11 +4581,30 @@ def normalise_history_item(item: object, category: str) -> dict[str, Any] | None
     }
 
 
+def history_item_search_text(item: dict[str, Any]) -> str:
+    link_titles = " ".join(
+        str(link.get("title") or "")
+        for link in item.get("links", [])
+        if isinstance(link, dict)
+    )
+    return f"{item.get('text', '')} {link_titles}".strip()
+
+
+def history_is_sport_event(item: dict[str, Any]) -> bool:
+    search_text = history_item_search_text(item)
+    strong_score = history_keyword_score(search_text, HISTORY_SPORT_STRONG_KEYWORDS, 1)
+    weak_score = history_keyword_score(search_text, HISTORY_SPORT_WEAK_KEYWORDS, 1)
+    military_score = history_keyword_score(search_text, HISTORY_MILITARY_KEYWORDS, 1)
+    if military_score > 0 and strong_score == 0:
+        return False
+    return strong_score > 0 or weak_score > 0
+
+
 def ranked_history_items(items: list[dict[str, Any]], category: str) -> list[dict[str, Any]]:
     scored: list[tuple[int, int, dict[str, Any]]] = []
 
     for item in items:
-        text = str(item.get("text", ""))
+        text = history_item_search_text(item)
         year = history_year_value(item.get("year"))
         score = history_recency_score(year)
 
@@ -4592,12 +4637,12 @@ def fetch_history_events(month: int, day: int, limit: int) -> list[dict[str, Any
     sport_events = [
         {**item, "category": "sport"}
         for item in normalised_events
-        if history_keyword_score(str(item.get("text", "")), HISTORY_SPORT_KEYWORDS, 1) > 0
+        if history_is_sport_event(item)
     ]
     history_events = [
         item
         for item in normalised_events
-        if history_keyword_score(str(item.get("text", "")), HISTORY_SPORT_KEYWORDS, 1) == 0
+        if not history_is_sport_event(item)
     ]
     birth_events = [
         normalised
