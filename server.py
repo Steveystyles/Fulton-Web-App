@@ -4261,14 +4261,25 @@ def rotated_location_facts(
         selected_themes = {str(item.get("theme") or "general") for item in selected}
         selected_diversity = {history_fact_diversity_key(item, place_title) for item in selected}
         selected_sources = {history_fact_source_key(item) for item in selected}
+        selected_title_keys = {
+            history_fact_text_key(str(item.get("title") or ""))
+            for item in selected
+            if str(item.get("title") or "").strip()
+        }
         for fact in pool:
             text_key = history_fact_text_key(str(fact.get("text") or ""))
             theme = str(fact.get("theme") or "general")
             diversity_key = history_fact_diversity_key(fact, place_title)
             source_key = history_fact_source_key(fact)
+            title_key = history_fact_text_key(str(fact.get("title") or ""))
             if text_key in selected_keys:
                 continue
             if diversity_key in selected_diversity:
+                continue
+            if title_key and any(
+                title_key.startswith(existing_key) or existing_key.startswith(title_key)
+                for existing_key in selected_title_keys
+            ):
                 continue
             if require_new_theme and theme != "general" and theme in selected_themes:
                 continue
@@ -4279,6 +4290,8 @@ def rotated_location_facts(
             selected_themes.add(theme)
             selected_diversity.add(diversity_key)
             selected_sources.add(source_key)
+            if title_key:
+                selected_title_keys.add(title_key)
             if len(selected) >= limit:
                 return
 
