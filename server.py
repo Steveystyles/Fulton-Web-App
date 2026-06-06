@@ -2744,9 +2744,11 @@ def fetch_web_page_excerpt(url: str) -> str:
 def search_web_fact_evidence(place_title: str, limit: int = 8) -> list[dict[str, str]]:
     place_name = place_title.split(",", 1)[0].strip()
     queries = [
-        f'"{place_title}" history landmark culture industry',
-        f'"{place_name}" local history museum official',
-        f'"{place_name}" textile abbey festival council',
+        f'"{place_name}" local history heritage museum',
+        f'"{place_name}" abbey castle landmark founded',
+        f'"{place_name}" textile pattern industry',
+        f'"{place_name}" born here king queen notable',
+        f'"{place_title}" council heritage festival',
     ]
     evidence: list[dict[str, str]] = []
     seen_urls: set[str] = set()
@@ -2987,6 +2989,11 @@ def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title:
     theme = classify_fact_theme(cleaned)
     score = fact_candidate_score(cleaned, theme)
     mentions_place = place_name in lower or place_name in title_lower
+    if theme == "general" and not any(
+        token in lower
+        for token in ("born", "founded", "abbey", "pattern", "festival", "museum", "castle", "king", "queen", "textile")
+    ):
+        return False
     if not mentions_place and theme == "general":
         return False
     if not mentions_place and score < 34:
@@ -4669,7 +4676,7 @@ def reviewed_location_facts(
         rotated_location_facts(candidates, limit=limit, recent_texts=recent_texts),
         place_title,
     )
-    web_evidence = search_web_fact_evidence(place_title, limit=max(limit * 4, 8))
+    web_evidence = search_web_fact_evidence(place_title, limit=max(limit * 6, 12))
     web_fallback = web_evidence_fallback_facts(
         place_title,
         web_evidence,
