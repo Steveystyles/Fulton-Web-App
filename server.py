@@ -4251,7 +4251,12 @@ def rotated_location_facts(
 ) -> list[dict[str, Any]]:
     recent_keys = {history_fact_text_key(text) for text in recent_texts}
 
-    def choose(pool: list[dict[str, Any]], selected: list[dict[str, Any]], require_new_theme: bool) -> None:
+    def choose(
+        pool: list[dict[str, Any]],
+        selected: list[dict[str, Any]],
+        require_new_theme: bool,
+        require_new_source: bool,
+    ) -> None:
         selected_keys = {history_fact_text_key(str(item.get("text") or "")) for item in selected}
         selected_themes = {str(item.get("theme") or "general") for item in selected}
         selected_diversity = {history_fact_diversity_key(item, place_title) for item in selected}
@@ -4267,7 +4272,7 @@ def rotated_location_facts(
                 continue
             if require_new_theme and theme != "general" and theme in selected_themes:
                 continue
-            if require_new_theme and source_key in selected_sources and len(selected) < max(1, limit - 1):
+            if require_new_source and source_key in selected_sources:
                 continue
             selected.append(dict(fact))
             selected_keys.add(text_key)
@@ -4283,13 +4288,13 @@ def rotated_location_facts(
         if history_fact_text_key(str(fact.get("text") or "")) not in recent_keys
     ]
     selected: list[dict[str, Any]] = []
-    choose(fresh_candidates, selected, True)
+    choose(fresh_candidates, selected, True, True)
     if len(selected) < limit:
-        choose(fresh_candidates, selected, False)
+        choose(fresh_candidates, selected, False, True)
     if len(selected) < limit:
-        choose(candidates, selected, True)
+        choose(candidates, selected, True, False)
     if len(selected) < limit:
-        choose(candidates, selected, False)
+        choose(candidates, selected, False, False)
     return selected[:limit]
 
 
