@@ -481,6 +481,7 @@ FACT_LOW_QUALITY_SOURCE_TOKENS = (
     "hotels",
     "booking.com",
     "expedia",
+    "whatsonin",
 )
 FACT_GENERIC_PAGE_TERMS = (
     "skip to content",
@@ -2673,6 +2674,8 @@ def clean_web_excerpt_candidate(value: str, limit: int = 320) -> str:
 
 def web_search_result_is_promising(title: str, source_url: str, snippet: str) -> bool:
     combined = fact_text_match_key(" ".join((title, source_url, snippet)))
+    if any(token in combined for token in FACT_LOW_QUALITY_SOURCE_TOKENS):
+        return False
     specific_signal = bool(
         re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b", combined)
         or any(
@@ -2681,8 +2684,6 @@ def web_search_result_is_promising(title: str, source_url: str, snippet: str) ->
         )
     )
     if any(term in combined for term in FACT_GENERIC_PAGE_TERMS) and not specific_signal:
-        return False
-    if any(token in combined for token in FACT_LOW_QUALITY_SOURCE_TOKENS) and not specific_signal:
         return False
     return True
 
@@ -2821,6 +2822,8 @@ def web_evidence_item_is_useful(
     snippet: str,
 ) -> bool:
     metadata = fact_text_match_key(" ".join((source_name, source_url, evidence_title)))
+    if any(token in metadata for token in FACT_LOW_QUALITY_SOURCE_TOKENS):
+        return False
     snippet_lower = fact_text_match_key(snippet)
     snippet_has_specific_signal = bool(
         re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b", snippet_lower)
@@ -2861,6 +2864,7 @@ def fact_title_is_specific(title: str, place_title: str) -> bool:
 
 def trim_fact_title(value: str) -> str:
     cleaned = clean_search_text(value, 72).strip(" -|:")
+    cleaned = re.sub(r"\s+[-|]\s+[A-Z][A-Za-z0-9.&' ]{1,28}$", "", cleaned).strip(" -|:")
     cleaned = re.sub(
         r"\b(history|heritage|visitor guide|visit guide|travel guide|official guide|official site)\b$",
         "",
