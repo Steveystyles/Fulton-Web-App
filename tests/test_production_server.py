@@ -1783,6 +1783,35 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(result["definition"], "A person officially recognised as holy.")
         self.assertEqual(result["sourceUrl"], "https://en.wiktionary.org/wiki/saint")
 
+    def test_word_definition_uses_scots_wiktionary_section(self) -> None:
+        import server
+
+        payload = {
+            "parse": {
+                "wikitext": (
+                    "==Scots==\n"
+                    "===Noun===\n"
+                    "# [[oil]]\n"
+                    "==French==\n"
+                    "===Noun===\n"
+                    "# huile\n"
+                )
+            }
+        }
+
+        server.WORD_DEFINITION_CACHE.clear()
+        self.addCleanup(server.WORD_DEFINITION_CACHE.clear)
+        with (
+            patch("server.word_definition_from_dictionary_api", return_value=None),
+            patch("server.fetch_json_url", return_value=payload),
+        ):
+            result = server.word_definition("Ulzie")
+
+        self.assertEqual(result["word"], "ulzie")
+        self.assertEqual(result["partOfSpeech"], "noun")
+        self.assertEqual(result["definition"], "oil")
+        self.assertEqual(result["sourceUrl"], "https://en.wiktionary.org/wiki/ulzie")
+
     def test_quiz_scoring_adds_perfect_round_bonus(self) -> None:
         import server
 

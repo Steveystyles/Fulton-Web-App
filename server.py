@@ -1519,17 +1519,21 @@ def strip_wiktionary_markup(value: str) -> str:
     return text.strip(" ,;:-")
 
 
-def extract_wiktionary_english_section(wikitext: str) -> str | None:
+def extract_wiktionary_section(
+    wikitext: str,
+    *section_names: str,
+) -> tuple[str | None, str | None]:
+    wanted = {section.casefold() for section in section_names if section.strip()}
     headers = list(re.finditer(r"(?m)^==[^=].*?==\s*$", wikitext))
     for index, header_match in enumerate(headers):
         header = re.sub(r"^==\s*|\s*==\s*$", "", header_match.group(0)).strip().casefold()
-        if header != "english":
+        if header not in wanted:
             continue
         start = header_match.end()
         end = headers[index + 1].start() if index + 1 < len(headers) else len(wikitext)
         section = wikitext[start:end].strip()
-        return section or None
-    return None
+        return (section or None), header
+    return None, None
 
 
 def word_definition_from_wiktionary(normalized_word: str) -> dict[str, str | None] | None:
@@ -1549,8 +1553,8 @@ def word_definition_from_wiktionary(normalized_word: str) -> dict[str, str | Non
     if not isinstance(wikitext, str) or not wikitext.strip():
         return None
 
-    english_section = extract_wiktionary_english_section(wikitext)
-    if not english_section:
+    definition_section, _section_name = extract_wiktionary_section(wikitext, "English", "Scots")
+    if not definition_section:
         return None
 
     supported_parts_of_speech = {
@@ -1573,7 +1577,7 @@ def word_definition_from_wiktionary(normalized_word: str) -> dict[str, str | Non
         "prefix",
     }
     part_of_speech: str | None = None
-    for raw_line in english_section.splitlines():
+    for raw_line in definition_section.splitlines():
         line = raw_line.strip()
         if not line:
             continue
