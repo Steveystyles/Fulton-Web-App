@@ -16,7 +16,7 @@ import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
@@ -193,6 +193,39 @@ FACTS_AI_CRITIC_BUDGET_SEC = max(
 FACTS_WEB_SEARCH_TIMEOUT_SEC = max(
     4,
     int(os.environ.get("FULTONS_FACTS_WEB_SEARCH_TIMEOUT_SEC", "8")),
+)
+FACT_PREWARM_ENABLED = os.environ.get("FULTONS_FACT_PREWARM_ENABLED", "1") != "0"
+FACT_PREWARM_LEAD_SEC = max(
+    300,
+    int(os.environ.get("FULTONS_FACT_PREWARM_LEAD_SEC", "7200")),
+)
+FACT_PREWARM_POLL_SEC = max(
+    15,
+    int(os.environ.get("FULTONS_FACT_PREWARM_POLL_SEC", "60")),
+)
+FACT_PREWARM_MAX_ATTEMPTS = max(
+    1,
+    int(os.environ.get("FULTONS_FACT_PREWARM_MAX_ATTEMPTS", "2")),
+)
+FACT_PREWARM_TIMEOUT_SEC = max(
+    FACTS_AI_TIMEOUT_SEC,
+    int(os.environ.get("FULTONS_FACT_PREWARM_TIMEOUT_SEC", "12")),
+)
+FACT_PREWARM_TRANSIENT_RETRIES = max(
+    FACTS_AI_TRANSIENT_RETRIES,
+    int(os.environ.get("FULTONS_FACT_PREWARM_TRANSIENT_RETRIES", "1")),
+)
+FACT_PREWARM_GENERATOR_BUDGET_SEC = max(
+    FACTS_AI_GENERATOR_BUDGET_SEC,
+    float(os.environ.get("FULTONS_FACT_PREWARM_GENERATOR_BUDGET_SEC", "24")),
+)
+FACT_PREWARM_CRITIC_BUDGET_SEC = max(
+    FACTS_AI_CRITIC_BUDGET_SEC,
+    float(os.environ.get("FULTONS_FACT_PREWARM_CRITIC_BUDGET_SEC", "12")),
+)
+FACT_PREWARM_WEB_SEARCH_TIMEOUT_SEC = max(
+    FACTS_WEB_SEARCH_TIMEOUT_SEC,
+    int(os.environ.get("FULTONS_FACT_PREWARM_WEB_SEARCH_TIMEOUT_SEC", "10")),
 )
 DAILY_QUIZ_CONFIG = daily_quiz.QuizConfig.from_env()
 EXPECTED_DATA_DIR = os.environ.get("FULTONS_EXPECT_DATA_DIR", "").strip()
@@ -549,6 +582,7 @@ FACTS_AI_CONTEXT = threading.local()
 DAILY_QUIZ_OPERATION_LOCK = threading.Lock()
 FACTS_AI_NEXT_REQUEST_AT = 0.0
 HISTORY_FACT_ROTATION_VERSION = "v4"
+HISTORY_FACT_PREWARM_EVENT = threading.Event()
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -1067,6 +1101,31 @@ def initialize_database() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_history_fact_review_failures_key_created_at
             ON history_fact_review_failures (rotation_key, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS history_fact_prewarm_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rotation_key TEXT NOT NULL,
+                location_query TEXT NOT NULL,
+                place_title TEXT NOT NULL,
+                lang TEXT NOT NULL,
+                limit_facts INTEGER NOT NULL DEFAULT 2,
+                source_rotation_created_at TEXT NOT NULL,
+                target_not_before_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'running', 'ready', 'failed', 'consumed', 'cancelled')),
+                facts_json TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                last_error TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_history_fact_prewarm_jobs_rotation_target
+            ON history_fact_prewarm_jobs (rotation_key, target_not_before_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_history_fact_prewarm_jobs_status_target
+            ON history_fact_prewarm_jobs (status, target_not_before_at ASC, created_at ASC);
             """
             )
             ensure_column(conn, "users", "is_moderator", "INTEGER NOT NULL DEFAULT 0")
@@ -2723,6 +2782,12 @@ def history_rotation_expiry_isoformat(rotation_created_at: datetime | None) -> s
     return expires_at.replace(microsecond=0).isoformat()
 
 
+def history_rotation_expiry_datetime(rotation_created_at: datetime | None) -> datetime | None:
+    if rotation_created_at is None:
+        return None
+    return rotation_created_at.astimezone(timezone.utc) + timedelta(seconds=FACT_ROTATION_TTL_SEC)
+
+
 def fetch_json_url(url: str, timeout: int = 8) -> dict[str, Any]:
     request = Request(url, headers={"User-Agent": HISTORY_USER_AGENT})
     with urlopen(request, timeout=timeout) as response:
@@ -2876,7 +2941,7 @@ def fetch_web_page_excerpt(url: str) -> str:
         return ""
     try:
         return extract_web_page_excerpt(
-            fetch_text_url(url, timeout=FACTS_WEB_SEARCH_TIMEOUT_SEC),
+            fetch_text_url(url, timeout=current_facts_web_search_timeout_sec()),
         )
     except Exception:
         return ""
@@ -2942,7 +3007,7 @@ def search_web_fact_evidence(
         try:
             payload = fetch_text_url(
                 bing_rss_search_url(query),
-                timeout=FACTS_WEB_SEARCH_TIMEOUT_SEC,
+                timeout=current_facts_web_search_timeout_sec(),
             )
             root = ElementTree.fromstring(payload)
         except Exception as error:
@@ -3341,15 +3406,19 @@ def deserialize_history_facts(value: str) -> list[dict[str, Any]]:
     return facts
 
 
-def current_rotated_history_facts_record(
+def latest_history_fact_rotation_row(
     rotation_key: str,
-    now: datetime | None = None,
-) -> tuple[list[dict[str, Any]], datetime] | None:
-    cutoff = history_fact_rotation_limit(now)
-    with closing(connect_db()) as conn:
-        row = conn.execute(
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> sqlite3.Row | None:
+    owns_connection = conn is None
+    if owns_connection:
+        conn = connect_db()
+    assert conn is not None
+    try:
+        return conn.execute(
             """
-            SELECT facts_json, created_at
+            SELECT id, facts_json, created_at
             FROM history_fact_rotations
             WHERE rotation_key = ?
             ORDER BY created_at DESC
@@ -3357,6 +3426,28 @@ def current_rotated_history_facts_record(
             """,
             (rotation_key,),
         ).fetchone()
+    finally:
+        if owns_connection:
+            conn.close()
+
+
+def latest_history_fact_rotation_created_at(
+    rotation_key: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> datetime | None:
+    row = latest_history_fact_rotation_row(rotation_key, conn=conn)
+    if row is None:
+        return None
+    return parse_utc_timestamp(str(row["created_at"]))
+
+
+def current_rotated_history_facts_record(
+    rotation_key: str,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], datetime] | None:
+    cutoff = history_fact_rotation_limit(now)
+    row = latest_history_fact_rotation_row(rotation_key)
     if row is None:
         return None
 
@@ -3380,6 +3471,322 @@ def current_rotated_history_facts(
         return None
     facts, _created_at = record
     return facts
+
+
+def history_rotation_has_moved_on(
+    rotation_key: str,
+    target_not_before_at: datetime,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    latest_created_at = latest_history_fact_rotation_created_at(rotation_key, conn=conn)
+    if latest_created_at is None:
+        return False
+    return latest_created_at > target_not_before_at
+
+
+def deserialize_history_fact_prewarm_job(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["id"]),
+        "rotationKey": str(row["rotation_key"] or ""),
+        "locationQuery": str(row["location_query"] or ""),
+        "placeTitle": str(row["place_title"] or ""),
+        "lang": str(row["lang"] or "en"),
+        "limitFacts": int(row["limit_facts"] or 0),
+        "sourceRotationCreatedAt": str(row["source_rotation_created_at"] or ""),
+        "targetNotBeforeAt": str(row["target_not_before_at"] or ""),
+        "status": str(row["status"] or ""),
+        "attempts": int(row["attempts"] or 0),
+        "createdAt": str(row["created_at"] or ""),
+        "startedAt": str(row["started_at"] or ""),
+        "completedAt": str(row["completed_at"] or ""),
+        "lastError": str(row["last_error"] or ""),
+    }
+
+
+def cleanup_history_fact_prewarm_jobs(
+    conn: sqlite3.Connection,
+    *,
+    rotation_key: str | None = None,
+) -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).replace(microsecond=0).isoformat()
+    if rotation_key is not None:
+        conn.execute(
+            """
+            DELETE FROM history_fact_prewarm_jobs
+            WHERE rotation_key = ?
+              AND completed_at IS NOT NULL
+              AND completed_at < ?
+            """,
+            (rotation_key, cutoff),
+        )
+        conn.execute(
+            """
+            DELETE FROM history_fact_prewarm_jobs
+            WHERE rotation_key = ?
+              AND id NOT IN (
+                SELECT id
+                FROM history_fact_prewarm_jobs
+                WHERE rotation_key = ?
+                ORDER BY target_not_before_at DESC, created_at DESC
+                LIMIT 12
+              )
+            """,
+            (rotation_key, rotation_key),
+        )
+        return
+
+    conn.execute(
+        """
+        DELETE FROM history_fact_prewarm_jobs
+        WHERE completed_at IS NOT NULL
+          AND completed_at < ?
+        """,
+        (cutoff,),
+    )
+
+
+def schedule_history_fact_prewarm(
+    *,
+    rotation_key: str,
+    location_query: str,
+    place_title: str,
+    lang: str,
+    limit_facts: int,
+    source_rotation_created_at: datetime,
+    now: datetime | None = None,
+) -> bool:
+    if not FACT_PREWARM_ENABLED or limit_facts <= 0:
+        return False
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    target_not_before_at = history_rotation_expiry_datetime(source_rotation_created_at)
+    if target_not_before_at is None:
+        return False
+    remaining_sec = (target_not_before_at - reference_now).total_seconds()
+    if remaining_sec <= 0 or remaining_sec > FACT_PREWARM_LEAD_SEC:
+        return False
+
+    target_iso = target_not_before_at.replace(microsecond=0).isoformat()
+    created_at = utc_now()
+    with closing(connect_db()) as conn:
+        with conn:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM history_fact_prewarm_jobs
+                WHERE rotation_key = ?
+                  AND target_not_before_at = ?
+                  AND status IN ('pending', 'running', 'ready')
+                LIMIT 1
+                """,
+                (rotation_key, target_iso),
+            ).fetchone()
+            if existing is not None:
+                return False
+            conn.execute(
+                """
+                INSERT INTO history_fact_prewarm_jobs (
+                    rotation_key,
+                    location_query,
+                    place_title,
+                    lang,
+                    limit_facts,
+                    source_rotation_created_at,
+                    target_not_before_at,
+                    status,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (
+                    rotation_key,
+                    location_query,
+                    place_title,
+                    normalise_history_lang(lang),
+                    limit_facts,
+                    source_rotation_created_at.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+                    target_iso,
+                    created_at,
+                ),
+            )
+            cleanup_history_fact_prewarm_jobs(conn, rotation_key=rotation_key)
+    HISTORY_FACT_PREWARM_EVENT.set()
+    return True
+
+
+def reset_stale_history_fact_prewarm_jobs(conn: sqlite3.Connection) -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).replace(microsecond=0).isoformat()
+    conn.execute(
+        """
+        UPDATE history_fact_prewarm_jobs
+        SET status = 'pending',
+            started_at = NULL
+        WHERE status = 'running'
+          AND started_at IS NOT NULL
+          AND started_at < ?
+          AND attempts < ?
+        """,
+        (cutoff, FACT_PREWARM_MAX_ATTEMPTS),
+    )
+    conn.execute(
+        """
+        UPDATE history_fact_prewarm_jobs
+        SET status = 'failed',
+            completed_at = ?,
+            last_error = COALESCE(last_error, 'Prewarm job exceeded retry limit.')
+        WHERE status IN ('pending', 'running')
+          AND attempts >= ?
+        """,
+        (utc_now(), FACT_PREWARM_MAX_ATTEMPTS),
+    )
+
+
+def claim_history_fact_prewarm_job() -> sqlite3.Row | None:
+    with closing(connect_db()) as conn:
+        with conn:
+            reset_stale_history_fact_prewarm_jobs(conn)
+            row = conn.execute(
+                """
+                SELECT *
+                FROM history_fact_prewarm_jobs
+                WHERE status = 'pending'
+                ORDER BY target_not_before_at ASC, created_at ASC, id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            started_at = utc_now()
+            updated = conn.execute(
+                """
+                UPDATE history_fact_prewarm_jobs
+                SET status = 'running',
+                    attempts = attempts + 1,
+                    started_at = ?
+                WHERE id = ?
+                  AND status = 'pending'
+                """,
+                (started_at, row["id"]),
+            )
+            if updated.rowcount != 1:
+                return None
+            return conn.execute(
+                "SELECT * FROM history_fact_prewarm_jobs WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+
+
+def complete_history_fact_prewarm_job(
+    job_id: int,
+    *,
+    status: str,
+    facts: list[dict[str, Any]] | None = None,
+    last_error: str | None = None,
+) -> None:
+    completed_at = utc_now()
+    with closing(connect_db()) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE history_fact_prewarm_jobs
+                SET status = ?,
+                    facts_json = ?,
+                    completed_at = ?,
+                    last_error = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    json.dumps(facts, ensure_ascii=True) if facts is not None else None,
+                    completed_at,
+                    last_error,
+                    job_id,
+                ),
+            )
+
+
+def requeue_history_fact_prewarm_job(job_id: int, *, last_error: str) -> None:
+    with closing(connect_db()) as conn:
+        with conn:
+            conn.execute(
+                """
+                UPDATE history_fact_prewarm_jobs
+                SET status = 'pending',
+                    started_at = NULL,
+                    completed_at = NULL,
+                    last_error = ?
+                WHERE id = ?
+                """,
+                (last_error, job_id),
+            )
+
+
+def next_ready_history_fact_prewarm(
+    rotation_key: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], sqlite3.Row] | None:
+    reference_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).replace(microsecond=0)
+    reference_now_iso = reference_now.isoformat()
+    with closing(connect_db()) as conn:
+        while True:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM history_fact_prewarm_jobs
+                WHERE rotation_key = ?
+                  AND status = 'ready'
+                  AND target_not_before_at <= ?
+                ORDER BY target_not_before_at DESC, completed_at DESC, id DESC
+                LIMIT 1
+                """,
+                (rotation_key, reference_now_iso),
+            ).fetchone()
+            if row is None:
+                return None
+
+            target_not_before_at = parse_utc_timestamp(str(row["target_not_before_at"]))
+            if target_not_before_at is None:
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE history_fact_prewarm_jobs
+                        SET status = 'cancelled',
+                            completed_at = COALESCE(completed_at, ?),
+                            last_error = 'Invalid prewarm target timestamp.'
+                        WHERE id = ?
+                        """,
+                        (utc_now(), row["id"]),
+                    )
+                continue
+            if history_rotation_has_moved_on(rotation_key, target_not_before_at, conn=conn):
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE history_fact_prewarm_jobs
+                        SET status = 'cancelled',
+                            completed_at = COALESCE(completed_at, ?),
+                            last_error = 'Prewarmed facts became stale before promotion.'
+                        WHERE id = ?
+                        """,
+                        (utc_now(), row["id"]),
+                    )
+                continue
+            try:
+                return deserialize_history_facts(str(row["facts_json"])), row
+            except Exception:
+                with conn:
+                    conn.execute(
+                        """
+                        UPDATE history_fact_prewarm_jobs
+                        SET status = 'failed',
+                            completed_at = COALESCE(completed_at, ?),
+                            last_error = 'Stored prewarmed facts could not be decoded.'
+                        WHERE id = ?
+                        """,
+                        (utc_now(), row["id"]),
+                    )
+                continue
 
 
 def recent_rotated_history_texts(
@@ -3423,30 +3830,78 @@ def store_rotated_history_facts(
     *,
     created_at: str | None = None,
 ) -> None:
-    timestamp = created_at or utc_now()
     with closing(connect_db()) as conn:
         with conn:
-            conn.execute(
-                """
-                INSERT INTO history_fact_rotations (rotation_key, facts_json, created_at)
-                VALUES (?, ?, ?)
-                """,
-                (rotation_key, json.dumps(facts, ensure_ascii=True), timestamp),
+            store_rotated_history_facts_in_conn(
+                conn,
+                rotation_key,
+                facts,
+                created_at=created_at,
+            )
+
+
+def store_rotated_history_facts_in_conn(
+    conn: sqlite3.Connection,
+    rotation_key: str,
+    facts: list[dict[str, Any]],
+    *,
+    created_at: str | None = None,
+) -> None:
+    timestamp = created_at or utc_now()
+    conn.execute(
+        """
+        INSERT INTO history_fact_rotations (rotation_key, facts_json, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (rotation_key, json.dumps(facts, ensure_ascii=True), timestamp),
+    )
+    conn.execute(
+        """
+        DELETE FROM history_fact_rotations
+        WHERE rotation_key = ?
+          AND id NOT IN (
+            SELECT id
+            FROM history_fact_rotations
+            WHERE rotation_key = ?
+            ORDER BY created_at DESC
+            LIMIT 8
+          )
+        """,
+        (rotation_key, rotation_key),
+    )
+
+
+def promote_ready_history_fact_prewarm(
+    rotation_key: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], datetime] | None:
+    ready = next_ready_history_fact_prewarm(rotation_key, now=now)
+    if ready is None:
+        return None
+    facts, row = ready
+    created_at = utc_now()
+    with closing(connect_db()) as conn:
+        with conn:
+            store_rotated_history_facts_in_conn(
+                conn,
+                rotation_key,
+                facts,
+                created_at=created_at,
             )
             conn.execute(
                 """
-                DELETE FROM history_fact_rotations
-                WHERE rotation_key = ?
-                  AND id NOT IN (
-                    SELECT id
-                    FROM history_fact_rotations
-                    WHERE rotation_key = ?
-                    ORDER BY created_at DESC
-                    LIMIT 8
-                  )
+                UPDATE history_fact_prewarm_jobs
+                SET status = 'consumed',
+                    completed_at = COALESCE(completed_at, ?)
+                WHERE id = ?
                 """,
-                (rotation_key, rotation_key),
+                (created_at, row["id"]),
             )
+    created_at_dt = parse_utc_timestamp(created_at)
+    if created_at_dt is None:
+        raise ValueError("Promoted prewarmed facts used an invalid timestamp.")
+    return facts, created_at_dt
 
 
 def normalise_place_alias_key(value: str) -> str:
@@ -4610,8 +5065,78 @@ def ai_fact_critique_schema(limit: int) -> dict[str, Any]:
         "additionalProperties": False,
     }
 
+def current_facts_ai_timeout_sec() -> float:
+    override = getattr(FACTS_AI_CONTEXT, "timeout_sec", None)
+    if isinstance(override, (int, float)) and override > 0:
+        return float(override)
+    return float(FACTS_AI_TIMEOUT_SEC)
+
+
+def current_facts_ai_request_delay_sec() -> float:
+    override = getattr(FACTS_AI_CONTEXT, "request_delay_sec", None)
+    if isinstance(override, (int, float)) and override >= 0:
+        return float(override)
+    return FACTS_AI_REQUEST_DELAY_SEC
+
+
+def current_facts_ai_transient_retries() -> int:
+    override = getattr(FACTS_AI_CONTEXT, "transient_retries", None)
+    if isinstance(override, int) and override >= 0:
+        return override
+    return FACTS_AI_TRANSIENT_RETRIES
+
+
+def current_facts_ai_budget_sec(task: str) -> float:
+    attribute = "critic_budget_sec" if task == "critic" else "generator_budget_sec"
+    override = getattr(FACTS_AI_CONTEXT, attribute, None)
+    if isinstance(override, (int, float)) and override > 0:
+        return float(override)
+    return FACTS_AI_CRITIC_BUDGET_SEC if task == "critic" else FACTS_AI_GENERATOR_BUDGET_SEC
+
+
+def current_facts_web_search_timeout_sec() -> int:
+    override = getattr(FACTS_AI_CONTEXT, "web_search_timeout_sec", None)
+    if isinstance(override, int) and override > 0:
+        return override
+    return FACTS_WEB_SEARCH_TIMEOUT_SEC
+
+
+@contextmanager
+def facts_ai_overrides(
+    *,
+    timeout_sec: int | None = None,
+    transient_retries: int | None = None,
+    generator_budget_sec: float | None = None,
+    critic_budget_sec: float | None = None,
+    web_search_timeout_sec: int | None = None,
+) -> Any:
+    fields = {
+        "timeout_sec": timeout_sec,
+        "transient_retries": transient_retries,
+        "generator_budget_sec": generator_budget_sec,
+        "critic_budget_sec": critic_budget_sec,
+        "web_search_timeout_sec": web_search_timeout_sec,
+    }
+    marker = object()
+    previous: dict[str, object] = {}
+    for field, value in fields.items():
+        previous[field] = getattr(FACTS_AI_CONTEXT, field, marker)
+        if value is None:
+            continue
+        setattr(FACTS_AI_CONTEXT, field, value)
+    try:
+        yield
+    finally:
+        for field, prior in previous.items():
+            if prior is marker:
+                if hasattr(FACTS_AI_CONTEXT, field):
+                    delattr(FACTS_AI_CONTEXT, field)
+            else:
+                setattr(FACTS_AI_CONTEXT, field, prior)
+
+
 def facts_ai_budget_deadline(task: str) -> float:
-    budget_sec = FACTS_AI_CRITIC_BUDGET_SEC if task == "critic" else FACTS_AI_GENERATOR_BUDGET_SEC
+    budget_sec = current_facts_ai_budget_sec(task)
     return time.monotonic() + budget_sec
 
 
@@ -4633,14 +5158,15 @@ def facts_ai_remaining_budget_sec(deadline_monotonic: float | None) -> float | N
 def facts_ai_request_timeout(deadline_monotonic: float | None) -> float:
     remaining = facts_ai_remaining_budget_sec(deadline_monotonic)
     if remaining is None:
-        return float(FACTS_AI_TIMEOUT_SEC)
+        return current_facts_ai_timeout_sec()
     if remaining <= 0.25:
         raise TimeoutError("Facts AI budget exceeded.")
-    return min(float(FACTS_AI_TIMEOUT_SEC), remaining)
+    return min(current_facts_ai_timeout_sec(), remaining)
 
 
 def facts_ai_wait_for_request_slot(deadline_monotonic: float | None = None) -> None:
     global FACTS_AI_NEXT_REQUEST_AT
+    request_delay_sec = current_facts_ai_request_delay_sec()
     with FACTS_AI_LOCK:
         now = time.monotonic()
         wait_sec = FACTS_AI_NEXT_REQUEST_AT - now
@@ -4654,7 +5180,7 @@ def facts_ai_wait_for_request_slot(deadline_monotonic: float | None = None) -> N
         now = time.monotonic()
         if deadline_monotonic is not None and now >= deadline_monotonic:
             raise TimeoutError("Facts AI budget exceeded.")
-        FACTS_AI_NEXT_REQUEST_AT = now + FACTS_AI_REQUEST_DELAY_SEC
+        FACTS_AI_NEXT_REQUEST_AT = now + request_delay_sec
 
 
 def facts_ai_defer_retry(
@@ -4686,7 +5212,7 @@ def facts_ai_defer_retry(
         except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
             pass
     delay = max(
-        FACTS_AI_REQUEST_DELAY_SEC,
+        current_facts_ai_request_delay_sec(),
         retry_after_sec,
         min(45.0, 3.0 * (2**attempt)),
     )
@@ -4766,7 +5292,8 @@ def facts_gemini_json_response(
         method="POST",
     )
 
-    for attempt in range(FACTS_AI_TRANSIENT_RETRIES + 1):
+    transient_retries = current_facts_ai_transient_retries()
+    for attempt in range(transient_retries + 1):
         deadline_monotonic = current_facts_ai_deadline()
         facts_ai_wait_for_request_slot(deadline_monotonic)
         try:
@@ -4774,12 +5301,12 @@ def facts_gemini_json_response(
                 payload = json.loads(response.read().decode("utf-8"))
             break
         except HTTPError as error:
-            if error.code in {429, 500, 502, 503, 504} and attempt < FACTS_AI_TRANSIENT_RETRIES:
+            if error.code in {429, 500, 502, 503, 504} and attempt < transient_retries:
                 facts_ai_defer_retry(attempt, error, deadline_monotonic)
                 continue
             raise RuntimeError(f"Gemini request failed with HTTP {error.code}.") from error
         except (TimeoutError, URLError, OSError) as error:
-            if attempt < FACTS_AI_TRANSIENT_RETRIES:
+            if attempt < transient_retries:
                 facts_ai_defer_retry(attempt, deadline_monotonic=deadline_monotonic)
                 continue
             raise RuntimeError(f"Gemini request timed out or failed: {error}") from error
@@ -4846,7 +5373,8 @@ def facts_compatible_json_response(
         method="POST",
     )
 
-    for attempt in range(FACTS_AI_TRANSIENT_RETRIES + 1):
+    transient_retries = current_facts_ai_transient_retries()
+    for attempt in range(transient_retries + 1):
         deadline_monotonic = current_facts_ai_deadline()
         facts_ai_wait_for_request_slot(deadline_monotonic)
         try:
@@ -4854,12 +5382,12 @@ def facts_compatible_json_response(
                 payload = json.loads(response.read().decode("utf-8"))
             break
         except HTTPError as error:
-            if error.code in {408, 429, 500, 502, 503, 504} and attempt < FACTS_AI_TRANSIENT_RETRIES:
+            if error.code in {408, 429, 500, 502, 503, 504} and attempt < transient_retries:
                 facts_ai_defer_retry(attempt, error, deadline_monotonic)
                 continue
             raise RuntimeError(f"{provider_name} request failed with HTTP {error.code}.") from error
         except (TimeoutError, URLError, OSError) as error:
-            if attempt < FACTS_AI_TRANSIENT_RETRIES:
+            if attempt < transient_retries:
                 facts_ai_defer_retry(attempt, deadline_monotonic=deadline_monotonic)
                 continue
             raise RuntimeError(f"{provider_name} request timed out or failed: {error}") from error
@@ -5489,6 +6017,193 @@ def fetch_history_events(month: int, day: int, limit: int) -> list[dict[str, Any
     return selected[:limit]
 
 
+def load_history_location_context(location: str, lang: str) -> dict[str, Any]:
+    wiki = fetch_wikipedia_summary(location, lang)
+    content_urls = wiki.get("content_urls", {})
+    desktop_urls = content_urls.get("desktop", {}) if isinstance(content_urls, dict) else {}
+    thumbnail = wiki.get("thumbnail", {})
+    article_url = desktop_urls.get("page")
+    plain_extract = ""
+    wikidata_entity = None
+
+    try:
+        plain_extract = fetch_wikipedia_plain_extract(str(wiki.get("title") or location), lang)
+    except Exception as error:
+        safe_log(f"History Wikipedia extract fetch failed: {error}")
+
+    qid = str(wiki.get("wikibase_item", ""))
+    if qid:
+        try:
+            wikidata_entity = fetch_wikidata_entity(qid)
+        except Exception as error:
+            safe_log(f"History Wikidata fetch failed: {error}")
+
+    title = str(wiki.get("title") or location)
+    return {
+        "wiki": wiki,
+        "title": title,
+        "description": wiki.get("description"),
+        "articleUrl": article_url,
+        "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
+        "plainExtract": plain_extract,
+        "wikidataEntity": wikidata_entity,
+        "locationImages": fetch_wikipedia_images(wiki, lang, article_url),
+    }
+
+
+def build_history_rotation_facts_from_context(
+    location_context: dict[str, Any],
+    *,
+    rotation_key: str,
+    lang: str,
+    limit_facts: int,
+    recent_texts: list[str],
+) -> list[dict[str, Any]]:
+    title = str(location_context.get("title") or "")
+    article_url = location_context.get("articleUrl")
+    candidate_limit = max(6, limit_facts * 4)
+    candidate_facts = build_location_facts(
+        location_context.get("wiki", {}),
+        str(location_context.get("plainExtract") or ""),
+        max(10, candidate_limit),
+        article_url if isinstance(article_url, str) else None,
+        location_context.get("wikidataEntity"),
+        lang,
+    )
+    rotated_facts = reviewed_location_facts(
+        rotation_key,
+        title,
+        candidate_facts,
+        limit=limit_facts,
+        recent_texts=recent_texts,
+    )
+    return fetch_missing_fact_images(
+        attach_fact_images(
+            rotated_facts,
+            location_context.get("locationImages", []),
+            title,
+        ),
+        title,
+    )
+
+
+def process_history_fact_prewarm_job(job_row: sqlite3.Row) -> None:
+    job = deserialize_history_fact_prewarm_job(job_row)
+    job_id = job["id"]
+    rotation_key = job["rotationKey"]
+    attempts = job["attempts"]
+    target_not_before_at = parse_utc_timestamp(job["targetNotBeforeAt"])
+    if target_not_before_at is None:
+        complete_history_fact_prewarm_job(
+            job_id,
+            status="failed",
+            last_error="Prewarm job target timestamp is invalid.",
+        )
+        return
+
+    with closing(connect_db()) as conn:
+        if history_rotation_has_moved_on(rotation_key, target_not_before_at, conn=conn):
+            complete_history_fact_prewarm_job(
+                job_id,
+                status="cancelled",
+                last_error="Rotation advanced before prewarm could complete.",
+            )
+            return
+
+    try:
+        with facts_ai_overrides(
+            timeout_sec=FACT_PREWARM_TIMEOUT_SEC,
+            transient_retries=FACT_PREWARM_TRANSIENT_RETRIES,
+            generator_budget_sec=FACT_PREWARM_GENERATOR_BUDGET_SEC,
+            critic_budget_sec=FACT_PREWARM_CRITIC_BUDGET_SEC,
+            web_search_timeout_sec=FACT_PREWARM_WEB_SEARCH_TIMEOUT_SEC,
+        ):
+            location_context = load_history_location_context(job["placeTitle"], job["lang"])
+            facts = build_history_rotation_facts_from_context(
+                location_context,
+                rotation_key=rotation_key,
+                lang=job["lang"],
+                limit_facts=job["limitFacts"],
+                recent_texts=recent_rotated_history_texts(rotation_key),
+            )
+    except Exception as error:
+        if attempts < FACT_PREWARM_MAX_ATTEMPTS:
+            requeue_history_fact_prewarm_job(job_id, last_error=str(error))
+            HISTORY_FACT_PREWARM_EVENT.set()
+        else:
+            complete_history_fact_prewarm_job(
+                job_id,
+                status="failed",
+                last_error=str(error),
+            )
+        return
+
+    with closing(connect_db()) as conn:
+        if history_rotation_has_moved_on(rotation_key, target_not_before_at, conn=conn):
+            complete_history_fact_prewarm_job(
+                job_id,
+                status="cancelled",
+                last_error="Rotation advanced before prewarmed facts were stored.",
+            )
+            return
+
+    complete_history_fact_prewarm_job(
+        job_id,
+        status="ready",
+        facts=facts,
+    )
+
+
+def history_fact_prewarm_worker_loop() -> None:
+    safe_log("History fact prewarm worker started")
+    while True:
+        try:
+            job_row = claim_history_fact_prewarm_job()
+            if job_row is None:
+                HISTORY_FACT_PREWARM_EVENT.wait(FACT_PREWARM_POLL_SEC)
+                HISTORY_FACT_PREWARM_EVENT.clear()
+                continue
+            process_history_fact_prewarm_job(job_row)
+        except Exception as error:
+            safe_log(f"History fact prewarm worker error: {error}")
+            time.sleep(5)
+
+
+def start_history_fact_prewarm_worker() -> None:
+    if not FACT_PREWARM_ENABLED:
+        safe_log("History fact prewarm worker disabled")
+        return
+    thread = threading.Thread(target=history_fact_prewarm_worker_loop, daemon=True)
+    thread.start()
+
+
+def maybe_enqueue_history_fact_prewarm_from_payload(
+    payload: dict[str, Any],
+    *,
+    limit_facts: int,
+) -> bool:
+    if not history_payload_is_cacheable(payload) or limit_facts <= 0:
+        return False
+    location_payload = payload.get("location")
+    request_payload = payload.get("request")
+    meta_payload = payload.get("meta")
+    if not isinstance(location_payload, dict) or not isinstance(request_payload, dict) or not isinstance(meta_payload, dict):
+        return False
+    title = str(location_payload.get("title") or request_payload.get("location") or "").strip()
+    lang = str(request_payload.get("lang") or "en")
+    rotation_created_at = parse_utc_timestamp(str(meta_payload.get("rotationCreatedAt") or ""))
+    if not title or rotation_created_at is None:
+        return False
+    return schedule_history_fact_prewarm(
+        rotation_key=history_fact_rotation_key(title, lang),
+        location_query=title,
+        place_title=title,
+        lang=lang,
+        limit_facts=limit_facts,
+        source_rotation_created_at=rotation_created_at,
+    )
+
+
 def history_payload(
     location: str,
     date_value: str,
@@ -5507,6 +6222,7 @@ def history_payload(
     cache_key = f"{lang}:{location.lower()}:{iso_date}:{limit_facts}:{limit_events}"
     cached = history_cache_get(cache_key)
     if cached is not None:
+        maybe_enqueue_history_fact_prewarm_from_payload(cached, limit_facts=limit_facts)
         return cached, HTTPStatus.OK
 
     warnings: list[dict[str, str]] = []
@@ -5515,76 +6231,52 @@ def history_payload(
     cache_rotation_created_at: datetime | None = None
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        wiki_future = executor.submit(fetch_wikipedia_summary, location, lang)
+        wiki_future = executor.submit(load_history_location_context, location, lang)
         events_future = executor.submit(fetch_history_events, month, day, limit_events)
 
         try:
-            wiki = wiki_future.result()
-            content_urls = wiki.get("content_urls", {})
-            desktop_urls = content_urls.get("desktop", {}) if isinstance(content_urls, dict) else {}
-            thumbnail = wiki.get("thumbnail", {})
-            article_url = desktop_urls.get("page")
-            plain_extract = ""
-            wikidata_entity = None
-
-            try:
-                plain_extract = fetch_wikipedia_plain_extract(str(wiki.get("title") or location), lang)
-            except Exception as error:
-                safe_log(f"History Wikipedia extract fetch failed: {error}")
-
-            qid = str(wiki.get("wikibase_item", ""))
-            if qid:
-                try:
-                    wikidata_entity = fetch_wikidata_entity(qid)
-                except Exception as error:
-                    safe_log(f"History Wikidata fetch failed: {error}")
-
-            title = str(wiki.get("title") or location)
+            location_context = wiki_future.result()
+            title = str(location_context.get("title") or location)
             rotation_key = history_fact_rotation_key(title, lang)
-            location_images = fetch_wikipedia_images(wiki, lang, article_url)
             rotated_record = current_rotated_history_facts_record(rotation_key)
             if rotated_record is None:
-                candidate_limit = max(6, limit_facts * 4)
-                candidate_facts = build_location_facts(
-                    wiki,
-                    plain_extract,
-                    max(10, candidate_limit),
-                    article_url,
-                    wikidata_entity,
-                    lang,
-                )
-                rotated_facts = reviewed_location_facts(
-                    rotation_key,
-                    title,
-                    candidate_facts,
-                    limit=limit_facts,
-                    recent_texts=recent_rotated_history_texts(rotation_key),
-                )
-                rotated_facts = fetch_missing_fact_images(
-                    attach_fact_images(
-                        rotated_facts,
-                        location_images,
-                        title,
-                    ),
-                    title,
-                )
-                created_at = utc_now()
-                store_rotated_history_facts(rotation_key, rotated_facts, created_at=created_at)
-                cache_rotation_created_at = parse_utc_timestamp(created_at)
+                promoted = promote_ready_history_fact_prewarm(rotation_key)
+                if promoted is not None:
+                    rotated_facts, cache_rotation_created_at = promoted
+                else:
+                    rotated_facts = build_history_rotation_facts_from_context(
+                        location_context,
+                        rotation_key=rotation_key,
+                        lang=lang,
+                        limit_facts=limit_facts,
+                        recent_texts=recent_rotated_history_texts(rotation_key),
+                    )
+                    created_at = utc_now()
+                    store_rotated_history_facts(rotation_key, rotated_facts, created_at=created_at)
+                    cache_rotation_created_at = parse_utc_timestamp(created_at)
             else:
                 rotated_facts, cache_rotation_created_at = rotated_record
+                if cache_rotation_created_at is not None:
+                    schedule_history_fact_prewarm(
+                        rotation_key=rotation_key,
+                        location_query=title,
+                        place_title=title,
+                        lang=lang,
+                        limit_facts=limit_facts,
+                        source_rotation_created_at=cache_rotation_created_at,
+                    )
             location_payload = {
                 "title": title,
-                "description": wiki.get("description"),
+                "description": location_context.get("description"),
                 "profile": wikidata_profile(
-                    wikidata_entity,
+                    location_context.get("wikidataEntity"),
                     lang,
                     title,
                 ),
                 "facts": [public_history_fact(fact) for fact in rotated_facts[:limit_facts]],
-                "articleUrl": article_url,
-                "thumbnailUrl": thumbnail.get("source") if isinstance(thumbnail, dict) else None,
-                "images": location_images,
+                "articleUrl": location_context.get("articleUrl"),
+                "thumbnailUrl": location_context.get("thumbnailUrl"),
+                "images": location_context.get("locationImages", []),
             }
         except LookupError:
             return {"error": f"No location facts found for {location}."}, HTTPStatus.NOT_FOUND
@@ -6534,6 +7226,7 @@ def run() -> None:
     assert_runtime_storage_ready("after database initialization")
     start_news_monitor()
     start_daily_quiz_scheduler()
+    start_history_fact_prewarm_worker()
     host = os.environ.get("FULTONS_HOST", "127.0.0.1")
     port = int(os.environ.get("FULTONS_PORT", "8000"))
     server = ThreadingHTTPServer((host, port), FultonsHandler)

@@ -1505,6 +1505,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 "server.current_rotated_history_facts_record",
                 return_value=(rotated_facts, rotation_created_at),
             ),
+            patch("server.schedule_history_fact_prewarm", return_value=False),
             patch("server.wikidata_profile", return_value={}),
         ):
             first_payload, first_status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
@@ -1560,6 +1561,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 "server.current_rotated_history_facts_record",
                 return_value=(rotated_facts, rotation_created_at),
             ),
+            patch("server.schedule_history_fact_prewarm", return_value=False),
             patch("server.wikidata_profile", return_value={}),
         ):
             _payload, status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
@@ -1572,6 +1574,309 @@ class ProductionServerHardeningTests(unittest.TestCase):
             cached_payload["meta"]["rotationExpiresAt"],
             (rotation_created_at + timedelta(seconds=server.FACT_ROTATION_TTL_SEC)).isoformat(),
         )
+
+    def test_schedule_history_fact_prewarm_avoids_duplicate_active_job(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name) / "runtime-db"
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            now = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
+            source_rotation_created_at = now - timedelta(
+                seconds=server.FACT_ROTATION_TTL_SEC - 1800
+            )
+
+            first = server.schedule_history_fact_prewarm(
+                rotation_key="v4:en:paisley",
+                location_query="Paisley",
+                place_title="Paisley, Renfrewshire",
+                lang="en",
+                limit_facts=2,
+                source_rotation_created_at=source_rotation_created_at,
+                now=now,
+            )
+            second = server.schedule_history_fact_prewarm(
+                rotation_key="v4:en:paisley",
+                location_query="Paisley",
+                place_title="Paisley, Renfrewshire",
+                lang="en",
+                limit_facts=2,
+                source_rotation_created_at=source_rotation_created_at,
+                now=now,
+            )
+
+            with closing(server.connect_db()) as conn:
+                rows = conn.execute(
+                    """
+                    SELECT rotation_key, status, target_not_before_at
+                    FROM history_fact_prewarm_jobs
+                    ORDER BY id ASC
+                    """
+                ).fetchall()
+
+            self.assertTrue(first)
+            self.assertFalse(second)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["rotation_key"], "v4:en:paisley")
+            self.assertEqual(rows[0]["status"], "pending")
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_promote_ready_history_fact_prewarm_consumes_job_and_stores_rotation(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name) / "runtime-db"
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            facts = [
+                {
+                    "title": "Royal Birthplace",
+                    "text": "Robert II was born in Paisley in 1316.",
+                    "theme": "people",
+                    "sourceName": "paisley.is",
+                    "sourceUrl": "https://paisley.is/visit/paisley/",
+                    "confidence": "medium",
+                },
+                {
+                    "title": "Paisley Pattern",
+                    "text": "Paisley's textile industry made the pattern famous worldwide.",
+                    "theme": "industry",
+                    "sourceName": "bbc.com",
+                    "sourceUrl": "https://www.bbc.com/culture/article/paisley-pattern",
+                    "confidence": "medium",
+                },
+            ]
+
+            with closing(server.connect_db()) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO history_fact_prewarm_jobs (
+                            rotation_key,
+                            location_query,
+                            place_title,
+                            lang,
+                            limit_facts,
+                            source_rotation_created_at,
+                            target_not_before_at,
+                            status,
+                            facts_json,
+                            attempts,
+                            created_at,
+                            completed_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, 1, ?, ?)
+                        """,
+                        (
+                            "v4:en:paisley",
+                            "Paisley",
+                            "Paisley, Renfrewshire",
+                            "en",
+                            2,
+                            "2026-06-05T11:00:00+00:00",
+                            "2026-06-06T11:00:00+00:00",
+                            json.dumps(facts, ensure_ascii=True),
+                            "2026-06-06T10:00:00+00:00",
+                            "2026-06-06T10:05:00+00:00",
+                        ),
+                    )
+
+            promoted = server.promote_ready_history_fact_prewarm(
+                "v4:en:paisley",
+                now=datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertIsNotNone(promoted)
+            promoted_facts, promoted_created_at = promoted or ([], datetime.now(timezone.utc))
+            self.assertEqual(len(promoted_facts), 2)
+            self.assertEqual(promoted_facts[0]["title"], "Royal Birthplace")
+            self.assertIsNotNone(promoted_created_at)
+
+            with closing(server.connect_db()) as conn:
+                rotation = conn.execute(
+                    """
+                    SELECT facts_json
+                    FROM history_fact_rotations
+                    WHERE rotation_key = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    ("v4:en:paisley",),
+                ).fetchone()
+                job = conn.execute(
+                    "SELECT status FROM history_fact_prewarm_jobs WHERE rotation_key = ?",
+                    ("v4:en:paisley",),
+                ).fetchone()
+
+            self.assertIsNotNone(rotation)
+            self.assertEqual(json.loads(str(rotation["facts_json"]))[0]["title"], "Royal Birthplace")
+            self.assertEqual(job["status"], "consumed")
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_history_payload_promotes_ready_prewarm_before_cold_regeneration(self) -> None:
+        import server
+
+        server.HISTORY_CACHE.clear()
+        self.addCleanup(server.HISTORY_CACHE.clear)
+        ready_facts = [
+            {
+                "title": "Royal Birthplace",
+                "text": "Robert II was born in Paisley in 1316.",
+                "theme": "people",
+                "sourceName": "paisley.is",
+                "sourceUrl": "https://paisley.is/visit/paisley/",
+                "confidence": "medium",
+            },
+            {
+                "title": "Paisley Pattern",
+                "text": "Paisley's textile industry made the pattern famous worldwide.",
+                "theme": "industry",
+                "sourceName": "bbc.com",
+                "sourceUrl": "https://www.bbc.com/culture/article/paisley-pattern",
+                "confidence": "medium",
+            },
+        ]
+        promoted_created_at = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
+        location_context = {
+            "title": "Paisley",
+            "description": "Town in Scotland",
+            "articleUrl": "https://en.wikipedia.org/wiki/Paisley",
+            "thumbnailUrl": "https://example.com/paisley.jpg",
+            "wiki": {},
+            "plainExtract": "Paisley is a town in Scotland.",
+            "wikidataEntity": None,
+            "locationImages": [],
+        }
+
+        with (
+            patch("server.load_history_location_context", return_value=location_context),
+            patch("server.fetch_history_events", return_value=[]),
+            patch("server.current_rotated_history_facts_record", return_value=None),
+            patch(
+                "server.promote_ready_history_fact_prewarm",
+                return_value=(ready_facts, promoted_created_at),
+            ) as promote_ready,
+            patch("server.build_history_rotation_facts_from_context") as cold_build,
+            patch("server.wikidata_profile", return_value={}),
+        ):
+            payload, status = server.history_payload("Paisley", "2026-06-06", "en", 2, 5)
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(payload["location"]["facts"][0]["title"], "Royal Birthplace")
+        self.assertEqual(payload["meta"]["rotationCreatedAt"], "2026-06-06T12:00:00+00:00")
+        promote_ready.assert_called_once()
+        cold_build.assert_not_called()
+
+    def test_history_payload_enqueues_prewarm_for_near_expiry_rotation(self) -> None:
+        import server
+
+        server.HISTORY_CACHE.clear()
+        self.addCleanup(server.HISTORY_CACHE.clear)
+        rotation_created_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(
+            seconds=server.FACT_ROTATION_TTL_SEC - 1800
+        )
+        rotated_facts = [
+            {
+                "title": "Paisley Abbey",
+                "text": "Paisley Abbey is one of the town's best-known landmarks.",
+                "theme": "history",
+                "sourceName": "Paisley Abbey",
+                "sourceUrl": "https://paisleyabbey.org.uk/history",
+                "confidence": "high",
+            }
+        ]
+        location_context = {
+            "title": "Paisley",
+            "description": "Town in Scotland",
+            "articleUrl": "https://en.wikipedia.org/wiki/Paisley",
+            "thumbnailUrl": "https://example.com/paisley.jpg",
+            "wiki": {},
+            "plainExtract": "Paisley is a town in Scotland.",
+            "wikidataEntity": None,
+            "locationImages": [],
+        }
+
+        with (
+            patch("server.load_history_location_context", return_value=location_context),
+            patch("server.fetch_history_events", return_value=[]),
+            patch(
+                "server.current_rotated_history_facts_record",
+                return_value=(rotated_facts, rotation_created_at),
+            ),
+            patch("server.schedule_history_fact_prewarm", return_value=True) as schedule_prewarm,
+            patch("server.wikidata_profile", return_value={}),
+        ):
+            payload, status = server.history_payload("Paisley", "2026-06-06", "en", 2, 5)
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(payload["location"]["facts"][0]["title"], "Paisley Abbey")
+        schedule_prewarm.assert_called_once()
+        self.assertEqual(
+            schedule_prewarm.call_args.kwargs["rotation_key"],
+            "v4:en:paisleyrenfrewshire",
+        )
+        self.assertEqual(schedule_prewarm.call_args.kwargs["location_query"], "Paisley")
+
+    def test_history_payload_cache_hit_still_enqueues_prewarm(self) -> None:
+        import server
+
+        server.HISTORY_CACHE.clear()
+        self.addCleanup(server.HISTORY_CACHE.clear)
+        cache_key = "en:paisley:2026-06-06:2:5"
+        cached_payload = {
+            "request": {"location": "Paisley", "date": "2026-06-06", "lang": "en"},
+            "location": {
+                "title": "Paisley",
+                "description": "Town in Scotland",
+                "facts": [
+                    {
+                        "title": "Paisley Abbey",
+                        "text": "Paisley Abbey is one of the town's best-known landmarks.",
+                        "theme": "history",
+                        "sourceName": "Paisley Abbey",
+                        "sourceUrl": "https://paisleyabbey.org.uk/history",
+                        "confidence": "high",
+                    }
+                ],
+                "articleUrl": "https://en.wikipedia.org/wiki/Paisley",
+                "thumbnailUrl": "https://example.com/paisley.jpg",
+                "images": [],
+            },
+            "globalEvents": [],
+            "partial": False,
+            "warnings": [],
+            "meta": {
+                "cached": False,
+                "eventsLanguage": "en",
+                "generatedAt": "2026-06-06T10:30:00+00:00",
+                "rotationCreatedAt": (
+                    datetime.now(timezone.utc).replace(microsecond=0)
+                    - timedelta(seconds=server.FACT_ROTATION_TTL_SEC - 1800)
+                ).isoformat(),
+                "rotationExpiresAt": None,
+            },
+        }
+        server.HISTORY_CACHE[cache_key] = (server.time.time() + 60, cached_payload)
+
+        with patch("server.schedule_history_fact_prewarm", return_value=True) as schedule_prewarm:
+            payload, status = server.history_payload("Paisley", "2026-06-06", "en", 2, 5)
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertTrue(payload["meta"]["cached"])
+        schedule_prewarm.assert_called_once()
 
     def test_wikipedia_images_keep_location_photos_and_skip_badges(self) -> None:
         import server
