@@ -4209,6 +4209,25 @@ def public_history_fact(fact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def history_fact_diversity_key(fact: dict[str, Any]) -> str:
+    title = str(fact.get("title") or "").strip()
+    if title and title.casefold() not in FACT_GENERIC_FACT_TITLES:
+        return history_fact_text_key(title)
+    source_url = str(fact.get("sourceUrl") or "").strip()
+    if source_url:
+        parsed = urlparse(source_url)
+        return history_fact_text_key(f"{parsed.netloc}{parsed.path}")
+    return history_fact_text_key(str(fact.get("text") or "")[:80])
+
+
+def history_fact_source_key(fact: dict[str, Any]) -> str:
+    source_url = str(fact.get("sourceUrl") or "").strip()
+    if source_url:
+        parsed = urlparse(source_url)
+        return history_fact_text_key(parsed.netloc)
+    return history_fact_text_key(str(fact.get("sourceName") or ""))
+
+
 def rotated_location_facts(
     candidates: list[dict[str, Any]],
     *,
@@ -4220,16 +4239,26 @@ def rotated_location_facts(
     def choose(pool: list[dict[str, Any]], selected: list[dict[str, Any]], require_new_theme: bool) -> None:
         selected_keys = {history_fact_text_key(str(item.get("text") or "")) for item in selected}
         selected_themes = {str(item.get("theme") or "general") for item in selected}
+        selected_diversity = {history_fact_diversity_key(item) for item in selected}
+        selected_sources = {history_fact_source_key(item) for item in selected}
         for fact in pool:
             text_key = history_fact_text_key(str(fact.get("text") or ""))
             theme = str(fact.get("theme") or "general")
+            diversity_key = history_fact_diversity_key(fact)
+            source_key = history_fact_source_key(fact)
             if text_key in selected_keys:
                 continue
+            if diversity_key in selected_diversity:
+                continue
             if require_new_theme and theme != "general" and theme in selected_themes:
+                continue
+            if require_new_theme and source_key in selected_sources and len(selected) < max(1, limit - 1):
                 continue
             selected.append(dict(fact))
             selected_keys.add(text_key)
             selected_themes.add(theme)
+            selected_diversity.add(diversity_key)
+            selected_sources.add(source_key)
             if len(selected) >= limit:
                 return
 
