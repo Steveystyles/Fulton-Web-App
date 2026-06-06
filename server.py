@@ -497,6 +497,14 @@ FACT_GENERIC_PAGE_TERMS = (
     "plan your visit",
     "offers visitors",
     "vibrant cultural scene",
+    "local news",
+    "latest news updates",
+    "community guide",
+    "best coverage",
+    "pictures, video, reaction",
+    "business directory",
+    "community stories",
+    "all-about",
 )
 FACT_GENERIC_FACT_TITLES = {
     value.casefold()
@@ -2780,6 +2788,33 @@ def fact_source_quality_bonus(source_name: str, source_url: str) -> int:
     return score
 
 
+def web_evidence_item_is_useful(
+    source_name: str,
+    source_url: str,
+    evidence_title: str,
+    snippet: str,
+) -> bool:
+    metadata = " ".join((source_name, source_url, evidence_title)).lower()
+    snippet_lower = snippet.lower()
+    snippet_has_specific_signal = bool(
+        re.search(r"\b(1[0-9]{3}|20[0-9]{2})\b", snippet_lower)
+        or any(
+            token in snippet_lower
+            for token in ("born", "founded", "abbey", "pattern", "festival", "museum", "castle", "royal", "king", "queen")
+        )
+    )
+    if any(term in metadata for term in FACT_GENERIC_PAGE_TERMS) and not snippet_has_specific_signal:
+        return False
+    combined = f"{metadata} {snippet_lower}"
+    if "|" in evidence_title and any(term in combined for term in ("news", "guide", "daily record", "community")) and not snippet_has_specific_signal:
+        return False
+    if any(term in combined for term in ("latest news", "best coverage", "business directory", "community stories")) and not snippet_has_specific_signal:
+        return False
+    if source_url.rstrip("/").count("/") <= 2 and any(term in combined for term in ("news", "guide", "directory")) and not snippet_has_specific_signal:
+        return False
+    return True
+
+
 def fact_title_is_specific(title: str, place_title: str) -> bool:
     cleaned = clean_search_text(title, 72).strip(" -|:")
     if len(cleaned) < 4:
@@ -2792,6 +2827,8 @@ def fact_title_is_specific(title: str, place_title: str) -> bool:
     if lower in {place_name, place_full}:
         return False
     if any(term in lower for term in FACT_GENERIC_PAGE_TERMS):
+        return False
+    if "|" in cleaned:
         return False
     return True
 
@@ -2892,6 +2929,11 @@ def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title:
             "newsletter",
             "where to stay",
             "where to eat",
+            "business directory",
+            "community stories",
+            "best coverage",
+            "daily record",
+            "latest news updates",
         )
     ):
         return False
@@ -2905,6 +2947,8 @@ def web_fact_sentence_is_useful(sentence: str, place_title: str, evidence_title:
             "plan your visit",
             "top attractions",
             "vibrant cultural scene",
+            "we bring you",
+            "seven days a week",
         )
     ):
         return False
@@ -2932,16 +2976,19 @@ def web_evidence_fact_candidates(
         source_name = str(item.get("sourceName") or "").strip()
         source_url = str(item.get("sourceUrl") or "").strip()
         evidence_title = str(item.get("title") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
         if not source_name or not source_url.startswith(("http://", "https://")):
             continue
         if blocked_fact_source(source_url):
+            continue
+        if not web_evidence_item_is_useful(source_name, source_url, evidence_title, snippet):
             continue
         source_bonus = fact_source_quality_bonus(source_name, source_url)
         raw_text = " ".join(
             part
             for part in (
                 str(item.get("excerpt") or "").strip(),
-                str(item.get("snippet") or "").strip(),
+                snippet,
             )
             if part
         )
