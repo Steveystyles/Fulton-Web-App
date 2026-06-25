@@ -46,6 +46,11 @@ DATA_DIR = APP_DIR / "data"
 DB_PATH = DATA_DIR / "fultons.db"
 DIST_DIR = APP_DIR / "dist"
 SESSION_COOKIE = "fultons_session"
+CACHE_VERSION_COOKIE = "fultons_cache_version"
+CACHE_VERSION = (
+    re.sub(r"[^A-Za-z0-9_.-]", "-", os.environ.get("FULTONS_BUILD_COMMIT", "local"))[:64]
+    or "local"
+)
 SESSION_DAYS = 14
 PASSWORD_ITERATIONS = 260_000
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_-]{3,32}$")
@@ -1314,6 +1319,11 @@ def session_header(token: str) -> str:
 
 def clear_session_header() -> str:
     return f"{SESSION_COOKIE}=; {cookie_attributes(0)}"
+
+
+def cache_version_header() -> str:
+    max_age = 365 * 24 * 60 * 60
+    return f"{CACHE_VERSION_COOKIE}={CACHE_VERSION}; {cookie_attributes(max_age)}"
 
 
 def cleanup_expired_sessions(conn: sqlite3.Connection, now: str | None = None) -> None:
@@ -6605,6 +6615,28 @@ def history_payload(
     return payload, HTTPStatus.OK
 
 
+def current_index_asset(suffix: str) -> Path | None:
+    assets_dir = DIST_DIR / "assets"
+    if suffix not in {".css", ".js"} or not assets_dir.exists():
+        return None
+    matches = [path for path in assets_dir.glob(f"index-*{suffix}") if path.is_file()]
+    if not matches:
+        return None
+    return max(matches, key=lambda path: path.stat().st_mtime)
+
+
+def requested_dist_asset(parsed_path: str) -> Path | None:
+    target = (DIST_DIR / parsed_path.lstrip("/")).resolve()
+    dist_root = DIST_DIR.resolve()
+    try:
+        target.relative_to(dist_root)
+    except ValueError:
+        return None
+    if target.is_file():
+        return target
+    return None
+
+
 class FultonsHandler(SimpleHTTPRequestHandler):
     server_version = "FultonsQuiz/0.1"
 
@@ -6620,10 +6652,19 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def end_headers(self) -> None:
+        self.send_cache_version_headers()
         self.send_static_cache_headers()
         self.send_security_headers()
         self.send_cors_headers()
         super().end_headers()
+
+    def send_cache_version_headers(self) -> None:
+        if CACHE_VERSION == "local":
+            return
+        if get_cookie_value(self.headers, CACHE_VERSION_COOKIE) == CACHE_VERSION:
+            return
+        self.send_header("Clear-Site-Data", '"cache"')
+        self.send_header("Set-Cookie", cache_version_header())
 
     def send_static_cache_headers(self) -> None:
         if getattr(self, "_json_response", False):
@@ -6634,7 +6675,10 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_path.startswith("/assets/"):
-            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            if requested_dist_asset(parsed_path) is not None:
+                self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            else:
+                self.send_header("Cache-Control", "no-store, max-age=0")
             return
 
         self.send_header("Cache-Control", "no-store, max-age=0")
@@ -7489,12 +7533,23 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
     def translate_path(self, path: str) -> str:
         parsed_path = urlparse(path).path
+        if parsed_path.startswith("/assets/"):
+            target = requested_dist_asset(parsed_path)
+            if target is not None:
+                return str(target)
+            asset_name = Path(parsed_path).name
+            suffix = Path(parsed_path).suffix
+            if asset_name.startswith("index-"):
+                current_asset = current_index_asset(suffix)
+                if current_asset is not None:
+                    return str(current_asset)
+            return str(DIST_DIR / "__missing_asset__")
+
         if parsed_path == "/" or Path(parsed_path).suffix == "":
             return str(DIST_DIR / "index.html")
 
-        target = (DIST_DIR / parsed_path.lstrip("/")).resolve()
-        dist_root = DIST_DIR.resolve()
-        if not str(target).startswith(str(dist_root)) or not target.is_file():
+        target = requested_dist_asset(parsed_path)
+        if target is None:
             return str(DIST_DIR / "index.html")
         return str(target)
 

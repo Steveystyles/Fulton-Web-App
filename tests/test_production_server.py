@@ -1283,6 +1283,11 @@ class ProductionServerHardeningTests(unittest.TestCase):
         import server
 
         sent_headers: list[tuple[str, str]] = []
+        original_dist_dir = server.DIST_DIR
+        dist_dir = Path(self.temp_dir.name) / "dist"
+        assets_dir = dist_dir / "assets"
+        assets_dir.mkdir(parents=True)
+        (assets_dir / "index-BY5qEWa0.js").write_text("console.log('new')", encoding="utf-8")
 
         class DummyHandler:
             path = "/assets/index-BY5qEWa0.js"
@@ -1290,11 +1295,62 @@ class ProductionServerHardeningTests(unittest.TestCase):
             def send_header(self, name: str, value: str) -> None:
                 sent_headers.append((name, value))
 
-        server.FultonsHandler.send_static_cache_headers(DummyHandler())  # type: ignore[arg-type]
+        try:
+            server.DIST_DIR = dist_dir
+            server.FultonsHandler.send_static_cache_headers(DummyHandler())  # type: ignore[arg-type]
+        finally:
+            server.DIST_DIR = original_dist_dir
 
         self.assertEqual(
             [value for name, value in sent_headers if name == "Cache-Control"],
             ["public, max-age=31536000, immutable"],
+        )
+
+    def test_stale_index_asset_url_maps_to_current_bundle(self) -> None:
+        import server
+
+        original_dist_dir = server.DIST_DIR
+        dist_dir = Path(self.temp_dir.name) / "dist"
+        assets_dir = dist_dir / "assets"
+        assets_dir.mkdir(parents=True)
+        current_bundle = assets_dir / "index-current.js"
+        current_bundle.write_text("console.log('current')", encoding="utf-8")
+
+        class DummyHandler:
+            pass
+
+        try:
+            server.DIST_DIR = dist_dir
+            translated = server.FultonsHandler.translate_path(  # type: ignore[arg-type]
+                DummyHandler(),
+                "/assets/index-old.js",
+            )
+        finally:
+            server.DIST_DIR = original_dist_dir
+
+        self.assertEqual(Path(translated), current_bundle)
+
+    def test_stale_clients_receive_cache_clear_version_header(self) -> None:
+        import server
+
+        sent_headers: list[tuple[str, str]] = []
+
+        class DummyHeaders:
+            def get(self, _name: str) -> str:
+                return ""
+
+        class DummyHandler:
+            headers = DummyHeaders()
+
+            def send_header(self, name: str, value: str) -> None:
+                sent_headers.append((name, value))
+
+        with patch("server.CACHE_VERSION", "test-build"):
+            server.FultonsHandler.send_cache_version_headers(DummyHandler())  # type: ignore[arg-type]
+
+        self.assertIn(("Clear-Site-Data", '"cache"'), sent_headers)
+        self.assertTrue(
+            any(name == "Set-Cookie" and value.startswith("fultons_cache_version=test-build;") for name, value in sent_headers)
         )
 
     def test_production_database_does_not_seed_demo_users_by_default(self) -> None:
