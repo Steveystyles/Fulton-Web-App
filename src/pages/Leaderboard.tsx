@@ -12,8 +12,8 @@ function percent(value: number, maximum: number) {
   return `${Math.max(4, Math.round((value / maximum) * 100))}%`;
 }
 
-function dayLabel(value: number) {
-  return `${value} day${value === 1 ? "" : "s"}`;
+function streakLabel(value: number) {
+  return `${value} in a row`;
 }
 
 function shortDate(value: string) {
@@ -139,7 +139,7 @@ export function Leaderboard() {
                   <tr>
                     <th className="px-3 py-2">Player</th>
                     <th className="px-2 py-2 text-right">This week</th>
-                    <th className="px-3 py-2 text-right">Streak</th>
+                    <th className="px-3 py-2 text-right">Solve streak</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -200,10 +200,10 @@ function CurrentPlayerCard({
           <div className="text-right">
             <p className="inline-flex items-center gap-1 rounded-full bg-saints-red px-2.5 py-1 text-xs font-black">
               <Flame aria-hidden="true" className="h-3.5 w-3.5" />
-              {dayLabel(player.currentStreak)}
+              {streakLabel(player.currentStreak)}
             </p>
             <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
-              best {player.bestStreak}
+              best {streakLabel(player.bestStreak)}
             </p>
           </div>
         </div>
@@ -240,7 +240,7 @@ function CurrentPlayerCard({
             value={`${player.wordlePoints} pts`}
             detail={`${player.wordleWins}/${player.wordlePlayed} wins`}
           />
-          <StatFigure label="Best streak" value={player.bestStreak} />
+          <StatFigure label="Best solve streak" value={player.bestStreak} />
         </div>
       </div>
     </Card>
@@ -369,7 +369,7 @@ function PlayerDetailDialog({
         <div className="mt-4 grid grid-cols-3 gap-3">
           <StatFigure label="Rank" value={`#${player.rank}`} />
           <StatFigure label="This week" value={player.weeklyPoints} />
-          <StatFigure label="Streak" value={player.currentStreak} />
+          <StatFigure label="Solve streak" value={player.currentStreak} />
         </div>
 
         <div className="mt-4 space-y-3">
@@ -398,9 +398,9 @@ function PlayerDetailDialog({
             />
             <DetailMetricRow
               icon={Flame}
-              label="Best streak"
-              value={dayLabel(player.bestStreak)}
-              detail="Longest run of consecutive active days"
+              label="Best solve streak"
+              value={streakLabel(player.bestStreak)}
+              detail="Longest run of consecutive solved Wordles"
             />
           </div>
         </div>
@@ -421,7 +421,7 @@ function ScoreGuide() {
             Wordle awards 10 points for a first-guess win, then 5, 4, 3, 2, or 1. Quiz questions award 1, 3, or 5 points by difficulty, plus 3 for a perfect round.
           </p>
           <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
-            The leaderboard covers the latest seven days so new players can compete. Open any player to see their all-time total.
+            Streaks count consecutive solved Wordles. The leaderboard covers the latest seven days so new players can compete.
           </p>
         </div>
       </div>

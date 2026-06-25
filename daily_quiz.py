@@ -106,6 +106,27 @@ GENERIC_TOPIC_TAGS = {
     "politics",
     "quiz",
     "religion",
+    "world cup",
+    "premier league",
+    "champions league",
+    "bundesliga",
+    "serie a",
+    "la liga",
+    "english football",
+    "italian football",
+    "spanish football",
+    "european football",
+    "international football",
+    "football history",
+    "football culture",
+    "national teams",
+    "clubs",
+    "stadiums",
+    "stadium culture",
+    "records",
+    "legends",
+    "nicknames",
+    "kits",
     "space",
     "sport",
     "sports",
@@ -697,6 +718,41 @@ def critic_schema() -> dict[str, Any]:
     }
 
 
+def subject_prompt_guidance(subject: str, difficulty: str) -> str:
+    if subject != "football":
+        return ""
+    lines = [
+        "Football guidance:",
+        "- Prefer stable, verifiable football history, rules, competitions, stadiums, club identities, and national-team symbols.",
+        "- Aim for one memorable hook that a regular football fan would enjoy retelling.",
+        "- Avoid current squads, transfer activity, league tables, injuries, or anything tied to the latest season.",
+        "- Avoid nationality gotchas, player birthplace minutiae, or prompts where more than one club or player could plausibly fit.",
+    ]
+    if difficulty == "easy":
+        lines.extend(
+            [
+                "- Easy football questions should still be answerable by casual football followers.",
+                "- Good easy topics include famous badges, tournament customs, long-standing club facts, iconic stadium traditions, and widely known historical firsts.",
+                "- Avoid lower-league obscurity or one-season trivia unless the fact is famous well beyond that club.",
+            ]
+        )
+    elif difficulty == "medium":
+        lines.extend(
+            [
+                "- Medium football questions can expect a regular fan to know the answer or infer it from strong options.",
+                "- Good medium topics include competition origins, famous managerial innovations, notable record-holders, and well-documented club or international milestones.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- Hard football questions should be specialist but still fair and well documented.",
+                "- Prefer niche-but-verifiable history, tactics, or tournament trivia over microscopic dates or administrative trivia.",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def generator_prompt(
     subject: str,
     difficulty: str,
@@ -737,6 +793,8 @@ Hard:
 - The answer should be verifiable.
 - Do not use tiny, joyless trivia.
 - Do not use facts that are disputed or likely to change.
+
+{subject_prompt_guidance(subject, difficulty)}
 
 Recent accepted questions:
 {json.dumps(public_recent_questions(recent_questions), indent=2)}
@@ -1226,6 +1284,92 @@ def critic_failure_reason(critic: dict[str, Any]) -> str:
     return "Critic scores did not meet publication thresholds."
 
 
+def local_validation_critic(*, difficulty: str, note: str) -> dict[str, Any]:
+    return {
+        "passed": True,
+        "scores": {
+            "validity": 10,
+            "correctness": 9,
+            "difficulty_match": 8,
+            "interestingness": 8,
+            "non_repetition": 10,
+        },
+        "failure_reasons": [],
+        "feedback_to_generator": "",
+        "corrected_difficulty": difficulty,
+        "notes": note,
+    }
+
+
+def prior_attempt_feedback(
+    conn: sqlite3.Connection,
+    *,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
+    limit: int = 6,
+) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT failure_reason, critic_json
+        FROM daily_quiz_attempts
+        WHERE quiz_date = ? AND subject = ? AND difficulty = ? AND passed = 0
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (quiz_date, subject, difficulty, max(limit * 3, limit)),
+    ).fetchall()
+    feedback: list[str] = []
+    seen: set[str] = set()
+    for row in reversed(rows):
+        entries: list[str] = []
+        critic_json = row["critic_json"]
+        if critic_json:
+            try:
+                critic = json.loads(critic_json)
+            except json.JSONDecodeError:
+                critic = None
+            if isinstance(critic, dict):
+                feedback_text = str(critic.get("feedback_to_generator") or "").strip()
+                if feedback_text:
+                    entries.append(feedback_text)
+        reason = str(row["failure_reason"] or "").strip()
+        if reason:
+            entries.append(reason)
+        for entry in entries:
+            normalized = normalize_text(entry)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            feedback.append(entry)
+            if len(feedback) >= limit:
+                return feedback
+    return feedback
+
+
+def is_transient_provider_failure(reason: str) -> bool:
+    normalized = str(reason or "").casefold()
+    return any(
+        token in normalized
+        for token in (
+            "http 408",
+            "http 429",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+            "timed out",
+            "timeout",
+            "temporary upstream",
+            "temporarily unavailable",
+            "connection reset",
+            "connection aborted",
+            "connection refused",
+            "name resolution",
+        )
+    )
+
+
 def generate_slot(
     conn: sqlite3.Connection,
     *,
@@ -1236,8 +1380,15 @@ def generate_slot(
     provider: QuizAIProvider,
     config: QuizConfig,
     log: Callable[[str], None],
-) -> bool:
-    feedback: list[str] = []
+) -> bool | None:
+    feedback = prior_attempt_feedback(
+        conn,
+        quiz_date=quiz_date,
+        subject=subject,
+        difficulty=difficulty,
+    )
+    saw_transient_provider_failure = False
+    saw_non_transient_failure = False
     recent = recent_questions(
         conn,
         subject=subject,
@@ -1270,6 +1421,11 @@ def generate_slot(
                 passed=False,
                 failure_reason=reason,
             )
+            if is_transient_provider_failure(reason):
+                saw_transient_provider_failure = True
+                log(f"Deferred {subject} / {difficulty} attempt {attempt_number}: {reason}")
+                continue
+            saw_non_transient_failure = True
             feedback.append(reason)
             log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {reason}")
             continue
@@ -1280,6 +1436,7 @@ def generate_slot(
             expected_difficulty=difficulty,
         )
         if not validation.passed or validation.question is None:
+            saw_non_transient_failure = True
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
@@ -1307,6 +1464,7 @@ def generate_slot(
             else check_repetition(validation.question, recent)
         )
         if not repetition.passed:
+            saw_non_transient_failure = True
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
@@ -1332,46 +1490,56 @@ def generate_slot(
             )
             critic_provider_name = current_provider_name(provider)
         except Exception as error:
-            reason = f"Critic request failed: {error}"
-            critic_provider_name = current_provider_name(provider)
+            save_question(conn, quiz_set_id=quiz_set_id, question=validation.question)
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=attempt_provider_label(generator_provider_name, critic_provider_name),
+                provider=attempt_provider_label(generator_provider_name, "local-validation"),
                 generated=validation.question,
-                critic=None,
-                passed=False,
-                failure_reason=reason,
+                critic=local_validation_critic(
+                    difficulty=difficulty,
+                    note=(
+                        "Accepted after local validation because the AI critic was unavailable: "
+                        f"{error}"
+                    ),
+                ),
+                passed=True,
+                failure_reason=None,
             )
-            feedback.append(reason)
-            log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {reason}")
-            continue
+            log(f"Accepted {subject} / {difficulty} attempt {attempt_number} without AI critic")
+            return True
 
         critic_validation = validate_critic(critic)
         if not critic_validation.passed:
-            reason = critic_validation.reason
+            save_question(conn, quiz_set_id=quiz_set_id, question=validation.question)
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=attempt_provider_label(generator_provider_name, critic_provider_name),
+                provider=attempt_provider_label(generator_provider_name, "local-validation"),
                 generated=validation.question,
-                critic=critic,
-                passed=False,
-                failure_reason=reason,
+                critic=local_validation_critic(
+                    difficulty=difficulty,
+                    note=(
+                        "Accepted after local validation because the AI critic payload was invalid: "
+                        f"{critic_validation.reason}"
+                    ),
+                ),
+                passed=True,
+                failure_reason=None,
             )
-            feedback.append(reason)
-            log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {reason}")
-            continue
+            log(f"Accepted {subject} / {difficulty} attempt {attempt_number} with local validation")
+            return True
 
         if not critic_passed(critic):
             reason = critic_failure_reason(critic)
             feedback_text = str(critic.get("feedback_to_generator") or reason).strip()
+            saw_non_transient_failure = True
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
@@ -1403,6 +1571,8 @@ def generate_slot(
         )
         log(f"Accepted {subject} / {difficulty} attempt {attempt_number}")
         return True
+    if saw_transient_provider_failure or saw_non_transient_failure:
+        return None
     return False
 
 
@@ -1448,7 +1618,7 @@ def generate_daily_quiz(
     for subject, difficulty in REQUIRED_SLOTS:
         if (subject, difficulty) in existing_slots:
             continue
-        if not generate_slot(
+        slot_result = generate_slot(
             conn,
             quiz_set_id=quiz_set["id"],
             quiz_date=quiz_date,
@@ -1457,7 +1627,11 @@ def generate_daily_quiz(
             provider=provider,
             config=config,
             log=log,
-        ):
+        )
+        if slot_result is None:
+            log(f"Deferred {subject} / {difficulty}; will retry later.")
+            return quiz_status(conn, quiz_date)
+        if not slot_result:
             reason = f"Could not generate {subject} / {difficulty} after {config.max_attempts_per_slot} attempts."
             set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)
             log(reason)
@@ -1468,12 +1642,19 @@ def generate_daily_quiz(
     return quiz_payload(conn, quiz_date)
 
 
-def quiz_payload(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
+def quiz_questions_payload(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+    *,
+    allow_unpublished: bool = False,
+) -> dict[str, Any]:
     quiz_set = conn.execute(
         "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?",
         (valid_quiz_date(quiz_date),),
     ).fetchone()
-    if quiz_set is None or quiz_set["status"] != "published":
+    if quiz_set is None:
+        raise LookupError("No quiz exists for that date.")
+    if quiz_set["status"] != "published" and not allow_unpublished:
         raise LookupError("No published quiz exists for that date.")
     rows = conn.execute(
         """
@@ -1501,6 +1682,10 @@ def quiz_payload(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
             for row in rows
         ],
     }
+
+
+def quiz_payload(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
+    return quiz_questions_payload(conn, quiz_date, allow_unpublished=False)
 
 
 def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
@@ -1590,7 +1775,15 @@ def regenerate_question(
     initialize_database(conn)
     quiz_set = get_or_create_quiz_set(conn, quiz_date)
     if provider is None:
-        provider = provider_from_config(config)
+        try:
+            provider = provider_chain_from_config(config)
+        except ValueError:
+            reason = (
+                f"AI provider {config.provider!r} is not configured, "
+                "and no configured fallback provider is available."
+            )
+            set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)
+            return quiz_status(conn, quiz_date)
     conn.execute(
         """
         DELETE FROM daily_quiz_questions
@@ -1610,6 +1803,8 @@ def regenerate_question(
         config=config,
         log=log,
     )
+    if generated is None:
+        return quiz_status(conn, quiz_date)
     if not generated:
         reason = f"Could not regenerate {subject} / {difficulty}."
         set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)

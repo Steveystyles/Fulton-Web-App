@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
@@ -568,6 +569,37 @@ class ProductionServerHardeningTests(unittest.TestCase):
         regenerate.assert_called_once()
         quiz_payload.assert_called_once_with(connect_db.return_value.__enter__.return_value, "2026-06-03")
 
+    def test_ops_quiz_preview_includes_saved_questions_while_generating(self) -> None:
+        import daily_quiz
+        import server
+
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.row_factory = sqlite3.Row
+            daily_quiz.initialize_database(conn)
+            quiz_set = daily_quiz.get_or_create_quiz_set(conn, "2026-06-24")
+            daily_quiz.save_question(
+                conn,
+                quiz_set_id=quiz_set["id"],
+                question={
+                    "subject": "football",
+                    "difficulty": "easy",
+                    "question": "Who is the question for?",
+                    "choices": ["A", "B", "C", "D"],
+                    "correct_answer": "A",
+                    "explanation": "This is a sufficiently long explanation for the preview payload.",
+                    "interesting_reason": "This question is distinctive enough for the test.",
+                    "tags": ["football", "test-slot"],
+                },
+            )
+            daily_quiz.set_quiz_status(conn, "2026-06-24", "generating")
+
+            preview = server.ops_quiz_preview(conn, "2026-06-24")
+
+        self.assertEqual(preview["status"], "generating")
+        self.assertEqual(preview["acceptedQuestions"], 1)
+        self.assertEqual(len(preview["questions"]), 1)
+        self.assertEqual(preview["questions"][0]["subject"], "football")
+
     def test_internal_ops_summary_route_returns_payload(self) -> None:
         import server
 
@@ -671,6 +703,228 @@ class ProductionServerHardeningTests(unittest.TestCase):
             response["snapshot"]["remote"]["quiz"]["tomorrow"]["questions"][0]["question"],
             "Who won?",
         )
+
+    def test_local_ops_action_keeps_visible_questions_when_action_result_is_status_only(self) -> None:
+        import ops_monitor
+
+        config = ops_monitor.MonitorConfig(
+            enabled=True,
+            cache_ttl_sec=15,
+            ssh_target="ste@192.168.0.15",
+            ssh_port=22,
+            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+        starting_snapshot = {
+            "enabled": True,
+            "status": "healthy",
+            "ok": False,
+            "generatedAt": "2026-06-23T12:00:00Z",
+            "cacheAgeSec": 0,
+            "stale": False,
+            "publicProbe": {"ok": True},
+            "remote": {
+                "host": {"power": {"acOnline": True, "batteries": []}},
+                "resources": {"memory": {}, "disks": []},
+                "docker": {"containers": [], "volumes": [], "networks": []},
+                "application": {
+                    "health": {"ok": True},
+                    "sqlite": {
+                        "tomorrowQuiz": {
+                            "date": "2026-06-24",
+                            "status": "generating",
+                            "acceptedQuestions": 3,
+                            "failedAttempts": 12,
+                            "questions": [
+                                {
+                                    "subject": "football",
+                                    "difficulty": "easy",
+                                    "question": "Existing question?",
+                                    "choices": ["A", "B", "C", "D"],
+                                    "correctAnswer": "A",
+                                    "explanation": "Because.",
+                                }
+                            ],
+                        }
+                    },
+                },
+                "quiz": {
+                    "today": None,
+                    "tomorrow": {
+                        "date": "2026-06-24",
+                        "status": "generating",
+                        "acceptedQuestions": 3,
+                        "failedAttempts": 12,
+                        "questions": [
+                            {
+                                "subject": "football",
+                                "difficulty": "easy",
+                                "question": "Existing question?",
+                                "choices": ["A", "B", "C", "D"],
+                                "correctAnswer": "A",
+                                "explanation": "Because.",
+                            }
+                        ],
+                    },
+                },
+                "tests": [],
+                "errors": [],
+            },
+            "alerts": ["Tomorrow quiz is generating with 3/6 approved questions."],
+            "errors": [],
+        }
+        generated = {
+            "ok": True,
+            "generatedDate": "2026-06-24",
+            "result": {
+                "date": "2026-06-24",
+                "status": "generating",
+                "accepted_questions": 3,
+                "failed_attempts": 12,
+            },
+            "message": "Tomorrow quiz generation is still running for 2026-06-24; 3/6 approved so far.",
+        }
+
+        with (
+            patch.object(ops_monitor.MonitorConfig, "from_env", return_value=config),
+            patch("ops_monitor.generate_tomorrow_quiz_action", return_value=generated),
+            patch("ops_monitor.collect_dashboard_snapshot", return_value=starting_snapshot),
+        ):
+            response = ops_monitor.run_local_action("generate_tomorrow_quiz")
+
+        preview = response["snapshot"]["remote"]["quiz"]["tomorrow"]
+        self.assertEqual(preview["acceptedQuestions"], 3)
+        self.assertEqual(len(preview["questions"]), 1)
+        self.assertEqual(preview["questions"][0]["question"], "Existing question?")
+
+    def test_local_generate_quiz_action_updates_today_snapshot_when_today_is_missing(self) -> None:
+        import ops_monitor
+
+        config = ops_monitor.MonitorConfig(
+            enabled=True,
+            cache_ttl_sec=15,
+            ssh_target="ste@192.168.0.15",
+            ssh_port=22,
+            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+        starting_snapshot = {
+            "enabled": True,
+            "status": "degraded",
+            "ok": False,
+            "generatedAt": "2026-06-24T08:00:00Z",
+            "cacheAgeSec": 0,
+            "stale": False,
+            "publicProbe": {"ok": True},
+            "remote": {
+                "host": {"power": {"acOnline": True, "batteries": []}},
+                "resources": {"memory": {}, "disks": []},
+                "docker": {"containers": [], "volumes": [], "networks": []},
+                "application": {
+                    "health": {"ok": True},
+                    "sqlite": {
+                        "todayQuiz": {"date": "2026-06-24", "status": "missing"},
+                        "tomorrowQuiz": {"date": "2026-06-25", "status": "generating"},
+                    },
+                },
+                "quiz": {
+                    "today": {"date": "2026-06-24", "status": "missing"},
+                    "tomorrow": {"date": "2026-06-25", "status": "generating"},
+                },
+                "tests": [],
+                "errors": [],
+            },
+            "alerts": ["Today quiz is missing."],
+            "errors": [],
+        }
+        generated = {
+            "ok": True,
+            "generatedDate": "2026-06-24",
+            "result": {
+                "date": "2026-06-24",
+                "status": "published",
+                "questions": [
+                    {
+                        "subject": "general_knowledge",
+                        "difficulty": "easy",
+                        "question": "Which question was repaired?",
+                        "choices": ["A", "B", "C", "D"],
+                        "correct_answer": "A",
+                        "explanation": "Because.",
+                    }
+                ],
+            },
+            "message": "Today quiz repair triggered for 2026-06-24.",
+        }
+
+        with (
+            patch.object(ops_monitor.MonitorConfig, "from_env", return_value=config),
+            patch("ops_monitor.generate_tomorrow_quiz_action", return_value=generated),
+            patch("ops_monitor.collect_dashboard_snapshot", return_value=starting_snapshot),
+        ):
+            response = ops_monitor.run_local_action("generate_tomorrow_quiz")
+
+        preview = response["snapshot"]["remote"]["quiz"]["today"]
+        self.assertEqual(preview["status"], "published")
+        self.assertEqual(preview["questions"][0]["question"], "Which question was repaired?")
+
+    def test_generate_tomorrow_quiz_action_returns_live_preview_after_timeout(self) -> None:
+        import ops_monitor
+
+        config = ops_monitor.MonitorConfig(
+            enabled=True,
+            cache_ttl_sec=15,
+            ssh_target="",
+            ssh_port=22,
+            ssh_key_path="",
+            ssh_connect_timeout_sec=6,
+            public_health_url="https://example.com/api/health",
+            internal_base_url="https://example.com",
+            internal_quiz_token="secret-token",
+            compose_file="/compose.yaml",
+            env_file="/app.env",
+            data_dir="/data",
+            db_path="/data/fultons.db",
+            app_port=3000,
+        )
+
+        with (
+            patch(
+                "ops_monitor.internal_quiz_request",
+                side_effect=RuntimeError("Internal quiz request failed: The read operation timed out"),
+            ),
+            patch(
+                "ops_monitor.current_tomorrow_quiz_preview",
+                return_value={
+                    "date": "2026-06-24",
+                    "status": "generating",
+                    "acceptedQuestions": 3,
+                    "failedAttempts": 12,
+                    "questions": [],
+                },
+            ),
+        ):
+            payload = ops_monitor.generate_tomorrow_quiz_action(config)
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["result"]["status"], "generating")
+        self.assertIn("still running", payload["message"])
 
     def test_collect_dashboard_snapshot_returns_https_fallback_without_waiting_for_ssh(self) -> None:
         import ops_monitor
@@ -2032,6 +2286,194 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual([server.wordle_score("won", attempt) for attempt in range(1, 7)], [10, 5, 4, 3, 2, 1])
         self.assertEqual(server.wordle_score("lost", 6), 0)
 
+    def test_wordle_assignment_uses_streak_based_difficulty_pool(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-24T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    yesterday_game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-06-23', 'raise', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO wordle_results (
+                            user_id, game_id, status, attempts_used, score,
+                            completed_at, created_at, updated_at
+                        )
+                        VALUES (?, ?, 'won', 3, 4, ?, ?, ?)
+                        """,
+                        (user_id, yesterday_game_id, now, now, now),
+                    )
+                    today_game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-06-24', 'saint', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    today_game = conn.execute(
+                        "SELECT * FROM daily_wordle_games WHERE id = ?",
+                        (today_game_id,),
+                    ).fetchone()
+
+                with patch("server.today_game_date", return_value="2026-06-24"):
+                    state = server.serialize_wordle_state(conn, user_id, today_game)
+
+                assignment = conn.execute(
+                    """
+                    SELECT secret_word, difficulty
+                    FROM wordle_user_assignments
+                    WHERE user_id = ? AND game_id = ?
+                    """,
+                    (user_id, today_game_id),
+                ).fetchone()
+
+            self.assertEqual(state["game"]["difficulty"], 4)
+            self.assertEqual(state["stats"]["currentSolveStreak"], 1)
+            self.assertEqual(state["stats"]["bestSolveStreak"], 1)
+            self.assertEqual(assignment["difficulty"], 4)
+            self.assertIn(assignment["secret_word"], {"laden", "merit", "rinse"})
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_assignment_preserves_legacy_secret_for_started_game(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-24T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-06-24', 'aahed', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO wordle_results (
+                            user_id, game_id, status, attempts_used, score,
+                            completed_at, created_at, updated_at
+                        )
+                        VALUES (?, ?, 'in_progress', 1, 0, NULL, ?, ?)
+                        """,
+                        (user_id, game_id, now, now),
+                    )
+                    game = conn.execute(
+                        "SELECT * FROM daily_wordle_games WHERE id = ?",
+                        (game_id,),
+                    ).fetchone()
+
+                with patch("server.today_game_date", return_value="2026-06-24"):
+                    state = server.serialize_wordle_state(conn, user_id, game)
+
+                assignment = conn.execute(
+                    """
+                    SELECT secret_word, difficulty
+                    FROM wordle_user_assignments
+                    WHERE user_id = ? AND game_id = ?
+                    """,
+                    (user_id, game_id),
+                ).fetchone()
+
+            self.assertEqual(state["game"]["difficulty"], 1)
+            self.assertEqual(assignment["secret_word"], "aahed")
+            self.assertEqual(assignment["difficulty"], 1)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_stats_reset_current_solve_streak_after_loss(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-05-20T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    for game_date, status in (
+                        ("2026-05-18", "won"),
+                        ("2026-05-19", "won"),
+                        ("2026-05-20", "lost"),
+                    ):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                            VALUES (?, 'saint', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
+                        attempts_used = 3 if status == "won" else 6
+                        score = 4 if status == "won" else 0
+                        conn.execute(
+                            """
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (user_id, game_id, status, attempts_used, score, now, now, now),
+                        )
+
+                with patch("server.today_game_date", return_value="2026-05-20"):
+                    stats = server.wordle_stats(conn, user_id)
+
+            self.assertEqual(stats["currentSolveStreak"], 0)
+            self.assertEqual(stats["bestSolveStreak"], 2)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
     def test_word_definition_uses_dictionary_api_first_definition(self) -> None:
         import server
 
@@ -2328,7 +2770,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
-    def test_leaderboard_includes_score_day_streaks(self) -> None:
+    def test_leaderboard_includes_wordle_solve_streaks(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
@@ -2373,6 +2815,65 @@ class ProductionServerHardeningTests(unittest.TestCase):
             self.assertEqual(payload["players"][0]["currentStreak"], 2)
             self.assertEqual(payload["players"][0]["bestStreak"], 2)
             self.assertEqual(payload["summary"]["bestStreak"], 2)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_leaderboard_streak_ignores_quiz_only_activity(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-05-22T12:00:00+00:00"
+                with conn:
+                    dad_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    for game_date in ("2026-05-18", "2026-05-19"):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                            VALUES (?, 'saint', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
+                            )
+                            VALUES (?, ?, 'won', 6, 1, ?, ?, ?)
+                            """,
+                            (dad_id, game_id, now, now, now),
+                        )
+                    conn.execute(
+                        """
+                        INSERT INTO daily_quiz_results (
+                            user_id, game_date, category, answers_json, score, max_score,
+                            correct_count, bonus_points, completed_at, created_at, updated_at
+                        )
+                        VALUES (?, '2026-05-22', 'football', '[]', 0, 12, 0, 0, ?, ?, ?)
+                        """,
+                        (dad_id, now, now, now),
+                    )
+
+                with patch("server.today_game_date", return_value="2026-05-22"):
+                    payload = server.leaderboard_payload(conn)
+
+            self.assertEqual(payload["players"][0]["currentStreak"], 0)
+            self.assertEqual(payload["players"][0]["bestStreak"], 2)
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
@@ -2603,6 +3104,70 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_news_backfill_rewrites_story_keys_without_unique_index_conflicts(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            now = "2026-06-01T10:00:00+00:00"
+            with closing(server.connect_db()) as conn:
+                with conn:
+                    conn.execute(
+                        """
+                        INSERT INTO news_items (
+                            source_key, story_key, kind, title, url, source, summary,
+                            published_at, host, priority, tags_json, created_at, updated_at
+                        )
+                        VALUES (?, ?, 'article', ?, ?, 'BBC', ?, ?, 'news.google.com',
+                            'news', '[]', ?, ?)
+                        """,
+                        (
+                            "story-a",
+                            "story-a",
+                            "St Mirren appoint new manager - BBC",
+                            "https://news.google.com/rss/articles/a",
+                            "St Mirren appoint new manager BBC",
+                            now,
+                            now,
+                            now,
+                        ),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO news_items (
+                            source_key, story_key, kind, title, url, source, summary,
+                            published_at, host, priority, tags_json, created_at, updated_at
+                        )
+                        VALUES (?, ?, 'article', ?, ?, 'BBC', ?, ?, 'news.google.com',
+                            'news', '[]', ?, ?)
+                        """,
+                        (
+                            "story-b",
+                            "story-b",
+                            "St Mirren appoint new manager | BBC",
+                            "https://news.google.com/rss/articles/b",
+                            "St Mirren appoint new manager BBC",
+                            now,
+                            now,
+                            now,
+                        ),
+                    )
+                    server.backfill_news_items(conn)
+                rows = conn.execute("SELECT title, story_key FROM news_items").fetchall()
+
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["title"], "St Mirren appoint new manager")
+            self.assertTrue(rows[0]["story_key"])
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
     def test_news_feed_supplements_with_other_sports_when_recent_scoped_items_are_thin(self) -> None:
         import server
 
@@ -2796,6 +3361,53 @@ class ProductionServerHardeningTests(unittest.TestCase):
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
+
+    def test_daily_quiz_scheduler_repairs_today_before_generating_tomorrow(self) -> None:
+        import server
+
+        with patch("daily_quiz.generate_daily_quiz") as generate_daily_quiz:
+            generate_daily_quiz.side_effect = [
+                {
+                    "date": "2026-06-24",
+                    "status": "generating",
+                    "accepted_questions": 4,
+                    "failed_attempts": 12,
+                    "failure_reason": None,
+                }
+            ]
+            results = server.ensure_active_daily_quizzes(
+                datetime(2026, 6, 24, 0, 10, tzinfo=timezone.utc)
+            )
+
+        self.assertEqual([result["date"] for result in results], ["2026-06-24"])
+        self.assertEqual(generate_daily_quiz.call_count, 1)
+        self.assertEqual(generate_daily_quiz.call_args.kwargs["quiz_date"], "2026-06-24")
+
+    def test_daily_quiz_scheduler_retries_unpublished_tomorrow_before_next_window(self) -> None:
+        import server
+
+        now = datetime(2026, 6, 1, 0, 10, tzinfo=timezone.utc)
+        next_run = datetime(2026, 6, 2, 0, 5, tzinfo=timezone.utc)
+        sleep_calls: list[float] = []
+
+        def stop_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            raise RuntimeError("stop loop")
+
+        with (
+            patch("server.ensure_tomorrow_daily_quiz", return_value={"status": "generating"}),
+            patch("server.next_daily_quiz_run", return_value=next_run),
+            patch("server.DAILY_QUIZ_RETRY_INTERVAL_SEC", 900),
+            patch("server.time.sleep", side_effect=stop_sleep),
+            patch("server.safe_log"),
+            patch("server.datetime") as mocked_datetime,
+        ):
+            mocked_datetime.now.return_value = now
+            mocked_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            with self.assertRaisesRegex(RuntimeError, "stop loop"):
+                server.daily_quiz_scheduler_loop()
+
+        self.assertEqual(sleep_calls, [900.0])
 
     def test_daily_quiz_write_helpers_commit_immediately(self) -> None:
         import daily_quiz

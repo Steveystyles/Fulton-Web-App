@@ -57,7 +57,7 @@ Production defaults are intentionally stricter than local development:
 ## Storage
 
 - User accounts, sessions, daily Wordle games, guesses, and results are stored in `data/fultons.db` locally or `/app/data/fultons.db` inside the container.
-- Daily quiz JSON is stored in `data/quizzes` locally or `/app/data/quizzes` inside the container. The backend can generate quizzes with `FULTONS_QUIZ_OPENAI_API_KEY`; without that key it uses a curated rotating question bank rather than placeholder sample questions.
+- Daily quiz state is stored in the SQLite database tables `daily_quiz_sets`, `daily_quiz_questions`, and `daily_quiz_attempts`. Unfinished AI-generated quizzes stay in `generating` and retry missing slots rather than falling back to local bank content.
 - The local used-word tracker is stored beside `wordle_game.py` as `used_words.txt`.
 
 ## Checks

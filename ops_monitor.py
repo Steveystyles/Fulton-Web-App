@@ -737,6 +737,17 @@ def main() -> None:
         )
         errors.append(f"Internal health probe failed: {error}")
 
+    today_quiz = sqlite.get("todayQuiz") or {}
+    today_status = str(today_quiz.get("status") or "missing")
+    tests.append(
+        {
+            "id": "today_quiz",
+            "label": "Today quiz",
+            "status": "pass" if today_status == "published" else "fail",
+            "detail": f"{today_status} / accepted {today_quiz.get('acceptedQuestions', 0)}",
+        }
+    )
+
     tomorrow_quiz = sqlite.get("tomorrowQuiz") or {}
     tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
     tests.append(
@@ -1452,6 +1463,58 @@ def internal_quiz_request(
     return decoded
 
 
+def current_tomorrow_quiz_preview(config: MonitorConfig) -> dict[str, Any]:
+    _, tomorrow_date = london_dates()
+    summary = internal_ops_request(
+        config,
+        "/internal/ops-summary",
+        timeout_sec=12,
+    )
+    quiz = summary.get("quiz") if isinstance(summary.get("quiz"), dict) else {}
+    preview = quiz.get("tomorrow") if isinstance(quiz.get("tomorrow"), dict) else None
+    if preview is None:
+        application = summary.get("application") if isinstance(summary.get("application"), dict) else {}
+        sqlite = application.get("sqlite") if isinstance(application.get("sqlite"), dict) else {}
+        preview = sqlite.get("tomorrowQuiz") if isinstance(sqlite.get("tomorrowQuiz"), dict) else None
+    if preview is None:
+        raise RuntimeError("Internal ops summary did not include tomorrow quiz state.")
+    return quiz_preview_from_payload(preview, fallback_date=tomorrow_date)
+
+
+def current_active_quiz_target(config: MonitorConfig) -> tuple[str, dict[str, Any], str]:
+    today_date, tomorrow_date = london_dates()
+    summary = internal_ops_request(
+        config,
+        "/internal/ops-summary",
+        timeout_sec=12,
+    )
+    quiz = summary.get("quiz") if isinstance(summary.get("quiz"), dict) else {}
+    application = summary.get("application") if isinstance(summary.get("application"), dict) else {}
+    sqlite = application.get("sqlite") if isinstance(application.get("sqlite"), dict) else {}
+
+    today_payload = (
+        quiz.get("today")
+        if isinstance(quiz.get("today"), dict)
+        else sqlite.get("todayQuiz")
+        if isinstance(sqlite.get("todayQuiz"), dict)
+        else {"date": today_date, "status": "missing", "acceptedQuestions": 0, "questions": []}
+    )
+    tomorrow_payload = (
+        quiz.get("tomorrow")
+        if isinstance(quiz.get("tomorrow"), dict)
+        else sqlite.get("tomorrowQuiz")
+        if isinstance(sqlite.get("tomorrowQuiz"), dict)
+        else {"date": tomorrow_date, "status": "missing", "acceptedQuestions": 0, "questions": []}
+    )
+
+    today_preview = quiz_preview_from_payload(today_payload, fallback_date=today_date)
+    if today_preview["status"] != "published":
+        return today_date, today_preview, "today"
+
+    tomorrow_preview = quiz_preview_from_payload(tomorrow_payload, fallback_date=tomorrow_date)
+    return tomorrow_date, tomorrow_preview, "tomorrow"
+
+
 def internal_ops_request(
     config: MonitorConfig,
     path: str,
@@ -1521,6 +1584,10 @@ def quiz_preview_from_payload(
         accepted_questions = payload.get("accepted_questions")
     if not isinstance(accepted_questions, int):
         accepted_questions = len(questions)
+    if not questions and accepted_questions > 0:
+        previous_questions = previous.get("questions")
+        if isinstance(previous_questions, list):
+            questions = previous_questions
     failed_attempts = payload.get("failedAttempts")
     if not isinstance(failed_attempts, int):
         failed_attempts = payload.get("failed_attempts")
@@ -1679,32 +1746,67 @@ def merge_quiz_action_snapshot(
         sqlite = {"todayQuiz": None, "tomorrowQuiz": None}
         application["sqlite"] = sqlite
 
-    existing_preview = quiz_section.get("tomorrow")
+    generated_date = str(
+        details.get("generatedDate")
+        or details.get("date")
+        or result.get("date")
+        or ""
+    )
+    today_date, tomorrow_date = london_dates()
+    result_date = str(result.get("date") or generated_date)
+    existing_today = quiz_section.get("today")
+    existing_tomorrow = quiz_section.get("tomorrow")
+    existing_today_date = (
+        str(existing_today.get("date") or "")
+        if isinstance(existing_today, dict)
+        else today_date
+    )
+    existing_tomorrow_date = (
+        str(existing_tomorrow.get("date") or "")
+        if isinstance(existing_tomorrow, dict)
+        else tomorrow_date
+    )
+    if result_date == existing_today_date:
+        target_slot = "today"
+    elif result_date == existing_tomorrow_date:
+        target_slot = "tomorrow"
+    else:
+        target_slot = "today" if result_date == today_date else "tomorrow"
+    sqlite_key = "todayQuiz" if target_slot == "today" else "tomorrowQuiz"
+    existing_preview = quiz_section.get(target_slot)
     preview = quiz_preview_from_payload(
         result,
-        fallback_date=str(details.get("generatedDate") or details.get("date") or ""),
+        fallback_date=generated_date,
         previous=existing_preview if isinstance(existing_preview, dict) else None,
     )
-    quiz_section["tomorrow"] = preview
-    sqlite["tomorrowQuiz"] = copy.deepcopy(preview)
+    quiz_section[target_slot] = preview
+    sqlite[sqlite_key] = copy.deepcopy(preview)
 
     tests = remote.get("tests")
     if not isinstance(tests, list):
         tests = []
         remote["tests"] = tests
-    test_row = {
-        "id": "tomorrow_quiz",
-        "label": "Tomorrow quiz",
-        "status": "pass"
-        if preview["status"] == "published"
-        else "warn"
-        if preview["status"] in {"generating", "ready", "draft"}
-        else "fail",
-        "detail": f"{preview['status']} / accepted {preview['acceptedQuestions']}",
-    }
+    if target_slot == "today":
+        test_row = {
+            "id": "today_quiz",
+            "label": "Today quiz",
+            "status": "pass" if preview["status"] == "published" else "fail",
+            "detail": f"{preview['status']} / accepted {preview['acceptedQuestions']}",
+        }
+    else:
+        test_row = {
+            "id": "tomorrow_quiz",
+            "label": "Tomorrow quiz",
+            "status": "pass"
+            if preview["status"] == "published"
+            else "warn"
+            if preview["status"] in {"generating", "ready", "draft"}
+            else "fail",
+            "detail": f"{preview['status']} / accepted {preview['acceptedQuestions']}",
+        }
     replaced = False
     for index, row in enumerate(tests):
-        if isinstance(row, dict) and row.get("id") == "tomorrow_quiz":
+        if isinstance(row, dict) and row.get("id") == test_row["id"]:
             tests[index] = test_row
             replaced = True
             break
@@ -1800,7 +1902,7 @@ def queued_local_action_message(action: str, params: dict[str, Any] | None) -> s
             return f"Refreshing {subject} / {difficulty} for {question_date}."
         return f"Refreshing {subject} for {question_date}."
     if action == "generate_tomorrow_quiz":
-        return "Generating tomorrow's quiz in the background."
+        return "Repairing the active daily quiz in the background."
     return "Running action in the background."
 
 
@@ -1926,18 +2028,59 @@ def get_local_action_job(job_id: str) -> dict[str, Any]:
 
 
 def generate_tomorrow_quiz_action(config: MonitorConfig) -> dict[str, Any]:
-    _, tomorrow_date = london_dates()
-    payload = internal_quiz_request(
-        config,
-        "/internal/generate-daily-quiz",
-        {"date": tomorrow_date},
-        timeout_sec=240,
+    try:
+        quiz_date, existing_preview, target_label = current_active_quiz_target(config)
+    except RuntimeError:
+        _, tomorrow_date = london_dates()
+        quiz_date = tomorrow_date
+        existing_preview = {
+            "date": tomorrow_date,
+            "status": "missing",
+            "acceptedQuestions": 0,
+            "failedAttempts": 0,
+            "failureReason": None,
+            "questions": [],
+        }
+        target_label = "tomorrow"
+    try:
+        payload = internal_quiz_request(
+            config,
+            "/internal/generate-daily-quiz",
+            {"date": quiz_date},
+            timeout_sec=120,
+        )
+    except RuntimeError as error:
+        if "timed out" not in str(error).casefold():
+            raise
+        try:
+            _, preview, preview_label = current_active_quiz_target(config)
+        except RuntimeError:
+            preview = current_tomorrow_quiz_preview(config)
+            preview_label = "tomorrow"
+        accepted = int(preview.get("acceptedQuestions") or 0)
+        status = str(preview.get("status") or "generating")
+        label = "Today" if preview_label == "today" else "Tomorrow"
+        return {
+            "ok": status in {"generating", "published"},
+            "generatedDate": str(preview.get("date") or quiz_date),
+            "result": preview,
+            "message": (
+                f"{label} quiz generation is still running for {preview.get('date') or quiz_date}; "
+                f"{accepted}/6 approved so far."
+            ),
+            "transport": "https",
+        }
+    label = "Today" if target_label == "today" else "Tomorrow"
+    result_preview = (
+        quiz_preview_from_payload(payload, fallback_date=quiz_date, previous=existing_preview)
+        if isinstance(payload, dict)
+        else existing_preview
     )
     return {
         "ok": True,
-        "generatedDate": str(payload.get("date") or tomorrow_date),
-        "result": payload,
-        "message": f"Tomorrow quiz generated for {tomorrow_date}.",
+        "generatedDate": str(payload.get("date") or quiz_date),
+        "result": result_preview,
+        "message": f"{label} quiz repair triggered for {quiz_date}.",
         "transport": "https",
     }
 
@@ -1953,16 +2096,34 @@ def regenerate_question_action(config: MonitorConfig, params: dict[str, Any]) ->
     if difficulty not in {"easy", "medium", "hard"}:
         raise RuntimeError("difficulty must be easy, medium, or hard.")
 
-    payload = internal_quiz_request(
-        config,
-        "/internal/regenerate-daily-quiz-question",
-        {
+    try:
+        payload = internal_quiz_request(
+            config,
+            "/internal/regenerate-daily-quiz-question",
+            {
+                "date": quiz_date,
+                "subject": subject,
+                "difficulty": difficulty,
+            },
+            timeout_sec=120,
+        )
+    except RuntimeError as error:
+        if "timed out" not in str(error).casefold():
+            raise
+        preview = current_tomorrow_quiz_preview(config)
+        accepted = int(preview.get("acceptedQuestions") or 0)
+        return {
+            "ok": True,
             "date": quiz_date,
             "subject": subject,
             "difficulty": difficulty,
-        },
-        timeout_sec=240,
-    )
+            "result": preview,
+            "message": (
+                f"Question refresh is still running for {quiz_date}; "
+                f"{accepted}/6 approved so far."
+            ),
+            "transport": "https",
+        }
     return {
         "ok": True,
         "date": quiz_date,
@@ -2044,11 +2205,25 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
                     f"{battery.get('name', 'Battery')} is low at {battery['capacityPct']}%."
                 )
 
-    tomorrow_quiz = (
-        remote.get("quiz", {}).get("tomorrow", {})
+    today_quiz = (
+        remote.get("quiz", {}).get("today")
         if isinstance(remote.get("quiz"), dict)
         else {}
     )
+    if not isinstance(today_quiz, dict):
+        today_quiz = {}
+    today_status = str(today_quiz.get("status") or "missing")
+    today_accepted = int(today_quiz.get("acceptedQuestions") or 0)
+    if today_status != "published":
+        alerts.append(f"Today quiz is {today_status} with {today_accepted}/6 approved questions.")
+
+    tomorrow_quiz = (
+        remote.get("quiz", {}).get("tomorrow")
+        if isinstance(remote.get("quiz"), dict)
+        else {}
+    )
+    if not isinstance(tomorrow_quiz, dict):
+        tomorrow_quiz = {}
     quiz_status = str(tomorrow_quiz.get("status") or "missing")
     accepted = int(tomorrow_quiz.get("acceptedQuestions") or 0)
     if quiz_status != "published":

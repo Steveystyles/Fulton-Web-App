@@ -24,6 +24,7 @@ export type WordleState = {
     date: string;
     wordLength: number;
     maxAttempts: number;
+    difficulty: number;
   };
   result: {
     status: "in_progress" | "won" | "lost";
@@ -37,6 +38,8 @@ export type WordleState = {
     wins: number;
     losses: number;
     points: number;
+    currentSolveStreak: number;
+    bestSolveStreak: number;
   };
 };
 

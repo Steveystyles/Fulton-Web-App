@@ -172,6 +172,38 @@ class PassingProvider:
         return critic
 
 
+class CriticUnavailableProvider(PassingProvider):
+    def critique_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        question: dict[str, object],
+        recent_questions: list[dict[str, object]],
+    ) -> dict[str, object]:
+        raise RuntimeError("Gemini request failed with HTTP 429.")
+
+
+class FeedbackReuseProvider(PassingProvider):
+    def __init__(self) -> None:
+        super().__init__("feedback-reuse")
+        self.feedback_calls: list[list[str]] = []
+
+    def generate_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        recent_questions: list[dict[str, object]],
+        feedback: list[str],
+    ) -> dict[str, object]:
+        if subject == "football" and difficulty == "easy":
+            self.feedback_calls.append(list(feedback))
+            if not feedback:
+                return {"subject": "football"}
+        return valid_question(subject, difficulty)
+
+
 class DailyQuizTests(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
@@ -299,6 +331,22 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertTrue(result.passed)
 
+    def test_repetition_ignores_broad_football_topic_tags(self) -> None:
+        question = valid_question(subject="football", difficulty="easy")
+        question["tags"] = ["world cup", "premier league", "legends"]
+        previous = [
+            {
+                "question": f"Which football clue is associated with archive entry {index}?",
+                "correct_answer": f"Football answer {index}",
+                "tags": ["world cup", "premier league", "legends"],
+            }
+            for index in range(8)
+        ]
+
+        result = daily_quiz.check_repetition(question, previous)
+
+        self.assertTrue(result.passed)
+
     def test_repetition_rejects_specific_overused_topic_tags(self) -> None:
         question = valid_question(difficulty="hard")
         question["tags"] = ["mesopotamia", "history"]
@@ -344,7 +392,7 @@ class DailyQuizTests(unittest.TestCase):
         self.assertNotIn("tags", public_question)
         self.assertNotIn("critic", public_question)
 
-    def test_generation_marks_set_failed_after_retry_limit(self) -> None:
+    def test_generation_keeps_quiz_generating_after_retry_limit(self) -> None:
         result = daily_quiz.generate_daily_quiz(
             self.conn,
             quiz_date="2026-06-03",
@@ -353,11 +401,79 @@ class DailyQuizTests(unittest.TestCase):
             log=lambda _: None,
         )
 
-        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["status"], "generating")
         self.assertEqual(result["accepted_questions"], 0)
         self.assertEqual(result["failed_attempts"], 2)
         with self.assertRaises(LookupError):
             daily_quiz.quiz_payload(self.conn, "2026-06-03")
+
+    def test_generation_reuses_prior_feedback_on_later_retry_cycles(self) -> None:
+        provider = FeedbackReuseProvider()
+
+        first = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-07",
+            config=config(max_attempts=1),
+            provider=provider,
+            log=lambda _: None,
+        )
+        second = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-07",
+            config=config(max_attempts=1),
+            provider=provider,
+            log=lambda _: None,
+        )
+
+        self.assertEqual(first["status"], "generating")
+        self.assertEqual(first["accepted_questions"], 3)
+        self.assertEqual(second["status"], "published")
+        self.assertEqual(len(provider.feedback_calls), 2)
+        self.assertEqual(provider.feedback_calls[0], [])
+        self.assertTrue(
+            any("Missing required fields" in entry for entry in provider.feedback_calls[1])
+        )
+
+    def test_generation_keeps_quiz_generating_after_transient_provider_failures(self) -> None:
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-03",
+            config=config(max_attempts=2),
+            provider=AlwaysFailingProvider("gemini", "Gemini request failed with HTTP 429."),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(result["status"], "generating")
+        self.assertEqual(result["accepted_questions"], 0)
+        self.assertEqual(result["failed_attempts"], 2)
+        self.assertIsNone(result["failure_reason"])
+
+    def test_regenerate_question_uses_fallback_provider_chain(self) -> None:
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-06-04")
+        daily_quiz.save_question(
+            self.conn,
+            quiz_set_id=quiz_set["id"],
+            question=valid_question(subject="football", difficulty="easy"),
+        )
+
+        with (
+            patch("daily_quiz.provider_chain_from_config", return_value=PassingProvider("fallback")) as provider_chain,
+            patch(
+                "daily_quiz.provider_from_config",
+                side_effect=AssertionError("primary-only provider should not be used"),
+            ),
+        ):
+            result = daily_quiz.regenerate_question(
+                self.conn,
+                quiz_date="2026-06-04",
+                subject="football",
+                difficulty="easy",
+                config=config(),
+                log=lambda _: None,
+            )
+
+        provider_chain.assert_called_once()
+        self.assertEqual(result["accepted_questions"], 1)
 
     def test_unconfigured_provider_fails_without_silent_fallback(self) -> None:
         unconfigured = daily_quiz.QuizConfig(
@@ -399,6 +515,25 @@ class DailyQuizTests(unittest.TestCase):
             )
         }
         self.assertEqual(providers, {"openrouter"})
+
+    def test_generation_accepts_locally_valid_question_when_critic_is_unavailable(self) -> None:
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-06",
+            config=config(),
+            provider=CriticUnavailableProvider("gemini"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(payload["status"], "published")
+        passed_rows = self.conn.execute(
+            "SELECT provider, critic_json FROM daily_quiz_attempts WHERE quiz_date = ? AND passed = 1",
+            ("2026-06-06",),
+        ).fetchall()
+        self.assertTrue(passed_rows)
+        self.assertTrue(
+            all("local-validation" in row["provider"] for row in passed_rows)
+        )
 
     def test_provider_chain_from_config_includes_openrouter_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(

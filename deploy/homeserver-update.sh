@@ -132,6 +132,32 @@ PY
   fi
 }
 
+default_env_var_when_blank() {
+  local key="${1:?key required}"
+  local value="${2:-}"
+  python3 - "${ENV_FILE}" "${key}" "${value}" <<'PY'
+import sys
+from pathlib import Path
+
+env_path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+prefix = f"{key}="
+
+lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+updated = False
+for index, line in enumerate(lines):
+    if line.startswith(prefix):
+        if not line[len(prefix):].strip():
+            lines[index] = prefix + value
+        updated = True
+        break
+if not updated:
+    lines.append(prefix + value)
+env_path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+PY
+}
+
 ensure_env_var "FULTONS_COOKIE_SECURE" "1"
 ensure_env_var "FULTONS_SEED_DEMO_USERS" "0"
 ensure_env_var "FULTONS_ALLOWED_ORIGINS" "https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk"
@@ -154,12 +180,30 @@ ensure_env_var "AI_CRITIC_MODEL" "gemini-3.1-flash-lite"
 ensure_env_var "GEMINI_API_KEY" ""
 ensure_env_var "AI_BASE_URL" ""
 ensure_env_var "AI_API_KEY" ""
+ensure_env_var "AI_FALLBACK_PROVIDER" "openrouter"
+ensure_env_var "AI_FALLBACK_GENERATOR_MODEL" "openai/gpt-oss-120b:free"
+ensure_env_var "AI_FALLBACK_CRITIC_MODEL" "openai/gpt-oss-120b:free"
+ensure_env_var "AI_FALLBACK_API_KEY" ""
+ensure_env_var "AI_FALLBACK_BASE_URL" "https://openrouter.ai/api/v1"
+ensure_env_var "AI_FALLBACK2_PROVIDER" "openrouter"
+ensure_env_var "AI_FALLBACK2_GENERATOR_MODEL" "openai/gpt-oss-120b:free"
+ensure_env_var "AI_FALLBACK2_CRITIC_MODEL" "openai/gpt-oss-120b:free"
+ensure_env_var "AI_FALLBACK2_API_KEY" ""
+ensure_env_var "AI_FALLBACK2_BASE_URL" "https://openrouter.ai/api/v1"
 ensure_env_var "AI_TIMEOUT_SEC" "90"
 ensure_env_var "AI_REQUEST_DELAY_SEC" "12"
 ensure_env_var "AI_TRANSIENT_RETRIES" "3"
 ensure_env_var "MAX_ATTEMPTS_PER_SLOT" "15"
 ensure_env_var "QUESTION_HISTORY_DAYS" "90"
 ensure_env_var "INTERNAL_QUIZ_TOKEN" ""
+default_env_var_when_blank "AI_FALLBACK_PROVIDER" "openrouter"
+default_env_var_when_blank "AI_FALLBACK_GENERATOR_MODEL" "openai/gpt-oss-120b:free"
+default_env_var_when_blank "AI_FALLBACK_CRITIC_MODEL" "openai/gpt-oss-120b:free"
+default_env_var_when_blank "AI_FALLBACK_BASE_URL" "https://openrouter.ai/api/v1"
+default_env_var_when_blank "AI_FALLBACK2_PROVIDER" "openrouter"
+default_env_var_when_blank "AI_FALLBACK2_GENERATOR_MODEL" "openai/gpt-oss-120b:free"
+default_env_var_when_blank "AI_FALLBACK2_CRITIC_MODEL" "openai/gpt-oss-120b:free"
+default_env_var_when_blank "AI_FALLBACK2_BASE_URL" "https://openrouter.ai/api/v1"
 
 if [ -d "${DATA_DIR}" ]; then
   backup_dir="${BACKUP_ROOT}/fultons-quiz-$(date -u +%Y%m%d%H%M%S)"

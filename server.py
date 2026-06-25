@@ -17,7 +17,7 @@ import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
@@ -66,6 +66,10 @@ DAILY_QUIZ_SCHEDULER_HOUR = int(
 )
 DAILY_QUIZ_SCHEDULER_MINUTE = int(
     os.environ.get("FULTONS_DAILY_QUIZ_SCHEDULER_MINUTE", "5")
+)
+DAILY_QUIZ_RETRY_INTERVAL_SEC = max(
+    60,
+    int(os.environ.get("FULTONS_DAILY_QUIZ_RETRY_INTERVAL_SEC", "900")),
 )
 NEWS_USER_AGENT = os.environ.get(
     "FULTONS_NEWS_USER_AGENT",
@@ -591,7 +595,11 @@ from wordle_game import (  # noqa: E402
     MAX_ATTEMPTS,
     WORD_LENGTH,
     choose_secret,
+    choose_secret_for_difficulty,
     compute_feedback,
+    difficulty_for_streak,
+    load_answer_words,
+    load_word_difficulty_ratings,
     load_word_list,
     reset_used_words,
     serialize_feedback,
@@ -780,10 +788,14 @@ def ops_quiz_preview(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]
         "questions": [],
         "updatedAt": None,
     }
-    if status["status"] != "published":
+    if int(status.get("accepted_questions") or 0) <= 0:
         return preview
     try:
-        payload = daily_quiz.quiz_payload(conn, quiz_date)
+        payload = daily_quiz.quiz_questions_payload(
+            conn,
+            quiz_date,
+            allow_unpublished=True,
+        )
     except LookupError:
         return preview
     preview["questions"] = [
@@ -853,6 +865,15 @@ def internal_ops_summary_payload() -> dict[str, Any]:
             "label": "Internal /api/health",
             "status": "pass" if storage["ok"] else "fail",
             "detail": "HTTP 200 in 0ms",
+        }
+    )
+    today_status = str(today_quiz.get("status") or "missing")
+    tests.append(
+        {
+            "id": "today_quiz",
+            "label": "Today quiz",
+            "status": "pass" if today_status == "published" else "fail",
+            "detail": f"{today_status} / accepted {today_quiz.get('acceptedQuestions', 0)}",
         }
     )
     tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
@@ -1029,6 +1050,18 @@ def initialize_database() -> None:
                 completed_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (game_id) REFERENCES daily_wordle_games(id) ON DELETE CASCADE,
+                UNIQUE (user_id, game_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS wordle_user_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                game_id INTEGER NOT NULL,
+                secret_word TEXT NOT NULL,
+                difficulty INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (game_id) REFERENCES daily_wordle_games(id) ON DELETE CASCADE,
                 UNIQUE (user_id, game_id)
@@ -1353,7 +1386,7 @@ def ensure_daily_game(conn: sqlite3.Connection) -> sqlite3.Row:
     if game is not None:
         return game
 
-    words = load_word_list()
+    words = load_answer_words()
     cycle = conn.execute(
         "SELECT COALESCE(MAX(cycle), 1) AS cycle FROM daily_wordle_games"
     ).fetchone()["cycle"]
@@ -1397,18 +1430,42 @@ def ensure_daily_game(conn: sqlite3.Connection) -> sqlite3.Row:
     ).fetchone()
 
 
+def wordle_assignment_row(
+    conn: sqlite3.Connection,
+    user_id: int,
+    game_id: int,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM wordle_user_assignments
+        WHERE user_id = ? AND game_id = ?
+        """,
+        (user_id, game_id),
+    ).fetchone()
+
+
+def existing_wordle_result(
+    conn: sqlite3.Connection,
+    user_id: int,
+    game_id: int,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM wordle_results
+        WHERE user_id = ? AND game_id = ?
+        """,
+        (user_id, game_id),
+    ).fetchone()
+
+
 def get_or_create_wordle_result(
     conn: sqlite3.Connection,
     user_id: int,
     game_id: int,
 ) -> sqlite3.Row:
-    result = conn.execute(
-        """
-        SELECT * FROM wordle_results
-        WHERE user_id = ? AND game_id = ?
-        """,
-        (user_id, game_id),
-    ).fetchone()
+    result = existing_wordle_result(conn, user_id, game_id)
     if result is not None:
         return result
 
@@ -1428,6 +1485,169 @@ def get_or_create_wordle_result(
         """,
         (user_id, game_id),
     ).fetchone()
+
+
+def wordle_result_outcomes(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    before_date: str | None = None,
+) -> list[tuple[str, str]]:
+    where = ["wordle_results.user_id = ?", "wordle_results.status IN ('won', 'lost')"]
+    params: list[Any] = [user_id]
+    if before_date is not None:
+        where.append("daily_wordle_games.game_date < ?")
+        params.append(before_date)
+
+    rows = conn.execute(
+        f"""
+        SELECT daily_wordle_games.game_date, wordle_results.status
+        FROM wordle_results
+        INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+        WHERE {' AND '.join(where)}
+        ORDER BY daily_wordle_games.game_date
+        """,
+        params,
+    ).fetchall()
+    return [(row["game_date"], row["status"]) for row in rows]
+
+
+def score_wordle_solve_streak(
+    outcomes: list[tuple[str, str]],
+    current_date: str | None = None,
+) -> dict[str, int]:
+    if not outcomes:
+        return {"current": 0, "best": 0}
+
+    ordered_outcomes: list[tuple[date, str]] = []
+    for date_value, status in outcomes:
+        if status not in {"won", "lost"}:
+            continue
+        try:
+            day = datetime.strptime(date_value, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        ordered_outcomes.append((day, status))
+
+    if not ordered_outcomes:
+        return {"current": 0, "best": 0}
+
+    ordered_outcomes.sort(key=lambda item: item[0])
+    status_by_day = {day: status for day, status in ordered_outcomes}
+
+    best = 0
+    run = 0
+    previous_day: date | None = None
+    for day, status in ordered_outcomes:
+        if status == "won":
+            run = run + 1 if previous_day == day - timedelta(days=1) and run > 0 else 1
+            best = max(best, run)
+        else:
+            run = 0
+        previous_day = day
+
+    reference_date = current_date or today_game_date()
+    try:
+        reference_day = datetime.strptime(reference_date, "%Y-%m-%d").date()
+    except ValueError:
+        reference_day = ordered_outcomes[-1][0]
+
+    latest_day = ordered_outcomes[-1][0]
+    if latest_day < reference_day - timedelta(days=1):
+        return {"current": 0, "best": best}
+
+    current = 0
+    day = reference_day
+    if day not in status_by_day:
+        day -= timedelta(days=1)
+
+    while status_by_day.get(day) == "won":
+        current += 1
+        day -= timedelta(days=1)
+
+    return {"current": current, "best": best}
+
+
+def user_wordle_solve_streak(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    current_date: str | None = None,
+    before_date: str | None = None,
+) -> dict[str, int]:
+    return score_wordle_solve_streak(
+        wordle_result_outcomes(conn, user_id, before_date=before_date),
+        current_date=current_date,
+    )
+
+
+def ensure_wordle_assignment(
+    conn: sqlite3.Connection,
+    user_id: int,
+    game: sqlite3.Row,
+) -> sqlite3.Row:
+    assignment = wordle_assignment_row(conn, user_id, game["id"])
+    if assignment is not None:
+        return assignment
+
+    streak = user_wordle_solve_streak(
+        conn,
+        user_id,
+        current_date=game["game_date"],
+        before_date=game["game_date"],
+    )["current"]
+    target_difficulty = difficulty_for_streak(streak)
+    existing_result = existing_wordle_result(conn, user_id, game["id"])
+    legacy_secret_word = None
+    if (
+        existing_result is not None
+        and (
+            existing_result["status"] != "in_progress"
+            or existing_result["attempts_used"] > 0
+        )
+    ):
+        legacy_secret_word = str(game["secret_word"]).strip().lower()
+
+    if legacy_secret_word is not None:
+        actual_difficulty = load_word_difficulty_ratings().get(
+            legacy_secret_word,
+            target_difficulty,
+        )
+        secret_word = legacy_secret_word
+    else:
+        used_words = {
+            row["secret_word"]
+            for row in conn.execute(
+                """
+                SELECT secret_word
+                FROM wordle_user_assignments
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+        }
+        secret_word, actual_difficulty = choose_secret_for_difficulty(
+            target_difficulty,
+            used_words,
+        )
+
+    now = utc_now()
+    try:
+        conn.execute(
+            """
+            INSERT INTO wordle_user_assignments
+                (user_id, game_id, secret_word, difficulty, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (user_id, game["id"], secret_word, actual_difficulty, now),
+        )
+    except sqlite3.IntegrityError:
+        pass
+
+    assignment = wordle_assignment_row(conn, user_id, game["id"])
+    if assignment is None:
+        raise LookupError("Wordle assignment could not be created.")
+    return assignment
 
 
 def wordle_score(status: str, attempts_used: int) -> int:
@@ -1463,11 +1683,14 @@ def wordle_stats(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:
         """,
         (user_id,),
     ).fetchone()
+    streak = user_wordle_solve_streak(conn, user_id)
     return {
         "played": row["played"] or 0,
         "wins": row["wins"] or 0,
         "losses": row["losses"] or 0,
         "points": row["points"] or 0,
+        "currentSolveStreak": streak["current"],
+        "bestSolveStreak": streak["best"],
     }
 
 
@@ -1476,6 +1699,7 @@ def serialize_wordle_state(
     user_id: int,
     game: sqlite3.Row,
 ) -> dict[str, Any]:
+    assignment = ensure_wordle_assignment(conn, user_id, game)
     result = get_or_create_wordle_result(conn, user_id, game["id"])
     guesses = [
         {
@@ -1500,13 +1724,14 @@ def serialize_wordle_state(
             "date": game["game_date"],
             "wordLength": WORD_LENGTH,
             "maxAttempts": MAX_ATTEMPTS,
+            "difficulty": assignment["difficulty"],
         },
         "result": {
             "status": status,
             "attemptsUsed": result["attempts_used"],
             "score": result["score"],
             "guesses": guesses,
-            "answer": game["secret_word"] if status != "in_progress" else None,
+            "answer": assignment["secret_word"] if status != "in_progress" else None,
         },
         "stats": wordle_stats(conn, user_id),
     }
@@ -1884,25 +2109,27 @@ def backfill_daily_quiz_scores(conn: sqlite3.Connection) -> None:
             )
 
 
-def player_score_day_streaks(conn: sqlite3.Connection) -> dict[int, dict[str, int]]:
-    activity_rows = conn.execute(
+def player_wordle_solve_streaks(conn: sqlite3.Connection) -> dict[int, dict[str, int]]:
+    outcome_rows = conn.execute(
         """
-        SELECT wordle_results.user_id, daily_wordle_games.game_date
+        SELECT
+            wordle_results.user_id,
+            daily_wordle_games.game_date,
+            wordle_results.status
         FROM wordle_results
         INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
         WHERE wordle_results.status IN ('won', 'lost')
-        UNION
-        SELECT user_id, game_date
-        FROM daily_quiz_results
         """
     ).fetchall()
-    activity_dates: dict[int, list[str]] = {}
-    for row in activity_rows:
-        activity_dates.setdefault(row["user_id"], []).append(row["game_date"])
+    outcomes_by_user: dict[int, list[tuple[str, str]]] = {}
+    for row in outcome_rows:
+        outcomes_by_user.setdefault(row["user_id"], []).append(
+            (row["game_date"], row["status"])
+        )
 
     return {
-        user_id: score_day_streak(date_values)
-        for user_id, date_values in activity_dates.items()
+        user_id: score_wordle_solve_streak(outcomes)
+        for user_id, outcomes in outcomes_by_user.items()
     }
 
 
@@ -1976,7 +2203,7 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         (period_start, period_start),
     ).fetchall()
 
-    streaks = player_score_day_streaks(conn)
+    streaks = player_wordle_solve_streaks(conn)
     players = []
     for index, row in enumerate(rows):
         streak = streaks.get(row["id"], {"current": 0, "best": 0})
@@ -2405,6 +2632,11 @@ def backfill_news_items(conn: sqlite3.Connection) -> None:
         ORDER BY published_at DESC, id DESC
         """
     ).fetchall()
+    if not rows:
+        return
+
+    # Release the partial unique index before recomputing normalized story keys.
+    conn.execute("UPDATE news_items SET story_key = '' WHERE story_key <> ''")
 
     seen_story_keys: set[str] = set()
     kept_rows: list[dict[str, Any]] = []
@@ -2654,35 +2886,74 @@ def next_daily_quiz_run(now: datetime | None = None) -> datetime:
     return next_run
 
 
-def ensure_tomorrow_daily_quiz(now: datetime | None = None) -> None:
+def active_daily_quiz_dates(now: datetime | None = None) -> list[str]:
     tz = server_timezone()
     local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
-    quiz_date = (local_now.date() + timedelta(days=1)).isoformat()
+    today = local_now.date()
+    tomorrow = today + timedelta(days=1)
+    return [today.isoformat(), tomorrow.isoformat()]
+
+
+def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen_dates: set[str] = set()
     with DAILY_QUIZ_OPERATION_LOCK:
         with closing(connect_db()) as conn:
-            status = daily_quiz.quiz_status(conn, quiz_date)
-            if status["status"] == "published":
-                safe_log(f"Daily quiz for {quiz_date} is already published")
-                return
-            daily_quiz.generate_daily_quiz(
-                conn,
-                quiz_date=quiz_date,
-                config=DAILY_QUIZ_CONFIG,
-                log=lambda message: safe_log(f"Daily quiz: {message}"),
-            )
+            for quiz_date in target_dates:
+                normalized_date = daily_quiz.valid_quiz_date(quiz_date)
+                if normalized_date in seen_dates:
+                    continue
+                seen_dates.add(normalized_date)
+                status = daily_quiz.quiz_status(conn, normalized_date)
+                if status["status"] == "published":
+                    safe_log(f"Daily quiz for {normalized_date} is already published")
+                    results.append(status)
+                    continue
+                result = daily_quiz.generate_daily_quiz(
+                    conn,
+                    quiz_date=normalized_date,
+                    config=DAILY_QUIZ_CONFIG,
+                    log=lambda message: safe_log(f"Daily quiz: {message}"),
+                )
+                results.append(result)
+                if result.get("status") != "published":
+                    break
+    return results
+
+
+def ensure_tomorrow_daily_quiz(now: datetime | None = None) -> dict[str, Any]:
+    tomorrow_date = active_daily_quiz_dates(now)[1]
+    return ensure_daily_quiz_dates([tomorrow_date])[0]
+
+
+def ensure_active_daily_quizzes(now: datetime | None = None) -> list[dict[str, Any]]:
+    return ensure_daily_quiz_dates(active_daily_quiz_dates(now))
 
 
 def daily_quiz_scheduler_loop() -> None:
     safe_log("Daily quiz scheduler started")
     while True:
+        results: list[dict[str, Any]] = []
+        retry_required = False
         try:
-            ensure_tomorrow_daily_quiz()
+            results = ensure_active_daily_quizzes()
+            retry_required = any(
+                result.get("status") != "published"
+                for result in results
+            )
         except Exception as error:
             safe_log(f"Daily quiz scheduler generation failed: {error}")
+            retry_required = True
 
         next_run = next_daily_quiz_run()
-        delay = max(1.0, (next_run - datetime.now(next_run.tzinfo)).total_seconds())
-        safe_log(f"Daily quiz scheduler sleeping until {next_run.isoformat()}")
+        now = datetime.now(next_run.tzinfo)
+        if retry_required:
+            retry_at = now + timedelta(seconds=DAILY_QUIZ_RETRY_INTERVAL_SEC)
+            wake_at = retry_at if retry_at < next_run else next_run
+        else:
+            wake_at = next_run
+        delay = max(1.0, (wake_at - now).total_seconds())
+        safe_log(f"Daily quiz scheduler sleeping until {wake_at.isoformat()}")
         time.sleep(delay)
 
 
@@ -6749,6 +7020,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/wordle/definition" and method == "GET":
                 game = ensure_daily_game(conn)
+                assignment = ensure_wordle_assignment(conn, user["id"], game)
                 result = get_or_create_wordle_result(conn, user["id"], game["id"])
                 if result["status"] == "in_progress":
                     self.send_error_json(
@@ -6756,7 +7028,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                         "Finish today's Wordle before requesting its definition.",
                     )
                     return
-                self.send_json(HTTPStatus.OK, word_definition(game["secret_word"]))
+                self.send_json(HTTPStatus.OK, word_definition(assignment["secret_word"]))
                 return
 
             if path == "/api/daily-quiz" and method == "GET":
@@ -7031,6 +7303,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             return
 
         game = ensure_daily_game(conn)
+        assignment = ensure_wordle_assignment(conn, user["id"], game)
         result = get_or_create_wordle_result(conn, user["id"], game["id"])
 
         if result["status"] != "in_progress":
@@ -7042,7 +7315,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, "No attempts remain.")
             return
 
-        feedback = serialize_feedback(compute_feedback(game["secret_word"], guess))
+        feedback = serialize_feedback(compute_feedback(assignment["secret_word"], guess))
         won = all(tile["color"] == "green" for tile in feedback)
         status = "won" if won else "lost" if attempt_number >= MAX_ATTEMPTS else "in_progress"
         completed_at = utc_now() if status != "in_progress" else None

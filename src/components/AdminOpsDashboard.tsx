@@ -286,6 +286,7 @@ export function AdminOpsDashboard({
     disks
       .filter((disk) => typeof disk.usedPct === "number")
       .sort((left, right) => (right.usedPct ?? 0) - (left.usedPct ?? 0))[0] ?? null;
+  const todayQuiz = remote?.quiz.today ?? null;
   const tomorrowQuiz = remote?.quiz.tomorrow ?? null;
   const tests = remote?.tests ?? [];
   const containers = remote?.docker.containers ?? [];
@@ -293,8 +294,15 @@ export function AdminOpsDashboard({
   const networks = remote?.docker.networks ?? [];
   const orphanedNetworks = networks.filter((networkInfo) => networkInfo.orphaned);
   const batteries = remote?.host.power.batteries ?? [];
+  const activeQuizNeedsRepair = Boolean(todayQuiz && todayQuiz.status !== "published");
+  const repairDailyQuizLabel = activeQuizNeedsRepair ? "Repair today's quiz" : "Generate tomorrow";
+  const repairDailyQuizTestId = activeQuizNeedsRepair ? "today_quiz" : "tomorrow_quiz";
   const canGenerateTomorrowQuiz =
-    source === "local" && Boolean(tomorrowQuiz && tomorrowQuiz.status !== "published");
+    source === "local"
+    && Boolean(
+      (activeQuizNeedsRepair && todayQuiz?.date)
+      || (tomorrowQuiz && tomorrowQuiz.status !== "published"),
+    );
   const canRegenerateTomorrowQuestions =
     source === "local" && Boolean(tomorrowQuiz?.date) && (tomorrowQuiz?.questions.length ?? 0) > 0;
   const canRemoveOrphanedNetworks = source === "local" && orphanedNetworks.length > 0;
@@ -636,7 +644,7 @@ export function AdminOpsDashboard({
             {canGenerateTomorrowQuiz ? (
               <ActionButton
                 icon={<Zap aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />}
-                label="Fix tomorrow quiz"
+                label={repairDailyQuizLabel}
                 onClick={() => void runLocalAction("generate_tomorrow_quiz")}
                 disabled={activeAction !== null || refreshing}
                 busy={activeAction === "generate_tomorrow_quiz"}
@@ -1074,7 +1082,7 @@ export function AdminOpsDashboard({
               {canGenerateTomorrowQuiz ? (
                 <ActionButton
                   icon={<Zap aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />}
-                  label="Generate now"
+                  label={repairDailyQuizLabel}
                   onClick={() => void runLocalAction("generate_tomorrow_quiz")}
                   disabled={activeAction !== null || refreshing}
                   busy={activeAction === "generate_tomorrow_quiz"}
@@ -1194,10 +1202,10 @@ export function AdminOpsDashboard({
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {source === "local" && test.id === "tomorrow_quiz" && canGenerateTomorrowQuiz ? (
+                {source === "local" && test.id === repairDailyQuizTestId && canGenerateTomorrowQuiz ? (
                   <ActionButton
                     icon={<Zap aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />}
-                    label="Fix"
+                    label="Repair"
                     onClick={() => void runLocalAction("generate_tomorrow_quiz")}
                     disabled={activeAction !== null || refreshing}
                     busy={activeAction === "generate_tomorrow_quiz"}
