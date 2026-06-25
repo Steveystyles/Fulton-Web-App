@@ -1262,6 +1262,41 @@ class ProductionServerHardeningTests(unittest.TestCase):
         ]
         self.assertEqual(policy_headers, ["camera=(), microphone=(), geolocation=(self)"])
 
+    def test_static_app_shell_disables_cache(self) -> None:
+        import server
+
+        sent_headers: list[tuple[str, str]] = []
+
+        class DummyHandler:
+            path = "/wordle"
+
+            def send_header(self, name: str, value: str) -> None:
+                sent_headers.append((name, value))
+
+        server.FultonsHandler.send_static_cache_headers(DummyHandler())  # type: ignore[arg-type]
+
+        self.assertIn(("Cache-Control", "no-store, max-age=0"), sent_headers)
+        self.assertIn(("Pragma", "no-cache"), sent_headers)
+        self.assertIn(("Expires", "0"), sent_headers)
+
+    def test_static_hashed_assets_are_immutable(self) -> None:
+        import server
+
+        sent_headers: list[tuple[str, str]] = []
+
+        class DummyHandler:
+            path = "/assets/index-BY5qEWa0.js"
+
+            def send_header(self, name: str, value: str) -> None:
+                sent_headers.append((name, value))
+
+        server.FultonsHandler.send_static_cache_headers(DummyHandler())  # type: ignore[arg-type]
+
+        self.assertEqual(
+            [value for name, value in sent_headers if name == "Cache-Control"],
+            ["public, max-age=31536000, immutable"],
+        )
+
     def test_production_database_does_not_seed_demo_users_by_default(self) -> None:
         import server
 

@@ -6620,9 +6620,26 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def end_headers(self) -> None:
+        self.send_static_cache_headers()
         self.send_security_headers()
         self.send_cors_headers()
         super().end_headers()
+
+    def send_static_cache_headers(self) -> None:
+        if getattr(self, "_json_response", False):
+            return
+
+        parsed_path = urlparse(self.path).path
+        if parsed_path.startswith("/api/") or parsed_path.startswith("/internal/"):
+            return
+
+        if parsed_path.startswith("/assets/"):
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            return
+
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
 
     def send_security_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -6699,6 +6716,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         headers: dict[str, str] | None = None,
     ) -> None:
         body = json.dumps(payload).encode("utf-8")
+        self._json_response = True
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
