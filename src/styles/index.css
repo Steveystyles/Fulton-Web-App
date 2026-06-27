@@ -134,6 +134,48 @@ input[type="date"] {
   animation: page-fade 190ms ease-out both;
 }
 
+.wordle-board-window {
+  overscroll-behavior: contain;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+  touch-action: none;
+}
+
+.wordle-board-rows-replace,
+.wordle-board-window [data-wordle-row] {
+  will-change: transform, opacity;
+}
+
+.wordle-board-window::-webkit-scrollbar {
+  display: none;
+}
+
+.wordle-board-window [data-wordle-row] {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+.wordle-board-rows-replace {
+  --wordle-window-enter-y: 12px;
+  --wordle-window-overshoot-y: -2px;
+  --wordle-row-enter-y: 18px;
+  --wordle-row-overshoot-y: -3px;
+  animation: wordle-board-replace 420ms cubic-bezier(0.2, 0.85, 0.2, 1) both;
+}
+
+.wordle-board-rows-replace [data-active-row="true"] {
+  animation: wordle-row-replace 420ms cubic-bezier(0.2, 0.85, 0.2, 1) both;
+}
+
+.wordle-win-modal {
+  animation: wordle-win-pop 240ms ease-out both;
+}
+
+.wordle-win-badge {
+  animation: wordle-win-badge 680ms ease-out both;
+}
+
 @keyframes ticker {
   from {
     transform: translate3d(0, 0, 0);
@@ -141,6 +183,66 @@ input[type="date"] {
 
   to {
     transform: translate3d(var(--ticker-shift, -50%), 0, 0);
+  }
+}
+
+@keyframes wordle-row-replace {
+  from {
+    opacity: 0.46;
+    transform: translateY(var(--wordle-row-enter-y, 16px)) scale(0.955);
+  }
+
+  58% {
+    opacity: 1;
+    transform: translateY(var(--wordle-row-overshoot-y, -2px)) scale(1.012);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wordle-board-replace {
+  from {
+    opacity: 0.82;
+    transform: translateY(var(--wordle-window-enter-y, 10px));
+  }
+
+  62% {
+    opacity: 1;
+    transform: translateY(var(--wordle-window-overshoot-y, -2px));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes wordle-win-pop {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wordle-win-badge {
+  0% {
+    transform: scale(0.72) rotate(-8deg);
+  }
+
+  55% {
+    transform: scale(1.12) rotate(4deg);
+  }
+
+  100% {
+    transform: scale(1) rotate(0);
   }
 }
 

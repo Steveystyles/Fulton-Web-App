@@ -2379,6 +2379,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
     def test_wordle_assignment_uses_streak_based_difficulty_pool(self) -> None:
         import server
+        import wordle_game
 
         original_data_dir = server.DATA_DIR
         original_db_path = server.DB_PATH
@@ -2439,11 +2440,14 @@ class ProductionServerHardeningTests(unittest.TestCase):
                     (user_id, today_game_id),
                 ).fetchone()
 
-            self.assertEqual(state["game"]["difficulty"], 4)
+            self.assertEqual(state["game"]["difficulty"], 2)
             self.assertEqual(state["stats"]["currentSolveStreak"], 1)
             self.assertEqual(state["stats"]["bestSolveStreak"], 1)
-            self.assertEqual(assignment["difficulty"], 4)
-            self.assertIn(assignment["secret_word"], {"laden", "merit", "rinse"})
+            self.assertEqual(assignment["difficulty"], 2)
+            self.assertIn(
+                assignment["secret_word"],
+                set(wordle_game.answer_words_by_difficulty()[2]),
+            )
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
@@ -2506,6 +2510,56 @@ class ProductionServerHardeningTests(unittest.TestCase):
             self.assertEqual(state["game"]["difficulty"], 1)
             self.assertEqual(assignment["secret_word"], "aahed")
             self.assertEqual(assignment["difficulty"], 1)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_assignment_difficulty_backfill_uses_current_buckets(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-24T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-06-24', 'laden', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    assignment_id = conn.execute(
+                        """
+                        INSERT INTO wordle_user_assignments
+                            (user_id, game_id, secret_word, difficulty, created_at)
+                        VALUES (?, ?, 'laden', 4, ?)
+                        """,
+                        (user_id, game_id, now),
+                    ).lastrowid
+
+                with conn:
+                    server.backfill_wordle_assignment_difficulties(conn)
+
+                row = conn.execute(
+                    "SELECT difficulty FROM wordle_user_assignments WHERE id = ?",
+                    (assignment_id,),
+                ).fetchone()
+
+            self.assertEqual(row["difficulty"], 1)
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path

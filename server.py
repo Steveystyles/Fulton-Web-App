@@ -1172,6 +1172,7 @@ def initialize_database() -> None:
             ensure_column(conn, "daily_quiz_results", "bonus_points", "INTEGER NOT NULL DEFAULT 0")
             ensure_column(conn, "news_items", "story_key", "TEXT NOT NULL DEFAULT ''")
             backfill_wordle_scores(conn)
+            backfill_wordle_assignment_difficulties(conn)
             daily_quiz.initialize_database(conn)
             backfill_daily_quiz_scores(conn)
             user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
@@ -1678,6 +1679,23 @@ def backfill_wordle_scores(conn: sqlite3.Connection) -> None:
         next_score = wordle_score(row["status"], row["attempts_used"])
         if row["score"] != next_score:
             conn.execute("UPDATE wordle_results SET score = ? WHERE id = ?", (next_score, row["id"]))
+
+
+def backfill_wordle_assignment_difficulties(conn: sqlite3.Connection) -> None:
+    ratings = load_word_difficulty_ratings()
+    rows = conn.execute(
+        """
+        SELECT id, secret_word, difficulty
+        FROM wordle_user_assignments
+        """
+    ).fetchall()
+    for row in rows:
+        difficulty = ratings.get(str(row["secret_word"]).strip().lower())
+        if difficulty is not None and row["difficulty"] != difficulty:
+            conn.execute(
+                "UPDATE wordle_user_assignments SET difficulty = ? WHERE id = ?",
+                (difficulty, row["id"]),
+            )
 
 
 def wordle_stats(conn: sqlite3.Connection, user_id: int) -> dict[str, int]:

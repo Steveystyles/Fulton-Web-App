@@ -1,12 +1,24 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type TouchEvent,
+  type WheelEvent,
+} from "react";
 import {
   BookOpen,
+  ChevronDown,
+  ChevronUp,
   Delete,
   ExternalLink,
-  Flame,
   Hash,
   LoaderCircle,
+  Trophy,
   Type,
+  X,
 } from "lucide-react";
 import { api, type FeedbackColor, type WordleState } from "../lib/api";
 import type { WordleDefinition } from "../lib/api";
@@ -15,6 +27,7 @@ type GuessValidity = "empty" | "short" | "checking" | "valid" | "invalid";
 
 const keyboardRows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
 const largePrintStorageKey = "fultons-wordle-large-print";
+const maxWordleLevel = 20;
 
 const colorPriority: Record<FeedbackColor, number> = {
   grey: 1,
@@ -35,23 +48,114 @@ const keyboardColors: Record<FeedbackColor, string> = {
 };
 
 function difficultyBadgeClasses(level: number) {
-  if (level <= 20) {
+  if (level <= 5) {
     return "border border-emerald-200 bg-emerald-50 text-emerald-800";
   }
-  if (level <= 50) {
+  if (level <= 10) {
     return "border border-sky-200 bg-sky-50 text-sky-800";
   }
-  if (level <= 75) {
+  if (level <= 15) {
     return "border border-amber-200 bg-amber-50 text-amber-800";
   }
   return "border border-rose-200 bg-rose-50 text-rose-800";
 }
 
-function streakLabel(value: number) {
-  return `${value} in a row`;
+function readLargePrintPreference() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(largePrintStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeLargePrintPreference(enabled: boolean) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(largePrintStorageKey, enabled ? "1" : "0");
+  } catch {
+    // Keep the toggle usable even when browser storage is unavailable.
+  }
+}
+
+function DictionaryDefinitionCard({
+  definition,
+  error,
+  loading,
+  largePrint,
+}: {
+  definition: WordleDefinition | null;
+  error: string;
+  loading: boolean;
+  largePrint: boolean;
+}) {
+  const word = definition?.word ?? "";
+  const termClass = largePrint ? "text-3xl" : "text-2xl";
+  const bodyClass = largePrint ? "text-base leading-7" : "text-sm leading-relaxed";
+  const metaClass = largePrint ? "text-sm" : "text-xs";
+
+  return (
+    <article className="rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-saints-redSoft text-saints-red">
+          <BookOpen aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+        </div>
+        <div className="min-w-0">
+          <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+            Dictionary
+          </p>
+          <h2 className={["mt-1 font-black lowercase leading-none text-slate-950", termClass].join(" ")}>
+            {word || "word"}
+          </h2>
+          {definition?.partOfSpeech ? (
+            <p className={["mt-2 font-black italic text-saints-red", metaClass].join(" ")}>
+              {definition.partOfSpeech}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      {loading ? (
+        <p className={["mt-4 flex items-center gap-2 font-semibold text-slate-500", bodyClass].join(" ")}>
+          <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
+          Loading dictionary definition
+        </p>
+      ) : definition?.definition ? (
+        <>
+          <p className={["mt-4 border-l-4 border-saints-red/70 pl-3 font-serif text-slate-800", bodyClass].join(" ")}>
+            {definition.definition}
+          </p>
+          <a
+            href={definition.sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            className={["mt-3 inline-flex items-center gap-1 font-black text-saints-red underline-offset-2 hover:underline", metaClass].join(" ")}
+          >
+            Dictionary source
+            <ExternalLink aria-hidden="true" className="h-3 w-3" />
+          </a>
+        </>
+      ) : (
+        <p className={["mt-4 font-semibold text-slate-500", bodyClass].join(" ")}>
+          {error || "Dictionary definition is unavailable for this word."}
+        </p>
+      )}
+    </article>
+  );
 }
 
 export function Wordle() {
+  const boardScrollRef = useRef<HTMLDivElement | null>(null);
+  const wheelGestureLockedRef = useRef(false);
+  const wheelUnlockTimeoutRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const touchGestureHandledRef = useRef(false);
   const [state, setState] = useState<WordleState | null>(null);
   const [guess, setGuess] = useState("");
   const [guessValidity, setGuessValidity] = useState<GuessValidity>("empty");
@@ -61,11 +165,11 @@ export function Wordle() {
   const [definition, setDefinition] = useState<WordleDefinition | null>(null);
   const [definitionError, setDefinitionError] = useState("");
   const [definitionLoading, setDefinitionLoading] = useState(false);
-  const [largePrint, setLargePrint] = useState(() => {
-    if (typeof window === "undefined") {
-      return false;
-    }
-    return window.localStorage.getItem(largePrintStorageKey) === "1";
+  const [largePrint, setLargePrint] = useState(readLargePrintPreference);
+  const [winDialogDismissed, setWinDialogDismissed] = useState(false);
+  const [rowScrollState, setRowScrollState] = useState({
+    canScrollDown: false,
+    canScrollUp: false,
   });
 
   const gameStatus = state?.result.status ?? "in_progress";
@@ -73,14 +177,32 @@ export function Wordle() {
   const wordLength = state?.game.wordLength ?? 5;
   const maxAttempts = state?.game.maxAttempts ?? 6;
   const guesses = state?.result.guesses ?? [];
+  const activeRowIndex = isComplete
+    ? Math.max(0, guesses.length - 1)
+    : Math.min(guesses.length, maxAttempts - 1);
+  const visibleStartRowIndex = largePrint
+    ? Math.max(0, activeRowIndex - 1)
+    : 0;
   const canSubmit = state !== null && !isComplete && guessValidity === "valid" && !submitting;
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(largePrintStorageKey, largePrint ? "1" : "0");
+    writeLargePrintPreference(largePrint);
   }, [largePrint]);
+
+  useEffect(
+    () => () => {
+      if (wheelUnlockTimeoutRef.current !== null) {
+        window.clearTimeout(wheelUnlockTimeoutRef.current);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (gameStatus === "won") {
+      setWinDialogDismissed(false);
+    }
+  }, [gameStatus, state?.game.date]);
 
   useEffect(() => {
     let active = true;
@@ -175,6 +297,20 @@ export function Wordle() {
       active = false;
     };
   }, [guess, wordLength]);
+
+  useEffect(() => {
+    if (!largePrint) {
+      return;
+    }
+
+    const board = boardScrollRef.current;
+    const row = board?.querySelector<HTMLElement>(
+      `[data-wordle-row="${visibleStartRowIndex}"]`,
+    );
+    if (board !== null && row !== undefined && row !== null) {
+      board.scrollTo({ top: row.offsetTop, behavior: "smooth" });
+    }
+  }, [largePrint, visibleStartRowIndex]);
 
   const addLetter = useCallback(
     (letter: string) => {
@@ -293,99 +429,319 @@ export function Wordle() {
     void submitGuess();
   }
 
-  const boardWidthClass = largePrint ? "max-w-[19rem]" : "max-w-[17.5rem]";
+  const updateBoardScrollControls = useCallback(
+    (board: HTMLDivElement | null = boardScrollRef.current) => {
+      if (!largePrint || board === null) {
+        setRowScrollState((currentState) =>
+          currentState.canScrollDown || currentState.canScrollUp
+            ? { canScrollDown: false, canScrollUp: false }
+            : currentState,
+        );
+        return;
+      }
+
+      const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
+      const nextState = {
+        canScrollDown: board.scrollTop < maxScrollTop - 1,
+        canScrollUp: board.scrollTop > 1,
+      };
+      setRowScrollState((currentState) =>
+        currentState.canScrollDown === nextState.canScrollDown &&
+        currentState.canScrollUp === nextState.canScrollUp
+          ? currentState
+          : nextState,
+      );
+    },
+    [largePrint],
+  );
+
+  const scrollBoardByRow = useCallback((board: HTMLDivElement, direction: 1 | -1) => {
+    const row = board.querySelector<HTMLElement>("[data-wordle-row]");
+    const rowGroup = board.firstElementChild;
+    if (row === null || rowGroup === null) {
+      return;
+    }
+
+    const rowGap = Number.parseFloat(window.getComputedStyle(rowGroup).rowGap || "0") || 0;
+    const rowStep = row.getBoundingClientRect().height + rowGap;
+    if (rowStep <= 0) {
+      return;
+    }
+
+    const currentIndex = Math.round(board.scrollTop / rowStep);
+    const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
+    const nextTop = Math.min(
+      maxScrollTop,
+      Math.max(0, (currentIndex + direction) * rowStep),
+    );
+    board.scrollTo({ top: nextTop, behavior: "smooth" });
+    window.setTimeout(() => updateBoardScrollControls(board), 320);
+  }, [updateBoardScrollControls]);
+
+  useEffect(() => {
+    updateBoardScrollControls();
+  }, [largePrint, maxAttempts, updateBoardScrollControls, visibleStartRowIndex]);
+
+  const releaseWheelGestureAfterBurst = useCallback(() => {
+    if (wheelUnlockTimeoutRef.current !== null) {
+      window.clearTimeout(wheelUnlockTimeoutRef.current);
+    }
+    wheelUnlockTimeoutRef.current = window.setTimeout(() => {
+      wheelGestureLockedRef.current = false;
+      wheelUnlockTimeoutRef.current = null;
+    }, 240);
+  }, []);
+
+  const handleBoardWheel = useCallback(
+    (event: WheelEvent<HTMLDivElement>) => {
+      if (!largePrint || event.deltaY === 0) {
+        return;
+      }
+
+      event.preventDefault();
+      releaseWheelGestureAfterBurst();
+      if (wheelGestureLockedRef.current) {
+        return;
+      }
+
+      wheelGestureLockedRef.current = true;
+      scrollBoardByRow(event.currentTarget, event.deltaY > 0 ? 1 : -1);
+    },
+    [largePrint, releaseWheelGestureAfterBurst, scrollBoardByRow],
+  );
+
+  const handleBoardScroll = useCallback(() => {
+    updateBoardScrollControls();
+  }, [updateBoardScrollControls]);
+
+  const handleRowControlClick = useCallback(
+    (direction: 1 | -1) => {
+      if (!largePrint || boardScrollRef.current === null) {
+        return;
+      }
+
+      scrollBoardByRow(boardScrollRef.current, direction);
+    },
+    [largePrint, scrollBoardByRow],
+  );
+
+  const handleBoardTouchStart = useCallback(
+    (event: TouchEvent<HTMLDivElement>) => {
+      if (!largePrint || event.touches.length === 0) {
+        return;
+      }
+
+      touchStartYRef.current = event.touches[0].clientY;
+      touchGestureHandledRef.current = false;
+    },
+    [largePrint],
+  );
+
+  const handleBoardTouchMove = useCallback(
+    (event: TouchEvent<HTMLDivElement>) => {
+      if (!largePrint || touchStartYRef.current === null || event.touches.length === 0) {
+        return;
+      }
+
+      const deltaY = touchStartYRef.current - event.touches[0].clientY;
+      if (Math.abs(deltaY) < 24) {
+        return;
+      }
+
+      event.preventDefault();
+      if (touchGestureHandledRef.current) {
+        return;
+      }
+
+      touchGestureHandledRef.current = true;
+      scrollBoardByRow(event.currentTarget, deltaY > 0 ? 1 : -1);
+    },
+    [largePrint, scrollBoardByRow],
+  );
+
+  const handleBoardTouchEnd = useCallback(
+    () => {
+      touchStartYRef.current = null;
+      touchGestureHandledRef.current = false;
+    },
+    [],
+  );
+
+  const statusTextClass = largePrint ? "text-lg" : "text-base";
+  const badgeClass = largePrint ? "px-3.5 py-1.5 text-sm" : "px-3 py-1 text-xs";
+  const rowControlButtonClass =
+    "inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-saints-red hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:border-slate-100 disabled:bg-slate-100 disabled:text-slate-300 disabled:shadow-none";
+  const controlBarClass = largePrint
+    ? "inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-sm"
+    : "inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-sm";
+  const rowControlShellClass =
+    "inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1 shadow-sm";
+  const toggleButtonClass = largePrint
+    ? "bg-saints-redSoft text-saints-red"
+    : "bg-white text-slate-700 hover:bg-saints-redSoft hover:text-saints-red";
+  const toggleStateClass = largePrint
+    ? "bg-saints-red text-white"
+    : "bg-slate-100 text-slate-600";
+  const cardPaddingClass = largePrint ? "p-2" : "p-3";
+  const formSpacingClass = largePrint ? "space-y-2.5" : "space-y-3";
+  const boardWidthClass = largePrint ? "max-w-full" : "max-w-[17.5rem]";
+  const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
+  const boardFrameClass = largePrint
+    ? "wordle-board-window aspect-[2.56/1] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md"
+    : "";
+  const boardRowsKey = largePrint ? `visible-row-${visibleStartRowIndex}` : "all-rows";
+  const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
   const tileClass = largePrint
-    ? "min-h-12 text-[1.9rem] min-[380px]:min-h-[3.5rem] min-[380px]:text-[2.15rem]"
-    : "min-h-11 text-[1.7rem] min-[380px]:min-h-[3.25rem] min-[380px]:text-[1.95rem]";
+    ? "w-full text-[2.7rem] min-[380px]:text-[2.9rem]"
+    : "w-full text-[1.7rem] min-[380px]:text-[1.95rem]";
+  const keyboardSpacingClass = largePrint ? "space-y-1.5" : "space-y-1.5";
+  const keyboardRowGapClass = largePrint ? "gap-1.5" : "gap-1.5";
+  const keyboardMiddleRowPaddingClass = largePrint ? "px-2" : "px-3";
   const keyClass = largePrint
-    ? "min-h-11 text-[0.92rem] min-[380px]:min-h-[3rem]"
+    ? "min-h-[3.35rem] text-[1.08rem] min-[380px]:min-h-[3.55rem] min-[380px]:text-[1.16rem]"
     : "min-h-10 text-[0.8rem] min-[380px]:min-h-[2.9rem]";
   const actionKeyClass = largePrint
-    ? "min-h-11 text-[0.78rem] min-[380px]:min-h-[3rem]"
+    ? "min-h-[3.35rem] text-[0.9rem] min-[380px]:min-h-[3.55rem] min-[380px]:text-[0.94rem]"
     : "min-h-10 text-[0.72rem] min-[380px]:min-h-[2.9rem]";
+  const validationClass = largePrint ? "min-h-6 text-base" : "min-h-5 text-sm";
+  const messageClass = largePrint ? "text-base" : "text-sm";
+  const definitionEyebrowClass = largePrint ? "text-xs" : "text-[0.68rem]";
+  const nextLevel = Math.min(maxWordleLevel, (state?.game.difficulty ?? 1) + 1);
+  const showWinDialog = gameStatus === "won" && !winDialogDismissed;
 
   return (
-    <section className="page-fade" aria-label="Wordle game">
-      <section className="max-w-full overflow-hidden rounded-lg saints-card p-3">
-        <form className="space-y-3" onSubmit={handleSubmit}>
+    <section className="page-fade" aria-label="Wordle game" data-large-print={largePrint}>
+      <section className={["max-w-full overflow-hidden rounded-lg saints-card", cardPaddingClass].join(" ")}>
+        <form className={formSpacingClass} onSubmit={handleSubmit}>
           <div className="space-y-2">
             {statusText ? (
-              <p className="text-center text-base font-black text-slate-700">{statusText}</p>
-            ) : null}
-
-            {state ? (
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <span
-                  className={[
-                    "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-black uppercase tracking-normal",
-                    difficultyBadgeClasses(state.game.difficulty),
-                  ].join(" ")}
-                >
-                  <Hash aria-hidden="true" className="h-3.5 w-3.5" />
-                  Difficulty {state.game.difficulty}
-                </span>
-                <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-normal text-slate-700">
-                  <Flame aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-                  {streakLabel(state.stats.currentSolveStreak)}
-                </span>
-                <span className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-normal text-slate-700">
-                  {state.stats.points} Wordle pts
-                </span>
-              </div>
+              <p className={["text-center font-black text-slate-700", statusTextClass].join(" ")}>
+                {statusText}
+              </p>
             ) : null}
 
             <div className="flex justify-center">
+              <div className={controlBarClass} aria-label="Wordle settings">
+                {state ? (
+                  <span
+                    className={[
+                      "inline-flex min-h-9 items-center gap-1 rounded-full font-black uppercase tracking-normal",
+                      badgeClass,
+                      difficultyBadgeClasses(state.game.difficulty),
+                    ].join(" ")}
+                  >
+                    <Hash aria-hidden="true" className="h-3.5 w-3.5" />
+                    Difficulty {state.game.difficulty}
+                  </span>
+                ) : null}
+
               <button
                 type="button"
                 onClick={() => setLargePrint((current) => !current)}
                 aria-pressed={largePrint}
-                className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-black uppercase tracking-normal text-slate-700 transition hover:border-saints-red hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+                aria-label={largePrint ? "Use standard text size" : "Use large text size"}
+                data-testid="wordle-text-size-toggle"
+                className={[
+                  "inline-flex min-h-9 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-black uppercase tracking-normal transition focus:outline-none focus:ring-4 focus:ring-saints-red/15",
+                  toggleButtonClass,
+                ].join(" ")}
               >
                 <Type aria-hidden="true" className="h-3.5 w-3.5" />
-                {largePrint ? "Standard text" : "Large print"}
+                Large text
+                <span className={["rounded-full px-2 py-0.5 text-[0.68rem]", toggleStateClass].join(" ")}>
+                  {largePrint ? "On" : "Off"}
+                </span>
               </button>
+              </div>
+            </div>
+
+            {largePrint ? (
+              <div className="flex justify-center">
+                <div className={rowControlShellClass} aria-label="Guess row controls">
+                  <button
+                    type="button"
+                    onClick={() => handleRowControlClick(-1)}
+                    disabled={!rowScrollState.canScrollUp}
+                    aria-label="Show previous guess row"
+                    className={rowControlButtonClass}
+                  >
+                    <ChevronUp aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                  </button>
+                  <span className="px-2 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+                    Guess rows
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleRowControlClick(1)}
+                    disabled={!rowScrollState.canScrollDown}
+                    aria-label="Show next guess row"
+                    className={rowControlButtonClass}
+                  >
+                    <ChevronDown aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div
+            ref={boardScrollRef}
+            onScroll={handleBoardScroll}
+            onWheel={handleBoardWheel}
+            onTouchStart={handleBoardTouchStart}
+            onTouchMove={handleBoardTouchMove}
+            onTouchEnd={handleBoardTouchEnd}
+            onTouchCancel={handleBoardTouchEnd}
+            className={[
+              "mx-auto w-full",
+              boardFrameClass,
+              boardWidthClass,
+            ].join(" ")}
+            aria-label="Wordle board"
+            data-testid="wordle-board-scroll"
+          >
+            <div key={boardRowsKey} className={["grid", boardGapClass, boardRowsClass].join(" ")}>
+              {Array.from({ length: maxAttempts }, (_, rowIndex) => {
+                const submittedGuess = guesses[rowIndex];
+                const isDraftRow = submittedGuess === undefined && rowIndex === guesses.length;
+                const draft = isDraftRow && !isComplete ? guess.toUpperCase() : "";
+
+                return (
+                  <div
+                    key={rowIndex}
+                    data-wordle-row={rowIndex}
+                    data-active-row={rowIndex === activeRowIndex}
+                    className={["grid", boardGapClass].join(" ")}
+                    style={{ gridTemplateColumns: `repeat(${wordLength}, minmax(0, 1fr))` }}
+                  >
+                    {Array.from({ length: wordLength }, (_, letterIndex) => {
+                      const feedbackTile = submittedGuess?.feedback[letterIndex];
+                      const letter = feedbackTile?.letter.toUpperCase() ?? draft[letterIndex] ?? "";
+                      const colorClass =
+                        feedbackTile !== undefined
+                          ? tileColors[feedbackTile.color]
+                          : "border-slate-300 bg-white text-slate-950";
+
+                      return (
+                        <div
+                          key={letterIndex}
+                          className={[
+                            "flex aspect-square items-center justify-center rounded-md border-2 font-black uppercase leading-none shadow-sm",
+                            tileClass,
+                            colorClass,
+                          ].join(" ")}
+                        >
+                          {letter}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          <div className={["mx-auto grid gap-1.5", boardWidthClass].join(" ")} aria-label="Wordle board">
-            {Array.from({ length: maxAttempts }, (_, rowIndex) => {
-              const submittedGuess = guesses[rowIndex];
-              const isDraftRow = submittedGuess === undefined && rowIndex === guesses.length;
-              const draft = isDraftRow && !isComplete ? guess.toUpperCase() : "";
-
-              return (
-                <div
-                  key={rowIndex}
-                  className="grid gap-1.5"
-                  style={{ gridTemplateColumns: `repeat(${wordLength}, minmax(0, 1fr))` }}
-                >
-                  {Array.from({ length: wordLength }, (_, letterIndex) => {
-                    const feedbackTile = submittedGuess?.feedback[letterIndex];
-                    const letter = feedbackTile?.letter.toUpperCase() ?? draft[letterIndex] ?? "";
-                    const colorClass =
-                      feedbackTile !== undefined
-                        ? tileColors[feedbackTile.color]
-                        : "border-slate-300 bg-white text-slate-950";
-
-                    return (
-                      <div
-                        key={letterIndex}
-                        className={[
-                          "flex aspect-square items-center justify-center rounded-md border-2 font-black uppercase leading-none shadow-sm",
-                          tileClass,
-                          colorClass,
-                        ].join(" ")}
-                      >
-                        {letter}
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })}
-          </div>
-
-          <div aria-live="polite" className="min-h-5 text-center text-sm font-black">
+          <div aria-live="polite" className={["text-center font-black", validationClass].join(" ")}>
             {guessValidity === "checking" ? (
               <span className="text-slate-500">Checking word</span>
             ) : guessValidity === "invalid" ? (
@@ -395,14 +751,15 @@ export function Wordle() {
             ) : null}
           </div>
 
-          <div className="space-y-1.5" aria-label="Wordle keyboard">
+          <div className={keyboardSpacingClass} aria-label="Wordle keyboard">
             {keyboardRows.map((row, rowIndex) => (
               <div
                 key={row}
                 className={[
-                  "grid gap-1.5",
+                  "grid",
+                  keyboardRowGapClass,
                   rowIndex === 1
-                    ? "grid-cols-9 px-3"
+                    ? ["grid-cols-9", keyboardMiddleRowPaddingClass].join(" ")
                     : rowIndex === 2
                       ? "grid-cols-[1.35fr_repeat(7,1fr)_1.35fr]"
                       : "grid-cols-10",
@@ -463,7 +820,7 @@ export function Wordle() {
           </div>
 
           {error ? (
-            <p className="rounded-2xl bg-red-50 px-3 py-2 text-center text-sm font-bold text-saints-red">
+            <p className={["rounded-2xl bg-red-50 px-3 py-2 text-center font-bold text-saints-red", messageClass].join(" ")}>
               {error}
             </p>
           ) : null}
@@ -474,66 +831,90 @@ export function Wordle() {
             className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3"
             aria-label="Word definition"
           >
-            <div className="flex items-start gap-2">
-              <BookOpen
-                aria-hidden="true"
-                className="mt-0.5 h-5 w-5 shrink-0 text-saints-red"
-                strokeWidth={2.4}
-              />
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
-                    Today's word
-                  </p>
-                  {state ? (
-                    <span
-                      className={[
-                        "inline-flex items-center rounded-full px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-normal",
-                        difficultyBadgeClasses(state.game.difficulty),
-                      ].join(" ")}
-                    >
-                      Difficulty {state.game.difficulty}
-                    </span>
-                  ) : null}
-                </div>
-                <h2 className="mt-1 text-xl font-black uppercase text-slate-950">
-                  {definition?.word ?? state?.result.answer}
-                </h2>
-                {definitionLoading ? (
-                  <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-slate-500">
-                    <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
-                    Loading dictionary definition
-                  </p>
-                ) : definition?.definition ? (
-                  <>
-                    {definition.partOfSpeech ? (
-                      <p className="mt-1 text-xs font-black italic text-slate-500">
-                        {definition.partOfSpeech}
-                      </p>
-                    ) : null}
-                    <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-700">
-                      {definition.definition}
-                    </p>
-                    <a
-                      href={definition.sourceUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 inline-flex items-center gap-1 text-xs font-black text-saints-red underline-offset-2 hover:underline"
-                    >
-                      Dictionary source
-                      <ExternalLink aria-hidden="true" className="h-3 w-3" />
-                    </a>
-                  </>
-                ) : (
-                  <p className="mt-2 text-sm font-semibold text-slate-500">
-                    {definitionError || "Dictionary definition is unavailable for this word."}
-                  </p>
-                )}
-              </div>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <p className={["font-black uppercase tracking-normal text-saints-red", definitionEyebrowClass].join(" ")}>
+                Today's word
+              </p>
+              {state ? (
+                <span
+                  className={[
+                    "inline-flex items-center rounded-full px-2.5 py-1 font-black uppercase tracking-normal",
+                    definitionEyebrowClass,
+                    difficultyBadgeClasses(state.game.difficulty),
+                  ].join(" ")}
+                >
+                  Difficulty {state.game.difficulty}
+                </span>
+              ) : null}
             </div>
+            <DictionaryDefinitionCard
+              definition={definition}
+              error={definitionError}
+              loading={definitionLoading}
+              largePrint={largePrint}
+            />
           </section>
         ) : null}
       </section>
+
+      {showWinDialog ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-saints-black/75 px-4 py-6"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="wordle-win-title"
+        >
+          <section className="wordle-win-modal max-h-full w-full max-w-[390px] overflow-y-auto rounded-lg bg-white p-4 text-slate-950 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="wordle-win-badge flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-white">
+                  <Trophy aria-hidden="true" className="h-6 w-6" strokeWidth={2.5} />
+                </div>
+                <div>
+                  <p className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
+                    Correct guess
+                  </p>
+                  <h2 id="wordle-win-title" className="mt-1 text-2xl font-black leading-tight text-slate-950">
+                    Congratulations
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWinDialogDismissed(true)}
+                aria-label="Close win message"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-700 transition hover:bg-slate-200 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+              >
+                <X aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className="rounded-lg bg-emerald-50 px-3 py-2 ring-1 ring-emerald-200">
+                <p className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
+                  Score
+                </p>
+                <p className="mt-1 text-xl font-black text-emerald-900">{state?.result.score ?? 0} pts</p>
+              </div>
+              <div className="rounded-lg bg-saints-redSoft px-3 py-2 ring-1 ring-red-200">
+                <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+                  Next level
+                </p>
+                <p className="mt-1 text-xl font-black text-slate-950">{nextLevel}</p>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              <DictionaryDefinitionCard
+                definition={definition}
+                error={definitionError}
+                loading={definitionLoading}
+                largePrint={largePrint}
+              />
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

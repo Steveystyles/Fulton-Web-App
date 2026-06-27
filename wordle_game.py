@@ -10,7 +10,7 @@ USED_WORDS_FILE = WORDLE_DIR / "used_words.txt"
 WORD_LIST_FILE = WORDLE_DIR / "wordle_words.txt"
 WORDLE_RATINGS_FILE = WORDLE_DIR / "wordle_difficulty_ratings.json"
 MIN_WORDLE_DIFFICULTY = 1
-MAX_WORDLE_DIFFICULTY = 100
+MAX_WORDLE_DIFFICULTY = 20
 
 
 def load_word_list() -> list[str]:
@@ -47,14 +47,24 @@ def load_word_difficulty_ratings() -> dict[str, int]:
             f"Word difficulty ratings file is invalid JSON: {WORDLE_RATINGS_FILE}"
         ) from error
 
-    ratings = payload.get("ratings")
-    if not isinstance(ratings, dict):
+    raw_ratings = payload.get("ratings")
+    if not isinstance(raw_ratings, dict):
+        buckets = payload.get("buckets")
+        if isinstance(buckets, dict):
+            raw_ratings = {}
+            for level, words in buckets.items():
+                if not isinstance(words, list):
+                    continue
+                for word in words:
+                    raw_ratings[str(word)] = level
+
+    if not isinstance(raw_ratings, dict):
         raise RuntimeError(
-            f"Word difficulty ratings file has no ratings map: {WORDLE_RATINGS_FILE}"
+            f"Word difficulty ratings file has no ratings or buckets map: {WORDLE_RATINGS_FILE}"
         )
 
     normalized: dict[str, int] = {}
-    for raw_word, raw_rating in ratings.items():
+    for raw_word, raw_rating in raw_ratings.items():
         word = str(raw_word).strip().lower()
         try:
             rating = int(raw_rating)
