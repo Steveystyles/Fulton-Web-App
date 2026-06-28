@@ -1,16 +1,20 @@
 import {
+  ArrowRight,
+  Check,
   CalendarDays,
   CircleHelp,
   Gauge,
+  Gift,
   Hash,
   Info,
   LoaderCircle,
   Medal,
+  Star,
   TrendingUp,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Card } from "../components/Card";
 import { useAuth } from "../context/AuthContext";
@@ -35,6 +39,21 @@ function quizAccuracy(player: LeaderboardPlayer) {
   const answered = player.quizPlayed * 3;
   return answered > 0 ? `${Math.round((player.quizCorrect / answered) * 100)}%` : "0%";
 }
+
+const QUIZ_JOURNEY = [
+  { label: "Easy", value: "1 pt", ringClass: "border-emerald-200 text-emerald-500" },
+  { label: "Medium", value: "3 pts", ringClass: "border-amber-200 text-amber-500" },
+  { label: "Hard", value: "5 pts", ringClass: "border-rose-200 text-rose-500" },
+] as const;
+
+const WORDLE_JOURNEY = [
+  { value: 10, accentClass: "border-rose-200 text-rose-500", lineClass: "bg-rose-200" },
+  { value: 5, accentClass: "border-orange-200 text-orange-500", lineClass: "bg-orange-200" },
+  { value: 4, accentClass: "border-amber-200 text-amber-500", lineClass: "bg-amber-200" },
+  { value: 3, accentClass: "border-lime-200 text-lime-500", lineClass: "bg-lime-200" },
+  { value: 2, accentClass: "border-emerald-200 text-emerald-500", lineClass: "bg-emerald-200" },
+  { value: 1, accentClass: "border-teal-200 text-teal-500", lineClass: "bg-teal-200" },
+] as const;
 
 export function Leaderboard() {
   const { user } = useAuth();
@@ -480,92 +499,204 @@ function PlayerDetailDialog({
 
 function ScoreGuide() {
   return (
-    <Card className="overflow-hidden p-0">
-      <div className="flex items-center gap-2 bg-slate-950 px-4 py-3 text-white">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10 text-saints-red">
-          <Info aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-        </span>
-        <div className="min-w-0">
-          <h2 className="text-sm font-black">How scoring works</h2>
-          <p className="text-xs font-bold leading-snug text-white/60">
-            Quiz and Wordle both count.
-          </p>
-        </div>
-      </div>
-      <div className="space-y-3 p-3">
-        <ScoreRuleGroup icon={CircleHelp} title="Quiz">
-          <div className="grid grid-cols-3 gap-2">
-            <ScoreRuleCell label="Easy" value="1 pt" />
-            <ScoreRuleCell label="Medium" value="3 pts" />
-            <ScoreRuleCell label="Hard" value="5 pts" />
-          </div>
-          <div className="mt-2 rounded-lg border border-red-100 bg-saints-redSoft px-3 py-2 text-center">
-            <p className="text-[0.62rem] font-black uppercase tracking-normal text-saints-red">
-              Perfect round
+    <Card className="p-4 sm:p-5">
+      <div className="space-y-5">
+        <div className="flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-red-100 bg-red-50 text-saints-red shadow-sm">
+            <Info aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+          </span>
+          <div className="min-w-0 pt-0.5">
+            <h2 className="text-[1.05rem] font-black leading-tight text-slate-950">
+              Your scoring journey
+            </h2>
+            <p className="mt-1 text-sm font-semibold leading-snug text-slate-500">
+              See how points are earned.
             </p>
-            <p className="mt-1 text-sm font-black leading-tight text-slate-950">+3 bonus pts</p>
           </div>
-        </ScoreRuleGroup>
-        <ScoreRuleGroup icon={Hash} title="Wordle">
-          <div className="grid grid-cols-3 gap-2">
-            <ScoreRuleCell label="Guesses" value="10/5/4/3/2/1" />
-            <ScoreRuleCell label="Bonus" value={"+2 per\nlevel"} tone="red" />
-            <ScoreRuleCell label="Next level" value={"Win +1\nMiss -> 1"} />
+        </div>
+
+        <section className="space-y-3">
+          <GuideSectionTitle icon={CircleHelp} title="Quiz" />
+          <div className="grid grid-cols-[minmax(0,1fr)_0.75rem_minmax(0,1fr)_0.75rem_minmax(0,1fr)_0.9rem_5.75rem] items-start gap-y-2">
+            {QUIZ_JOURNEY.map((step, index) => (
+              <QuizJourneyStep
+                key={step.label}
+                isLast={index === QUIZ_JOURNEY.length - 1}
+                label={step.label}
+                ringClass={step.ringClass}
+                value={step.value}
+              />
+            ))}
+            <div className="flex h-12 items-center justify-center text-rose-200">
+              <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+            </div>
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-2.5 py-3 text-center shadow-sm">
+              <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-2xl bg-saints-redSoft text-saints-red">
+                <Star aria-hidden="true" className="h-5 w-5 fill-current" />
+              </span>
+              <p className="mt-2 text-[0.78rem] font-black leading-tight text-slate-950">
+                Perfect
+                <br />
+                round
+              </p>
+              <p className="mt-1 text-[0.72rem] font-black leading-tight text-saints-red">
+                +3 bonus pts
+              </p>
+            </div>
           </div>
-        </ScoreRuleGroup>
+        </section>
+
+        <div className="h-px bg-slate-200" aria-hidden="true" />
+
+        <section className="space-y-3">
+          <GuideSectionTitle icon={Hash} title="Wordle" />
+          <div className="space-y-3">
+            <p className="text-[0.76rem] font-bold leading-tight text-slate-600">
+              Guesses ladder <span className="text-slate-400">(fewer is better)</span>
+            </p>
+            <div className="flex items-center gap-0.5">
+              {WORDLE_JOURNEY.map((step, index) => (
+                <WordleJourneyStep
+                  key={step.value}
+                  accentClass={step.accentClass}
+                  isLast={index === WORDLE_JOURNEY.length - 1}
+                  lineClass={step.lineClass}
+                  value={step.value}
+                />
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <JourneyInfoCard
+                body={"+2 pts\nper level"}
+                icon={Gift}
+                iconClassName="bg-saints-redSoft text-saints-red"
+                title="Level bonus"
+              />
+              <JourneyInfoCard
+                body={"Correct answer: level up\nMissed word: return to level 1"}
+                bodyClassName="text-[0.75rem] font-semibold leading-relaxed text-slate-600"
+                icon={TrendingUp}
+                iconClassName="bg-red-50 text-saints-red"
+                title="Level progression"
+              />
+            </div>
+          </div>
+        </section>
       </div>
     </Card>
   );
 }
 
-function ScoreRuleGroup({
-  children,
+function GuideSectionTitle({
   icon: Icon,
   title,
 }: {
-  children: ReactNode;
   icon: LucideIcon;
   title: string;
 }) {
   return (
-    <section>
-      <div className="mb-2 flex items-center gap-2">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-700">
-          <Icon aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
-        </span>
-        <h3 className="text-xs font-black uppercase tracking-normal text-slate-700">{title}</h3>
-      </div>
-      {children}
-    </section>
+    <div className="flex items-center gap-2">
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-950 text-white shadow-sm">
+        <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
+      </span>
+      <h3 className="text-[1.02rem] font-black uppercase tracking-normal text-slate-950">
+        {title}
+      </h3>
+    </div>
   );
 }
 
-function ScoreRuleCell({
+function QuizJourneyStep({
+  isLast,
   label,
-  tone = "neutral",
+  ringClass,
   value,
 }: {
+  isLast: boolean;
   label: string;
-  tone?: "neutral" | "red";
+  ringClass: string;
   value: string;
 }) {
   return (
-    <div
-      className={[
-        "flex min-h-[3.75rem] flex-col justify-center rounded-lg border border-slate-200 px-1.5 py-2 text-center shadow-sm",
-        tone === "red" ? "bg-saints-redSoft" : "bg-slate-50",
-      ].join(" ")}
-    >
-      <p
+    <>
+      <div className="min-w-0 text-center">
+        <span
+          className={[
+            "mx-auto flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-sm",
+            ringClass,
+          ].join(" ")}
+        >
+          <Check aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
+        </span>
+        <p className="mt-2 text-[0.8rem] font-black leading-tight text-slate-800">{label}</p>
+        <p className="mt-1 text-[0.88rem] font-black leading-none text-slate-950">{value}</p>
+      </div>
+      {!isLast ? (
+        <div className="flex h-12 items-center justify-center text-slate-300">
+          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function WordleJourneyStep({
+  accentClass,
+  isLast,
+  lineClass,
+  value,
+}: {
+  accentClass: string;
+  isLast: boolean;
+  lineClass: string;
+  value: number;
+}) {
+  return (
+    <>
+      <div
         className={[
-          "text-[0.62rem] font-black uppercase leading-tight tracking-normal",
-          tone === "red" ? "text-saints-red" : "text-slate-500",
+          "flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-full border-2 bg-white text-center shadow-sm",
+          accentClass,
         ].join(" ")}
       >
-        {label}
-      </p>
-      <p className="mt-1 whitespace-pre-line text-[0.78rem] font-black leading-tight text-slate-950">
-        {value}
+        <span className="text-[0.95rem] font-black leading-none text-slate-950">{value}</span>
+        <span className="mt-0.5 text-[0.6rem] font-black uppercase leading-none tracking-normal text-slate-500">
+          {value === 1 ? "pt" : "pts"}
+        </span>
+      </div>
+      {!isLast ? (
+        <div className={["h-0.5 min-w-0 flex-1 rounded-full", lineClass].join(" ")} />
+      ) : null}
+    </>
+  );
+}
+
+function JourneyInfoCard({
+  body,
+  bodyClassName = "text-[0.92rem] font-black leading-snug text-slate-950",
+  icon: Icon,
+  iconClassName,
+  title,
+}: {
+  body: string;
+  bodyClassName?: string;
+  icon: LucideIcon;
+  iconClassName: string;
+  title: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-2xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
+      <span
+        className={[
+          "flex h-10 w-10 items-center justify-center rounded-2xl",
+          iconClassName,
+        ].join(" ")}
+      >
+        <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+      </span>
+      <p className="mt-2 text-[0.82rem] font-black leading-tight text-slate-800">{title}</p>
+      <p className={["mt-1 whitespace-pre-line", bodyClassName].join(" ")}>
+        {body}
       </p>
     </div>
   );
