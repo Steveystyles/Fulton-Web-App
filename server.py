@@ -262,6 +262,7 @@ CORS_ALLOWED_ORIGINS = {
     if origin.strip()
 }
 WORDLE_POINTS_BY_ATTEMPT = {1: 10, 2: 5, 3: 4, 4: 3, 5: 2, 6: 1}
+WORDLE_DIFFICULTY_BONUS_PER_LEVEL = 2
 QUIZ_POINTS_BY_DIFFICULTY = {"easy": 1, "medium": 3, "hard": 5}
 QUIZ_PERFECT_ROUND_BONUS = 3
 WORD_DEFINITION_TIMEOUT_SEC = max(
@@ -1171,8 +1172,8 @@ def initialize_database() -> None:
             ensure_column(conn, "wordle_results", "score", "INTEGER NOT NULL DEFAULT 0")
             ensure_column(conn, "daily_quiz_results", "bonus_points", "INTEGER NOT NULL DEFAULT 0")
             ensure_column(conn, "news_items", "story_key", "TEXT NOT NULL DEFAULT ''")
-            backfill_wordle_scores(conn)
             backfill_wordle_assignment_difficulties(conn)
+            backfill_wordle_scores(conn)
             daily_quiz.initialize_database(conn)
             backfill_daily_quiz_scores(conn)
             user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
@@ -1661,22 +1662,40 @@ def ensure_wordle_assignment(
     return assignment
 
 
-def wordle_score(status: str, attempts_used: int) -> int:
+def wordle_difficulty_bonus(difficulty: int) -> int:
+    try:
+        level = int(difficulty)
+    except (TypeError, ValueError):
+        level = 1
+    normalized_level = max(1, min(20, level))
+    return (normalized_level - 1) * WORDLE_DIFFICULTY_BONUS_PER_LEVEL
+
+
+def wordle_score(status: str, attempts_used: int, difficulty: int = 1) -> int:
     if status != "won":
         return 0
-    return WORDLE_POINTS_BY_ATTEMPT.get(attempts_used, 0)
+    base_score = WORDLE_POINTS_BY_ATTEMPT.get(attempts_used, 0)
+    return base_score + wordle_difficulty_bonus(difficulty) if base_score > 0 else 0
 
 
 def backfill_wordle_scores(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         """
-        SELECT id, status, attempts_used, score
+        SELECT
+            wordle_results.id,
+            wordle_results.status,
+            wordle_results.attempts_used,
+            wordle_results.score,
+            COALESCE(wordle_user_assignments.difficulty, 1) AS difficulty
         FROM wordle_results
+        LEFT JOIN wordle_user_assignments
+            ON wordle_user_assignments.user_id = wordle_results.user_id
+            AND wordle_user_assignments.game_id = wordle_results.game_id
         WHERE status != 'in_progress'
         """
     ).fetchall()
     for row in rows:
-        next_score = wordle_score(row["status"], row["attempts_used"])
+        next_score = wordle_score(row["status"], row["attempts_used"], row["difficulty"])
         if row["score"] != next_score:
             conn.execute("UPDATE wordle_results SET score = ? WHERE id = ?", (next_score, row["id"]))
 
@@ -2168,23 +2187,42 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     ).isoformat()
     rows = conn.execute(
         """
-        WITH wordle_scores AS (
+        WITH wordle_scored_results AS (
+            SELECT
+                wordle_results.user_id,
+                daily_wordle_games.game_date,
+                wordle_results.status,
+                wordle_results.score,
+                CASE
+                    WHEN wordle_results.status = 'won'
+                        AND COALESCE(wordle_user_assignments.difficulty, 1) > 1
+                    THEN (COALESCE(wordle_user_assignments.difficulty, 1) - 1) * ?
+                    ELSE 0
+                END AS difficulty_bonus
+            FROM wordle_results
+            INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+            LEFT JOIN wordle_user_assignments
+                ON wordle_user_assignments.user_id = wordle_results.user_id
+                AND wordle_user_assignments.game_id = wordle_results.game_id
+        ),
+        wordle_scores AS (
             SELECT
                 user_id,
                 SUM(score) AS points,
+                SUM(difficulty_bonus) AS difficulty_bonus,
                 SUM(CASE WHEN status IN ('won', 'lost') THEN 1 ELSE 0 END) AS played,
                 SUM(CASE WHEN status = 'won' THEN 1 ELSE 0 END) AS wins
-            FROM wordle_results
+            FROM wordle_scored_results
             GROUP BY user_id
         ),
         weekly_wordle_scores AS (
             SELECT
-                wordle_results.user_id,
-                SUM(wordle_results.score) AS points
-            FROM wordle_results
-            INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
-            WHERE daily_wordle_games.game_date >= ?
-            GROUP BY wordle_results.user_id
+                user_id,
+                SUM(score) AS points,
+                SUM(difficulty_bonus) AS difficulty_bonus
+            FROM wordle_scored_results
+            WHERE game_date >= ?
+            GROUP BY user_id
         ),
         quiz_scores AS (
             SELECT
@@ -2209,6 +2247,8 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             users.username,
             COALESCE(wordle_scores.points, 0) AS wordle_points,
             COALESCE(weekly_wordle_scores.points, 0) AS weekly_wordle_points,
+            COALESCE(wordle_scores.difficulty_bonus, 0) AS wordle_difficulty_bonus,
+            COALESCE(weekly_wordle_scores.difficulty_bonus, 0) AS weekly_wordle_difficulty_bonus,
             COALESCE(wordle_scores.played, 0) AS wordle_played,
             COALESCE(wordle_scores.wins, 0) AS wordle_wins,
             COALESCE(quiz_scores.points, 0) AS quiz_points,
@@ -2228,7 +2268,7 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             COALESCE(wordle_scores.wins, 0) DESC,
             LOWER(users.username)
         """,
-        (period_start, period_start),
+        (WORDLE_DIFFICULTY_BONUS_PER_LEVEL, period_start, period_start),
     ).fetchall()
 
     streaks = player_wordle_solve_streaks(conn)
@@ -2245,6 +2285,8 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 "weeklyQuizPoints": row["weekly_quiz_points"],
                 "totalPoints": row["wordle_points"] + row["quiz_points"],
                 "wordlePoints": row["wordle_points"],
+                "weeklyWordleDifficultyBonus": row["weekly_wordle_difficulty_bonus"],
+                "wordleDifficultyBonus": row["wordle_difficulty_bonus"],
                 "wordlePlayed": row["wordle_played"],
                 "wordleWins": row["wordle_wins"],
                 "quizPoints": row["quiz_points"],
@@ -2253,6 +2295,8 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 "quizCorrect": row["quiz_correct"],
                 "currentStreak": streak["current"],
                 "bestStreak": streak["best"],
+                "wordleLevel": difficulty_for_streak(streak["current"]),
+                "bestWordleLevel": difficulty_for_streak(streak["best"]),
             }
         )
 
@@ -7399,7 +7443,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         won = all(tile["color"] == "green" for tile in feedback)
         status = "won" if won else "lost" if attempt_number >= MAX_ATTEMPTS else "in_progress"
         completed_at = utc_now() if status != "in_progress" else None
-        score = wordle_score(status, attempt_number)
+        score = wordle_score(status, attempt_number, assignment["difficulty"])
         now = utc_now()
 
         conn.execute(

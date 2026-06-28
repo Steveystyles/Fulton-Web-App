@@ -2375,7 +2375,10 @@ class ProductionServerHardeningTests(unittest.TestCase):
         import server
 
         self.assertEqual([server.wordle_score("won", attempt) for attempt in range(1, 7)], [10, 5, 4, 3, 2, 1])
+        self.assertEqual(server.wordle_score("won", 3, difficulty=4), 10)
+        self.assertEqual(server.wordle_score("won", 1, difficulty=20), 48)
         self.assertEqual(server.wordle_score("lost", 6), 0)
+        self.assertEqual(server.wordle_score("lost", 3, difficulty=20), 0)
 
     def test_wordle_assignment_uses_streak_based_difficulty_pool(self) -> None:
         import server
@@ -2915,6 +2918,64 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_leaderboard_includes_wordle_difficulty_bonus(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-02T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-06-02', 'saint', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO wordle_user_assignments
+                            (user_id, game_id, secret_word, difficulty, created_at)
+                        VALUES (?, ?, 'saint', 4, ?)
+                        """,
+                        (user_id, game_id, now),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO wordle_results (
+                            user_id, game_id, status, attempts_used, score,
+                            completed_at, created_at, updated_at
+                        )
+                        VALUES (?, ?, 'won', 3, ?, ?, ?, ?)
+                        """,
+                        (user_id, game_id, server.wordle_score("won", 3, 4), now, now, now),
+                    )
+                with patch("server.today_game_date", return_value="2026-06-02"):
+                    payload = server.leaderboard_payload(conn)
+
+            player = payload["players"][0]
+            self.assertEqual(player["wordlePoints"], 10)
+            self.assertEqual(player["weeklyWordlePoints"], 10)
+            self.assertEqual(player["wordleDifficultyBonus"], 6)
+            self.assertEqual(player["weeklyWordleDifficultyBonus"], 6)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
     def test_leaderboard_includes_wordle_solve_streaks(self) -> None:
         import server
 
@@ -2959,6 +3020,8 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
             self.assertEqual(payload["players"][0]["currentStreak"], 2)
             self.assertEqual(payload["players"][0]["bestStreak"], 2)
+            self.assertEqual(payload["players"][0]["wordleLevel"], 3)
+            self.assertEqual(payload["players"][0]["bestWordleLevel"], 3)
             self.assertEqual(payload["summary"]["bestStreak"], 2)
         finally:
             server.DATA_DIR = original_data_dir
@@ -3019,6 +3082,8 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
             self.assertEqual(payload["players"][0]["currentStreak"], 0)
             self.assertEqual(payload["players"][0]["bestStreak"], 2)
+            self.assertEqual(payload["players"][0]["wordleLevel"], 1)
+            self.assertEqual(payload["players"][0]["bestWordleLevel"], 3)
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path

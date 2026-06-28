@@ -440,8 +440,23 @@ export function Wordle() {
       }
 
       const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
+      const row = board.querySelector<HTMLElement>("[data-wordle-row]");
+      const rowGroup = board.firstElementChild;
+      if (row === null || rowGroup === null) {
+        setRowScrollState((currentState) =>
+          currentState.canScrollDown || currentState.canScrollUp
+            ? { canScrollDown: false, canScrollUp: false }
+            : currentState,
+        );
+        return;
+      }
+
+      const rowGap = Number.parseFloat(window.getComputedStyle(rowGroup).rowGap || "0") || 0;
+      const rowStep = row.getBoundingClientRect().height + rowGap;
+      const maxAllowedScrollTop =
+        rowStep > 0 ? Math.min(maxScrollTop, visibleStartRowIndex * rowStep) : 0;
       const nextState = {
-        canScrollDown: board.scrollTop < maxScrollTop - 1,
+        canScrollDown: board.scrollTop < maxAllowedScrollTop - 1,
         canScrollUp: board.scrollTop > 1,
       };
       setRowScrollState((currentState) =>
@@ -451,7 +466,7 @@ export function Wordle() {
           : nextState,
       );
     },
-    [largePrint],
+    [largePrint, visibleStartRowIndex],
   );
 
   const scrollBoardByRow = useCallback((board: HTMLDivElement, direction: 1 | -1) => {
@@ -469,13 +484,14 @@ export function Wordle() {
 
     const currentIndex = Math.round(board.scrollTop / rowStep);
     const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
+    const maxAllowedScrollTop = Math.min(maxScrollTop, visibleStartRowIndex * rowStep);
     const nextTop = Math.min(
-      maxScrollTop,
+      maxAllowedScrollTop,
       Math.max(0, (currentIndex + direction) * rowStep),
     );
     board.scrollTo({ top: nextTop, behavior: "smooth" });
     window.setTimeout(() => updateBoardScrollControls(board), 320);
-  }, [updateBoardScrollControls]);
+  }, [updateBoardScrollControls, visibleStartRowIndex]);
 
   useEffect(() => {
     updateBoardScrollControls();
@@ -568,7 +584,7 @@ export function Wordle() {
 
   const statusTextClass = largePrint ? "text-lg" : "text-base";
   const rowControlButtonClass =
-    "inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-saints-red hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:border-slate-100 disabled:bg-slate-100 disabled:text-slate-300 disabled:shadow-none";
+    "inline-flex h-9 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-saints-red hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:border-slate-100 disabled:bg-slate-100 disabled:text-slate-300 disabled:shadow-none";
   const topControlWidthClass = largePrint ? "max-w-[23.75rem]" : "max-w-[20rem]";
   const levelBadgeClass = largePrint ? "px-3.5 py-2 text-sm shadow-sm" : "px-3 py-1.5 text-xs shadow-sm";
   const rowControlShellClass =
@@ -672,7 +688,7 @@ export function Wordle() {
                       aria-label="Show previous guess row"
                       className={rowControlButtonClass}
                     >
-                      <ChevronUp aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                      <ChevronUp aria-hidden="true" className="h-5 w-7" strokeWidth={3.2} />
                     </button>
                     <button
                       type="button"
@@ -681,7 +697,7 @@ export function Wordle() {
                       aria-label="Show next guess row"
                       className={rowControlButtonClass}
                     >
-                      <ChevronDown aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                      <ChevronDown aria-hidden="true" className="h-5 w-7" strokeWidth={3.2} />
                     </button>
                   </div>
                 </div>

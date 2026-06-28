@@ -1,4 +1,15 @@
-import { CalendarDays, CircleHelp, Flame, Hash, Info, LoaderCircle, Medal, X } from "lucide-react";
+import {
+  CalendarDays,
+  CircleHelp,
+  Gauge,
+  Hash,
+  Info,
+  LoaderCircle,
+  Medal,
+  TrendingUp,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Card } from "../components/Card";
@@ -12,8 +23,8 @@ function percent(value: number, maximum: number) {
   return `${Math.max(4, Math.round((value / maximum) * 100))}%`;
 }
 
-function streakLabel(value: number) {
-  return `${value} in a row`;
+function levelLabel(value: number) {
+  return `Level ${value}`;
 }
 
 function shortDate(value: string) {
@@ -139,7 +150,7 @@ export function Leaderboard() {
                   <tr>
                     <th className="px-3 py-2">Player</th>
                     <th className="px-2 py-2 text-right">This week</th>
-                    <th className="px-3 py-2 text-right">Solve streak</th>
+                    <th className="px-3 py-2 text-right">Wordle level</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -199,11 +210,11 @@ function CurrentPlayerCard({
           </div>
           <div className="text-right">
             <p className="inline-flex items-center gap-1 rounded-full bg-saints-red px-2.5 py-1 text-xs font-black">
-              <Flame aria-hidden="true" className="h-3.5 w-3.5" />
-              {streakLabel(player.currentStreak)}
+              <Gauge aria-hidden="true" className="h-3.5 w-3.5" />
+              {levelLabel(player.wordleLevel)}
             </p>
             <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
-              best {streakLabel(player.bestStreak)}
+              best {levelLabel(player.bestWordleLevel)}
             </p>
           </div>
         </div>
@@ -238,9 +249,14 @@ function CurrentPlayerCard({
             icon={Hash}
             label="Wordle"
             value={`${player.wordlePoints} pts`}
-            detail={`${player.wordleWins}/${player.wordlePlayed} wins`}
+            detail={`${player.wordleWins}/${player.wordlePlayed} wins, +${player.wordleDifficultyBonus} level bonus`}
           />
-          <StatFigure label="Best solve streak" value={player.bestStreak} />
+          <ScoreFigure
+            icon={Gauge}
+            label="Next Wordle level"
+            value={levelLabel(player.wordleLevel)}
+            detail={`Best earned ${levelLabel(player.bestWordleLevel)}`}
+          />
         </div>
       </div>
     </Card>
@@ -290,8 +306,8 @@ function ScoreRow({
       </td>
       <td className="px-3 py-3 text-right">
         <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-700">
-          <Flame aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-          {player.currentStreak}
+          <Gauge aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
+          {levelLabel(player.wordleLevel)}
         </span>
       </td>
     </tr>
@@ -369,7 +385,7 @@ function PlayerDetailDialog({
         <div className="mt-4 grid grid-cols-3 gap-3">
           <StatFigure label="Rank" value={`#${player.rank}`} />
           <StatFigure label="This week" value={player.weeklyPoints} />
-          <StatFigure label="Solve streak" value={player.currentStreak} />
+          <StatFigure label="Wordle level" value={player.wordleLevel} />
         </div>
 
         <div className="mt-4 space-y-3">
@@ -380,9 +396,15 @@ function PlayerDetailDialog({
           <div className="space-y-2">
             <DetailMetricRow
               icon={Hash}
-              label="Wordle points"
+              label="Wordle score"
               value={`${player.wordlePoints} pts`}
-              detail={`${player.wordleWins} wins from ${player.wordlePlayed} games`}
+              detail={`${player.wordleWins} wins from ${player.wordlePlayed} games, including +${player.wordleDifficultyBonus} level bonus`}
+            />
+            <DetailMetricRow
+              icon={Gauge}
+              label="Next Wordle level"
+              value={levelLabel(player.wordleLevel)}
+              detail={`Best level earned: ${levelLabel(player.bestWordleLevel)}`}
             />
             <DetailMetricRow
               icon={CircleHelp}
@@ -397,10 +419,10 @@ function PlayerDetailDialog({
               detail="Permanent score across all games"
             />
             <DetailMetricRow
-              icon={Flame}
-              label="Best solve streak"
-              value={streakLabel(player.bestStreak)}
-              detail="Longest run of consecutive solved Wordles"
+              icon={TrendingUp}
+              label="This week's level bonus"
+              value={`+${player.weeklyWordleDifficultyBonus} pts`}
+              detail="Included in the Wordle total above"
             />
           </div>
         </div>
@@ -418,10 +440,10 @@ function ScoreGuide() {
         <div>
           <h2 className="text-sm font-black text-slate-950">How scoring works</h2>
           <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
-            Wordle awards 10 points for a first-guess win, then 5, 4, 3, 2, or 1. Quiz questions award 1, 3, or 5 points by difficulty, plus 3 for a perfect round.
+            Wordle awards 10 points for a first-guess win, then 5, 4, 3, 2, or 1. A win also adds 2 points for each level above 1, so higher levels are worth more without overriding the guess count.
           </p>
           <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
-            Streaks count consecutive solved Wordles. The leaderboard covers the latest seven days so new players can compete.
+            Solving a Wordle earns the next level; missing one returns the next level to 1. The leaderboard covers the latest seven days so new players can compete.
           </p>
         </div>
       </div>
@@ -447,7 +469,7 @@ function ScoreFigure({
   value,
 }: {
   detail: string;
-  icon: typeof Hash | typeof CircleHelp;
+  icon: LucideIcon;
   label: string;
   value: number | string;
 }) {
@@ -474,7 +496,7 @@ function DetailMetricRow({
   value,
 }: {
   detail: string;
-  icon: typeof Hash | typeof CircleHelp | typeof Flame;
+  icon: LucideIcon;
   label: string;
   value: string;
 }) {

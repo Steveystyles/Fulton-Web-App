@@ -359,6 +359,8 @@ export type LeaderboardPlayer = {
   weeklyQuizPoints: number;
   totalPoints: number;
   wordlePoints: number;
+  weeklyWordleDifficultyBonus: number;
+  wordleDifficultyBonus: number;
   wordlePlayed: number;
   wordleWins: number;
   quizPoints: number;
@@ -367,6 +369,8 @@ export type LeaderboardPlayer = {
   quizCorrect: number;
   currentStreak: number;
   bestStreak: number;
+  wordleLevel: number;
+  bestWordleLevel: number;
 };
 
 export type LeaderboardResponse = {
