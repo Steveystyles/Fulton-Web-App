@@ -269,7 +269,7 @@ WORD_DEFINITION_TIMEOUT_SEC = max(
     1,
     int(os.environ.get("FULTONS_WORD_DEFINITION_TIMEOUT_SEC", "5")),
 )
-WORD_DEFINITION_CACHE: dict[str, dict[str, str | None]] = {}
+WORD_DEFINITION_CACHE: dict[str, dict[str, Any]] = {}
 NEWS_MIN_RECENT_SCOPED_ITEMS = 8
 NEWS_RECENT_WINDOW_HOURS = 72
 NEWS_SCOPED_QUERY_CONFIGS = (
@@ -783,6 +783,17 @@ def health_storage_payload(storage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def health_payload(storage: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ok": storage["ok"],
+        "date": today_game_date(),
+        "storage": health_storage_payload(storage),
+        "build": {
+            "version": CACHE_VERSION,
+        },
+    }
+
+
 def ops_quiz_preview(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
     status = daily_quiz.quiz_status(conn, quiz_date)
     preview = {
@@ -852,11 +863,7 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         tomorrow_quiz = ops_quiz_preview(conn, tomorrow_date)
         user_count = db_user_count(conn)
 
-    health_payload = {
-        "ok": storage["ok"],
-        "date": today_game_date(),
-        "storage": health_storage_payload(storage),
-    }
+    application_health = health_payload(storage)
     tests.append(
         {
             "id": "sqlite_quick_check",
@@ -921,7 +928,7 @@ def internal_ops_summary_payload() -> dict[str, Any]:
                 "url": "internal://api/health",
                 "status": 200,
                 "responseTimeMs": 0,
-                "payload": health_payload,
+                "payload": application_health,
                 "ok": bool(storage["ok"]),
                 "probeSource": "in-process",
             },
@@ -1784,7 +1791,24 @@ def serialize_wordle_state(
     }
 
 
-def word_definition_from_dictionary_api(normalized_word: str) -> dict[str, str | None] | None:
+def word_definition_payload(
+    normalized_word: str,
+    definitions: list[dict[str, str | None]],
+    source_url: str,
+) -> dict[str, Any] | None:
+    if not definitions:
+        return None
+    first_definition = definitions[0]
+    return {
+        "word": normalized_word,
+        "definition": first_definition["definition"],
+        "partOfSpeech": first_definition.get("partOfSpeech"),
+        "definitions": definitions,
+        "sourceUrl": source_url,
+    }
+
+
+def word_definition_from_dictionary_api(normalized_word: str) -> dict[str, Any] | None:
     request = Request(
         f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(normalized_word, safe='')}",
         headers={
@@ -1801,6 +1825,8 @@ def word_definition_from_dictionary_api(normalized_word: str) -> dict[str, str |
     if not isinstance(payload, list):
         return None
 
+    collected_definitions: list[dict[str, str | None]] = []
+    seen_definitions: set[str] = set()
     for entry in payload:
         if not isinstance(entry, dict):
             continue
@@ -1820,13 +1846,27 @@ def word_definition_from_dictionary_api(normalized_word: str) -> dict[str, str |
                 definition = str(definition_entry.get("definition") or "").strip()
                 if not definition:
                     continue
-                return {
-                    "word": normalized_word,
-                    "definition": definition,
-                    "partOfSpeech": part_of_speech,
-                    "sourceUrl": "https://dictionaryapi.dev/",
-                }
-    return None
+                definition_key = definition.casefold()
+                if definition_key in seen_definitions:
+                    continue
+                seen_definitions.add(definition_key)
+                collected_definitions.append(
+                    {
+                        "definition": definition,
+                        "partOfSpeech": part_of_speech,
+                    }
+                )
+                if len(collected_definitions) >= 3:
+                    return word_definition_payload(
+                        normalized_word,
+                        collected_definitions,
+                        "https://dictionaryapi.dev/",
+                    )
+    return word_definition_payload(
+        normalized_word,
+        collected_definitions,
+        "https://dictionaryapi.dev/",
+    )
 
 
 def strip_wiktionary_markup(value: str) -> str:
@@ -1867,7 +1907,7 @@ def extract_wiktionary_section(
     return None, None
 
 
-def word_definition_from_wiktionary(normalized_word: str) -> dict[str, str | None] | None:
+def word_definition_from_wiktionary(normalized_word: str) -> dict[str, Any] | None:
     try:
         payload = fetch_json_url(
             "https://en.wiktionary.org/w/api.php"
@@ -1907,6 +1947,8 @@ def word_definition_from_wiktionary(normalized_word: str) -> dict[str, str | Non
         "suffix",
         "prefix",
     }
+    collected_definitions: list[dict[str, str | None]] = []
+    seen_definitions: set[str] = set()
     part_of_speech: str | None = None
     for raw_line in definition_section.splitlines():
         line = raw_line.strip()
@@ -1922,16 +1964,26 @@ def word_definition_from_wiktionary(normalized_word: str) -> dict[str, str | Non
         definition = strip_wiktionary_markup(line)
         if not definition:
             continue
-        return {
-            "word": normalized_word,
-            "definition": definition,
-            "partOfSpeech": part_of_speech,
-            "sourceUrl": f"https://en.wiktionary.org/wiki/{quote(normalized_word, safe='')}",
-        }
-    return None
+        definition_key = definition.casefold()
+        if definition_key in seen_definitions:
+            continue
+        seen_definitions.add(definition_key)
+        collected_definitions.append(
+            {
+                "definition": definition,
+                "partOfSpeech": part_of_speech,
+            }
+        )
+        if len(collected_definitions) >= 3:
+            break
+    return word_definition_payload(
+        normalized_word,
+        collected_definitions,
+        f"https://en.wiktionary.org/wiki/{quote(normalized_word, safe='')}",
+    )
 
 
-def word_definition(word: str) -> dict[str, str | None]:
+def word_definition(word: str) -> dict[str, Any]:
     normalized_word = re.sub(r"[^a-z]", "", word.casefold())
     cached = WORD_DEFINITION_CACHE.get(normalized_word)
     if cached is not None:
@@ -1941,6 +1993,7 @@ def word_definition(word: str) -> dict[str, str | None]:
         "word": normalized_word,
         "definition": None,
         "partOfSpeech": None,
+        "definitions": [],
         "sourceUrl": "https://dictionaryapi.dev/",
     }
     if not normalized_word:
@@ -6885,14 +6938,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         if path == "/api/health" and method == "GET":
             storage = runtime_storage_health()
             status = HTTPStatus.OK if storage["ok"] else HTTPStatus.SERVICE_UNAVAILABLE
-            self.send_json(
-                status,
-                {
-                    "ok": storage["ok"],
-                    "date": today_game_date(),
-                    "storage": health_storage_payload(storage),
-                },
-            )
+            self.send_json(status, health_payload(storage))
             return
 
         if path == "/api/local/ops-monitor" and method == "GET":

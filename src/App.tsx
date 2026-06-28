@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { AppUpdateReloader } from "./components/AppUpdateReloader";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { AppRouter } from "./routes/AppRouter";
 import { api } from "./lib/api";
@@ -24,9 +25,12 @@ function CoreDataWarmup() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <CoreDataWarmup />
-      <AppRouter />
-    </AuthProvider>
+    <>
+      <AppUpdateReloader />
+      <AuthProvider>
+        <CoreDataWarmup />
+        <AppRouter />
+      </AuthProvider>
+    </>
   );
 }

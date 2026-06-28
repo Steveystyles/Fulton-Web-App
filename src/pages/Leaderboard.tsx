@@ -10,7 +10,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Card } from "../components/Card";
 import { useAuth } from "../context/AuthContext";
@@ -21,10 +21,6 @@ function percent(value: number, maximum: number) {
     return "0%";
   }
   return `${Math.max(4, Math.round((value / maximum) * 100))}%`;
-}
-
-function levelLabel(value: number) {
-  return `Level ${value}`;
 }
 
 function shortDate(value: string) {
@@ -100,7 +96,7 @@ export function Leaderboard() {
   );
 
   return (
-    <section className="page-fade space-y-3" aria-label="Scores">
+    <section className="page-fade space-y-3 pb-2" aria-label="Scores">
       {loading ? (
         <Card>
           <div className="flex min-h-28 items-center justify-center gap-2 text-sm font-black text-slate-500">
@@ -150,7 +146,7 @@ export function Leaderboard() {
                   <tr>
                     <th className="px-3 py-2">Player</th>
                     <th className="px-2 py-2 text-right">This week</th>
-                    <th className="px-3 py-2 text-right">Wordle level</th>
+                    <th className="px-3 py-2 text-right">Level</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -184,78 +180,82 @@ function CurrentPlayerCard({
 }) {
   return (
     <Card className="overflow-hidden p-0">
-      <div className="bg-saints-black px-4 py-4 text-white">
+      <div className="relative bg-saints-black px-4 py-3 text-white">
+        <div className="absolute inset-y-0 left-0 w-1 bg-saints-red" aria-hidden="true" />
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="flex items-center gap-2 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
+            <p className="flex items-center gap-1.5 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
               <Medal aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-              Your 7-day score
+              7-day score
             </p>
-            <h1 className="mt-1 break-words text-2xl font-black leading-tight">{player.username}</h1>
+            <h1 className="mt-1 truncate text-xl font-black leading-tight">{player.username}</h1>
           </div>
-          <div className="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-right">
-            <p className="text-[0.68rem] font-black uppercase tracking-normal text-white/60">
+          <div className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-right">
+            <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
               Rank
             </p>
-            <p className="text-2xl font-black leading-none">#{player.rank}</p>
+            <p className="text-xl font-black leading-none">#{player.rank}</p>
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
-          <div>
-            <p className="text-5xl font-black leading-none">{player.weeklyPoints}</p>
-            <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
+        <div className="mt-3 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+          <div className="min-w-0">
+            <p className="text-4xl font-black leading-none">{player.weeklyPoints}</p>
+            <p className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-white/60">
               points this week
             </p>
           </div>
-          <div className="text-right">
-            <p className="inline-flex items-center gap-1 rounded-full bg-saints-red px-2.5 py-1 text-xs font-black">
-              <Gauge aria-hidden="true" className="h-3.5 w-3.5" />
-              {levelLabel(player.wordleLevel)}
-            </p>
-            <p className="mt-1 text-xs font-black uppercase tracking-normal text-white/60">
-              best {levelLabel(player.bestWordleLevel)}
-            </p>
+          <div className="grid shrink-0 grid-cols-2 gap-1.5 text-center">
+            <div className="min-w-[3.6rem] rounded-lg bg-saints-red px-2 py-1.5">
+              <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/70">
+                Level
+              </p>
+              <p className="mt-0.5 text-2xl font-black leading-none">{player.wordleLevel}</p>
+            </div>
+            <div className="min-w-[3.6rem] rounded-lg bg-white/10 px-2 py-1.5">
+              <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
+                Best
+              </p>
+              <p className="mt-0.5 text-2xl font-black leading-none">{player.bestWordleLevel}</p>
+            </div>
           </div>
-        </div>
-
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15">
-          <div
-            className="h-full rounded-full bg-saints-red"
-            style={{ width: percent(player.weeklyPoints, highestWeeklyScore) }}
-          />
         </div>
       </div>
 
       <div className="space-y-3 p-3">
+        <div>
+          <div className="h-2 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
+            <div
+              className="h-full rounded-full bg-saints-red"
+              style={{ width: percent(player.weeklyPoints, highestWeeklyScore) }}
+            />
+          </div>
+          <div className="mt-1 flex items-center justify-between gap-2 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+            <span>Weekly pace</span>
+            <span className="whitespace-nowrap">{player.totalPoints} all-time pts</span>
+          </div>
+        </div>
         <ContributionBar
           quizPoints={player.weeklyQuizPoints}
           wordlePoints={player.weeklyWordlePoints}
         />
-        <div className="grid grid-cols-2 gap-2">
-          <ScoreFigure
-            icon={Hash}
-            label="All-time"
-            value={`${player.totalPoints} pts`}
-            detail="Your permanent total"
-          />
-          <ScoreFigure
-            icon={CircleHelp}
-            label="Quiz accuracy"
-            value={quizAccuracy(player)}
-            detail={`${player.quizCorrect} correct answers`}
-          />
-          <ScoreFigure
+        <div className="grid grid-cols-3 gap-2">
+          <CompactScoreMetric
             icon={Hash}
             label="Wordle"
-            value={`${player.wordlePoints} pts`}
-            detail={`${player.wordleWins}/${player.wordlePlayed} wins, +${player.wordleDifficultyBonus} level bonus`}
+            value={player.weeklyWordlePoints}
+            tone="dark"
           />
-          <ScoreFigure
-            icon={Gauge}
-            label="Next Wordle level"
-            value={levelLabel(player.wordleLevel)}
-            detail={`Best earned ${levelLabel(player.bestWordleLevel)}`}
+          <CompactScoreMetric
+            icon={CircleHelp}
+            label="Quiz"
+            value={player.weeklyQuizPoints}
+            tone="red"
+          />
+          <CompactScoreMetric
+            icon={TrendingUp}
+            label="Total"
+            value={player.totalPoints}
           />
         </div>
       </div>
@@ -305,9 +305,8 @@ function ScoreRow({
         {player.weeklyPoints}
       </td>
       <td className="px-3 py-3 text-right">
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-700">
-          <Gauge aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-          {levelLabel(player.wordleLevel)}
+        <span className="inline-flex min-w-9 items-center justify-center rounded-full bg-slate-100 px-2.5 py-1 text-sm font-black leading-none text-slate-950">
+          {player.wordleLevel}
         </span>
       </td>
     </tr>
@@ -332,6 +331,53 @@ function ContributionBar({ quizPoints, wordlePoints }: { quizPoints: number; wor
         <span>Wordle {wordlePoints}</span>
         <span>Quiz {quizPoints}</span>
       </div>
+    </div>
+  );
+}
+
+function CompactScoreMetric({
+  icon: Icon,
+  label,
+  tone = "neutral",
+  value,
+}: {
+  icon: LucideIcon;
+  label: string;
+  tone?: "dark" | "neutral" | "red";
+  value: number | string;
+}) {
+  const toneClasses = {
+    dark: "bg-saints-black text-white",
+    neutral: "bg-slate-50 text-slate-950",
+    red: "bg-saints-redSoft text-slate-950",
+  };
+  const iconClasses = {
+    dark: "text-saints-red",
+    neutral: "text-slate-500",
+    red: "text-saints-red",
+  };
+
+  return (
+    <div
+      className={[
+        "flex min-h-[4.15rem] flex-col justify-center rounded-lg border border-slate-200 px-2 py-2 text-center shadow-sm",
+        toneClasses[tone],
+      ].join(" ")}
+    >
+      <Icon
+        aria-hidden="true"
+        className={["mx-auto h-4 w-4", iconClasses[tone]].join(" ")}
+        strokeWidth={2.6}
+      />
+      <p className="mt-1 text-xl font-black leading-none">{value}</p>
+      <p
+        className={[
+          "mt-1 text-[0.62rem] font-black uppercase leading-tight tracking-normal",
+          tone === "dark" ? "text-white/70" : "text-slate-500",
+        ].join(" ")}
+      >
+        {label}
+      </p>
     </div>
   );
 }
@@ -385,7 +431,7 @@ function PlayerDetailDialog({
         <div className="mt-4 grid grid-cols-3 gap-3">
           <StatFigure label="Rank" value={`#${player.rank}`} />
           <StatFigure label="This week" value={player.weeklyPoints} />
-          <StatFigure label="Wordle level" value={player.wordleLevel} />
+          <StatFigure label="Level" value={player.wordleLevel} />
         </div>
 
         <div className="mt-4 space-y-3">
@@ -402,9 +448,9 @@ function PlayerDetailDialog({
             />
             <DetailMetricRow
               icon={Gauge}
-              label="Next Wordle level"
-              value={levelLabel(player.wordleLevel)}
-              detail={`Best level earned: ${levelLabel(player.bestWordleLevel)}`}
+              label="Wordle level"
+              value={`${player.wordleLevel}`}
+              detail={`Best level earned: ${player.bestWordleLevel}`}
             />
             <DetailMetricRow
               icon={CircleHelp}
@@ -434,20 +480,94 @@ function PlayerDetailDialog({
 
 function ScoreGuide() {
   return (
-    <Card className="p-3">
-      <div className="flex items-start gap-2">
-        <Info aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-saints-red" strokeWidth={2.4} />
-        <div>
-          <h2 className="text-sm font-black text-slate-950">How scoring works</h2>
-          <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
-            Wordle awards 10 points for a first-guess win, then 5, 4, 3, 2, or 1. A win also adds 2 points for each level above 1, so higher levels are worth more without overriding the guess count.
-          </p>
-          <p className="mt-1 text-xs font-semibold leading-relaxed text-slate-600">
-            Solving a Wordle earns the next level; missing one returns the next level to 1. The leaderboard covers the latest seven days so new players can compete.
+    <Card className="overflow-hidden p-0">
+      <div className="flex items-center gap-2 bg-slate-950 px-4 py-3 text-white">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10 text-saints-red">
+          <Info aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+        </span>
+        <div className="min-w-0">
+          <h2 className="text-sm font-black">How scoring works</h2>
+          <p className="text-xs font-bold leading-snug text-white/60">
+            Quiz and Wordle both count.
           </p>
         </div>
       </div>
+      <div className="space-y-3 p-3">
+        <ScoreRuleGroup icon={CircleHelp} title="Quiz">
+          <div className="grid grid-cols-3 gap-2">
+            <ScoreRuleCell label="Easy" value="1 pt" />
+            <ScoreRuleCell label="Medium" value="3 pts" />
+            <ScoreRuleCell label="Hard" value="5 pts" />
+          </div>
+          <div className="mt-2 rounded-lg border border-red-100 bg-saints-redSoft px-3 py-2 text-center">
+            <p className="text-[0.62rem] font-black uppercase tracking-normal text-saints-red">
+              Perfect round
+            </p>
+            <p className="mt-1 text-sm font-black leading-tight text-slate-950">+3 bonus pts</p>
+          </div>
+        </ScoreRuleGroup>
+        <ScoreRuleGroup icon={Hash} title="Wordle">
+          <div className="grid grid-cols-3 gap-2">
+            <ScoreRuleCell label="Guesses" value="10/5/4/3/2/1" />
+            <ScoreRuleCell label="Bonus" value={"+2 per\nlevel"} tone="red" />
+            <ScoreRuleCell label="Next level" value={"Win +1\nMiss -> 1"} />
+          </div>
+        </ScoreRuleGroup>
+      </div>
     </Card>
+  );
+}
+
+function ScoreRuleGroup({
+  children,
+  icon: Icon,
+  title,
+}: {
+  children: ReactNode;
+  icon: LucideIcon;
+  title: string;
+}) {
+  return (
+    <section>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-700">
+          <Icon aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+        </span>
+        <h3 className="text-xs font-black uppercase tracking-normal text-slate-700">{title}</h3>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function ScoreRuleCell({
+  label,
+  tone = "neutral",
+  value,
+}: {
+  label: string;
+  tone?: "neutral" | "red";
+  value: string;
+}) {
+  return (
+    <div
+      className={[
+        "flex min-h-[3.75rem] flex-col justify-center rounded-lg border border-slate-200 px-1.5 py-2 text-center shadow-sm",
+        tone === "red" ? "bg-saints-redSoft" : "bg-slate-50",
+      ].join(" ")}
+    >
+      <p
+        className={[
+          "text-[0.62rem] font-black uppercase leading-tight tracking-normal",
+          tone === "red" ? "text-saints-red" : "text-slate-500",
+        ].join(" ")}
+      >
+        {label}
+      </p>
+      <p className="mt-1 whitespace-pre-line text-[0.78rem] font-black leading-tight text-slate-950">
+        {value}
+      </p>
+    </div>
   );
 }
 
@@ -458,33 +578,6 @@ function StatFigure({ label, value }: { label: string; value: number | string })
       <p className="mt-1 text-[0.72rem] font-black uppercase tracking-normal text-slate-600">
         {label}
       </p>
-    </div>
-  );
-}
-
-function ScoreFigure({
-  detail,
-  icon: Icon,
-  label,
-  value,
-}: {
-  detail: string;
-  icon: LucideIcon;
-  label: string;
-  value: number | string;
-}) {
-  return (
-    <div className="flex min-w-0 items-start gap-2 rounded-2xl bg-slate-50 p-2.5">
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white text-saints-red">
-        <Icon aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
-      </span>
-      <div className="min-w-0">
-        <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
-          {label}
-        </p>
-        <p className="break-words text-base font-black leading-tight text-slate-950">{value}</p>
-        <p className="mt-1 break-words text-sm font-semibold leading-snug text-slate-600">{detail}</p>
-      </div>
     </div>
   );
 }

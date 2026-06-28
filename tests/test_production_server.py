@@ -2622,7 +2622,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
-    def test_word_definition_uses_dictionary_api_first_definition(self) -> None:
+    def test_word_definition_uses_dictionary_api_definitions(self) -> None:
         import server
 
         class DictionaryResponse:
@@ -2639,7 +2639,10 @@ class ProductionServerHardeningTests(unittest.TestCase):
                             "meanings": [
                                 {
                                     "partOfSpeech": "noun",
-                                    "definitions": [{"definition": "A person acknowledged as holy."}],
+                                    "definitions": [
+                                        {"definition": "A person acknowledged as holy."},
+                                        {"definition": "A very good or patient person."},
+                                    ],
                                 }
                             ]
                         }
@@ -2654,6 +2657,13 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(result["word"], "saint")
         self.assertEqual(result["partOfSpeech"], "noun")
         self.assertEqual(result["definition"], "A person acknowledged as holy.")
+        self.assertEqual(
+            result["definitions"],
+            [
+                {"definition": "A person acknowledged as holy.", "partOfSpeech": "noun"},
+                {"definition": "A very good or patient person.", "partOfSpeech": "noun"},
+            ],
+        )
         urlopen.assert_called_once()
 
     def test_word_definition_uses_wiktionary_when_dictionary_api_misses(self) -> None:
@@ -2683,6 +2693,15 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(result["word"], "saint")
         self.assertEqual(result["partOfSpeech"], "noun")
         self.assertEqual(result["definition"], "A person officially recognised as holy.")
+        self.assertEqual(
+            result["definitions"],
+            [
+                {
+                    "definition": "A person officially recognised as holy.",
+                    "partOfSpeech": "noun",
+                }
+            ],
+        )
         self.assertEqual(result["sourceUrl"], "https://en.wiktionary.org/wiki/saint")
 
     def test_word_definition_uses_scots_wiktionary_section(self) -> None:

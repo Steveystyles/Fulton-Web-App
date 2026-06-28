@@ -14,6 +14,7 @@ import {
   ChevronUp,
   Delete,
   ExternalLink,
+  Hash,
   LoaderCircle,
   Trophy,
   Type,
@@ -84,25 +85,46 @@ function writeLargePrintPreference(enabled: boolean) {
 }
 
 function DictionaryDefinitionCard({
+  compact = false,
   definition,
   error,
   loading,
   largePrint,
 }: {
+  compact?: boolean;
   definition: WordleDefinition | null;
   error: string;
   loading: boolean;
   largePrint: boolean;
 }) {
   const word = definition?.word ?? "";
-  const termClass = largePrint ? "text-3xl" : "text-2xl";
-  const bodyClass = largePrint ? "text-base leading-7" : "text-sm leading-relaxed";
+  const definitionItems =
+    definition?.definitions?.filter((item) => item.definition.trim().length > 0) ??
+    (definition?.definition
+      ? [{ definition: definition.definition, partOfSpeech: definition.partOfSpeech }]
+      : []);
+  const visibleDefinitions = definitionItems.slice(0, compact ? 2 : 3);
+  const sourceUrl = definition?.sourceUrl ?? "https://dictionaryapi.dev/";
+  const termClass = compact ? (largePrint ? "text-2xl" : "text-xl") : largePrint ? "text-3xl" : "text-2xl";
+  const bodyClass = compact
+    ? largePrint
+      ? "text-[0.95rem] leading-6"
+      : "text-sm leading-relaxed"
+    : largePrint
+      ? "text-base leading-7"
+      : "text-sm leading-relaxed";
   const metaClass = largePrint ? "text-sm" : "text-xs";
+  const articleClass = compact
+    ? "text-left"
+    : "rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm";
+  const iconClass = compact
+    ? "flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-white text-saints-red ring-1 ring-red-100"
+    : "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-saints-redSoft text-saints-red";
 
   return (
-    <article className="rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm">
-      <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-saints-redSoft text-saints-red">
+    <article className={articleClass}>
+      <div className={["flex items-start", compact ? "gap-2.5" : "gap-3"].join(" ")}>
+        <div className={iconClass}>
           <BookOpen aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
         </div>
         <div className="min-w-0">
@@ -125,13 +147,22 @@ function DictionaryDefinitionCard({
           <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
           Loading dictionary definition
         </p>
-      ) : definition?.definition ? (
+      ) : visibleDefinitions.length > 0 ? (
         <>
-          <p className={["mt-4 border-l-4 border-saints-red/70 pl-3 font-serif text-slate-800", bodyClass].join(" ")}>
-            {definition.definition}
-          </p>
+          <ol className={["mt-4 space-y-3 border-l-4 border-saints-red/70 pl-3 font-serif text-slate-800", bodyClass].join(" ")}>
+            {visibleDefinitions.map((item, index) => (
+              <li key={`${item.definition}-${index}`} className="min-w-0">
+                <p>{item.definition}</p>
+                {item.partOfSpeech && item.partOfSpeech !== definition?.partOfSpeech ? (
+                  <p className={["mt-1 font-sans font-black italic text-saints-red", metaClass].join(" ")}>
+                    {item.partOfSpeech}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ol>
           <a
-            href={definition.sourceUrl}
+            href={sourceUrl}
             target="_blank"
             rel="noreferrer"
             className={["mt-3 inline-flex items-center gap-1 font-black text-saints-red underline-offset-2 hover:underline", metaClass].join(" ")}
@@ -440,23 +471,8 @@ export function Wordle() {
       }
 
       const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
-      const row = board.querySelector<HTMLElement>("[data-wordle-row]");
-      const rowGroup = board.firstElementChild;
-      if (row === null || rowGroup === null) {
-        setRowScrollState((currentState) =>
-          currentState.canScrollDown || currentState.canScrollUp
-            ? { canScrollDown: false, canScrollUp: false }
-            : currentState,
-        );
-        return;
-      }
-
-      const rowGap = Number.parseFloat(window.getComputedStyle(rowGroup).rowGap || "0") || 0;
-      const rowStep = row.getBoundingClientRect().height + rowGap;
-      const maxAllowedScrollTop =
-        rowStep > 0 ? Math.min(maxScrollTop, visibleStartRowIndex * rowStep) : 0;
       const nextState = {
-        canScrollDown: board.scrollTop < maxAllowedScrollTop - 1,
+        canScrollDown: board.scrollTop < maxScrollTop - 1,
         canScrollUp: board.scrollTop > 1,
       };
       setRowScrollState((currentState) =>
@@ -466,7 +482,7 @@ export function Wordle() {
           : nextState,
       );
     },
-    [largePrint, visibleStartRowIndex],
+    [largePrint],
   );
 
   const scrollBoardByRow = useCallback((board: HTMLDivElement, direction: 1 | -1) => {
@@ -484,14 +500,13 @@ export function Wordle() {
 
     const currentIndex = Math.round(board.scrollTop / rowStep);
     const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
-    const maxAllowedScrollTop = Math.min(maxScrollTop, visibleStartRowIndex * rowStep);
     const nextTop = Math.min(
-      maxAllowedScrollTop,
+      maxScrollTop,
       Math.max(0, (currentIndex + direction) * rowStep),
     );
     board.scrollTo({ top: nextTop, behavior: "smooth" });
     window.setTimeout(() => updateBoardScrollControls(board), 320);
-  }, [updateBoardScrollControls, visibleStartRowIndex]);
+  }, [updateBoardScrollControls]);
 
   useEffect(() => {
     updateBoardScrollControls();
@@ -584,16 +599,13 @@ export function Wordle() {
 
   const statusTextClass = largePrint ? "text-lg" : "text-base";
   const rowControlButtonClass =
-    "inline-flex h-9 w-12 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-saints-red hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:border-slate-100 disabled:bg-slate-100 disabled:text-slate-300 disabled:shadow-none";
-  const topControlWidthClass = largePrint ? "max-w-[23.75rem]" : "max-w-[20rem]";
-  const levelBadgeClass = largePrint ? "px-3.5 py-2 text-sm shadow-sm" : "px-3 py-1.5 text-xs shadow-sm";
+    "flex h-10 w-full items-center justify-center text-slate-700 transition hover:bg-white hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:text-slate-300";
+  const controlBarClass =
+    "mx-auto w-full max-w-[22rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm";
   const rowControlShellClass =
-    "flex min-h-10 items-center justify-between rounded-full bg-slate-50 px-1.5 py-1 ring-1 ring-slate-200";
-  const toggleButtonClass = largePrint
-    ? "border-saints-red/25 bg-white text-saints-red shadow-sm"
-    : "border-slate-200 bg-white text-slate-700 shadow-sm hover:border-saints-red/30 hover:text-saints-red";
-  const toggleTrackClass = largePrint ? "bg-saints-red" : "bg-slate-300";
-  const toggleThumbClass = largePrint ? "translate-x-5" : "translate-x-0";
+    "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
+  const switchTrackClass = largePrint ? "bg-saints-red" : "bg-slate-300";
+  const switchThumbClass = largePrint ? "translate-x-4" : "translate-x-0";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
   const formSpacingClass = largePrint ? "space-y-2.5" : "space-y-3";
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[17.5rem]";
@@ -620,6 +632,11 @@ export function Wordle() {
   const definitionEyebrowClass = largePrint ? "text-xs" : "text-[0.68rem]";
   const nextLevel = Math.min(maxWordleLevel, (state?.game.difficulty ?? 1) + 1);
   const showWinDialog = gameStatus === "won" && !winDialogDismissed;
+  const winGuessLabel = state?.result.attemptsUsed === 1 ? "guess" : "guesses";
+  const winSummaryText =
+    state?.result.status === "won"
+      ? `Solved in ${state.result.attemptsUsed} ${winGuessLabel}`
+      : "";
 
   return (
     <section className="page-fade" aria-label="Wordle game" data-large-print={largePrint}>
@@ -632,77 +649,91 @@ export function Wordle() {
               </p>
             ) : null}
 
-            <div className={["mx-auto flex w-full items-center justify-between gap-2", topControlWidthClass].join(" ")}>
-              <div aria-label="Wordle level">
+            <div className={controlBarClass} aria-label="Wordle settings">
+              <div className="grid grid-cols-2 divide-x divide-slate-200">
                 {state ? (
-                  <span
+                  <div
                     className={[
-                      "inline-flex min-h-9 items-center rounded-full font-black uppercase tracking-normal",
-                      levelBadgeClass,
-                      difficultyBadgeClasses(state.game.difficulty),
+                      "flex min-h-[3.3rem] min-w-0 items-center gap-2 bg-white px-3 py-2",
+                      state.game.difficulty <= 5 ? "text-emerald-800" : "",
+                      state.game.difficulty > 5 && state.game.difficulty <= 10 ? "text-sky-800" : "",
+                      state.game.difficulty > 10 && state.game.difficulty <= 15 ? "text-amber-800" : "",
+                      state.game.difficulty > 15 ? "text-rose-800" : "",
                     ].join(" ")}
                   >
-                    Level {state.game.difficulty}
-                  </span>
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                      <Hash aria-hidden="true" className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-[0.62rem] font-black uppercase leading-none tracking-normal text-slate-500">
+                        Difficulty
+                      </span>
+                      <span className="mt-1 block text-2xl font-black leading-none">
+                        {state.game.difficulty}
+                      </span>
+                    </span>
+                  </div>
                 ) : null}
-              </div>
 
-              <button
-                type="button"
-                onClick={() => setLargePrint((current) => !current)}
-                aria-pressed={largePrint}
-                aria-label={largePrint ? "Use standard text size" : "Use large text size"}
-                data-testid="wordle-text-size-toggle"
-                className={[
-                  "inline-flex min-h-10 items-center gap-2 rounded-full border py-1.5 pl-3 pr-1.5 text-xs font-black uppercase tracking-normal transition focus:outline-none focus:ring-4 focus:ring-saints-red/15",
-                  toggleButtonClass,
-                ].join(" ")}
-              >
-                <Type aria-hidden="true" className="h-3.5 w-3.5" />
-                Large text
-                <span
-                  aria-hidden="true"
-                  className={["relative inline-flex h-6 w-11 shrink-0 rounded-full p-0.5 transition", toggleTrackClass].join(" ")}
+                <button
+                  type="button"
+                  onClick={() => setLargePrint((current) => !current)}
+                  aria-pressed={largePrint}
+                  aria-label={largePrint ? "Use standard text size" : "Use large text size"}
+                  data-testid="wordle-text-size-toggle"
+                  className="flex min-h-[3.3rem] min-w-0 items-center justify-between gap-2 bg-white px-3 py-2 text-left text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
                 >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-saints-redSoft text-saints-red ring-1 ring-red-100">
+                      <Type aria-hidden="true" className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 whitespace-nowrap text-xs font-black uppercase leading-tight tracking-normal text-slate-700">
+                      Large text
+                    </span>
+                  </span>
                   <span
                     className={[
-                      "h-5 w-5 rounded-full bg-white shadow-sm transition-transform",
-                      toggleThumbClass,
+                      "relative h-5 w-9 shrink-0 rounded-full p-0.5 transition",
+                      switchTrackClass,
                     ].join(" ")}
-                  />
-                </span>
-              </button>
-            </div>
+                    aria-hidden="true"
+                  >
+                    <span
+                      className={[
+                        "block h-4 w-4 rounded-full bg-white shadow-sm transition",
+                        switchThumbClass,
+                      ].join(" ")}
+                    />
+                  </span>
+                </button>
+              </div>
 
-            {largePrint ? (
-              <div className={["mx-auto w-full", topControlWidthClass].join(" ")}>
+              {largePrint ? (
                 <div className={rowControlShellClass} aria-label="Guess row controls">
-                  <span className="px-2 text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
+                  <button
+                    type="button"
+                    onClick={() => handleRowControlClick(-1)}
+                    disabled={!rowScrollState.canScrollUp}
+                    aria-label="Show previous guess row"
+                    className={rowControlButtonClass}
+                  >
+                    <ChevronUp aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                  </button>
+                  <span className="text-center text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
                     Board rows
                   </span>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleRowControlClick(-1)}
-                      disabled={!rowScrollState.canScrollUp}
-                      aria-label="Show previous guess row"
-                      className={rowControlButtonClass}
-                    >
-                      <ChevronUp aria-hidden="true" className="h-5 w-7" strokeWidth={3.2} />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRowControlClick(1)}
-                      disabled={!rowScrollState.canScrollDown}
-                      aria-label="Show next guess row"
-                      className={rowControlButtonClass}
-                    >
-                      <ChevronDown aria-hidden="true" className="h-5 w-7" strokeWidth={3.2} />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRowControlClick(1)}
+                    disabled={!rowScrollState.canScrollDown}
+                    aria-label="Show next guess row"
+                    className={rowControlButtonClass}
+                  >
+                    <ChevronDown aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                  </button>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
           </div>
 
           <div
@@ -880,58 +911,79 @@ export function Wordle() {
 
       {showWinDialog ? (
         <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-saints-black/75 px-4 py-6"
+          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))] pt-20 min-[540px]:items-center min-[540px]:pt-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="wordle-win-title"
+          aria-describedby="wordle-win-description"
         >
-          <section className="wordle-win-modal max-h-full w-full max-w-[390px] overflow-y-auto rounded-lg bg-white p-4 text-slate-950 shadow-2xl">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <div className="wordle-win-badge flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-white">
-                  <Trophy aria-hidden="true" className="h-6 w-6" strokeWidth={2.5} />
-                </div>
-                <div>
-                  <p className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
-                    Correct guess
-                  </p>
-                  <h2 id="wordle-win-title" className="mt-1 text-2xl font-black leading-tight text-slate-950">
-                    Congratulations
-                  </h2>
-                </div>
-              </div>
+          <section className="wordle-win-modal max-h-[calc(100dvh_-_10.75rem_-_env(safe-area-inset-bottom))] w-full max-w-[360px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_7rem_-_env(safe-area-inset-bottom))]">
+            <div className="relative px-4 pb-4 pt-5 text-center">
               <button
                 type="button"
                 onClick={() => setWinDialogDismissed(true)}
                 aria-label="Close win message"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-700 transition hover:bg-slate-200 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+                className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-700 transition hover:bg-slate-200 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
               >
                 <X aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
               </button>
+              <div className="wordle-win-badge mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-700 text-white shadow-lg shadow-emerald-900/20">
+                <Trophy aria-hidden="true" className="h-7 w-7" strokeWidth={2.5} />
+              </div>
+              <p className="mt-3 text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
+                Correct guess
+              </p>
+              <h2 id="wordle-win-title" className="mt-1 text-[1.65rem] font-black leading-tight text-slate-950">
+                Congratulations
+              </h2>
+              <p id="wordle-win-description" className="mt-1 text-sm font-bold text-slate-500">
+                {winSummaryText}
+              </p>
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <div className="rounded-lg bg-emerald-50 px-3 py-2 ring-1 ring-emerald-200">
-                <p className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
+            <dl className="grid grid-cols-2 gap-2 px-4 pb-4">
+              <div className="flex min-h-[5.25rem] flex-col justify-center rounded-lg bg-emerald-50 px-3 py-3 text-center ring-1 ring-emerald-200">
+                <dt className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
                   Score
-                </p>
-                <p className="mt-1 text-xl font-black text-emerald-900">{state?.result.score ?? 0} pts</p>
+                </dt>
+                <dd className="mt-1 text-2xl font-black leading-none text-emerald-900">{state?.result.score ?? 0}</dd>
+                <dd className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
+                  points
+                </dd>
               </div>
-              <div className="rounded-lg bg-saints-redSoft px-3 py-2 ring-1 ring-red-200">
-                <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+              <div className="flex min-h-[5.25rem] flex-col justify-center rounded-lg bg-saints-redSoft px-3 py-3 text-center ring-1 ring-red-200">
+                <dt className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
                   Next level
-                </p>
-                <p className="mt-1 text-xl font-black text-slate-950">{nextLevel}</p>
+                </dt>
+                <dd className="mt-1 text-2xl font-black leading-none text-slate-950">{nextLevel}</dd>
               </div>
-            </div>
+            </dl>
 
-            <div className="mt-4">
-              <DictionaryDefinitionCard
-                definition={definition}
-                error={definitionError}
-                loading={definitionLoading}
-                largePrint={largePrint}
-              />
+            <div className="px-4 pb-4">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+                    Today's word
+                  </p>
+                  {state ? (
+                    <span
+                      className={[
+                        "inline-flex items-center rounded-full px-2 py-0.5 text-[0.68rem] font-black uppercase tracking-normal",
+                        difficultyBadgeClasses(state.game.difficulty),
+                      ].join(" ")}
+                    >
+                      Level {state.game.difficulty}
+                    </span>
+                  ) : null}
+                </div>
+                <DictionaryDefinitionCard
+                  compact
+                  definition={definition}
+                  error={definitionError}
+                  loading={definitionLoading}
+                  largePrint={largePrint}
+                />
+              </div>
             </div>
           </section>
         </div>

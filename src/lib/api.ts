@@ -286,10 +286,16 @@ export type LocalOpsActionResponse = {
   reused?: boolean;
 };
 
+export type WordleDefinitionEntry = {
+  definition: string;
+  partOfSpeech: string | null;
+};
+
 export type WordleDefinition = {
   word: string;
   definition: string | null;
   partOfSpeech: string | null;
+  definitions?: WordleDefinitionEntry[];
   sourceUrl: string;
 };
 
