@@ -14,7 +14,6 @@ import {
   ChevronUp,
   Delete,
   ExternalLink,
-  Hash,
   LoaderCircle,
   Trophy,
   Type,
@@ -568,20 +567,17 @@ export function Wordle() {
   );
 
   const statusTextClass = largePrint ? "text-lg" : "text-base";
-  const badgeClass = largePrint ? "px-3.5 py-1.5 text-sm" : "px-3 py-1 text-xs";
   const rowControlButtonClass =
     "inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:border-saints-red hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:border-slate-100 disabled:bg-slate-100 disabled:text-slate-300 disabled:shadow-none";
-  const controlBarClass = largePrint
-    ? "inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-sm"
-    : "inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-sm";
+  const topControlWidthClass = largePrint ? "max-w-[23.75rem]" : "max-w-[20rem]";
+  const levelBadgeClass = largePrint ? "px-3.5 py-2 text-sm shadow-sm" : "px-3 py-1.5 text-xs shadow-sm";
   const rowControlShellClass =
-    "inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 p-1 shadow-sm";
+    "flex min-h-10 items-center justify-between rounded-full bg-slate-50 px-1.5 py-1 ring-1 ring-slate-200";
   const toggleButtonClass = largePrint
-    ? "bg-saints-redSoft text-saints-red"
-    : "bg-white text-slate-700 hover:bg-saints-redSoft hover:text-saints-red";
-  const toggleStateClass = largePrint
-    ? "bg-saints-red text-white"
-    : "bg-slate-100 text-slate-600";
+    ? "border-saints-red/25 bg-white text-saints-red shadow-sm"
+    : "border-slate-200 bg-white text-slate-700 shadow-sm hover:border-saints-red/30 hover:text-saints-red";
+  const toggleTrackClass = largePrint ? "bg-saints-red" : "bg-slate-300";
+  const toggleThumbClass = largePrint ? "translate-x-5" : "translate-x-0";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
   const formSpacingClass = largePrint ? "space-y-2.5" : "space-y-3";
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[17.5rem]";
@@ -620,20 +616,20 @@ export function Wordle() {
               </p>
             ) : null}
 
-            <div className="flex justify-center">
-              <div className={controlBarClass} aria-label="Wordle settings">
+            <div className={["mx-auto flex w-full items-center justify-between gap-2", topControlWidthClass].join(" ")}>
+              <div aria-label="Wordle level">
                 {state ? (
                   <span
                     className={[
-                      "inline-flex min-h-9 items-center gap-1 rounded-full font-black uppercase tracking-normal",
-                      badgeClass,
+                      "inline-flex min-h-9 items-center rounded-full font-black uppercase tracking-normal",
+                      levelBadgeClass,
                       difficultyBadgeClasses(state.game.difficulty),
                     ].join(" ")}
                   >
-                    <Hash aria-hidden="true" className="h-3.5 w-3.5" />
-                    Difficulty {state.game.difficulty}
+                    Level {state.game.difficulty}
                   </span>
                 ) : null}
+              </div>
 
               <button
                 type="button"
@@ -642,43 +638,52 @@ export function Wordle() {
                 aria-label={largePrint ? "Use standard text size" : "Use large text size"}
                 data-testid="wordle-text-size-toggle"
                 className={[
-                  "inline-flex min-h-9 items-center gap-2 rounded-full px-3 py-1.5 text-xs font-black uppercase tracking-normal transition focus:outline-none focus:ring-4 focus:ring-saints-red/15",
+                  "inline-flex min-h-10 items-center gap-2 rounded-full border py-1.5 pl-3 pr-1.5 text-xs font-black uppercase tracking-normal transition focus:outline-none focus:ring-4 focus:ring-saints-red/15",
                   toggleButtonClass,
                 ].join(" ")}
               >
                 <Type aria-hidden="true" className="h-3.5 w-3.5" />
                 Large text
-                <span className={["rounded-full px-2 py-0.5 text-[0.68rem]", toggleStateClass].join(" ")}>
-                  {largePrint ? "On" : "Off"}
+                <span
+                  aria-hidden="true"
+                  className={["relative inline-flex h-6 w-11 shrink-0 rounded-full p-0.5 transition", toggleTrackClass].join(" ")}
+                >
+                  <span
+                    className={[
+                      "h-5 w-5 rounded-full bg-white shadow-sm transition-transform",
+                      toggleThumbClass,
+                    ].join(" ")}
+                  />
                 </span>
               </button>
-              </div>
             </div>
 
             {largePrint ? (
-              <div className="flex justify-center">
+              <div className={["mx-auto w-full", topControlWidthClass].join(" ")}>
                 <div className={rowControlShellClass} aria-label="Guess row controls">
-                  <button
-                    type="button"
-                    onClick={() => handleRowControlClick(-1)}
-                    disabled={!rowScrollState.canScrollUp}
-                    aria-label="Show previous guess row"
-                    className={rowControlButtonClass}
-                  >
-                    <ChevronUp aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
-                  </button>
-                  <span className="px-2 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
-                    Guess rows
+                  <span className="px-2 text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
+                    Board rows
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => handleRowControlClick(1)}
-                    disabled={!rowScrollState.canScrollDown}
-                    aria-label="Show next guess row"
-                    className={rowControlButtonClass}
-                  >
-                    <ChevronDown aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleRowControlClick(-1)}
+                      disabled={!rowScrollState.canScrollUp}
+                      aria-label="Show previous guess row"
+                      className={rowControlButtonClass}
+                    >
+                      <ChevronUp aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRowControlClick(1)}
+                      disabled={!rowScrollState.canScrollDown}
+                      aria-label="Show next guess row"
+                      className={rowControlButtonClass}
+                    >
+                      <ChevronDown aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : null}
