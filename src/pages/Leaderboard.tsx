@@ -674,7 +674,7 @@ function QuizJourneyCard({
     <>
       <div
         className={[
-          "flex min-h-[7.25rem] min-w-0 flex-col items-center justify-center rounded-xl border px-1.5 py-3 text-center shadow-sm",
+          "grid min-h-[7.25rem] min-w-0 grid-rows-[2.75rem_2.25rem_1.25rem] justify-items-center rounded-xl border px-1.5 py-3 text-center shadow-sm",
           isPerfect
             ? "border-red-200 bg-red-50/50"
             : "border-slate-200 bg-gradient-to-br from-white via-white to-slate-50",
@@ -688,12 +688,12 @@ function QuizJourneyCard({
         >
           <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={isPerfect ? 2.4 : 2.6} />
         </span>
-        <p className="mx-auto mt-2 max-w-[4.5rem] text-[0.7rem] font-bold leading-tight text-slate-950 min-[390px]:text-[0.74rem]">
+        <p className="mx-auto max-w-[4.5rem] self-center text-[0.7rem] font-bold leading-tight text-slate-950 min-[390px]:text-[0.74rem]">
           {label}
         </p>
         <p
           className={[
-            "mx-auto mt-1 max-w-[4.5rem] text-[0.84rem] font-black leading-tight min-[390px]:text-[0.88rem]",
+            "mx-auto max-w-[4.5rem] self-start text-[0.84rem] font-black leading-tight min-[390px]:text-[0.88rem]",
             isPerfect ? "text-saints-red" : "text-slate-950",
           ].join(" ")}
         >
