@@ -530,9 +530,9 @@ function ScoreGuide() {
             <div className="flex h-12 items-center justify-center text-rose-200">
               <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
             </div>
-            <div className="flex min-h-[8.6rem] flex-col items-center justify-center rounded-2xl bg-red-50 px-2.5 py-3 text-center shadow-sm">
-              <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-2xl bg-white/80 text-saints-red shadow-sm">
-                <Star aria-hidden="true" className="h-5 w-5 fill-current" />
+            <div className="flex min-h-[8.6rem] flex-col items-center rounded-2xl bg-red-50 px-2.5 py-3 text-center shadow-sm">
+              <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-full border-2 border-rose-200 bg-white text-saints-red shadow-sm">
+                <Star aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
               </span>
               <p className="mt-2 text-[0.82rem] font-black leading-tight text-slate-950">
                 Perfect
@@ -685,15 +685,17 @@ function JourneyInfoCard({
 }) {
   return (
     <div className="flex min-h-[8.6rem] min-w-0 flex-col rounded-2xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
-      <span
-        className={[
-          "flex h-10 w-10 items-center justify-center rounded-2xl",
-          iconClassName,
-        ].join(" ")}
-      >
-        <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-      </span>
-      <p className="mt-2 text-[0.82rem] font-black leading-tight text-slate-800">{title}</p>
+      <div className="flex items-center gap-2">
+        <span
+          className={[
+            "flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl",
+            iconClassName,
+          ].join(" ")}
+        >
+          <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+        </span>
+        <p className="text-[0.78rem] font-black leading-tight text-slate-800">{title}</p>
+      </div>
       <p className={["mt-1 whitespace-pre-line", bodyClassName].join(" ")}>
         {body}
       </p>
