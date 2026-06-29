@@ -606,7 +606,7 @@ export function Wordle() {
   const controlBarClass =
     "mx-auto w-full max-w-[22rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm";
   const settingsRowClass = state
-    ? "grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)]"
+    ? "grid grid-cols-[minmax(0,7.15rem)_minmax(0,1fr)] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,7.35rem)_minmax(0,1fr)]"
     : "grid grid-cols-1";
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
@@ -617,7 +617,7 @@ export function Wordle() {
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[17.5rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
-    ? "wordle-board-window aspect-[2.56/1] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md pt-1"
+    ? "wordle-board-window aspect-[2.56/1] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md pb-0.5 pt-1.5"
     : "";
   const boardRowsKey = largePrint ? `visible-row-${visibleStartRowIndex}` : "all-rows";
   const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
@@ -660,14 +660,14 @@ export function Wordle() {
                 {state ? (
                   <div
                     className={[
-                      "flex min-h-[3.3rem] min-w-0 items-center gap-2 bg-white px-3 py-2",
+                      "flex min-h-[3.3rem] min-w-0 items-center gap-1.5 bg-white px-2 py-2",
                       state.game.difficulty <= 5 ? "text-emerald-800" : "",
                       state.game.difficulty > 5 && state.game.difficulty <= 10 ? "text-sky-800" : "",
                       state.game.difficulty > 10 && state.game.difficulty <= 15 ? "text-amber-800" : "",
                       state.game.difficulty > 15 ? "text-rose-800" : "",
                     ].join(" ")}
                   >
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
                       <Hash aria-hidden="true" className="h-4 w-4" />
                     </span>
                     <span className="min-w-0">
@@ -687,14 +687,15 @@ export function Wordle() {
                   aria-pressed={largePrint}
                   aria-label={largePrint ? "Use standard text size" : "Use large text size"}
                   data-testid="wordle-text-size-toggle"
-                  className="flex min-h-[3.3rem] min-w-0 items-center justify-between gap-2 bg-white px-3 py-2 text-left text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+                  className="flex min-h-[3.3rem] min-w-0 items-center justify-between gap-1.5 bg-white px-2 py-2 text-left text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
                 >
                   <span className="flex min-w-0 items-center gap-1.5">
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-saints-redSoft text-saints-red ring-1 ring-red-100">
                       <Type aria-hidden="true" className="h-4 w-4" />
                     </span>
-                    <span className="min-w-0 whitespace-nowrap text-[0.7rem] font-black uppercase leading-tight tracking-normal text-slate-700 min-[380px]:text-[0.72rem]">
-                      Large text
+                    <span className="min-w-0 text-[0.66rem] font-black uppercase leading-[0.9] tracking-normal text-slate-700 min-[380px]:text-[0.68rem]">
+                      <span className="block">Large</span>
+                      <span className="block">text</span>
                     </span>
                   </span>
                   <span
