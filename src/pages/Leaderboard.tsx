@@ -1,4 +1,5 @@
 import {
+  ArrowDown,
   ArrowRight,
   Check,
   CalendarDays,
@@ -69,12 +70,42 @@ const QUIZ_JOURNEY = [
 ] as const;
 
 const WORDLE_JOURNEY = [
-  { value: 10, accentClass: "border-rose-200 text-rose-500", lineClass: "bg-rose-200" },
-  { value: 5, accentClass: "border-orange-200 text-orange-500", lineClass: "bg-orange-200" },
-  { value: 4, accentClass: "border-amber-200 text-amber-500", lineClass: "bg-amber-200" },
-  { value: 3, accentClass: "border-lime-200 text-lime-500", lineClass: "bg-lime-200" },
-  { value: 2, accentClass: "border-emerald-200 text-emerald-500", lineClass: "bg-emerald-200" },
-  { value: 1, accentClass: "border-teal-200 text-teal-500", lineClass: "bg-teal-200" },
+  {
+    value: 10,
+    accentClass: "border-rose-200 text-rose-500",
+    lineClass: "bg-rose-200",
+    arrowClass: "text-rose-300",
+  },
+  {
+    value: 5,
+    accentClass: "border-orange-200 text-orange-500",
+    lineClass: "bg-orange-200",
+    arrowClass: "text-orange-300",
+  },
+  {
+    value: 4,
+    accentClass: "border-amber-200 text-amber-500",
+    lineClass: "bg-amber-200",
+    arrowClass: "text-amber-300",
+  },
+  {
+    value: 3,
+    accentClass: "border-lime-200 text-lime-500",
+    lineClass: "bg-lime-200",
+    arrowClass: "text-lime-300",
+  },
+  {
+    value: 2,
+    accentClass: "border-emerald-200 text-emerald-500",
+    lineClass: "bg-emerald-200",
+    arrowClass: "text-emerald-300",
+  },
+  {
+    value: 1,
+    accentClass: "border-teal-200 text-teal-500",
+    lineClass: "bg-teal-200",
+    arrowClass: "text-teal-300",
+  },
 ] as const;
 
 export function Leaderboard() {
@@ -562,20 +593,13 @@ function ScoreGuide() {
             <p className="text-[0.76rem] font-bold leading-tight text-slate-600">
               Guesses ladder <span className="text-slate-400">(fewer is better)</span>
             </p>
-            <div className="space-y-2">
-              {[WORDLE_JOURNEY.slice(0, 3), WORDLE_JOURNEY.slice(3)].map((row) => (
-                <div key={row[0].value} className="flex min-w-0 items-center">
-                  {row.map((step, index) => (
-                    <WordleJourneyStep
-                      key={step.value}
-                      accentClass={step.accentClass}
-                      isLast={index === row.length - 1}
-                      lineClass={step.lineClass}
-                      value={step.value}
-                    />
-                  ))}
-                </div>
-              ))}
+            <div className="space-y-0">
+              <WordleJourneyRow direction="right" steps={WORDLE_JOURNEY.slice(0, 3)} />
+              <WordleTurnConnector
+                arrowClass={WORDLE_JOURNEY[3].arrowClass}
+                lineClass={WORDLE_JOURNEY[3].lineClass}
+              />
+              <WordleJourneyRow direction="left" steps={[...WORDLE_JOURNEY.slice(3)].reverse()} />
             </div>
             <div className="grid grid-cols-2 gap-2">
               <JourneyInfoCard
@@ -665,15 +689,77 @@ function QuizJourneyStep({
   );
 }
 
+type WordleJourneyDirection = "left" | "right";
+type WordleJourneyStepConfig = (typeof WORDLE_JOURNEY)[number];
+
+function WordleJourneyRow({
+  direction,
+  steps,
+}: {
+  direction: WordleJourneyDirection;
+  steps: readonly WordleJourneyStepConfig[];
+}) {
+  return (
+    <div className="flex min-w-0 items-center">
+      {steps.map((step, index) => {
+        const connectorStep = direction === "left" ? steps[index + 1] : step;
+
+        return (
+          <WordleJourneyStep
+            key={step.value}
+            accentClass={step.accentClass}
+            arrowClass={connectorStep?.arrowClass}
+            direction={direction}
+            isLast={index === steps.length - 1}
+            lineClass={connectorStep?.lineClass}
+            value={step.value}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function WordleTurnConnector({
+  arrowClass,
+  lineClass,
+}: {
+  arrowClass: string;
+  lineClass: string;
+}) {
+  return (
+    <div
+      className="grid h-4 grid-cols-[2.5rem_minmax(0,1fr)_2.5rem_minmax(0,1fr)_2.5rem]"
+      aria-hidden="true"
+    >
+      <div className={["col-start-5 flex items-center justify-center", arrowClass].join(" ")}>
+        <span className="relative flex h-4 w-4 items-center justify-center">
+          <span
+            className={[
+              "absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 rounded-full",
+              lineClass,
+            ].join(" ")}
+          />
+          <ArrowDown className="absolute -bottom-1 h-3.5 w-3.5" strokeWidth={2.8} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function WordleJourneyStep({
   accentClass,
+  arrowClass,
+  direction,
   isLast,
   lineClass,
   value,
 }: {
   accentClass: string;
+  arrowClass?: string;
+  direction: WordleJourneyDirection;
   isLast: boolean;
-  lineClass: string;
+  lineClass?: string;
   value: number;
 }) {
   return (
@@ -690,9 +776,41 @@ function WordleJourneyStep({
         </span>
       </div>
       {!isLast ? (
-        <div className={["h-0.5 min-w-0 flex-1 rounded-full", lineClass].join(" ")} />
+        <WordleJourneyConnector
+          arrowClass={arrowClass ?? "text-slate-300"}
+          direction={direction}
+          lineClass={lineClass ?? "bg-slate-200"}
+        />
       ) : null}
     </>
+  );
+}
+
+function WordleJourneyConnector({
+  arrowClass,
+  direction,
+  lineClass,
+}: {
+  arrowClass: string;
+  direction: WordleJourneyDirection;
+  lineClass: string;
+}) {
+  return (
+    <div className={["relative h-10 min-w-0 flex-1", arrowClass].join(" ")} aria-hidden="true">
+      <span
+        className={[
+          "absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full",
+          lineClass,
+        ].join(" ")}
+      />
+      <ArrowRight
+        className={[
+          "absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2",
+          direction === "left" ? "left-0 rotate-180" : "right-0",
+        ].join(" ")}
+        strokeWidth={2.8}
+      />
+    </div>
   );
 }
 
