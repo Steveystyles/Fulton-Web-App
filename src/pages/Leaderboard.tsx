@@ -61,7 +61,7 @@ const QUIZ_JOURNEY = [
   },
   {
     label: "Perfect round",
-    value: "+3 bonus pts",
+    value: "+3 pts",
     icon: Star,
     ringClass: "border-rose-200 text-saints-red",
     valueClassName: "text-saints-red",
@@ -562,15 +562,19 @@ function ScoreGuide() {
             <p className="text-[0.76rem] font-bold leading-tight text-slate-600">
               Guesses ladder <span className="text-slate-400">(fewer is better)</span>
             </p>
-            <div className="flex items-center gap-0.5">
-              {WORDLE_JOURNEY.map((step, index) => (
-                <WordleJourneyStep
-                  key={step.value}
-                  accentClass={step.accentClass}
-                  isLast={index === WORDLE_JOURNEY.length - 1}
-                  lineClass={step.lineClass}
-                  value={step.value}
-                />
+            <div className="space-y-2">
+              {[WORDLE_JOURNEY.slice(0, 3), WORDLE_JOURNEY.slice(3)].map((row) => (
+                <div key={row[0].value} className="flex min-w-0 items-center">
+                  {row.map((step, index) => (
+                    <WordleJourneyStep
+                      key={step.value}
+                      accentClass={step.accentClass}
+                      isLast={index === row.length - 1}
+                      lineClass={step.lineClass}
+                      value={step.value}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -581,7 +585,7 @@ function ScoreGuide() {
                 title="Level bonus"
               />
               <JourneyInfoCard
-                body={"Correct: level up\nMiss: return to level 1"}
+                body={"Correct: level up\nMiss: back to level 1"}
                 bodyClassName="text-[0.72rem] font-black leading-snug text-slate-900"
                 icon={TrendingUp}
                 iconClassName="bg-red-50 text-saints-red"
@@ -645,7 +649,7 @@ function QuizJourneyStep({
         </p>
         <p
           className={[
-            "mx-auto mt-1 max-w-[4.75rem] text-[0.78rem] font-black leading-tight",
+            "mx-auto mt-1 max-w-[4.75rem] text-[0.82rem] font-black leading-tight",
             valueClassName,
           ].join(" ")}
         >
@@ -676,12 +680,12 @@ function WordleJourneyStep({
     <>
       <div
         className={[
-          "flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-full border-2 bg-white text-center shadow-sm",
+          "flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-full border-2 bg-white text-center shadow-sm",
           accentClass,
         ].join(" ")}
       >
-        <span className="text-[0.95rem] font-black leading-none text-slate-950">{value}</span>
-        <span className="mt-0.5 text-[0.6rem] font-black uppercase leading-none tracking-normal text-slate-500">
+        <span className="text-[0.9rem] font-black leading-none text-slate-950">{value}</span>
+        <span className="mt-0.5 text-[0.56rem] font-black uppercase leading-none tracking-normal text-slate-500">
           {value === 1 ? "pt" : "pts"}
         </span>
       </div>
