@@ -554,7 +554,7 @@ function ScoreGuide() {
   return (
     <Card className="p-4 sm:p-5">
       <div className="space-y-4">
-        <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-2 min-[390px]:grid-cols-[3rem_minmax(0,1fr)_auto]">
+        <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-2 min-[520px]:grid-cols-[3rem_minmax(0,1fr)_auto]">
           <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-saints-red text-white shadow-sm">
             <Info aria-hidden="true" className="h-6 w-6" strokeWidth={2.8} />
           </span>
@@ -566,7 +566,7 @@ function ScoreGuide() {
               Your guide to earning points in Quiz and Wordle.
             </p>
           </div>
-          <div className="col-start-2 flex min-w-0 items-center self-center rounded-full border border-saints-red/35 bg-white px-3 py-2 text-saints-red min-[390px]:col-start-3 min-[390px]:row-start-1">
+          <div className="col-start-2 flex min-w-0 items-center self-center justify-self-start rounded-full border border-saints-red/35 bg-white px-3 py-2 text-saints-red min-[520px]:col-start-3 min-[520px]:row-start-1 min-[520px]:justify-self-end">
             <CalendarDays aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.4} />
             <span className="ml-2 whitespace-nowrap text-[0.66rem] font-black leading-none text-slate-950 min-[390px]:text-[0.7rem]">
               Daily scoring guide
