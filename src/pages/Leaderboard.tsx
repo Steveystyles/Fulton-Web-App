@@ -554,7 +554,7 @@ function ScoreGuide() {
   return (
     <Card className="p-4 sm:p-5">
       <div className="space-y-4">
-        <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-2 min-[520px]:grid-cols-[3rem_minmax(0,1fr)_auto]">
+        <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-2 min-[720px]:grid-cols-[3rem_minmax(0,1fr)_auto]">
           <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-saints-red text-white shadow-sm">
             <Info aria-hidden="true" className="h-6 w-6" strokeWidth={2.8} />
           </span>
@@ -566,7 +566,7 @@ function ScoreGuide() {
               Your guide to earning points in Quiz and Wordle.
             </p>
           </div>
-          <div className="col-start-2 flex min-w-0 items-center self-center justify-self-start rounded-full border border-saints-red/35 bg-white px-3 py-2 text-saints-red min-[520px]:col-start-3 min-[520px]:row-start-1 min-[520px]:justify-self-end">
+          <div className="col-start-2 flex min-w-0 items-center self-center justify-self-start rounded-full border border-saints-red/35 bg-white px-3 py-2 text-saints-red min-[720px]:col-start-3 min-[720px]:row-start-1 min-[720px]:justify-self-end">
             <CalendarDays aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.4} />
             <span className="ml-2 whitespace-nowrap text-[0.66rem] font-black leading-none text-slate-950 min-[390px]:text-[0.7rem]">
               Daily scoring guide
@@ -578,15 +578,17 @@ function ScoreGuide() {
 
         <section className="space-y-4">
           <GuideSectionTitle icon={CircleHelp} title="Quiz" />
-          <div className="grid grid-cols-[minmax(0,1fr)_0.85rem_minmax(0,1fr)_0.85rem_minmax(0,1fr)_0.85rem_minmax(4.45rem,0.95fr)] items-start gap-x-1">
-            {QUIZ_JOURNEY.slice(0, 3).map((step) => (
-              <QuizJourneyStep
+          <div className="grid grid-cols-[minmax(0,1fr)_0.75rem_minmax(0,1fr)_0.75rem_minmax(0,1fr)_0.75rem_minmax(0,1fr)] items-stretch gap-x-1">
+            {QUIZ_JOURNEY.map((step, index) => (
+              <QuizJourneyCard
                 key={step.label}
+                icon={step.icon}
+                isLast={index === QUIZ_JOURNEY.length - 1}
                 label={step.label}
                 value={step.value}
+                variant={step.label === "Perfect round" ? "perfect" : "standard"}
               />
             ))}
-            <PerfectRoundCard />
           </div>
         </section>
 
@@ -653,44 +655,57 @@ function GuideSectionTitle({
   );
 }
 
-function QuizJourneyStep({
+function QuizJourneyCard({
+  icon: Icon,
+  isLast,
   label,
   value,
+  variant,
 }: {
+  icon: LucideIcon;
+  isLast: boolean;
   label: string;
   value: string;
+  variant: "standard" | "perfect";
 }) {
+  const isPerfect = variant === "perfect";
+
   return (
     <>
-      <div className="min-w-0 text-center">
-        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-slate-700 bg-white text-slate-950 shadow-sm">
-          <Check aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
+      <div
+        className={[
+          "flex min-h-[7.25rem] min-w-0 flex-col items-center justify-center rounded-xl border px-1.5 py-3 text-center shadow-sm",
+          isPerfect
+            ? "border-red-200 bg-red-50/50"
+            : "border-slate-200 bg-gradient-to-br from-white via-white to-slate-50",
+        ].join(" ")}
+      >
+        <span
+          className={[
+            "flex h-11 w-11 items-center justify-center rounded-full border bg-white",
+            isPerfect ? "border-saints-red text-saints-red" : "border-slate-700 text-slate-950",
+          ].join(" ")}
+        >
+          <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={isPerfect ? 2.4 : 2.6} />
         </span>
-        <p className="mx-auto mt-2 max-w-[4.5rem] text-[0.76rem] font-bold leading-tight text-slate-800">
+        <p className="mx-auto mt-2 max-w-[4.5rem] text-[0.7rem] font-bold leading-tight text-slate-950 min-[390px]:text-[0.74rem]">
           {label}
         </p>
-        <p className="mx-auto mt-1 max-w-[4.5rem] text-[0.88rem] font-black leading-tight text-slate-950">
+        <p
+          className={[
+            "mx-auto mt-1 max-w-[4.5rem] text-[0.84rem] font-black leading-tight min-[390px]:text-[0.88rem]",
+            isPerfect ? "text-saints-red" : "text-slate-950",
+          ].join(" ")}
+        >
           {value}
         </p>
       </div>
-      <div className="flex h-12 items-center justify-center text-slate-500">
-        <ArrowRight aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
-      </div>
+      {!isLast ? (
+        <div className="flex min-h-[7.25rem] items-center justify-center text-slate-500">
+          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.4} />
+        </div>
+      ) : null}
     </>
-  );
-}
-
-function PerfectRoundCard() {
-  return (
-    <div className="flex min-h-[7.2rem] min-w-0 flex-col items-center justify-center rounded-xl border border-red-200 bg-red-50/50 px-2 py-3 text-center">
-      <span className="flex h-12 w-12 items-center justify-center rounded-full border border-saints-red bg-white text-saints-red">
-        <Star aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
-      </span>
-      <p className="mt-2 text-[0.74rem] font-bold leading-tight text-slate-950">
-        Perfect round
-      </p>
-      <p className="mt-1 text-[0.88rem] font-black leading-tight text-saints-red">+3 pts</p>
-    </div>
   );
 }
 
