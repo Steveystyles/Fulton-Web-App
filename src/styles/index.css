@@ -138,7 +138,6 @@ input[type="date"] {
   overscroll-behavior: contain;
   scroll-snap-type: y mandatory;
   scrollbar-width: none;
-  scroll-behavior: smooth;
   touch-action: none;
 }
 
@@ -157,10 +156,10 @@ input[type="date"] {
 }
 
 .wordle-board-rows-replace {
-  --wordle-window-enter-y: 12px;
-  --wordle-window-overshoot-y: -2px;
-  --wordle-row-enter-y: 18px;
-  --wordle-row-overshoot-y: -3px;
+  --wordle-window-enter-y: 0px;
+  --wordle-window-overshoot-y: 0px;
+  --wordle-row-enter-y: 0px;
+  --wordle-row-overshoot-y: 0px;
   animation: wordle-board-replace 420ms cubic-bezier(0.2, 0.85, 0.2, 1) both;
 }
 

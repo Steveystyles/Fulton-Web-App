@@ -329,16 +329,19 @@ export function Wordle() {
   }, [guess, wordLength]);
 
   useEffect(() => {
-    if (!largePrint) {
+    const board = boardScrollRef.current;
+    if (board === null) {
       return;
     }
 
-    const board = boardScrollRef.current;
-    const row = board?.querySelector<HTMLElement>(
-      `[data-wordle-row="${visibleStartRowIndex}"]`,
-    );
-    if (board !== null && row !== undefined && row !== null) {
-      board.scrollTo({ top: row.offsetTop, behavior: "smooth" });
+    if (!largePrint) {
+      board.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+
+    const row = board.querySelector<HTMLElement>(`[data-wordle-row="${visibleStartRowIndex}"]`);
+    if (row !== null) {
+      board.scrollTo({ top: Math.max(0, row.offsetTop - 4), behavior: "auto" });
     }
   }, [largePrint, visibleStartRowIndex]);
 
@@ -602,16 +605,19 @@ export function Wordle() {
     "flex h-10 w-full items-center justify-center text-slate-700 transition hover:bg-white hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:text-slate-300";
   const controlBarClass =
     "mx-auto w-full max-w-[22rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm";
+  const settingsRowClass = state
+    ? "grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,8.25rem)_minmax(0,1fr)]"
+    : "grid grid-cols-1";
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
   const switchTrackClass = largePrint ? "bg-saints-red" : "bg-slate-300";
-  const switchThumbClass = largePrint ? "translate-x-4" : "translate-x-0";
+  const switchThumbClass = largePrint ? "translate-x-3" : "translate-x-0";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
   const formSpacingClass = largePrint ? "space-y-2.5" : "space-y-3";
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[17.5rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
-    ? "wordle-board-window aspect-[2.56/1] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md"
+    ? "wordle-board-window aspect-[2.56/1] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md pt-1"
     : "";
   const boardRowsKey = largePrint ? `visible-row-${visibleStartRowIndex}` : "all-rows";
   const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
@@ -650,7 +656,7 @@ export function Wordle() {
             ) : null}
 
             <div className={controlBarClass} aria-label="Wordle settings">
-              <div className="grid grid-cols-2 divide-x divide-slate-200">
+              <div className={settingsRowClass}>
                 {state ? (
                   <div
                     className={[
@@ -683,17 +689,17 @@ export function Wordle() {
                   data-testid="wordle-text-size-toggle"
                   className="flex min-h-[3.3rem] min-w-0 items-center justify-between gap-2 bg-white px-3 py-2 text-left text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
                 >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-saints-redSoft text-saints-red ring-1 ring-red-100">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-saints-redSoft text-saints-red ring-1 ring-red-100">
                       <Type aria-hidden="true" className="h-4 w-4" />
                     </span>
-                    <span className="min-w-0 whitespace-nowrap text-xs font-black uppercase leading-tight tracking-normal text-slate-700">
+                    <span className="min-w-0 whitespace-nowrap text-[0.7rem] font-black uppercase leading-tight tracking-normal text-slate-700 min-[380px]:text-[0.72rem]">
                       Large text
                     </span>
                   </span>
                   <span
                     className={[
-                      "relative h-5 w-9 shrink-0 rounded-full p-0.5 transition",
+                      "relative h-5 w-8 shrink-0 rounded-full p-0.5 transition",
                       switchTrackClass,
                     ].join(" ")}
                     aria-hidden="true"
