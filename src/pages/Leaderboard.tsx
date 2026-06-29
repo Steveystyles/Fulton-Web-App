@@ -603,17 +603,21 @@ function ScoreGuide() {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <JourneyInfoCard
+                accentClassName="bg-gradient-to-r from-red-400 via-saints-red to-red-500"
                 body={"+2 pts\nper level"}
+                cardClassName="border-red-100 bg-gradient-to-br from-white via-white to-red-50/70"
                 icon={Gift}
-                iconClassName="bg-saints-redSoft text-saints-red"
+                iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
                 title="Level bonus"
               />
               <JourneyInfoCard
-                body={"Correct: level up\nMiss: back to level 1"}
+                accentClassName="bg-gradient-to-r from-rose-400 via-saints-red to-amber-400"
+                body={"Win: level up\nMiss: reset to 1"}
                 bodyClassName="text-[0.72rem] font-black leading-snug text-slate-900"
+                cardClassName="border-rose-100 bg-gradient-to-br from-white via-white to-rose-50/70"
                 icon={TrendingUp}
-                iconClassName="bg-red-50 text-saints-red"
-                title="Level progression"
+                iconClassName="bg-rose-50 text-saints-red ring-1 ring-rose-100"
+                title="Level path"
               />
             </div>
           </div>
@@ -815,20 +819,30 @@ function WordleJourneyConnector({
 }
 
 function JourneyInfoCard({
+  accentClassName,
   body,
   bodyClassName = "text-[0.8rem] font-black leading-snug text-slate-950",
+  cardClassName,
   icon: Icon,
   iconClassName,
   title,
 }: {
+  accentClassName: string;
   body: string;
   bodyClassName?: string;
+  cardClassName: string;
   icon: LucideIcon;
   iconClassName: string;
   title: string;
 }) {
   return (
-    <div className="flex min-h-[7.6rem] min-w-0 flex-col rounded-2xl border border-slate-200 bg-white px-2.5 py-3 shadow-sm">
+    <div
+      className={[
+        "relative flex min-h-[7.6rem] min-w-0 flex-col overflow-hidden rounded-2xl border px-2.5 pb-3 pt-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]",
+        cardClassName,
+      ].join(" ")}
+    >
+      <span className={["absolute inset-x-0 top-0 h-1", accentClassName].join(" ")} aria-hidden="true" />
       <div className="flex items-center gap-2">
         <span
           className={[
