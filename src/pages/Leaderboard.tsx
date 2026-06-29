@@ -553,73 +553,74 @@ function PlayerDetailDialog({
 function ScoreGuide() {
   return (
     <Card className="p-4 sm:p-5">
-      <div className="space-y-5">
-        <div className="flex items-start gap-3">
-          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-red-100 bg-red-50 text-saints-red shadow-sm">
-            <Info aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+      <div className="space-y-4">
+        <div className="grid grid-cols-[3rem_minmax(0,1fr)] gap-x-3 gap-y-2 min-[390px]:grid-cols-[3rem_minmax(0,1fr)_auto]">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-saints-red text-white shadow-sm">
+            <Info aria-hidden="true" className="h-6 w-6" strokeWidth={2.8} />
           </span>
           <div className="min-w-0 pt-0.5">
-            <h2 className="text-[1.05rem] font-black leading-tight text-slate-950">
-              Your scoring journey
+            <h2 className="text-[1.25rem] font-black leading-tight text-slate-950 min-[390px]:text-[1.35rem]">
+              How points work
             </h2>
-            <p className="mt-1 text-sm font-semibold leading-snug text-slate-500">
-              See how points are earned.
+            <p className="mt-1 text-[0.82rem] font-semibold leading-snug text-slate-500 min-[390px]:text-sm">
+              Your guide to earning points in Quiz and Wordle.
             </p>
+          </div>
+          <div className="col-start-2 flex min-w-0 items-center self-center rounded-full border border-saints-red/35 bg-white px-3 py-2 text-saints-red min-[390px]:col-start-3 min-[390px]:row-start-1">
+            <CalendarDays aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.4} />
+            <span className="ml-2 whitespace-nowrap text-[0.66rem] font-black leading-none text-slate-950 min-[390px]:text-[0.7rem]">
+              Daily scoring guide
+            </span>
           </div>
         </div>
 
-        <section className="space-y-3">
+        <div className="h-px bg-slate-200" aria-hidden="true" />
+
+        <section className="space-y-4">
           <GuideSectionTitle icon={CircleHelp} title="Quiz" />
-          <div className="grid grid-cols-[minmax(0,1fr)_0.65rem_minmax(0,1fr)_0.65rem_minmax(0,1fr)_0.65rem_minmax(0,1fr)] items-start gap-y-2">
-            {QUIZ_JOURNEY.map((step, index) => (
+          <div className="grid grid-cols-[minmax(0,1fr)_0.85rem_minmax(0,1fr)_0.85rem_minmax(0,1fr)_0.85rem_minmax(4.45rem,0.95fr)] items-start gap-x-1">
+            {QUIZ_JOURNEY.slice(0, 3).map((step) => (
               <QuizJourneyStep
                 key={step.label}
-                icon={step.icon}
-                isLast={index === QUIZ_JOURNEY.length - 1}
                 label={step.label}
-                ringClass={step.ringClass}
                 value={step.value}
-                valueClassName={"valueClassName" in step ? step.valueClassName : undefined}
               />
             ))}
+            <PerfectRoundCard />
           </div>
         </section>
 
         <div className="h-px bg-slate-200" aria-hidden="true" />
 
-        <section className="space-y-3">
-          <GuideSectionTitle icon={Hash} title="Wordle" />
-          <div className="space-y-3">
-            <p className="text-[0.76rem] font-bold leading-tight text-slate-600">
+        <section className="space-y-4">
+          <div className="space-y-1">
+            <GuideSectionTitle glyph="W" title="Wordle" />
+            <p className="pl-10 text-[0.76rem] font-bold leading-tight text-slate-600">
               Guesses ladder <span className="text-slate-400">(fewer is better)</span>
             </p>
-            <div className="space-y-0">
-              <WordleJourneyRow direction="right" steps={WORDLE_JOURNEY.slice(0, 3)} />
-              <WordleTurnConnector
-                arrowClass={WORDLE_JOURNEY[3].arrowClass}
-                lineClass={WORDLE_JOURNEY[3].lineClass}
-              />
-              <WordleJourneyRow direction="left" steps={[...WORDLE_JOURNEY.slice(3)].reverse()} />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <JourneyInfoCard
-                accentClassName="bg-gradient-to-r from-red-400 via-saints-red to-red-500"
-                body={"+2 pts\nper level"}
-                cardClassName="border-red-100 bg-gradient-to-br from-white via-white to-red-50/70"
-                icon={Gift}
-                iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
-                title="Level bonus"
-              />
-              <JourneyInfoCard
-                accentClassName="bg-gradient-to-r from-rose-400 via-saints-red to-amber-400"
-                body={"Win: level up\nMiss: reset to 1"}
-                bodyClassName="text-[0.72rem] font-black leading-snug text-slate-900"
-                cardClassName="border-rose-100 bg-gradient-to-br from-white via-white to-rose-50/70"
-                icon={TrendingUp}
-                iconClassName="bg-rose-50 text-saints-red ring-1 ring-rose-100"
-                title="Level path"
-              />
-            </div>
+          </div>
+          <div className="mx-auto max-w-[19.8rem] space-y-0">
+            <WordleJourneyRow direction="right" steps={WORDLE_JOURNEY.slice(0, 3)} />
+            <WordleTurnConnector />
+            <WordleJourneyRow direction="left" steps={[...WORDLE_JOURNEY.slice(3)].reverse()} />
+          </div>
+          <div className="h-px bg-slate-200" aria-hidden="true" />
+          <div className="grid grid-cols-2 gap-2">
+            <JourneyInfoCard
+              body={"+2 pts\nper level"}
+              cardClassName="border-slate-200 bg-gradient-to-br from-white via-white to-slate-50"
+              icon={Gift}
+              iconClassName="bg-slate-100 text-slate-950 ring-1 ring-slate-200"
+              title="Bonus"
+            />
+            <JourneyInfoCard
+              body={"Win: level up\nMiss: reset to 1"}
+              bodyClassName="text-[0.72rem] font-bold leading-snug text-slate-950"
+              cardClassName="border-red-200 bg-gradient-to-br from-white via-white to-red-50/70"
+              icon={TrendingUp}
+              iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
+              title="Progress"
+            />
           </div>
         </section>
       </div>
@@ -628,16 +629,22 @@ function ScoreGuide() {
 }
 
 function GuideSectionTitle({
+  glyph,
   icon: Icon,
   title,
 }: {
-  icon: LucideIcon;
+  glyph?: string;
+  icon?: LucideIcon;
   title: string;
 }) {
   return (
     <div className="flex items-center gap-2">
       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-950 text-white shadow-sm">
-        <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
+        {Icon ? (
+          <Icon aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
+        ) : (
+          <span className="text-[1rem] font-black leading-none">{glyph}</span>
+        )}
       </span>
       <h3 className="text-[1.02rem] font-black uppercase tracking-normal text-slate-950">
         {title}
@@ -647,49 +654,43 @@ function GuideSectionTitle({
 }
 
 function QuizJourneyStep({
-  icon: Icon,
-  isLast,
   label,
-  ringClass,
   value,
-  valueClassName = "text-slate-950",
 }: {
-  icon: LucideIcon;
-  isLast: boolean;
   label: string;
-  ringClass: string;
   value: string;
-  valueClassName?: string;
 }) {
   return (
     <>
       <div className="min-w-0 text-center">
-        <span
-          className={[
-            "mx-auto flex h-11 w-11 items-center justify-center rounded-full border-2 bg-white shadow-sm",
-            ringClass,
-          ].join(" ")}
-        >
-          <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
+        <span className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-slate-700 bg-white text-slate-950 shadow-sm">
+          <Check aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
         </span>
-        <p className="mx-auto mt-2 max-w-[4.75rem] text-[0.76rem] font-black leading-tight text-slate-800">
+        <p className="mx-auto mt-2 max-w-[4.5rem] text-[0.76rem] font-bold leading-tight text-slate-800">
           {label}
         </p>
-        <p
-          className={[
-            "mx-auto mt-1 max-w-[4.75rem] text-[0.82rem] font-black leading-tight",
-            valueClassName,
-          ].join(" ")}
-        >
+        <p className="mx-auto mt-1 max-w-[4.5rem] text-[0.88rem] font-black leading-tight text-slate-950">
           {value}
         </p>
       </div>
-      {!isLast ? (
-        <div className="flex h-12 items-center justify-center text-slate-300">
-          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
-        </div>
-      ) : null}
+      <div className="flex h-12 items-center justify-center text-slate-500">
+        <ArrowRight aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+      </div>
     </>
+  );
+}
+
+function PerfectRoundCard() {
+  return (
+    <div className="flex min-h-[7.2rem] min-w-0 flex-col items-center justify-center rounded-xl border border-red-200 bg-red-50/50 px-2 py-3 text-center">
+      <span className="flex h-12 w-12 items-center justify-center rounded-full border border-saints-red bg-white text-saints-red">
+        <Star aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+      </span>
+      <p className="mt-2 text-[0.74rem] font-bold leading-tight text-slate-950">
+        Perfect round
+      </p>
+      <p className="mt-1 text-[0.88rem] font-black leading-tight text-saints-red">+3 pts</p>
+    </div>
   );
 }
 
@@ -706,16 +707,11 @@ function WordleJourneyRow({
   return (
     <div className="flex min-w-0 items-center">
       {steps.map((step, index) => {
-        const connectorStep = direction === "left" ? steps[index + 1] : step;
-
         return (
           <WordleJourneyStep
             key={step.value}
-            accentClass={step.accentClass}
-            arrowClass={connectorStep?.arrowClass}
             direction={direction}
             isLast={index === steps.length - 1}
-            lineClass={connectorStep?.lineClass}
             value={step.value}
           />
         );
@@ -724,27 +720,16 @@ function WordleJourneyRow({
   );
 }
 
-function WordleTurnConnector({
-  arrowClass,
-  lineClass,
-}: {
-  arrowClass: string;
-  lineClass: string;
-}) {
+function WordleTurnConnector() {
   return (
     <div
       className="grid h-4 grid-cols-[2.5rem_minmax(0,1fr)_2.5rem_minmax(0,1fr)_2.5rem]"
       aria-hidden="true"
     >
-      <div className={["col-start-5 flex items-center justify-center", arrowClass].join(" ")}>
+      <div className="col-start-5 flex items-center justify-center text-slate-500">
         <span className="relative flex h-4 w-4 items-center justify-center">
-          <span
-            className={[
-              "absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 rounded-full",
-              lineClass,
-            ].join(" ")}
-          />
-          <ArrowDown className="absolute -bottom-1 h-3.5 w-3.5" strokeWidth={2.8} />
+          <span className="absolute inset-y-0 left-1/2 -translate-x-1/2 border-l border-dashed border-slate-500" />
+          <ArrowDown className="absolute -bottom-1 h-3.5 w-3.5 bg-white" strokeWidth={2.2} />
         </span>
       </div>
     </div>
@@ -752,61 +737,37 @@ function WordleTurnConnector({
 }
 
 function WordleJourneyStep({
-  accentClass,
-  arrowClass,
   direction,
   isLast,
-  lineClass,
   value,
 }: {
-  accentClass: string;
-  arrowClass?: string;
   direction: WordleJourneyDirection;
   isLast: boolean;
-  lineClass?: string;
   value: number;
 }) {
   return (
     <>
-      <div
-        className={[
-          "flex h-10 w-10 shrink-0 flex-col items-center justify-center rounded-full border-2 bg-white text-center shadow-sm",
-          accentClass,
-        ].join(" ")}
-      >
-        <span className="text-[0.9rem] font-black leading-none text-slate-950">{value}</span>
-        <span className="mt-0.5 text-[0.56rem] font-black uppercase leading-none tracking-normal text-slate-500">
+      <div className="flex h-11 w-11 shrink-0 flex-col items-center justify-center rounded-full border border-slate-600 bg-white text-center shadow-sm">
+        <span className="text-[1rem] font-black leading-none text-slate-950">{value}</span>
+        <span className="mt-0.5 text-[0.58rem] font-black uppercase leading-none tracking-normal text-slate-600">
           {value === 1 ? "pt" : "pts"}
         </span>
       </div>
       {!isLast ? (
-        <WordleJourneyConnector
-          arrowClass={arrowClass ?? "text-slate-300"}
-          direction={direction}
-          lineClass={lineClass ?? "bg-slate-200"}
-        />
+        <WordleJourneyConnector direction={direction} />
       ) : null}
     </>
   );
 }
 
 function WordleJourneyConnector({
-  arrowClass,
   direction,
-  lineClass,
 }: {
-  arrowClass: string;
   direction: WordleJourneyDirection;
-  lineClass: string;
 }) {
   return (
-    <div className={["relative h-10 min-w-0 flex-1", arrowClass].join(" ")} aria-hidden="true">
-      <span
-        className={[
-          "absolute left-0 right-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full",
-          lineClass,
-        ].join(" ")}
-      />
+    <div className="relative h-11 min-w-0 flex-1 text-slate-500" aria-hidden="true">
+      <span className="absolute left-0 right-0 top-1/2 -translate-y-1/2 border-t border-dashed border-slate-500" />
       <ArrowRight
         className={[
           "absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2",
@@ -819,7 +780,6 @@ function WordleJourneyConnector({
 }
 
 function JourneyInfoCard({
-  accentClassName,
   body,
   bodyClassName = "text-[0.8rem] font-black leading-snug text-slate-950",
   cardClassName,
@@ -827,7 +787,6 @@ function JourneyInfoCard({
   iconClassName,
   title,
 }: {
-  accentClassName: string;
   body: string;
   bodyClassName?: string;
   cardClassName: string;
@@ -838,25 +797,18 @@ function JourneyInfoCard({
   return (
     <div
       className={[
-        "relative flex min-h-[7.6rem] min-w-0 flex-col overflow-hidden rounded-2xl border px-2.5 pb-3 pt-4 shadow-[0_10px_22px_rgba(15,23,42,0.08)]",
+        "grid min-h-[6.5rem] min-w-0 grid-cols-[3.2rem_minmax(0,1fr)] items-center gap-3 rounded-xl border px-3 py-3 shadow-sm",
         cardClassName,
       ].join(" ")}
     >
-      <span className={["absolute inset-x-0 top-0 h-1", accentClassName].join(" ")} aria-hidden="true" />
-      <div className="flex items-center gap-2">
-        <span
-          className={[
-            "flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl",
-            iconClassName,
-          ].join(" ")}
-        >
-          <Icon aria-hidden="true" className="h-4.5 w-4.5" strokeWidth={2.4} />
-        </span>
-        <p className="min-w-0 text-[0.73rem] font-black leading-tight text-slate-800">{title}</p>
+      <span className={["flex h-12 w-12 items-center justify-center rounded-full", iconClassName].join(" ")}>
+        <Icon aria-hidden="true" className="h-6 w-6" strokeWidth={2.3} />
+      </span>
+      <div className="min-w-0">
+        <p className="text-[0.92rem] font-black leading-tight text-slate-950">{title}</p>
+        <span className="mt-2 block h-1 w-8 rounded-full bg-saints-red" aria-hidden="true" />
+        <p className={["mt-2 whitespace-pre-line", bodyClassName].join(" ")}>{body}</p>
       </div>
-      <p className={["mt-1 whitespace-pre-line", bodyClassName].join(" ")}>
-        {body}
-      </p>
     </div>
   );
 }
