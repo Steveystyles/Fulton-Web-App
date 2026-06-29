@@ -530,16 +530,16 @@ function ScoreGuide() {
             <div className="flex h-12 items-center justify-center text-rose-200">
               <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
             </div>
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-2.5 py-3 text-center shadow-sm">
-              <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-2xl bg-saints-redSoft text-saints-red">
+            <div className="flex min-h-[8.6rem] flex-col items-center justify-center rounded-2xl bg-red-50 px-2.5 py-3 text-center shadow-sm">
+              <span className="mx-auto flex h-10 w-10 items-center justify-center rounded-2xl bg-white/80 text-saints-red shadow-sm">
                 <Star aria-hidden="true" className="h-5 w-5 fill-current" />
               </span>
-              <p className="mt-2 text-[0.78rem] font-black leading-tight text-slate-950">
+              <p className="mt-2 text-[0.82rem] font-black leading-tight text-slate-950">
                 Perfect
                 <br />
                 round
               </p>
-              <p className="mt-1 text-[0.72rem] font-black leading-tight text-saints-red">
+              <p className="mt-1 text-[0.76rem] font-black leading-tight text-saints-red">
                 +3 bonus pts
               </p>
             </div>
@@ -574,7 +574,6 @@ function ScoreGuide() {
               />
               <JourneyInfoCard
                 body={"Correct answer: level up\nMissed word: return to level 1"}
-                bodyClassName="text-[0.75rem] font-semibold leading-relaxed text-slate-600"
                 icon={TrendingUp}
                 iconClassName="bg-red-50 text-saints-red"
                 title="Level progression"
@@ -673,7 +672,7 @@ function WordleJourneyStep({
 
 function JourneyInfoCard({
   body,
-  bodyClassName = "text-[0.92rem] font-black leading-snug text-slate-950",
+  bodyClassName = "text-[0.82rem] font-black leading-snug text-slate-950",
   icon: Icon,
   iconClassName,
   title,
@@ -685,7 +684,7 @@ function JourneyInfoCard({
   title: string;
 }) {
   return (
-    <div className="min-w-0 rounded-2xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
+    <div className="flex min-h-[8.6rem] min-w-0 flex-col rounded-2xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
       <span
         className={[
           "flex h-10 w-10 items-center justify-center rounded-2xl",
