@@ -578,13 +578,13 @@ function ScoreGuide() {
 
         <section className="space-y-4">
           <GuideSectionTitle icon={CircleHelp} title="Quiz" />
-          <div className="grid grid-cols-[minmax(0,1fr)_0.75rem_minmax(0,1fr)_0.75rem_minmax(0,1fr)_0.75rem_minmax(0,1fr)] items-stretch gap-x-1">
+          <div className="grid grid-cols-[minmax(0,1fr)_0.55rem_minmax(0,1fr)_0.55rem_minmax(0,1fr)_0.55rem_minmax(0,1fr)] items-stretch gap-x-1">
             {QUIZ_JOURNEY.map((step, index) => (
               <QuizJourneyCard
                 key={step.label}
                 icon={step.icon}
                 isLast={index === QUIZ_JOURNEY.length - 1}
-                label={step.label}
+                label={step.label === "Perfect round" ? "Perfect" : step.label}
                 value={step.value}
                 variant={step.label === "Perfect round" ? "perfect" : "standard"}
               />
@@ -609,19 +609,19 @@ function ScoreGuide() {
           <div className="h-px bg-slate-200" aria-hidden="true" />
           <div className="grid grid-cols-2 gap-2">
             <JourneyInfoCard
-              body={"+2 pts\nper level"}
+              body={"+2 per level"}
               cardClassName="border-slate-200 bg-gradient-to-br from-white via-white to-slate-50"
               icon={Gift}
               iconClassName="bg-slate-100 text-slate-950 ring-1 ring-slate-200"
               title="Bonus"
             />
             <JourneyInfoCard
-              body={"Win: level up\nMiss: reset to 1"}
-              bodyClassName="text-[0.72rem] font-bold leading-snug text-slate-950"
+              body={"Win: up\nMiss: reset"}
+              bodyClassName="text-[0.72rem] font-bold leading-snug text-slate-950 min-[390px]:text-[0.76rem]"
               cardClassName="border-red-200 bg-gradient-to-br from-white via-white to-red-50/70"
               icon={TrendingUp}
               iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
-              title="Progress"
+              title="Level"
             />
           </div>
         </section>
@@ -674,7 +674,7 @@ function QuizJourneyCard({
     <>
       <div
         className={[
-          "grid min-h-[7.25rem] min-w-0 grid-rows-[2.75rem_2.25rem_1.25rem] justify-items-center rounded-xl border px-1.5 py-3 text-center shadow-sm",
+          "grid min-h-[7.25rem] min-w-0 grid-rows-[2.75rem_2.25rem_1.25rem] justify-items-center rounded-xl border px-1 py-3 text-center shadow-sm",
           isPerfect
             ? "border-red-200 bg-red-50/50"
             : "border-slate-200 bg-gradient-to-br from-white via-white to-slate-50",
@@ -693,7 +693,7 @@ function QuizJourneyCard({
         </p>
         <p
           className={[
-            "mx-auto max-w-[4.5rem] self-start text-[0.84rem] font-black leading-tight min-[390px]:text-[0.88rem]",
+            "mx-auto max-w-[4.5rem] self-start whitespace-nowrap text-[0.78rem] font-black leading-tight min-[390px]:text-[0.84rem]",
             isPerfect ? "text-saints-red" : "text-slate-950",
           ].join(" ")}
         >
@@ -796,7 +796,7 @@ function WordleJourneyConnector({
 
 function JourneyInfoCard({
   body,
-  bodyClassName = "text-[0.8rem] font-black leading-snug text-slate-950",
+  bodyClassName = "text-[0.72rem] font-black leading-snug text-slate-950 min-[390px]:text-[0.76rem]",
   cardClassName,
   icon: Icon,
   iconClassName,
@@ -812,17 +812,17 @@ function JourneyInfoCard({
   return (
     <div
       className={[
-        "grid min-h-[6.5rem] min-w-0 grid-cols-[3.2rem_minmax(0,1fr)] items-center gap-3 rounded-xl border px-3 py-3 shadow-sm",
+        "flex min-h-[6.75rem] min-w-0 flex-col items-center justify-center rounded-xl border px-2.5 py-3 text-center shadow-sm",
         cardClassName,
       ].join(" ")}
     >
-      <span className={["flex h-12 w-12 items-center justify-center rounded-full", iconClassName].join(" ")}>
-        <Icon aria-hidden="true" className="h-6 w-6" strokeWidth={2.3} />
+      <span className={["flex h-10 w-10 items-center justify-center rounded-full", iconClassName].join(" ")}>
+        <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
       </span>
-      <div className="min-w-0">
-        <p className="text-[0.92rem] font-black leading-tight text-slate-950">{title}</p>
-        <span className="mt-2 block h-1 w-8 rounded-full bg-saints-red" aria-hidden="true" />
-        <p className={["mt-2 whitespace-pre-line", bodyClassName].join(" ")}>{body}</p>
+      <div className="mt-2 min-w-0">
+        <p className="break-words text-[0.82rem] font-black leading-tight text-slate-950 min-[390px]:text-[0.88rem]">{title}</p>
+        <span className="mx-auto mt-1.5 block h-1 w-7 rounded-full bg-saints-red" aria-hidden="true" />
+        <p className={["mt-1.5 whitespace-pre-line break-words", bodyClassName].join(" ")}>{body}</p>
       </div>
     </div>
   );
