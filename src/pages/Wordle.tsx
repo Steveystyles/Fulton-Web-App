@@ -18,15 +18,22 @@ import {
   LoaderCircle,
   Trophy,
   Type,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
-import { api, type FeedbackColor, type WordleState } from "../lib/api";
+import { api, type FeedbackColor, type WordleGuess, type WordleState } from "../lib/api";
 import type { WordleDefinition } from "../lib/api";
 
 type GuessValidity = "empty" | "short" | "checking" | "valid" | "invalid";
+type WindowWithWebkitAudio = Window &
+  typeof globalThis & {
+    webkitAudioContext?: typeof AudioContext;
+  };
 
 const keyboardRows = ["qwertyuiop", "asdfghjkl", "zxcvbnm"];
 const largePrintStorageKey = "fultons-wordle-large-print";
+const soundStorageKey = "fultons-wordle-sound";
 const maxWordleLevel = 20;
 
 const colorPriority: Record<FeedbackColor, number> = {
@@ -36,15 +43,44 @@ const colorPriority: Record<FeedbackColor, number> = {
 };
 
 const tileColors: Record<FeedbackColor, string> = {
-  green: "border-emerald-700 bg-emerald-700 text-white",
-  yellow: "border-amber-300 bg-amber-300 text-slate-950",
-  grey: "border-slate-700 bg-slate-700 text-white",
+  green: "wordle-tile--green",
+  yellow: "wordle-tile--yellow",
+  grey: "wordle-tile--grey",
 };
 
 const keyboardColors: Record<FeedbackColor, string> = {
-  green: "bg-emerald-700 text-white",
-  yellow: "bg-amber-300 text-slate-950",
-  grey: "bg-slate-700 text-white",
+  green: "wordle-key--green",
+  yellow: "wordle-key--yellow",
+  grey: "wordle-key--grey",
+};
+
+const letterScores: Record<string, number> = {
+  a: 1,
+  e: 1,
+  i: 1,
+  o: 1,
+  u: 1,
+  l: 1,
+  n: 1,
+  s: 1,
+  t: 1,
+  r: 1,
+  d: 2,
+  g: 2,
+  b: 3,
+  c: 3,
+  m: 3,
+  p: 3,
+  f: 4,
+  h: 4,
+  v: 4,
+  w: 4,
+  y: 4,
+  k: 5,
+  j: 8,
+  x: 8,
+  q: 10,
+  z: 10,
 };
 
 function difficultyBadgeClasses(level: number) {
@@ -82,6 +118,88 @@ function writeLargePrintPreference(enabled: boolean) {
   } catch {
     // Keep the toggle usable even when browser storage is unavailable.
   }
+}
+
+function readSoundPreference() {
+  if (typeof window === "undefined") {
+    return true;
+  }
+
+  try {
+    return window.localStorage.getItem(soundStorageKey) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeSoundPreference(enabled: boolean) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(soundStorageKey, enabled ? "1" : "0");
+  } catch {
+    // Sound still toggles for the current session if storage is unavailable.
+  }
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+}
+
+function getLetterScore(letter: string) {
+  return letterScores[letter.toLowerCase()] ?? 1;
+}
+
+function buildKeyboardState(guesses: WordleGuess[]) {
+  const statuses = new Map<string, FeedbackColor>();
+
+  for (const submittedGuess of guesses) {
+    for (const tile of submittedGuess.feedback) {
+      const letter = tile.letter.toLowerCase();
+      const previous = statuses.get(letter);
+      if (previous === undefined || colorPriority[tile.color] > colorPriority[previous]) {
+        statuses.set(letter, tile.color);
+      }
+    }
+  }
+
+  return statuses;
+}
+
+function playTone(
+  context: AudioContext,
+  startFrequency: number,
+  duration: number,
+  delay: number,
+  type: OscillatorType,
+  volume: number,
+  endFrequency = startFrequency,
+) {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  const start = context.currentTime + delay;
+  const end = start + duration;
+
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(startFrequency, start);
+  oscillator.frequency.exponentialRampToValueAtTime(Math.max(40, endFrequency), end);
+
+  gain.gain.setValueAtTime(0.0001, start);
+  gain.gain.exponentialRampToValueAtTime(volume, start + 0.025);
+  gain.gain.exponentialRampToValueAtTime(0.0001, end);
+
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start(start);
+  oscillator.stop(end + 0.02);
 }
 
 function DictionaryDefinitionCard({
@@ -186,6 +304,8 @@ export function Wordle() {
   const wheelUnlockTimeoutRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const touchGestureHandledRef = useRef(false);
+  const mountedRef = useRef(true);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const [state, setState] = useState<WordleState | null>(null);
   const [guess, setGuess] = useState("");
   const [guessValidity, setGuessValidity] = useState<GuessValidity>("empty");
@@ -196,7 +316,13 @@ export function Wordle() {
   const [definitionError, setDefinitionError] = useState("");
   const [definitionLoading, setDefinitionLoading] = useState(false);
   const [largePrint, setLargePrint] = useState(readLargePrintPreference);
+  const [soundEnabled, setSoundEnabled] = useState(readSoundPreference);
   const [winDialogDismissed, setWinDialogDismissed] = useState(false);
+  const [revealingRowIndex, setRevealingRowIndex] = useState<number | null>(null);
+  const [revealedLetters, setRevealedLetters] = useState(0);
+  const [keyboardOverride, setKeyboardOverride] = useState<Map<string, FeedbackColor> | null>(null);
+  const [keyboardAnimatingLetter, setKeyboardAnimatingLetter] = useState("");
+  const [animationMessage, setAnimationMessage] = useState("");
   const [rowScrollState, setRowScrollState] = useState({
     canScrollDown: false,
     canScrollUp: false,
@@ -213,11 +339,25 @@ export function Wordle() {
   const visibleStartRowIndex = largePrint
     ? Math.max(0, activeRowIndex - 1)
     : 0;
-  const canSubmit = state !== null && !isComplete && guessValidity === "valid" && !submitting;
+  const isAnimatingReveal =
+    revealingRowIndex !== null || keyboardOverride !== null || animationMessage !== "";
+  const canSubmit =
+    state !== null && !isComplete && guessValidity === "valid" && !submitting && !isAnimatingReveal;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     writeLargePrintPreference(largePrint);
   }, [largePrint]);
+
+  useEffect(() => {
+    writeSoundPreference(soundEnabled);
+  }, [soundEnabled]);
 
   useEffect(
     () => () => {
@@ -265,6 +405,9 @@ export function Wordle() {
     let active = true;
 
     if (!isComplete) {
+      setDefinition(null);
+      setDefinitionError("");
+      setDefinitionLoading(false);
       return;
     }
 
@@ -347,7 +490,7 @@ export function Wordle() {
 
   const addLetter = useCallback(
     (letter: string) => {
-      if (isComplete || submitting) {
+      if (isComplete || submitting || isAnimatingReveal) {
         return;
       }
       const nextLetter = letter.slice(0, 1).toLowerCase();
@@ -362,16 +505,143 @@ export function Wordle() {
         return `${currentGuess}${nextLetter}`;
       });
     },
-    [isComplete, submitting, wordLength],
+    [isAnimatingReveal, isComplete, submitting, wordLength],
   );
 
   const removeLetter = useCallback(() => {
-    if (isComplete || submitting) {
+    if (isComplete || submitting || isAnimatingReveal) {
       return;
     }
     setError("");
     setGuess((currentGuess) => currentGuess.slice(0, -1));
-  }, [isComplete, submitting]);
+  }, [isAnimatingReveal, isComplete, submitting]);
+
+  const keyboardState = useMemo(() => buildKeyboardState(guesses), [guesses]);
+  const visibleKeyboardState = keyboardOverride ?? keyboardState;
+
+  const getAudioContext = useCallback(() => {
+    if (!soundEnabled || typeof window === "undefined") {
+      return null;
+    }
+
+    const AudioContextConstructor =
+      window.AudioContext ?? (window as WindowWithWebkitAudio).webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      return null;
+    }
+
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContextConstructor();
+    }
+
+    void audioContextRef.current.resume?.();
+    return audioContextRef.current;
+  }, [soundEnabled]);
+
+  const playFeedbackSound = useCallback(
+    (color: FeedbackColor) => {
+      const context = getAudioContext();
+      if (context === null) {
+        return;
+      }
+
+      if (color === "green") {
+        [523.25, 659.25, 783.99].forEach((frequency, index) => {
+          playTone(context, frequency, 0.1, index * 0.055, "triangle", 0.08);
+        });
+        return;
+      }
+
+      if (color === "yellow") {
+        playTone(context, 329.63, 0.34, 0, "sine", 0.055, 392);
+        return;
+      }
+
+      playTone(context, 220, 0.24, 0, "sawtooth", 0.045, 146.83);
+    },
+    [getAudioContext],
+  );
+
+  const runRevealAnimation = useCallback(
+    async (response: WordleState, previousKeyboardState: Map<string, FeedbackColor>) => {
+      const latestGuess = response.result.guesses[response.result.guesses.length - 1];
+      if (latestGuess === undefined) {
+        return;
+      }
+
+      const nextKeyboardState = buildKeyboardState(response.result.guesses);
+
+      if (prefersReducedMotion()) {
+        setKeyboardOverride(null);
+        setRevealingRowIndex(null);
+        setRevealedLetters(0);
+        setAnimationMessage("");
+        setKeyboardAnimatingLetter("");
+        return;
+      }
+
+      setKeyboardOverride(new Map(previousKeyboardState));
+      setRevealingRowIndex(response.result.guesses.length - 1);
+      setRevealedLetters(0);
+      setAnimationMessage("Revealing your guess");
+
+      for (let index = 0; index < latestGuess.feedback.length; index += 1) {
+        const tile = latestGuess.feedback[index];
+        playFeedbackSound(tile.color);
+        setRevealedLetters(index + 1);
+        await wait(330);
+        if (!mountedRef.current) {
+          return;
+        }
+      }
+
+      await wait(100);
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setAnimationMessage("Updating keyboard");
+      const seenLetters = new Set<string>();
+
+      for (const tile of latestGuess.feedback) {
+        const letter = tile.letter.toLowerCase();
+        if (seenLetters.has(letter)) {
+          continue;
+        }
+        seenLetters.add(letter);
+
+        const nextStatus = nextKeyboardState.get(letter);
+        const previousStatus = previousKeyboardState.get(letter);
+        if (
+          nextStatus === undefined ||
+          (previousStatus !== undefined && colorPriority[nextStatus] < colorPriority[previousStatus])
+        ) {
+          continue;
+        }
+
+        setKeyboardAnimatingLetter(letter);
+        setKeyboardOverride((current) => {
+          const updated = new Map(current ?? previousKeyboardState);
+          updated.set(letter, nextStatus);
+          return updated;
+        });
+        await wait(180);
+        if (!mountedRef.current) {
+          return;
+        }
+        setKeyboardAnimatingLetter("");
+        await wait(50);
+      }
+
+      setKeyboardOverride(null);
+      setRevealingRowIndex(null);
+      setRevealedLetters(0);
+      setAnimationMessage("");
+      setKeyboardAnimatingLetter("");
+    },
+    [playFeedbackSound],
+  );
 
   const submitGuess = useCallback(async () => {
     if (!canSubmit || state === null) {
@@ -381,6 +651,7 @@ export function Wordle() {
       return;
     }
 
+    const previousKeyboardState = new Map(keyboardState);
     setError("");
     setSubmitting(true);
 
@@ -388,12 +659,15 @@ export function Wordle() {
       const response = await api.submitWordleGuess(guess);
       setState(response);
       setGuess("");
+      await runRevealAnimation(response, previousKeyboardState);
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Guess failed.");
     } finally {
-      setSubmitting(false);
+      if (mountedRef.current) {
+        setSubmitting(false);
+      }
     }
-  }, [canSubmit, guess, guessValidity, state, wordLength]);
+  }, [canSubmit, guess, guessValidity, keyboardState, runRevealAnimation, state, wordLength]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -425,21 +699,6 @@ export function Wordle() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [addLetter, removeLetter, submitGuess]);
 
-  const keyboardState = useMemo(() => {
-    const statuses = new Map<string, FeedbackColor>();
-
-    for (const submittedGuess of guesses) {
-      for (const tile of submittedGuess.feedback) {
-        const previous = statuses.get(tile.letter);
-        if (previous === undefined || colorPriority[tile.color] > colorPriority[previous]) {
-          statuses.set(tile.letter, tile.color);
-        }
-      }
-    }
-
-    return statuses;
-  }, [guesses]);
-
   const statusText = useMemo(() => {
     if (state === null) {
       return loading ? "Loading daily game" : "Daily game unavailable";
@@ -447,7 +706,7 @@ export function Wordle() {
 
     if (state.result.status === "won") {
       const guessLabel = state.result.attemptsUsed === 1 ? "guess" : "guesses";
-      return `Solved in ${state.result.attemptsUsed} ${guessLabel} - ${state.result.score} pts`;
+      return `Solved in ${state.result.attemptsUsed} ${guessLabel}`;
     }
 
     if (state.result.status === "lost") {
@@ -606,7 +865,7 @@ export function Wordle() {
   const controlBarClass =
     "mx-auto w-full max-w-[22rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm";
   const settingsRowClass = state
-    ? "grid grid-cols-[minmax(0,7.15rem)_minmax(0,1fr)] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,7.35rem)_minmax(0,1fr)]"
+    ? "grid grid-cols-[minmax(0,6.7rem)_minmax(0,1fr)_3.15rem] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,7.1rem)_minmax(0,1fr)_3.3rem]"
     : "grid grid-cols-1";
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
@@ -614,30 +873,24 @@ export function Wordle() {
   const switchThumbClass = largePrint ? "translate-x-3" : "translate-x-0";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
   const formSpacingClass = largePrint ? "space-y-2.5" : "space-y-3";
-  const boardWidthClass = largePrint ? "max-w-full" : "max-w-[17.5rem]";
+  const boardWidthClass = largePrint ? "max-w-full" : "max-w-[15.25rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
     ? "wordle-board-window aspect-[2.56/1] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md pb-0.5 pt-1.5"
     : "";
   const boardRowsKey = largePrint ? `visible-row-${visibleStartRowIndex}` : "all-rows";
   const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
-  const tileClass = largePrint
-    ? "w-full text-[2.7rem] min-[380px]:text-[2.9rem]"
-    : "w-full text-[1.7rem] min-[380px]:text-[1.95rem]";
-  const keyboardSpacingClass = largePrint ? "space-y-1.5" : "space-y-1.5";
+  const tileClass = largePrint ? "wordle-tile--large" : "";
+  const keyboardSpacingClass = largePrint ? "wordle-keyboard wordle-keyboard--large" : "wordle-keyboard";
   const keyboardRowGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const keyboardMiddleRowPaddingClass = largePrint ? "px-2" : "px-3";
-  const keyClass = largePrint
-    ? "min-h-[3.35rem] text-[1.08rem] min-[380px]:min-h-[3.55rem] min-[380px]:text-[1.16rem]"
-    : "min-h-10 text-[0.8rem] min-[380px]:min-h-[2.9rem]";
-  const actionKeyClass = largePrint
-    ? "min-h-[3.35rem] text-[0.9rem] min-[380px]:min-h-[3.55rem] min-[380px]:text-[0.94rem]"
-    : "min-h-10 text-[0.72rem] min-[380px]:min-h-[2.9rem]";
+  const keyClass = largePrint ? "wordle-key--large" : "";
+  const actionKeyClass = largePrint ? "wordle-key--large" : "";
   const validationClass = largePrint ? "min-h-6 text-base" : "min-h-5 text-sm";
   const messageClass = largePrint ? "text-base" : "text-sm";
   const definitionEyebrowClass = largePrint ? "text-xs" : "text-[0.68rem]";
   const nextLevel = Math.min(maxWordleLevel, (state?.game.difficulty ?? 1) + 1);
-  const showWinDialog = gameStatus === "won" && !winDialogDismissed;
+  const showWinDialog = gameStatus === "won" && !winDialogDismissed && !isAnimatingReveal;
   const winGuessLabel = state?.result.attemptsUsed === 1 ? "guess" : "guesses";
   const winSummaryText =
     state?.result.status === "won"
@@ -645,11 +898,11 @@ export function Wordle() {
       : "";
 
   return (
-    <section className="page-fade" aria-label="Wordle game" data-large-print={largePrint}>
-      <section className={["max-w-full overflow-hidden rounded-lg saints-card", cardPaddingClass].join(" ")}>
+    <section className="page-fade wordle-game" aria-label="Wordle game" data-large-print={largePrint}>
+      <section className={["max-w-full overflow-hidden rounded-lg saints-card wordle-game-card", cardPaddingClass].join(" ")}>
         <form className={formSpacingClass} onSubmit={handleSubmit}>
           <div className="space-y-2">
-            {statusText ? (
+            {statusText && !isAnimatingReveal ? (
               <p className={["text-center font-black text-slate-700", statusTextClass].join(" ")}>
                 {statusText}
               </p>
@@ -713,6 +966,20 @@ export function Wordle() {
                     />
                   </span>
                 </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSoundEnabled((current) => !current)}
+                  aria-pressed={soundEnabled}
+                  aria-label={soundEnabled ? "Turn Wordle sound off" : "Turn Wordle sound on"}
+                  className="flex min-h-[3.3rem] min-w-0 items-center justify-center bg-white px-2 py-2 text-slate-700 transition hover:bg-slate-50 hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+                >
+                  {soundEnabled ? (
+                    <Volume2 aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+                  ) : (
+                    <VolumeX aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+                  )}
+                </button>
               </div>
 
               {largePrint ? (
@@ -763,6 +1030,7 @@ export function Wordle() {
               {Array.from({ length: maxAttempts }, (_, rowIndex) => {
                 const submittedGuess = guesses[rowIndex];
                 const isDraftRow = submittedGuess === undefined && rowIndex === guesses.length;
+                const isRevealingRow = revealingRowIndex === rowIndex;
                 const draft = isDraftRow && !isComplete ? guess.toUpperCase() : "";
 
                 return (
@@ -770,24 +1038,34 @@ export function Wordle() {
                     key={rowIndex}
                     data-wordle-row={rowIndex}
                     data-active-row={rowIndex === activeRowIndex}
-                    className={["grid", boardGapClass].join(" ")}
+                    className={["grid wordle-board-row", boardGapClass].join(" ")}
                     style={{ gridTemplateColumns: `repeat(${wordLength}, minmax(0, 1fr))` }}
                   >
                     {Array.from({ length: wordLength }, (_, letterIndex) => {
                       const feedbackTile = submittedGuess?.feedback[letterIndex];
                       const letter = feedbackTile?.letter.toUpperCase() ?? draft[letterIndex] ?? "";
+                      const shouldShowFeedback =
+                        feedbackTile !== undefined &&
+                        (!isRevealingRow || letterIndex < revealedLetters);
                       const colorClass =
-                        feedbackTile !== undefined
+                        feedbackTile !== undefined && shouldShowFeedback
                           ? tileColors[feedbackTile.color]
-                          : "border-slate-300 bg-white text-slate-950";
+                          : "wordle-tile--empty";
+                      const isLatestReveal =
+                        isRevealingRow && shouldShowFeedback && letterIndex === revealedLetters - 1;
 
                       return (
                         <div
                           key={letterIndex}
+                          data-score={letter ? getLetterScore(letter) : undefined}
                           className={[
-                            "flex aspect-square items-center justify-center rounded-md border-2 font-black uppercase leading-none shadow-sm",
+                            "wordle-tile",
                             tileClass,
+                            letter ? "wordle-tile--filled" : "",
                             colorClass,
+                            feedbackTile !== undefined && !shouldShowFeedback ? "wordle-tile--pending" : "",
+                            shouldShowFeedback ? "wordle-tile--revealed" : "",
+                            isLatestReveal ? "wordle-tile--revealing" : "",
                           ].join(" ")}
                         >
                           {letter}
@@ -801,7 +1079,9 @@ export function Wordle() {
           </div>
 
           <div aria-live="polite" className={["text-center font-black", validationClass].join(" ")}>
-            {guessValidity === "checking" ? (
+            {animationMessage ? (
+              <span className="text-saints-red">{animationMessage}</span>
+            ) : guessValidity === "checking" ? (
               <span className="text-slate-500">Checking word</span>
             ) : guessValidity === "invalid" ? (
               <span className="text-saints-red">Not in word list</span>
@@ -830,7 +1110,7 @@ export function Wordle() {
                     onClick={() => void submitGuess()}
                     disabled={!canSubmit}
                     className={[
-                      "flex items-center justify-center rounded-md bg-saints-red px-1 font-black uppercase text-white transition disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500",
+                      "wordle-key wordle-key--action wordle-key--enter",
                       actionKeyClass,
                     ].join(" ")}
                   >
@@ -839,20 +1119,22 @@ export function Wordle() {
                 ) : null}
 
                 {row.split("").map((letter) => {
-                  const status = keyboardState.get(letter);
-                  const colorClass =
-                    status === undefined ? "bg-slate-100 text-slate-950" : keyboardColors[status];
+                  const status = visibleKeyboardState.get(letter);
+                  const colorClass = status === undefined ? "" : keyboardColors[status];
+                  const isEliminated = status === "grey";
 
                   return (
                     <button
                       key={letter}
                       type="button"
                       onClick={() => addLetter(letter)}
-                      disabled={isComplete || submitting}
+                      disabled={isComplete || submitting || isAnimatingReveal || isEliminated}
                       className={[
-                        "flex items-center justify-center rounded-md font-black uppercase shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed",
+                        "wordle-key",
                         keyClass,
                         colorClass,
+                        isEliminated ? "wordle-key--eliminated" : "",
+                        keyboardAnimatingLetter === letter ? "wordle-key--updating" : "",
                       ].join(" ")}
                     >
                       {letter}
@@ -865,9 +1147,9 @@ export function Wordle() {
                     type="button"
                     aria-label="Delete letter"
                     onClick={removeLetter}
-                    disabled={isComplete || submitting || guess.length === 0}
+                    disabled={isComplete || submitting || isAnimatingReveal || guess.length === 0}
                     className={[
-                      "flex items-center justify-center rounded-md bg-slate-100 text-slate-950 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-saints-red/30 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400",
+                      "wordle-key wordle-key--action",
                       actionKeyClass,
                     ].join(" ")}
                   >
@@ -948,16 +1230,7 @@ export function Wordle() {
               </p>
             </div>
 
-            <dl className="grid grid-cols-2 gap-2 px-4 pb-4">
-              <div className="flex min-h-[5.25rem] flex-col justify-center rounded-lg bg-emerald-50 px-3 py-3 text-center ring-1 ring-emerald-200">
-                <dt className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
-                  Score
-                </dt>
-                <dd className="mt-1 text-2xl font-black leading-none text-emerald-900">{state?.result.score ?? 0}</dd>
-                <dd className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
-                  points
-                </dd>
-              </div>
+            <dl className="px-4 pb-4">
               <div className="flex min-h-[5.25rem] flex-col justify-center rounded-lg bg-saints-redSoft px-3 py-3 text-center ring-1 ring-red-200">
                 <dt className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
                   Next level
