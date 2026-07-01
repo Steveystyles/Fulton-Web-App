@@ -922,7 +922,7 @@ export function Wordle() {
   const switchTrackClass = largePrint ? "bg-saints-red" : "bg-slate-300";
   const switchThumbClass = largePrint ? "translate-x-3" : "translate-x-0";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
-  const formSpacingClass = largePrint ? "space-y-2.5" : "space-y-3";
+  const formSpacingClass = largePrint ? "space-y-1.5" : "space-y-3";
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[15.25rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
@@ -932,11 +932,11 @@ export function Wordle() {
   const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
   const tileClass = largePrint ? "wordle-tile--large" : "";
   const keyboardSpacingClass = largePrint ? "wordle-keyboard wordle-keyboard--large" : "wordle-keyboard";
-  const keyboardRowGapClass = largePrint ? "gap-1.5" : "gap-1.5";
+  const keyboardRowGapClass = largePrint ? "gap-1" : "gap-1.5";
   const keyboardMiddleRowPaddingClass = largePrint ? "px-2" : "px-3";
   const keyClass = largePrint ? "wordle-key--large" : "";
   const actionKeyClass = largePrint ? "wordle-key--large" : "";
-  const validationClass = largePrint ? "min-h-6 text-base" : "min-h-5 text-sm";
+  const validationClass = largePrint ? "min-h-1 text-xs leading-none" : "min-h-5 text-sm";
   const messageClass = largePrint ? "text-base" : "text-sm";
   const definitionEyebrowClass = largePrint ? "text-xs" : "text-[0.68rem]";
   const nextLevel = Math.min(maxWordleLevel, (state?.game.difficulty ?? 1) + 1);
@@ -1258,7 +1258,7 @@ export function Wordle() {
           aria-describedby="wordle-win-description"
         >
           <section className="wordle-win-modal max-h-[calc(100dvh_-_8.5rem_-_env(safe-area-inset-bottom))] w-full max-w-[350px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_7rem_-_env(safe-area-inset-bottom))]">
-            <div className="relative p-3.5">
+            <div className="relative p-3">
               <button
                 type="button"
                 onClick={() => setWinDialogDismissed(true)}
@@ -1268,37 +1268,37 @@ export function Wordle() {
                 <X aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
               </button>
 
-              <div className="flex items-center gap-3 pr-9 text-left">
-                <div className="wordle-win-badge flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-white shadow-lg shadow-emerald-900/20">
-                  <Trophy aria-hidden="true" className="h-6 w-6" strokeWidth={2.5} />
-                </div>
-                <div className="min-w-0">
+              <div className="pr-9 text-left">
+                <div className="flex items-center gap-2.5">
+                  <div className="wordle-win-badge flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-white shadow-lg shadow-emerald-900/20">
+                    <Trophy aria-hidden="true" className="h-5 w-5" strokeWidth={2.5} />
+                  </div>
                   <p className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
                     Correct guess
                   </p>
-                  <h2 id="wordle-win-title" className="mt-0.5 text-2xl font-black leading-none text-slate-950">
-                    Congratulations
-                  </h2>
-                  <p id="wordle-win-description" className="mt-1 text-sm font-bold text-slate-500">
-                    {winSummaryText}
-                  </p>
                 </div>
+                <h2 id="wordle-win-title" className="mt-2 text-[1.55rem] font-black leading-none text-slate-950">
+                  Congratulations
+                </h2>
+                <p id="wordle-win-description" className="mt-1 text-sm font-bold leading-tight text-slate-500">
+                  {winSummaryText}
+                </p>
               </div>
 
               <dl className="mt-3 grid grid-cols-2 gap-2">
-                <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
+                <div className="rounded-lg bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200">
                   <dt className="text-[0.65rem] font-black uppercase tracking-normal text-slate-500">
                     Solved
                   </dt>
-                  <dd className="mt-1 text-lg font-black leading-none text-slate-950">
+                  <dd className="mt-1 whitespace-nowrap text-base font-black leading-tight text-slate-950">
                     {state?.result.attemptsUsed} {winGuessLabel}
                   </dd>
                 </div>
-                <div className="rounded-lg bg-saints-redSoft px-3 py-2 ring-1 ring-red-200">
+                <div className="rounded-lg bg-saints-redSoft px-2.5 py-2 ring-1 ring-red-200">
                   <dt className="text-[0.65rem] font-black uppercase tracking-normal text-saints-red">
                     Next level
                   </dt>
-                  <dd className="mt-1 text-xl font-black leading-none text-slate-950">{nextLevel}</dd>
+                  <dd className="mt-1 text-lg font-black leading-tight text-slate-950">{nextLevel}</dd>
                 </div>
               </dl>
 
