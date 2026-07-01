@@ -343,10 +343,10 @@ input[type="date"] {
 }
 
 .wordle-game[data-large-print="true"] .wordle-keyboard--large {
-  position: sticky;
-  bottom: calc(5.6rem + env(safe-area-inset-bottom, 0px));
-  z-index: 25;
+  position: relative;
+  z-index: 1;
   margin-inline: -0.15rem;
+  margin-top: 0.45rem;
   border: 1px solid rgba(15, 23, 42, 0.14);
   border-radius: 0.9rem;
   padding: 0.45rem;
@@ -599,7 +599,6 @@ input[type="date"] {
 
 @media (max-width: 380px) {
   .wordle-game[data-large-print="true"] .wordle-keyboard--large {
-    bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
     margin-inline: -0.3rem;
     padding: 0.38rem;
   }
