@@ -14,10 +14,8 @@ import {
   ChevronUp,
   Delete,
   ExternalLink,
-  Hash,
   LoaderCircle,
   Trophy,
-  Type,
   Volume2,
   VolumeX,
   X,
@@ -221,7 +219,7 @@ function DictionaryDefinitionCard({
     (definition?.definition
       ? [{ definition: definition.definition, partOfSpeech: definition.partOfSpeech }]
       : []);
-  const visibleDefinitions = definitionItems.slice(0, compact ? 2 : 3);
+  const visibleDefinitions = definitionItems.slice(0, compact ? 1 : 3);
   const sourceUrl = definition?.sourceUrl ?? "https://dictionaryapi.dev/";
   const termClass = compact ? (largePrint ? "text-2xl" : "text-xl") : largePrint ? "text-3xl" : "text-2xl";
   const bodyClass = compact
@@ -323,6 +321,7 @@ export function Wordle() {
   const [keyboardOverride, setKeyboardOverride] = useState<Map<string, FeedbackColor> | null>(null);
   const [keyboardAnimatingLetter, setKeyboardAnimatingLetter] = useState("");
   const [animationMessage, setAnimationMessage] = useState("");
+  const [largeBoardWindowHeight, setLargeBoardWindowHeight] = useState<number | null>(null);
   const [rowScrollState, setRowScrollState] = useState({
     canScrollDown: false,
     canScrollUp: false,
@@ -484,9 +483,60 @@ export function Wordle() {
 
     const row = board.querySelector<HTMLElement>(`[data-wordle-row="${visibleStartRowIndex}"]`);
     if (row !== null) {
-      board.scrollTo({ top: Math.max(0, row.offsetTop - 4), behavior: "auto" });
+      board.scrollTo({ top: Math.max(0, row.offsetTop - 6), behavior: "auto" });
     }
   }, [largePrint, visibleStartRowIndex]);
+
+  useEffect(() => {
+    if (!largePrint) {
+      setLargeBoardWindowHeight(null);
+      return;
+    }
+
+    const board = boardScrollRef.current;
+    if (board === null) {
+      return;
+    }
+
+    const updateBoardWindowHeight = () => {
+      const row = board.querySelector<HTMLElement>("[data-wordle-row]");
+      const rowGroup = board.firstElementChild;
+      if (row === null || !(rowGroup instanceof HTMLElement)) {
+        return;
+      }
+
+      const visibleRows = Math.min(2, maxAttempts);
+      const rowGap = Number.parseFloat(window.getComputedStyle(rowGroup).rowGap || "0") || 0;
+      const rowHeight = row.getBoundingClientRect().height;
+      if (rowHeight <= 0 || visibleRows <= 0) {
+        return;
+      }
+
+      const verticalBuffer = Math.max(rowGap, 6);
+      const nextHeight = Math.ceil(rowHeight * visibleRows + rowGap * (visibleRows - 1) + verticalBuffer * 2 - 4);
+      setLargeBoardWindowHeight((currentHeight) =>
+        currentHeight !== null && Math.abs(currentHeight - nextHeight) < 1 ? currentHeight : nextHeight,
+      );
+    };
+
+    updateBoardWindowHeight();
+    const animationFrame = window.requestAnimationFrame(updateBoardWindowHeight);
+    const settledLayoutTimer = window.setTimeout(updateBoardWindowHeight, 250);
+    window.addEventListener("resize", updateBoardWindowHeight);
+
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateBoardWindowHeight);
+    resizeObserver?.observe(board);
+    if (board.firstElementChild instanceof HTMLElement) {
+      resizeObserver?.observe(board.firstElementChild);
+    }
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.clearTimeout(settledLayoutTimer);
+      window.removeEventListener("resize", updateBoardWindowHeight);
+      resizeObserver?.disconnect();
+    };
+  }, [largePrint, maxAttempts, wordLength]);
 
   const addLetter = useCallback(
     (letter: string) => {
@@ -865,7 +915,7 @@ export function Wordle() {
   const controlBarClass =
     "mx-auto w-full max-w-[22rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm";
   const settingsRowClass = state
-    ? "grid grid-cols-[minmax(0,6.7rem)_minmax(0,1fr)_3.15rem] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,7.1rem)_minmax(0,1fr)_3.3rem]"
+    ? "grid grid-cols-[minmax(0,5.6rem)_minmax(0,1fr)_3.15rem] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,5.9rem)_minmax(0,1fr)_3.3rem]"
     : "grid grid-cols-1";
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
@@ -876,7 +926,7 @@ export function Wordle() {
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[15.25rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
-    ? "wordle-board-window aspect-[2.56/1] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md pb-0.5 pt-1.5"
+    ? "wordle-board-window h-[9.15rem] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md px-0.5 py-1.5"
     : "";
   const boardRowsKey = largePrint ? `visible-row-${visibleStartRowIndex}` : "all-rows";
   const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
@@ -920,12 +970,9 @@ export function Wordle() {
                       state.game.difficulty > 15 ? "text-rose-800" : "",
                     ].join(" ")}
                   >
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
-                      <Hash aria-hidden="true" className="h-4 w-4" />
-                    </span>
                     <span className="min-w-0">
                       <span className="block text-[0.62rem] font-black uppercase leading-none tracking-normal text-slate-500">
-                        Difficulty
+                        Level
                       </span>
                       <span className="mt-1 block text-2xl font-black leading-none">
                         {state.game.difficulty}
@@ -940,15 +987,18 @@ export function Wordle() {
                   aria-pressed={largePrint}
                   aria-label={largePrint ? "Use standard text size" : "Use large text size"}
                   data-testid="wordle-text-size-toggle"
-                  className="flex min-h-[3.3rem] min-w-0 items-center justify-between gap-1.5 bg-white px-2 py-2 text-left text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+                  className="flex min-h-[3.3rem] min-w-0 items-center justify-center gap-3 bg-white px-2 py-2 text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
                 >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-saints-redSoft text-saints-red ring-1 ring-red-100">
-                      <Type aria-hidden="true" className="h-4 w-4" />
-                    </span>
-                    <span className="min-w-0 text-[0.66rem] font-black uppercase leading-[0.9] tracking-normal text-slate-700 min-[380px]:text-[0.68rem]">
-                      <span className="block">Large</span>
-                      <span className="block">text</span>
+                  <span className="sr-only">Large text</span>
+                  <span className="flex shrink-0 items-end gap-1.5" aria-hidden="true">
+                    <span className="pb-0.5 text-sm font-black leading-none text-slate-500">t</span>
+                    <span
+                      className={[
+                        "text-[1.75rem] font-black leading-none transition",
+                        largePrint ? "text-saints-red" : "text-slate-800",
+                      ].join(" ")}
+                    >
+                      T
                     </span>
                   </span>
                   <span
@@ -1023,6 +1073,7 @@ export function Wordle() {
               boardFrameClass,
               boardWidthClass,
             ].join(" ")}
+            style={largePrint && largeBoardWindowHeight !== null ? { height: `${largeBoardWindowHeight}px` } : undefined}
             aria-label="Wordle board"
             data-testid="wordle-board-scroll"
           >
@@ -1200,48 +1251,59 @@ export function Wordle() {
 
       {showWinDialog ? (
         <div
-          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.75rem+env(safe-area-inset-bottom))] pt-20 min-[540px]:items-center min-[540px]:pt-4"
+          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="wordle-win-title"
           aria-describedby="wordle-win-description"
         >
-          <section className="wordle-win-modal max-h-[calc(100dvh_-_10.75rem_-_env(safe-area-inset-bottom))] w-full max-w-[360px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_7rem_-_env(safe-area-inset-bottom))]">
-            <div className="relative px-4 pb-4 pt-5 text-center">
+          <section className="wordle-win-modal max-h-[calc(100dvh_-_8.5rem_-_env(safe-area-inset-bottom))] w-full max-w-[350px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_7rem_-_env(safe-area-inset-bottom))]">
+            <div className="relative p-3.5">
               <button
                 type="button"
                 onClick={() => setWinDialogDismissed(true)}
                 aria-label="Close win message"
-                className="absolute right-3 top-3 flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-700 transition hover:bg-slate-200 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-700 transition hover:bg-slate-200 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
               >
-                <X aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+                <X aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
               </button>
-              <div className="wordle-win-badge mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-emerald-700 text-white shadow-lg shadow-emerald-900/20">
-                <Trophy aria-hidden="true" className="h-7 w-7" strokeWidth={2.5} />
-              </div>
-              <p className="mt-3 text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
-                Correct guess
-              </p>
-              <h2 id="wordle-win-title" className="mt-1 text-[1.65rem] font-black leading-tight text-slate-950">
-                Congratulations
-              </h2>
-              <p id="wordle-win-description" className="mt-1 text-sm font-bold text-slate-500">
-                {winSummaryText}
-              </p>
-            </div>
 
-            <dl className="px-4 pb-4">
-              <div className="flex min-h-[5.25rem] flex-col justify-center rounded-lg bg-saints-redSoft px-3 py-3 text-center ring-1 ring-red-200">
-                <dt className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
-                  Next level
-                </dt>
-                <dd className="mt-1 text-2xl font-black leading-none text-slate-950">{nextLevel}</dd>
+              <div className="flex items-center gap-3 pr-9 text-left">
+                <div className="wordle-win-badge flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-white shadow-lg shadow-emerald-900/20">
+                  <Trophy aria-hidden="true" className="h-6 w-6" strokeWidth={2.5} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[0.68rem] font-black uppercase tracking-normal text-emerald-700">
+                    Correct guess
+                  </p>
+                  <h2 id="wordle-win-title" className="mt-0.5 text-2xl font-black leading-none text-slate-950">
+                    Congratulations
+                  </h2>
+                  <p id="wordle-win-description" className="mt-1 text-sm font-bold text-slate-500">
+                    {winSummaryText}
+                  </p>
+                </div>
               </div>
-            </dl>
 
-            <div className="px-4 pb-4">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="mb-3 flex items-center justify-between gap-2">
+              <dl className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
+                  <dt className="text-[0.65rem] font-black uppercase tracking-normal text-slate-500">
+                    Solved
+                  </dt>
+                  <dd className="mt-1 text-lg font-black leading-none text-slate-950">
+                    {state?.result.attemptsUsed} {winGuessLabel}
+                  </dd>
+                </div>
+                <div className="rounded-lg bg-saints-redSoft px-3 py-2 ring-1 ring-red-200">
+                  <dt className="text-[0.65rem] font-black uppercase tracking-normal text-saints-red">
+                    Next level
+                  </dt>
+                  <dd className="mt-1 text-xl font-black leading-none text-slate-950">{nextLevel}</dd>
+                </div>
+              </dl>
+
+              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
                   <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
                     Today's word
                   </p>
