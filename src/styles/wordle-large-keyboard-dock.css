@@ -1,0 +1,123 @@
+/* Option B: Keyboard dock
+   Large Text mode keeps the keyboard close at hand instead of making players scroll up/down.
+   This is best for repeated play because the input controls stay available while the board remains readable. */
+
+.wordle-game--large-text .wordle-game-card {
+  overflow: visible;
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child {
+  position: relative;
+  border-color: rgba(215, 25, 32, 0.22);
+  background: linear-gradient(135deg, rgba(254, 226, 226, 0.92), #ffffff 58%);
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child::after {
+  flex-basis: 100%;
+  border-radius: 999px;
+  padding: 0.32rem 0.6rem;
+  color: #7f1d1d;
+  content: "Large text active · keyboard docked for easier play";
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: inset 0 0 0 1px rgba(215, 25, 32, 0.12);
+  font-size: 0.68rem;
+  font-weight: 950;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.wordle-game:not(.wordle-game--large-text) .wordle-game-card > form > div:first-child::after {
+  flex-basis: 100%;
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  color: #475569;
+  content: "Normal text active";
+  background: #f1f5f9;
+  font-size: 0.62rem;
+  font-weight: 900;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.wordle-game--large-text .wordle-board {
+  margin-bottom: 0.85rem;
+  animation: wordle-dock-board-pop 260ms cubic-bezier(0.2, 0.8, 0.2, 1.05) both;
+}
+
+.wordle-game--large-text .wordle-keyboard {
+  position: sticky;
+  bottom: calc(4.3rem + env(safe-area-inset-bottom, 0px));
+  z-index: 30;
+  margin-inline: -0.35rem;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 1rem;
+  padding: 0.55rem;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 1rem 2rem rgba(15, 23, 42, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(16px);
+  animation: wordle-dock-slide-up 300ms cubic-bezier(0.2, 0.8, 0.2, 1.05) both;
+}
+
+.wordle-game--large-text .wordle-keyboard::before {
+  display: block;
+  margin: -0.1rem auto 0.42rem;
+  width: 2.75rem;
+  height: 0.22rem;
+  border-radius: 999px;
+  content: "";
+  background: rgba(100, 116, 139, 0.3);
+}
+
+.wordle-game--large-text .wordle-key {
+  min-height: 2.8rem;
+  box-shadow: 0 0.22rem 0 rgba(15, 23, 42, 0.18);
+}
+
+.wordle-game--large-text .wordle-key:focus-visible,
+.wordle-game--large-text button:focus-visible {
+  outline: 3px solid rgba(215, 25, 32, 0.34);
+  outline-offset: 2px;
+}
+
+@keyframes wordle-dock-board-pop {
+  from {
+    opacity: 0.75;
+    transform: translateY(0.35rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wordle-dock-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(1.15rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 380px) {
+  .wordle-game--large-text .wordle-keyboard {
+    bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
+    margin-inline: -0.55rem;
+    padding: 0.46rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wordle-game--large-text .wordle-board,
+  .wordle-game--large-text .wordle-keyboard {
+    animation: none;
+  }
+}
