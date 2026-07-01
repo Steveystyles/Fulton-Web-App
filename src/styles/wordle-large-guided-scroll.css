@@ -1,0 +1,102 @@
+/* Option A: Guided large-text scroll
+   Keeps the full game in one card, but makes the large-text state feel deliberate.
+   Board and keyboard become clear scroll destinations with snap points and a sticky mode indicator. */
+
+.wordle-game--large-text .wordle-game-card {
+  max-height: min(74dvh, 44rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scroll-padding-block: 0.75rem 1rem;
+  scroll-snap-type: y proximity;
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -0.15rem -0.15rem 0.15rem;
+  border-color: rgba(215, 25, 32, 0.22);
+  background: rgba(248, 250, 252, 0.96);
+  box-shadow: 0 0.6rem 1.2rem rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child::after {
+  flex-basis: 100%;
+  border-radius: 999px;
+  padding: 0.32rem 0.6rem;
+  color: #991b1b;
+  content: "Large text active · board and keyboard snap into place while scrolling";
+  background: rgba(254, 226, 226, 0.82);
+  font-size: 0.68rem;
+  font-weight: 950;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.wordle-game:not(.wordle-game--large-text) .wordle-game-card > form > div:first-child::after {
+  flex-basis: 100%;
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  color: #475569;
+  content: "Normal text active";
+  background: #f1f5f9;
+  font-size: 0.62rem;
+  font-weight: 900;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.wordle-game--large-text .wordle-board,
+.wordle-game--large-text .wordle-keyboard {
+  scroll-margin-block: 0.8rem;
+  scroll-snap-align: start;
+}
+
+.wordle-game--large-text .wordle-board {
+  animation: wordle-guided-board-arrive 260ms cubic-bezier(0.2, 0.8, 0.2, 1.05) both;
+}
+
+.wordle-game--large-text .wordle-keyboard {
+  animation: wordle-guided-keyboard-arrive 320ms cubic-bezier(0.2, 0.8, 0.2, 1.05) 90ms both;
+}
+
+.wordle-game--large-text .wordle-key:focus-visible,
+.wordle-game--large-text button:focus-visible {
+  outline: 3px solid rgba(215, 25, 32, 0.32);
+  outline-offset: 2px;
+}
+
+@keyframes wordle-guided-board-arrive {
+  from {
+    opacity: 0.72;
+    transform: translateY(0.35rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wordle-guided-keyboard-arrive {
+  from {
+    opacity: 0.72;
+    transform: translateY(0.55rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wordle-game--large-text .wordle-board,
+  .wordle-game--large-text .wordle-keyboard {
+    animation: none;
+  }
+}
