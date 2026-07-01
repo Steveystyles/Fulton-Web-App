@@ -1,0 +1,187 @@
+/* Option C: Focus mode
+   Large Text becomes a more playful game stage instead of a bigger normal layout.
+   The board gets a spotlight treatment, the keyboard becomes a matching control deck,
+   and the active text-size state reads as a mode change. */
+
+.wordle-game--large-text {
+  margin-inline: -0.25rem;
+}
+
+.wordle-game--large-text .wordle-game-card {
+  border-color: rgba(255, 255, 255, 0.16);
+  color: #f8fafc;
+  background:
+    radial-gradient(circle at 50% -8rem, rgba(215, 25, 32, 0.36), transparent 18rem),
+    radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.1), transparent 12rem),
+    linear-gradient(180deg, #111827, #050505);
+  box-shadow:
+    0 1.35rem 2.5rem rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child {
+  position: relative;
+  border-color: rgba(255, 255, 255, 0.14);
+  color: #f8fafc;
+  background:
+    linear-gradient(135deg, rgba(215, 25, 32, 0.28), transparent 48%),
+    rgba(15, 23, 42, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child p:first-child {
+  color: #fecaca;
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child p:last-child {
+  color: #e2e8f0;
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child button {
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #f8fafc;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child button[aria-pressed="true"] {
+  color: #450a0a;
+  background: #fecaca;
+}
+
+.wordle-game--large-text .wordle-game-card > form > div:first-child::after {
+  flex-basis: 100%;
+  border-radius: 999px;
+  padding: 0.38rem 0.7rem;
+  color: #ffffff;
+  content: "Focus mode active · oversized board, high contrast controls";
+  background: linear-gradient(90deg, rgba(215, 25, 32, 0.9), rgba(127, 29, 29, 0.9));
+  box-shadow: 0 0.5rem 1.2rem rgba(127, 29, 29, 0.28);
+  font-size: 0.7rem;
+  font-weight: 950;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.wordle-game:not(.wordle-game--large-text) .wordle-game-card > form > div:first-child::after {
+  flex-basis: 100%;
+  border-radius: 999px;
+  padding: 0.28rem 0.55rem;
+  color: #475569;
+  content: "Normal text active";
+  background: #f1f5f9;
+  font-size: 0.62rem;
+  font-weight: 900;
+  line-height: 1.2;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.wordle-game--large-text .wordle-board {
+  width: min(100%, 19.25rem);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 1.15rem;
+  padding: 0.7rem;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.16), transparent 10rem),
+    rgba(255, 255, 255, 0.06);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 1.1rem 2.4rem rgba(0, 0, 0, 0.36);
+  animation: wordle-focus-stage-in 320ms cubic-bezier(0.2, 0.8, 0.2, 1.05) both;
+}
+
+.wordle-game--large-text .wordle-keyboard {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 1.15rem;
+  padding: 0.65rem;
+  background: rgba(15, 23, 42, 0.86);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 0.9rem 2rem rgba(0, 0, 0, 0.3);
+  animation: wordle-focus-controls-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1.05) 80ms both;
+}
+
+.wordle-game--large-text .wordle-key {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #f8fafc;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05)),
+    rgba(30, 41, 59, 0.96);
+  box-shadow: 0 0.22rem 0 rgba(0, 0, 0, 0.28);
+}
+
+.wordle-game--large-text .wordle-key--green {
+  border-color: rgba(74, 222, 128, 0.82);
+  color: #052e16;
+  background: #4ade80;
+}
+
+.wordle-game--large-text .wordle-key--yellow {
+  border-color: rgba(251, 191, 36, 0.88);
+  color: #422006;
+  background: #fbbf24;
+}
+
+.wordle-game--large-text .wordle-key--grey {
+  border-color: rgba(148, 163, 184, 0.52);
+  color: rgba(248, 250, 252, 0.7);
+  background: #475569;
+}
+
+.wordle-game--large-text .text-slate-700,
+.wordle-game--large-text .text-slate-600,
+.wordle-game--large-text .text-slate-500 {
+  color: #e2e8f0;
+}
+
+.wordle-game--large-text .bg-slate-100 {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wordle-game--large-text .wordle-key:focus-visible,
+.wordle-game--large-text button:focus-visible {
+  outline: 3px solid rgba(254, 202, 202, 0.55);
+  outline-offset: 2px;
+}
+
+@keyframes wordle-focus-stage-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem) scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes wordle-focus-controls-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.7rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 380px) {
+  .wordle-game--large-text .wordle-board {
+    padding: 0.5rem;
+  }
+
+  .wordle-game--large-text .wordle-keyboard {
+    padding: 0.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wordle-game--large-text .wordle-board,
+  .wordle-game--large-text .wordle-keyboard {
+    animation: none;
+  }
+}
