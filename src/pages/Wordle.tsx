@@ -359,7 +359,7 @@ export function Wordle() {
   }
 
   async function runRevealAnimation(response: WordleState, previousKeyboardState: Map<string, FeedbackColor>) {
-    const latestGuess = response.result.guesses.at(-1);
+    const latestGuess = response.result.guesses[response.result.guesses.length - 1];
     if (!latestGuess) {
       return;
     }
