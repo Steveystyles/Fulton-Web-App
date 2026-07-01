@@ -322,10 +322,7 @@ export function Wordle() {
   const [keyboardAnimatingLetter, setKeyboardAnimatingLetter] = useState("");
   const [animationMessage, setAnimationMessage] = useState("");
   const [largeBoardWindowHeight, setLargeBoardWindowHeight] = useState<number | null>(null);
-  const [rowScrollState, setRowScrollState] = useState({
-    canScrollDown: false,
-    canScrollUp: false,
-  });
+  const [rowWindowStartIndex, setRowWindowStartIndex] = useState(0);
 
   const gameStatus = state?.result.status ?? "in_progress";
   const isComplete = gameStatus !== "in_progress";
@@ -335,9 +332,24 @@ export function Wordle() {
   const activeRowIndex = isComplete
     ? Math.max(0, guesses.length - 1)
     : Math.min(guesses.length, maxAttempts - 1);
-  const visibleStartRowIndex = largePrint
-    ? Math.max(0, activeRowIndex - 1)
+  const largeVisibleRowCount = Math.min(2, maxAttempts);
+  const maxStartRowIndex = Math.max(0, maxAttempts - largeVisibleRowCount);
+  const defaultVisibleStartRowIndex = largePrint
+    ? Math.min(maxStartRowIndex, Math.max(0, activeRowIndex - largeVisibleRowCount + 1))
     : 0;
+  const visibleStartRowIndex = largePrint
+    ? Math.min(maxStartRowIndex, Math.max(0, rowWindowStartIndex))
+    : 0;
+  const rowScrollState = {
+    canScrollDown: largePrint && visibleStartRowIndex < maxStartRowIndex,
+    canScrollUp: largePrint && visibleStartRowIndex > 0,
+  };
+  const visibleRowIndexes = Array.from(
+    {
+      length: largePrint ? largeVisibleRowCount : maxAttempts,
+    },
+    (_, offset) => (largePrint ? visibleStartRowIndex + offset : offset),
+  ).filter((rowIndex) => rowIndex >= 0 && rowIndex < maxAttempts);
   const isAnimatingReveal =
     revealingRowIndex !== null || keyboardOverride !== null || animationMessage !== "";
   const canSubmit =
@@ -357,6 +369,10 @@ export function Wordle() {
   useEffect(() => {
     writeSoundPreference(soundEnabled);
   }, [soundEnabled]);
+
+  useEffect(() => {
+    setRowWindowStartIndex(defaultVisibleStartRowIndex);
+  }, [defaultVisibleStartRowIndex]);
 
   useEffect(
     () => () => {
@@ -476,15 +492,7 @@ export function Wordle() {
       return;
     }
 
-    if (!largePrint) {
-      board.scrollTo({ top: 0, behavior: "auto" });
-      return;
-    }
-
-    const row = board.querySelector<HTMLElement>(`[data-wordle-row="${visibleStartRowIndex}"]`);
-    if (row !== null) {
-      board.scrollTo({ top: Math.max(0, row.offsetTop - 6), behavior: "auto" });
-    }
+    board.scrollTo({ top: 0, behavior: "auto" });
   }, [largePrint, visibleStartRowIndex]);
 
   useEffect(() => {
@@ -505,7 +513,7 @@ export function Wordle() {
         return;
       }
 
-      const visibleRows = Math.min(2, maxAttempts);
+      const visibleRows = largeVisibleRowCount;
       const rowGap = Number.parseFloat(window.getComputedStyle(rowGroup).rowGap || "0") || 0;
       const rowHeight = row.getBoundingClientRect().height;
       if (rowHeight <= 0 || visibleRows <= 0) {
@@ -536,7 +544,7 @@ export function Wordle() {
       window.removeEventListener("resize", updateBoardWindowHeight);
       resizeObserver?.disconnect();
     };
-  }, [largePrint, maxAttempts, wordLength]);
+  }, [largePrint, largeVisibleRowCount, wordLength]);
 
   const addLetter = useCallback(
     (letter: string) => {
@@ -779,74 +787,18 @@ export function Wordle() {
     void submitGuess();
   }
 
-  const updateBoardScrollControls = useCallback(
-    (board: HTMLDivElement | null = boardScrollRef.current) => {
-      if (!largePrint || board === null) {
-        setRowScrollState((currentState) =>
-          currentState.canScrollDown || currentState.canScrollUp
-            ? { canScrollDown: false, canScrollUp: false }
-            : currentState,
-        );
+  const moveBoardRows = useCallback(
+    (direction: 1 | -1) => {
+      if (!largePrint) {
         return;
       }
 
-      const rows = Array.from(board.querySelectorAll<HTMLElement>("[data-wordle-row]"));
-      if (rows.length === 0) {
-        return;
-      }
-
-      const firstRowOffset = rows[0].offsetTop;
-      const currentIndex = rows.reduce(
-        (nearestIndex, row, index) => {
-          const nearestDistance = Math.abs(board.scrollTop - Math.max(0, rows[nearestIndex].offsetTop - firstRowOffset));
-          const rowDistance = Math.abs(board.scrollTop - Math.max(0, row.offsetTop - firstRowOffset));
-          return rowDistance < nearestDistance ? index : nearestIndex;
-        },
-        0,
-      );
-      const visibleRows = Math.min(2, rows.length);
-      const maxStartIndex = Math.max(0, rows.length - visibleRows);
-      const nextState = {
-        canScrollDown: currentIndex < maxStartIndex,
-        canScrollUp: currentIndex > 0,
-      };
-      setRowScrollState((currentState) =>
-        currentState.canScrollDown === nextState.canScrollDown &&
-        currentState.canScrollUp === nextState.canScrollUp
-          ? currentState
-          : nextState,
+      setRowWindowStartIndex((currentIndex) =>
+        Math.min(maxStartRowIndex, Math.max(0, currentIndex + direction)),
       );
     },
-    [largePrint],
+    [largePrint, maxStartRowIndex],
   );
-
-  const scrollBoardByRow = useCallback((board: HTMLDivElement, direction: 1 | -1) => {
-    const rows = Array.from(board.querySelectorAll<HTMLElement>("[data-wordle-row]"));
-    if (rows.length === 0) {
-      return;
-    }
-
-    const firstRowOffset = rows[0].offsetTop;
-    const currentIndex = rows.reduce(
-      (nearestIndex, row, index) => {
-        const nearestDistance = Math.abs(board.scrollTop - Math.max(0, rows[nearestIndex].offsetTop - firstRowOffset));
-        const rowDistance = Math.abs(board.scrollTop - Math.max(0, row.offsetTop - firstRowOffset));
-        return rowDistance < nearestDistance ? index : nearestIndex;
-      },
-      0,
-    );
-    const visibleRows = Math.min(2, rows.length);
-    const maxStartIndex = Math.max(0, rows.length - visibleRows);
-    const nextIndex = Math.min(maxStartIndex, Math.max(0, currentIndex + direction));
-    const nextTop = Math.max(0, rows[nextIndex].offsetTop - firstRowOffset);
-
-    board.scrollTo({ top: nextTop, behavior: "smooth" });
-    window.setTimeout(() => updateBoardScrollControls(board), 320);
-  }, [updateBoardScrollControls]);
-
-  useEffect(() => {
-    updateBoardScrollControls();
-  }, [largePrint, maxAttempts, updateBoardScrollControls, visibleStartRowIndex]);
 
   const releaseWheelGestureAfterBurst = useCallback(() => {
     if (wheelUnlockTimeoutRef.current !== null) {
@@ -864,31 +816,26 @@ export function Wordle() {
         return;
       }
 
-      event.preventDefault();
       releaseWheelGestureAfterBurst();
       if (wheelGestureLockedRef.current) {
         return;
       }
 
       wheelGestureLockedRef.current = true;
-      scrollBoardByRow(event.currentTarget, event.deltaY > 0 ? 1 : -1);
+      moveBoardRows(event.deltaY > 0 ? 1 : -1);
     },
-    [largePrint, releaseWheelGestureAfterBurst, scrollBoardByRow],
+    [largePrint, moveBoardRows, releaseWheelGestureAfterBurst],
   );
-
-  const handleBoardScroll = useCallback(() => {
-    updateBoardScrollControls();
-  }, [updateBoardScrollControls]);
 
   const handleRowControlClick = useCallback(
     (direction: 1 | -1) => {
-      if (!largePrint || boardScrollRef.current === null) {
+      if (!largePrint) {
         return;
       }
 
-      scrollBoardByRow(boardScrollRef.current, direction);
+      moveBoardRows(direction);
     },
-    [largePrint, scrollBoardByRow],
+    [largePrint, moveBoardRows],
   );
 
   const handleBoardTouchStart = useCallback(
@@ -920,9 +867,9 @@ export function Wordle() {
       }
 
       touchGestureHandledRef.current = true;
-      scrollBoardByRow(event.currentTarget, deltaY > 0 ? 1 : -1);
+      moveBoardRows(deltaY > 0 ? 1 : -1);
     },
-    [largePrint, scrollBoardByRow],
+    [largePrint, moveBoardRows],
   );
 
   const handleBoardTouchEnd = useCallback(
@@ -944,11 +891,12 @@ export function Wordle() {
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
+  const cardOverflowClass = largePrint ? "overflow-visible" : "overflow-hidden";
   const formSpacingClass = largePrint ? "space-y-1.5" : "space-y-3";
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[15.25rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
-    ? "wordle-board-window h-[9.15rem] overflow-y-auto overflow-x-hidden overscroll-contain rounded-md px-0.5 py-1.5"
+    ? "wordle-board-window h-[9.15rem] overflow-hidden rounded-md px-0.5 py-1.5"
     : "";
   const boardRowsKey = largePrint ? `visible-row-${visibleStartRowIndex}` : "all-rows";
   const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
@@ -971,7 +919,7 @@ export function Wordle() {
 
   return (
     <section className="page-fade wordle-game" aria-label="Wordle game" data-large-print={largePrint}>
-      <section className={["max-w-full overflow-hidden rounded-lg saints-card wordle-game-card", cardPaddingClass].join(" ")}>
+      <section className={["max-w-full rounded-lg saints-card wordle-game-card", cardOverflowClass, cardPaddingClass].join(" ")}>
         <form className={formSpacingClass} onSubmit={handleSubmit}>
           <div className="space-y-2">
             {statusText && !isAnimatingReveal && !showWinDialog ? (
@@ -1080,7 +1028,6 @@ export function Wordle() {
 
           <div
             ref={boardScrollRef}
-            onScroll={handleBoardScroll}
             onWheel={handleBoardWheel}
             onTouchStart={handleBoardTouchStart}
             onTouchMove={handleBoardTouchMove}
@@ -1096,7 +1043,7 @@ export function Wordle() {
             data-testid="wordle-board-scroll"
           >
             <div key={boardRowsKey} className={["grid", boardGapClass, boardRowsClass].join(" ")}>
-              {Array.from({ length: maxAttempts }, (_, rowIndex) => {
+              {visibleRowIndexes.map((rowIndex) => {
                 const submittedGuess = guesses[rowIndex];
                 const isDraftRow = submittedGuess === undefined && rowIndex === guesses.length;
                 const isRevealingRow = revealingRowIndex === rowIndex;
