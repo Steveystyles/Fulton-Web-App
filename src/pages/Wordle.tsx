@@ -569,8 +569,8 @@ export function Wordle() {
   const keyboardState = useMemo(() => buildKeyboardState(guesses), [guesses]);
   const visibleKeyboardState = keyboardOverride ?? keyboardState;
 
-  const getAudioContext = useCallback(() => {
-    if (!soundEnabled || typeof window === "undefined") {
+  const getAudioContext = useCallback((enabled = soundEnabled) => {
+    if (!enabled || typeof window === "undefined") {
       return null;
     }
 
@@ -588,6 +588,13 @@ export function Wordle() {
     void audioContextRef.current.resume?.();
     return audioContextRef.current;
   }, [soundEnabled]);
+
+  const handleSoundToggle = useCallback(() => {
+    if (!soundEnabled) {
+      getAudioContext(true);
+    }
+    setSoundEnabled((current) => !current);
+  }, [getAudioContext, soundEnabled]);
 
   const playFeedbackSound = useCallback(
     (color: FeedbackColor) => {
@@ -702,6 +709,7 @@ export function Wordle() {
     }
 
     const previousKeyboardState = new Map(keyboardState);
+    getAudioContext();
     setError("");
     setSubmitting(true);
 
@@ -717,7 +725,7 @@ export function Wordle() {
         setSubmitting(false);
       }
     }
-  }, [canSubmit, guess, guessValidity, keyboardState, runRevealAnimation, state, wordLength]);
+  }, [canSubmit, getAudioContext, guess, guessValidity, keyboardState, runRevealAnimation, state, wordLength]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -782,10 +790,25 @@ export function Wordle() {
         return;
       }
 
-      const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
+      const rows = Array.from(board.querySelectorAll<HTMLElement>("[data-wordle-row]"));
+      if (rows.length === 0) {
+        return;
+      }
+
+      const firstRowOffset = rows[0].offsetTop;
+      const currentIndex = rows.reduce(
+        (nearestIndex, row, index) => {
+          const nearestDistance = Math.abs(board.scrollTop - Math.max(0, rows[nearestIndex].offsetTop - firstRowOffset));
+          const rowDistance = Math.abs(board.scrollTop - Math.max(0, row.offsetTop - firstRowOffset));
+          return rowDistance < nearestDistance ? index : nearestIndex;
+        },
+        0,
+      );
+      const visibleRows = Math.min(2, rows.length);
+      const maxStartIndex = Math.max(0, rows.length - visibleRows);
       const nextState = {
-        canScrollDown: board.scrollTop < maxScrollTop - 1,
-        canScrollUp: board.scrollTop > 1,
+        canScrollDown: currentIndex < maxStartIndex,
+        canScrollUp: currentIndex > 0,
       };
       setRowScrollState((currentState) =>
         currentState.canScrollDown === nextState.canScrollDown &&
@@ -798,24 +821,25 @@ export function Wordle() {
   );
 
   const scrollBoardByRow = useCallback((board: HTMLDivElement, direction: 1 | -1) => {
-    const row = board.querySelector<HTMLElement>("[data-wordle-row]");
-    const rowGroup = board.firstElementChild;
-    if (row === null || rowGroup === null) {
+    const rows = Array.from(board.querySelectorAll<HTMLElement>("[data-wordle-row]"));
+    if (rows.length === 0) {
       return;
     }
 
-    const rowGap = Number.parseFloat(window.getComputedStyle(rowGroup).rowGap || "0") || 0;
-    const rowStep = row.getBoundingClientRect().height + rowGap;
-    if (rowStep <= 0) {
-      return;
-    }
-
-    const currentIndex = Math.round(board.scrollTop / rowStep);
-    const maxScrollTop = Math.max(0, board.scrollHeight - board.clientHeight);
-    const nextTop = Math.min(
-      maxScrollTop,
-      Math.max(0, (currentIndex + direction) * rowStep),
+    const firstRowOffset = rows[0].offsetTop;
+    const currentIndex = rows.reduce(
+      (nearestIndex, row, index) => {
+        const nearestDistance = Math.abs(board.scrollTop - Math.max(0, rows[nearestIndex].offsetTop - firstRowOffset));
+        const rowDistance = Math.abs(board.scrollTop - Math.max(0, row.offsetTop - firstRowOffset));
+        return rowDistance < nearestDistance ? index : nearestIndex;
+      },
+      0,
     );
+    const visibleRows = Math.min(2, rows.length);
+    const maxStartIndex = Math.max(0, rows.length - visibleRows);
+    const nextIndex = Math.min(maxStartIndex, Math.max(0, currentIndex + direction));
+    const nextTop = Math.max(0, rows[nextIndex].offsetTop - firstRowOffset);
+
     board.scrollTo({ top: nextTop, behavior: "smooth" });
     window.setTimeout(() => updateBoardScrollControls(board), 320);
   }, [updateBoardScrollControls]);
@@ -919,8 +943,6 @@ export function Wordle() {
     : "grid grid-cols-1";
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
-  const switchTrackClass = largePrint ? "bg-saints-red" : "bg-slate-300";
-  const switchThumbClass = largePrint ? "translate-x-3" : "translate-x-0";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
   const formSpacingClass = largePrint ? "space-y-1.5" : "space-y-3";
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[15.25rem]";
@@ -952,7 +974,7 @@ export function Wordle() {
       <section className={["max-w-full overflow-hidden rounded-lg saints-card wordle-game-card", cardPaddingClass].join(" ")}>
         <form className={formSpacingClass} onSubmit={handleSubmit}>
           <div className="space-y-2">
-            {statusText && !isAnimatingReveal ? (
+            {statusText && !isAnimatingReveal && !showWinDialog ? (
               <p className={["text-center font-black text-slate-700", statusTextClass].join(" ")}>
                 {statusText}
               </p>
@@ -987,39 +1009,35 @@ export function Wordle() {
                   aria-pressed={largePrint}
                   aria-label={largePrint ? "Use standard text size" : "Use large text size"}
                   data-testid="wordle-text-size-toggle"
-                  className="flex min-h-[3.3rem] min-w-0 items-center justify-center gap-3 bg-white px-2 py-2 text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+                  className="flex min-h-[3.3rem] min-w-0 items-center justify-center bg-white px-2 py-2 text-slate-950 transition hover:bg-slate-50 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
                 >
-                  <span className="sr-only">Large text</span>
-                  <span className="flex shrink-0 items-end gap-1.5" aria-hidden="true">
-                    <span className="pb-0.5 text-sm font-black leading-none text-slate-500">t</span>
-                    <span
-                      className={[
-                        "text-[1.75rem] font-black leading-none transition",
-                        largePrint ? "text-saints-red" : "text-slate-800",
-                      ].join(" ")}
-                    >
-                      T
-                    </span>
-                  </span>
+                  <span className="sr-only">{largePrint ? "Large text selected" : "Standard text selected"}</span>
                   <span
-                    className={[
-                      "relative h-5 w-8 shrink-0 rounded-full p-0.5 transition",
-                      switchTrackClass,
-                    ].join(" ")}
+                    className="inline-flex h-10 min-w-[4.75rem] shrink-0 items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-2 shadow-sm ring-1 ring-slate-700"
                     aria-hidden="true"
                   >
                     <span
                       className={[
-                        "block h-4 w-4 rounded-full bg-white shadow-sm transition",
-                        switchThumbClass,
+                        "flex h-6 w-6 items-center justify-center rounded-lg text-base font-black leading-none transition",
+                        largePrint ? "text-slate-400" : "bg-white text-slate-950 shadow-sm",
                       ].join(" ")}
-                    />
+                    >
+                      A
+                    </span>
+                    <span
+                      className={[
+                        "flex h-8 w-8 items-center justify-center rounded-lg text-[1.5rem] font-black leading-none transition",
+                        largePrint ? "bg-saints-red text-white shadow-sm" : "text-slate-300",
+                      ].join(" ")}
+                    >
+                      A
+                    </span>
                   </span>
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => setSoundEnabled((current) => !current)}
+                  onClick={handleSoundToggle}
                   aria-pressed={soundEnabled}
                   aria-label={soundEnabled ? "Turn Wordle sound off" : "Turn Wordle sound on"}
                   className="flex min-h-[3.3rem] min-w-0 items-center justify-center bg-white px-2 py-2 text-slate-700 transition hover:bg-slate-50 hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15"
@@ -1041,7 +1059,7 @@ export function Wordle() {
                     aria-label="Show previous guess row"
                     className={rowControlButtonClass}
                   >
-                    <ChevronUp aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                    <ChevronUp aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
                   </button>
                   <span className="text-center text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
                     Board rows
@@ -1053,7 +1071,7 @@ export function Wordle() {
                     aria-label="Show next guess row"
                     className={rowControlButtonClass}
                   >
-                    <ChevronDown aria-hidden="true" className="h-4 w-4" strokeWidth={3} />
+                    <ChevronDown aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
                   </button>
                 </div>
               ) : null}
@@ -1280,8 +1298,8 @@ export function Wordle() {
                 <h2 id="wordle-win-title" className="mt-2 text-[1.55rem] font-black leading-none text-slate-950">
                   Congratulations
                 </h2>
-                <p id="wordle-win-description" className="mt-1 text-sm font-bold leading-tight text-slate-500">
-                  {winSummaryText}
+                <p id="wordle-win-description" className="sr-only">
+                  {winSummaryText}. Next level {nextLevel}.
                 </p>
               </div>
 
