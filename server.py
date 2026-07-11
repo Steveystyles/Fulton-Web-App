@@ -76,6 +76,10 @@ DAILY_QUIZ_RETRY_INTERVAL_SEC = max(
     60,
     int(os.environ.get("FULTONS_DAILY_QUIZ_RETRY_INTERVAL_SEC", "900")),
 )
+DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC = max(
+    DAILY_QUIZ_RETRY_INTERVAL_SEC,
+    int(os.environ.get("FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC", "3600")),
+)
 NEWS_USER_AGENT = os.environ.get(
     "FULTONS_NEWS_USER_AGENT",
     "FultonsQuiz/0.1 (+https://fultons-quiz.co.uk)",
@@ -802,6 +806,8 @@ def ops_quiz_preview(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]
         "acceptedQuestions": int(status.get("accepted_questions") or 0),
         "failedAttempts": int(status.get("failed_attempts") or 0),
         "failureReason": status.get("failure_reason"),
+        "lastFailureReason": status.get("last_failure_reason"),
+        "lastFailureTransient": bool(status.get("last_failure_transient")),
         "questions": [],
         "updatedAt": None,
     }
@@ -3055,6 +3061,12 @@ def ensure_active_daily_quizzes(now: datetime | None = None) -> list[dict[str, A
     return ensure_daily_quiz_dates(active_daily_quiz_dates(now))
 
 
+def daily_quiz_retry_interval_sec(results: list[dict[str, Any]]) -> int:
+    if any(bool(result.get("last_failure_transient")) for result in results):
+        return DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC
+    return DAILY_QUIZ_RETRY_INTERVAL_SEC
+
+
 def daily_quiz_scheduler_loop() -> None:
     safe_log("Daily quiz scheduler started")
     while True:
@@ -3073,7 +3085,7 @@ def daily_quiz_scheduler_loop() -> None:
         next_run = next_daily_quiz_run()
         now = datetime.now(next_run.tzinfo)
         if retry_required:
-            retry_at = now + timedelta(seconds=DAILY_QUIZ_RETRY_INTERVAL_SEC)
+            retry_at = now + timedelta(seconds=daily_quiz_retry_interval_sec(results))
             wake_at = retry_at if retry_at < next_run else next_run
         else:
             wake_at = next_run

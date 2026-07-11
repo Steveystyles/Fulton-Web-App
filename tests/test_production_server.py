@@ -3624,7 +3624,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             raise RuntimeError("stop loop")
 
         with (
-            patch("server.ensure_tomorrow_daily_quiz", return_value={"status": "generating"}),
+            patch("server.ensure_active_daily_quizzes", return_value=[{"status": "generating"}]),
             patch("server.next_daily_quiz_run", return_value=next_run),
             patch("server.DAILY_QUIZ_RETRY_INTERVAL_SEC", 900),
             patch("server.time.sleep", side_effect=stop_sleep),
@@ -3637,6 +3637,36 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 server.daily_quiz_scheduler_loop()
 
         self.assertEqual(sleep_calls, [900.0])
+
+    def test_daily_quiz_scheduler_uses_longer_retry_after_transient_provider_failure(self) -> None:
+        import server
+
+        now = datetime(2026, 6, 1, 0, 10, tzinfo=timezone.utc)
+        next_run = datetime(2026, 6, 2, 0, 5, tzinfo=timezone.utc)
+        sleep_calls: list[float] = []
+
+        def stop_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            raise RuntimeError("stop loop")
+
+        with (
+            patch(
+                "server.ensure_active_daily_quizzes",
+                return_value=[{"status": "generating", "last_failure_transient": True}],
+            ),
+            patch("server.next_daily_quiz_run", return_value=next_run),
+            patch("server.DAILY_QUIZ_RETRY_INTERVAL_SEC", 900),
+            patch("server.DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC", 3600),
+            patch("server.time.sleep", side_effect=stop_sleep),
+            patch("server.safe_log"),
+            patch("server.datetime") as mocked_datetime,
+        ):
+            mocked_datetime.now.return_value = now
+            mocked_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            with self.assertRaisesRegex(RuntimeError, "stop loop"):
+                server.daily_quiz_scheduler_loop()
+
+        self.assertEqual(sleep_calls, [3600.0])
 
     def test_daily_quiz_write_helpers_commit_immediately(self) -> None:
         import daily_quiz

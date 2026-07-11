@@ -1334,7 +1334,7 @@ def prior_attempt_feedback(
                 if feedback_text:
                     entries.append(feedback_text)
         reason = str(row["failure_reason"] or "").strip()
-        if reason:
+        if reason and not is_transient_provider_failure(reason):
             entries.append(reason)
         for entry in entries:
             normalized = normalize_text(entry)
@@ -1424,7 +1424,7 @@ def generate_slot(
             if is_transient_provider_failure(reason):
                 saw_transient_provider_failure = True
                 log(f"Deferred {subject} / {difficulty} attempt {attempt_number}: {reason}")
-                continue
+                return None
             saw_non_transient_failure = True
             feedback.append(reason)
             log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {reason}")
@@ -1701,6 +1701,8 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
             "accepted_questions": 0,
             "failed_attempts": 0,
             "failure_reason": None,
+            "last_failure_reason": None,
+            "last_failure_transient": False,
         }
     accepted = conn.execute(
         "SELECT COUNT(*) FROM daily_quiz_questions WHERE quiz_set_id = ?",
@@ -1710,12 +1712,25 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
         "SELECT COUNT(*) FROM daily_quiz_attempts WHERE quiz_date = ? AND passed = 0",
         (quiz_date,),
     ).fetchone()[0]
+    last_failure = conn.execute(
+        """
+        SELECT failure_reason
+        FROM daily_quiz_attempts
+        WHERE quiz_date = ? AND passed = 0
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (quiz_date,),
+    ).fetchone()
+    last_failure_reason = str(last_failure["failure_reason"] or "") if last_failure else ""
     return {
         "date": quiz_date,
         "status": quiz_set["status"],
         "accepted_questions": accepted,
         "failed_attempts": failed,
         "failure_reason": quiz_set["failure_reason"],
+        "last_failure_reason": last_failure_reason or None,
+        "last_failure_transient": is_transient_provider_failure(last_failure_reason),
     }
 
 

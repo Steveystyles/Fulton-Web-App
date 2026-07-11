@@ -237,7 +237,12 @@ The Fulton server checks tomorrow's quiz at startup and then runs its internal s
 FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED=1
 FULTONS_DAILY_QUIZ_SCHEDULER_HOUR=0
 FULTONS_DAILY_QUIZ_SCHEDULER_MINUTE=5
+FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC=3600
 ```
+
+Provider rate-limit failures use `FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC`
+instead of the normal retry cadence so the app does not keep refreshing a rate
+limit while waiting for the upstream provider to recover.
 
 Do not expose the internal token in browser code or commit it to Git.
 

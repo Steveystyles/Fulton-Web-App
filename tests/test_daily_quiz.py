@@ -445,8 +445,44 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "generating")
         self.assertEqual(result["accepted_questions"], 0)
-        self.assertEqual(result["failed_attempts"], 2)
+        self.assertEqual(result["failed_attempts"], 1)
         self.assertIsNone(result["failure_reason"])
+        self.assertTrue(result["last_failure_transient"])
+
+    def test_prior_attempt_feedback_skips_transient_provider_failures(self) -> None:
+        daily_quiz.save_attempt(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+            attempt_number=1,
+            provider="gemini",
+            generated={"error": "rate limited"},
+            critic=None,
+            passed=False,
+            failure_reason="Generator request failed: Gemini request failed with HTTP 429.",
+        )
+        daily_quiz.save_attempt(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+            attempt_number=2,
+            provider="gemini",
+            generated={"subject": "general_knowledge"},
+            critic=None,
+            passed=False,
+            failure_reason="Missing required fields: question.",
+        )
+
+        feedback = daily_quiz.prior_attempt_feedback(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+        )
+
+        self.assertEqual(feedback, ["Missing required fields: question."])
 
     def test_regenerate_question_uses_fallback_provider_chain(self) -> None:
         quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-06-04")
