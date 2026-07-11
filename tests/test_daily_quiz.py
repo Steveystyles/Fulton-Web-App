@@ -588,6 +588,29 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
         self.assertEqual([provider.name for provider in chain.providers], ["gemini", "openrouter"])
 
+    def test_provider_chain_reuses_primary_gemini_key_for_gemini_fallback(self) -> None:
+        chain = daily_quiz.provider_chain_from_config(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "fallback_provider": "gemini",
+                    "fallback_generator_model": "gemini-2.5-flash",
+                    "fallback_critic_model": "gemini-2.5-flash-lite",
+                    "fallback2_provider": "gemini",
+                    "fallback2_generator_model": "gemini-2.0-flash",
+                    "fallback2_critic_model": "gemini-2.0-flash-lite",
+                }
+            )
+        )
+
+        self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
+        self.assertEqual([provider.name for provider in chain.providers], ["gemini", "gemini", "gemini"])
+        self.assertEqual(
+            [provider.config.generator_model for provider in chain.providers],
+            ["test-generator", "gemini-2.5-flash", "gemini-2.0-flash"],
+        )
+        self.assertTrue(all(provider.config.gemini_api_key == "test-key" for provider in chain.providers))
+
     def test_provider_chain_from_config_includes_second_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
             daily_quiz.QuizConfig(
