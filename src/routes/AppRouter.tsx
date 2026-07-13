@@ -2,7 +2,6 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, type ReactNode } from "react";
 import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
-import { NewsTicker } from "../components/NewsTicker";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
 import { Account } from "../pages/Account";
@@ -15,14 +14,19 @@ import { News } from "../pages/News";
 import { Quiz } from "../pages/Quiz";
 import { Wordle } from "../pages/Wordle";
 
-function AppFrame({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
+function AppFrame({
+  children,
+  compact = false,
+}: {
+  children: ReactNode;
+  compact?: boolean;
+}) {
   return (
     <div className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10">
       <div className="top-shell">
         <Header />
-        <NewsTicker />
       </div>
-      <div className="h-[6.5rem] shrink-0" aria-hidden="true" />
+      <div className="h-[4rem] shrink-0" aria-hidden="true" />
       <main
         id="main-content"
         className={[

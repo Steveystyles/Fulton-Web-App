@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ENV_FILE="${ENV_FILE:-/srv/storage/appdata/fultons-quiz/app.env}"
+COMPOSE_DIR="${COMPOSE_DIR:-${HOME}/fulton-web-app-deploy}"
+COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${COMPOSE_DIR}/.env}"
+if [ -f "${COMPOSE_ENV_FILE}" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${COMPOSE_ENV_FILE}"
+  set +a
+fi
+ENV_FILE="${ENV_FILE:-${FULTONS_ENV_FILE:-/srv/storage/appdata/fultons-quiz/app.env}}"
 QUIZ_DATE="${1:-$(TZ=Europe/London date -d tomorrow +%F)}"
 QUIZ_FORCE="${QUIZ_FORCE:-false}"
 

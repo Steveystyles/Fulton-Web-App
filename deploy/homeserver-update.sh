@@ -5,13 +5,56 @@ APP_COMMIT="${1:?Usage: homeserver-update.sh <commit-sha>}"
 APP_REPO_URL="${APP_REPO_URL:-https://github.com/Steveystyles/Fulton-Web-App.git}"
 SRC_DIR="${SRC_DIR:-${HOME}/fulton-web-app}"
 COMPOSE_DIR="${COMPOSE_DIR:-${HOME}/fulton-web-app-deploy}"
-DATA_DIR="${DATA_DIR:-/srv/storage/appdata/fultons-quiz}"
+COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${COMPOSE_DIR}/.env}"
+if [ -f "${COMPOSE_ENV_FILE}" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "${COMPOSE_ENV_FILE}"
+  set +a
+fi
+DATA_DIR="${DATA_DIR:-${FULTONS_HOST_DATA_DIR:-/srv/storage/appdata/fultons-quiz}}"
 BACKUP_ROOT="${BACKUP_ROOT:-/srv/storage/backups}"
 COMPOSE_FILE="${COMPOSE_DIR}/compose.yaml"
-ENV_FILE="${ENV_FILE:-${DATA_DIR}/app.env}"
+ENV_FILE="${ENV_FILE:-${FULTONS_ENV_FILE:-${DATA_DIR}/app.env}}"
 
 log() {
   printf '[fultons-deploy] %s\n' "$*"
+}
+
+resolve_abs_path() {
+  python3 - "${1:?path required}" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
+upsert_env_var() {
+  local file="${1:?file required}"
+  local key="${2:?key required}"
+  local value="${3-}"
+  python3 - "${file}" "${key}" "${value}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+prefix = f"{key}="
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+updated = False
+result = []
+for line in lines:
+    if line.startswith(prefix):
+        result.append(prefix + value)
+        updated = True
+    else:
+        result.append(line)
+if not updated:
+    result.append(prefix + value)
+path.write_text("\n".join(result).rstrip("\n") + "\n", encoding="utf-8")
+PY
 }
 
 if [ -d "${SRC_DIR}/.git" ]; then
@@ -29,7 +72,15 @@ else
   git -C "${SRC_DIR}" checkout --detach "${APP_COMMIT}"
 fi
 
-mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}"
+SRC_DIR="$(resolve_abs_path "${SRC_DIR}")"
+DATA_DIR="$(resolve_abs_path "${DATA_DIR}")"
+BACKUP_ROOT="$(resolve_abs_path "${BACKUP_ROOT}")"
+COMPOSE_DIR="$(resolve_abs_path "${COMPOSE_DIR}")"
+ENV_FILE="$(resolve_abs_path "${ENV_FILE}")"
+COMPOSE_FILE="${COMPOSE_DIR}/compose.yaml"
+COMPOSE_ENV_FILE="${COMPOSE_DIR}/.env"
+
+mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}" "$(dirname "${ENV_FILE}")"
 
 if [ ! -f "${ENV_FILE}" ]; then
   log "Creating private app env file at ${ENV_FILE}"
@@ -81,6 +132,32 @@ PY
   fi
 }
 
+default_env_var_when_blank() {
+  local key="${1:?key required}"
+  local value="${2:-}"
+  python3 - "${ENV_FILE}" "${key}" "${value}" <<'PY'
+import sys
+from pathlib import Path
+
+env_path = Path(sys.argv[1])
+key = sys.argv[2]
+value = sys.argv[3]
+prefix = f"{key}="
+
+lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+updated = False
+for index, line in enumerate(lines):
+    if line.startswith(prefix):
+        if not line[len(prefix):].strip():
+            lines[index] = prefix + value
+        updated = True
+        break
+if not updated:
+    lines.append(prefix + value)
+env_path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
+PY
+}
+
 ensure_env_var "FULTONS_COOKIE_SECURE" "1"
 ensure_env_var "FULTONS_SEED_DEMO_USERS" "0"
 ensure_env_var "FULTONS_ALLOWED_ORIGINS" "https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk"
@@ -97,18 +174,43 @@ ensure_env_var "FULTONS_MIN_DB_USERS" "1"
 ensure_env_var "FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED" "1"
 ensure_env_var "FULTONS_DAILY_QUIZ_SCHEDULER_HOUR" "0"
 ensure_env_var "FULTONS_DAILY_QUIZ_SCHEDULER_MINUTE" "5"
+ensure_env_var "FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC" "3600"
 ensure_env_var "AI_PROVIDER" "gemini"
 ensure_env_var "AI_GENERATOR_MODEL" "gemini-3.5-flash"
 ensure_env_var "AI_CRITIC_MODEL" "gemini-3.1-flash-lite"
 ensure_env_var "GEMINI_API_KEY" ""
 ensure_env_var "AI_BASE_URL" ""
 ensure_env_var "AI_API_KEY" ""
+ensure_env_var "AI_FALLBACK_PROVIDER" "gemini"
+ensure_env_var "AI_FALLBACK_GENERATOR_MODEL" "gemini-2.5-flash"
+ensure_env_var "AI_FALLBACK_CRITIC_MODEL" "gemini-2.5-flash-lite"
+ensure_env_var "AI_FALLBACK_API_KEY" ""
+ensure_env_var "AI_FALLBACK_BASE_URL" ""
+ensure_env_var "AI_FALLBACK2_PROVIDER" "gemini"
+ensure_env_var "AI_FALLBACK2_GENERATOR_MODEL" "gemini-2.0-flash"
+ensure_env_var "AI_FALLBACK2_CRITIC_MODEL" "gemini-2.0-flash-lite"
+ensure_env_var "AI_FALLBACK2_API_KEY" ""
+ensure_env_var "AI_FALLBACK2_BASE_URL" ""
 ensure_env_var "AI_TIMEOUT_SEC" "90"
 ensure_env_var "AI_REQUEST_DELAY_SEC" "12"
 ensure_env_var "AI_TRANSIENT_RETRIES" "3"
 ensure_env_var "MAX_ATTEMPTS_PER_SLOT" "15"
 ensure_env_var "QUESTION_HISTORY_DAYS" "90"
 ensure_env_var "INTERNAL_QUIZ_TOKEN" ""
+migrate_env_var_value "AI_FALLBACK_PROVIDER" "openrouter" "gemini"
+migrate_env_var_value "AI_FALLBACK_GENERATOR_MODEL" "openai/gpt-oss-120b:free" "gemini-2.5-flash"
+migrate_env_var_value "AI_FALLBACK_CRITIC_MODEL" "openai/gpt-oss-120b:free" "gemini-2.5-flash-lite"
+migrate_env_var_value "AI_FALLBACK_BASE_URL" "https://openrouter.ai/api/v1" ""
+migrate_env_var_value "AI_FALLBACK2_PROVIDER" "openrouter" "gemini"
+migrate_env_var_value "AI_FALLBACK2_GENERATOR_MODEL" "openai/gpt-oss-120b:free" "gemini-2.0-flash"
+migrate_env_var_value "AI_FALLBACK2_CRITIC_MODEL" "openai/gpt-oss-120b:free" "gemini-2.0-flash-lite"
+migrate_env_var_value "AI_FALLBACK2_BASE_URL" "https://openrouter.ai/api/v1" ""
+default_env_var_when_blank "AI_FALLBACK_PROVIDER" "gemini"
+default_env_var_when_blank "AI_FALLBACK_GENERATOR_MODEL" "gemini-2.5-flash"
+default_env_var_when_blank "AI_FALLBACK_CRITIC_MODEL" "gemini-2.5-flash-lite"
+default_env_var_when_blank "AI_FALLBACK2_PROVIDER" "gemini"
+default_env_var_when_blank "AI_FALLBACK2_GENERATOR_MODEL" "gemini-2.0-flash"
+default_env_var_when_blank "AI_FALLBACK2_CRITIC_MODEL" "gemini-2.0-flash-lite"
 
 if [ -d "${DATA_DIR}" ]; then
   backup_dir="${BACKUP_ROOT}/fultons-quiz-$(date -u +%Y%m%d%H%M%S)"
@@ -157,6 +259,10 @@ except sqlite3.Error as exc:
 PY
 
 cp "${SRC_DIR}/deploy/compose.yaml" "${COMPOSE_FILE}"
+upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_SRC_DIR" "${SRC_DIR}"
+upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_ENV_FILE" "${ENV_FILE}"
+upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_HOST_DATA_DIR" "${DATA_DIR}"
+chmod 600 "${COMPOSE_ENV_FILE}"
 
 log "Normalizing data ownership"
 docker run --rm -v "${DATA_DIR}:/data" alpine:3.22 sh -c \
@@ -167,10 +273,28 @@ if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
   docker rm -f fultons-quiz
 fi
 
-log "Building and starting fultons-quiz"
+log "Building local/fulton-web-app:latest from ${SRC_DIR}"
+docker build \
+  --pull \
+  --build-arg "FULTONS_BUILD_COMMIT=${APP_COMMIT}" \
+  --build-arg "FULTONS_BUILD_SOURCE=${SRC_DIR}" \
+  -t local/fulton-web-app:latest \
+  "${SRC_DIR}"
+
+log "Starting fultons-quiz"
 export FULTONS_SRC_DIR="${SRC_DIR}"
 export FULTONS_ENV_FILE="${ENV_FILE}"
-docker compose -f "${COMPOSE_FILE}" up -d --build
+export FULTONS_HOST_DATA_DIR="${DATA_DIR}"
+cd "${COMPOSE_DIR}"
+docker compose -f "${COMPOSE_FILE}" up -d --no-build
+
+log "Verifying running container revision"
+running_revision="$(docker inspect fultons-quiz --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+if [ "${running_revision}" != "${APP_COMMIT}" ]; then
+  log "Running revision ${running_revision:-unknown} does not match expected ${APP_COMMIT}"
+  docker logs --tail 80 fultons-quiz || true
+  exit 1
+fi
 
 log "Waiting for health endpoint"
 for attempt in $(seq 1 30); do

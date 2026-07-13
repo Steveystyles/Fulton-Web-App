@@ -24,6 +24,7 @@ export type WordleState = {
     date: string;
     wordLength: number;
     maxAttempts: number;
+    difficulty: number;
   };
   result: {
     status: "in_progress" | "won" | "lost";
@@ -37,6 +38,8 @@ export type WordleState = {
     wins: number;
     losses: number;
     points: number;
+    currentSolveStreak: number;
+    bestSolveStreak: number;
   };
 };
 
@@ -266,17 +269,33 @@ export type LocalOpsActionRequest = {
   params?: Record<string, unknown>;
 };
 
+export type LocalOpsActionJobStatus = "queued" | "running" | "succeeded" | "failed";
+
 export type LocalOpsActionResponse = {
   action: LocalOpsActionName;
+  status: LocalOpsActionJobStatus;
+  done: boolean;
   message: string;
-  details: Record<string, unknown>;
-  snapshot: AdminOpsSnapshot;
+  jobId?: string;
+  details?: Record<string, unknown>;
+  snapshot?: AdminOpsSnapshot;
+  error?: string;
+  createdAt?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  reused?: boolean;
+};
+
+export type WordleDefinitionEntry = {
+  definition: string;
+  partOfSpeech: string | null;
 };
 
 export type WordleDefinition = {
   word: string;
   definition: string | null;
   partOfSpeech: string | null;
+  definitions?: WordleDefinitionEntry[];
   sourceUrl: string;
 };
 
@@ -346,6 +365,8 @@ export type LeaderboardPlayer = {
   weeklyQuizPoints: number;
   totalPoints: number;
   wordlePoints: number;
+  weeklyWordleDifficultyBonus: number;
+  wordleDifficultyBonus: number;
   wordlePlayed: number;
   wordleWins: number;
   quizPoints: number;
@@ -354,6 +375,8 @@ export type LeaderboardPlayer = {
   quizCorrect: number;
   currentStreak: number;
   bestStreak: number;
+  wordleLevel: number;
+  bestWordleLevel: number;
 };
 
 export type LeaderboardResponse = {
@@ -435,6 +458,8 @@ export type HistoryResponse = {
     cached: boolean;
     eventsLanguage: string;
     generatedAt: string;
+    rotationCreatedAt: string | null;
+    rotationExpiresAt: string | null;
   };
 };
 
@@ -557,9 +582,10 @@ function fetchNews(
 
   const promise = request<NewsResponse>(
     `/api/news?limit=${boundedLimit}&category=${category}`,
-  ).catch((error) => {
-    newsPromises.delete(cacheKey);
-    throw error;
+  ).finally(() => {
+    if (newsPromises.get(cacheKey) === promise) {
+      newsPromises.delete(cacheKey);
+    }
   });
   newsPromises.set(cacheKey, promise);
   return promise;
@@ -746,5 +772,10 @@ export const api = {
       method: "POST",
       body: jsonBody(requestPayload),
     });
+  },
+
+  localOpsActionStatus(jobId: string) {
+    const params = new URLSearchParams({ jobId });
+    return request<LocalOpsActionResponse>(`/api/local/ops-action-status?${params.toString()}`);
   },
 };

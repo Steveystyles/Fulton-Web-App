@@ -14,8 +14,14 @@ $remoteScript = @'
 set -Eeuo pipefail
 
 COMPOSE_FILE="/home/ste/fulton-web-app-deploy/compose.yaml"
-ENV_FILE="/srv/storage/appdata/fultons-quiz/app.env"
-APPDATA_DIR="/srv/storage/appdata/fultons-quiz"
+COMPOSE_ENV_FILE="/home/ste/fulton-web-app-deploy/.env"
+if [ -f "$COMPOSE_ENV_FILE" ]; then
+  set -a
+  . "$COMPOSE_ENV_FILE"
+  set +a
+fi
+ENV_FILE="${FULTONS_ENV_FILE:-/srv/storage/appdata/fultons-quiz/app.env}"
+APPDATA_DIR="${FULTONS_HOST_DATA_DIR:-/srv/storage/appdata/fultons-quiz}"
 
 log() {
   printf '[fultons-restart] %s\n' "$*"
@@ -73,13 +79,15 @@ except sqlite3.Error as exc:
 PY
 
 log "storage mount"
-findmnt -T /srv/storage -o TARGET,SOURCE,FSTYPE,OPTIONS
+findmnt -T "$APPDATA_DIR" -o TARGET,SOURCE,FSTYPE,OPTIONS
 
 log "containers before restart"
 docker ps --filter name=fultons-quiz --filter name=jellyfin --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || true
 
 log "recreating fultons-quiz from existing image"
+cd "$(dirname "$COMPOSE_FILE")"
 export FULTONS_ENV_FILE="$ENV_FILE"
+export FULTONS_HOST_DATA_DIR="$APPDATA_DIR"
 docker compose -f "$COMPOSE_FILE" up -d --force-recreate --no-build
 
 log "waiting for /api/health"

@@ -23,6 +23,7 @@ import {
   api,
   type AdminOpsSnapshot,
   type AdminOpsStatus,
+  type LocalOpsActionResponse,
   type AdminOpsTest,
   type LocalOpsActionName,
 } from "../lib/api";
@@ -31,6 +32,15 @@ type AdminOpsDashboardProps = {
   source?: "admin" | "local";
   standalone?: boolean;
 };
+
+const LOCAL_ACTION_POLL_INTERVAL_MS = 1500;
+const LOCAL_ACTION_POLL_ATTEMPTS = 180;
+
+function waitForDelay(milliseconds: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, milliseconds);
+  });
+}
 
 function formatBytes(value?: number | null) {
   if (value === undefined || value === null || Number.isNaN(value)) {
@@ -276,6 +286,7 @@ export function AdminOpsDashboard({
     disks
       .filter((disk) => typeof disk.usedPct === "number")
       .sort((left, right) => (right.usedPct ?? 0) - (left.usedPct ?? 0))[0] ?? null;
+  const todayQuiz = remote?.quiz.today ?? null;
   const tomorrowQuiz = remote?.quiz.tomorrow ?? null;
   const tests = remote?.tests ?? [];
   const containers = remote?.docker.containers ?? [];
@@ -283,12 +294,48 @@ export function AdminOpsDashboard({
   const networks = remote?.docker.networks ?? [];
   const orphanedNetworks = networks.filter((networkInfo) => networkInfo.orphaned);
   const batteries = remote?.host.power.batteries ?? [];
+  const activeQuizNeedsRepair = Boolean(todayQuiz && todayQuiz.status !== "published");
+  const repairDailyQuizLabel = activeQuizNeedsRepair ? "Repair today's quiz" : "Generate tomorrow";
+  const repairDailyQuizTestId = activeQuizNeedsRepair ? "today_quiz" : "tomorrow_quiz";
   const canGenerateTomorrowQuiz =
-    source === "local" && Boolean(tomorrowQuiz && tomorrowQuiz.status !== "published");
+    source === "local"
+    && Boolean(
+      (activeQuizNeedsRepair && todayQuiz?.date)
+      || (tomorrowQuiz && tomorrowQuiz.status !== "published"),
+    );
   const canRegenerateTomorrowQuestions =
     source === "local" && Boolean(tomorrowQuiz?.date) && (tomorrowQuiz?.questions.length ?? 0) > 0;
   const canRemoveOrphanedNetworks = source === "local" && orphanedNetworks.length > 0;
   const hasAvailableFixes = canGenerateTomorrowQuiz || canRemoveOrphanedNetworks;
+
+  async function waitForLocalActionJob(jobId: string) {
+    let latestResponse: LocalOpsActionResponse | null = null;
+    for (let attempt = 0; attempt < LOCAL_ACTION_POLL_ATTEMPTS; attempt += 1) {
+      await waitForDelay(LOCAL_ACTION_POLL_INTERVAL_MS);
+      latestResponse = await api.localOpsActionStatus(jobId);
+      if (latestResponse.message) {
+        setActionMessage(latestResponse.message);
+      }
+      if (latestResponse.done) {
+        return latestResponse;
+      }
+    }
+    throw new Error("The action is still running. Reload the board in a moment.");
+  }
+
+  async function performLocalAction(
+    action: LocalOpsActionName,
+    params?: Record<string, unknown>,
+  ) {
+    const response = await api.localOpsAction({ action, params });
+    if (response.done || !response.jobId) {
+      return response;
+    }
+    if (response.message) {
+      setActionMessage(response.message);
+    }
+    return waitForLocalActionJob(response.jobId);
+  }
 
   async function runLocalAction(
     action: LocalOpsActionName,
@@ -301,8 +348,13 @@ export function AdminOpsDashboard({
     setActionMessage("");
     setActionError("");
     try {
-      const response = await api.localOpsAction({ action, params });
-      setSnapshot(response.snapshot);
+      const response = await performLocalAction(action, params);
+      if (response.status !== "succeeded") {
+        throw new Error(response.error || response.message || "The requested fix action failed.");
+      }
+      if (response.snapshot) {
+        setSnapshot(response.snapshot);
+      }
       setActionMessage(response.message);
       setError("");
     } catch (caughtError) {
@@ -335,8 +387,13 @@ export function AdminOpsDashboard({
       let latestSnapshot: AdminOpsSnapshot | null = snapshot;
       const messages: string[] = [];
       for (const action of actions) {
-        const response = await api.localOpsAction({ action });
-        latestSnapshot = response.snapshot;
+        const response = await performLocalAction(action);
+        if (response.status !== "succeeded") {
+          throw new Error(response.error || response.message || "The requested fix action failed.");
+        }
+        if (response.snapshot) {
+          latestSnapshot = response.snapshot;
+        }
         messages.push(response.message);
       }
       if (latestSnapshot) {
@@ -587,7 +644,7 @@ export function AdminOpsDashboard({
             {canGenerateTomorrowQuiz ? (
               <ActionButton
                 icon={<Zap aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />}
-                label="Fix tomorrow quiz"
+                label={repairDailyQuizLabel}
                 onClick={() => void runLocalAction("generate_tomorrow_quiz")}
                 disabled={activeAction !== null || refreshing}
                 busy={activeAction === "generate_tomorrow_quiz"}
@@ -1025,7 +1082,7 @@ export function AdminOpsDashboard({
               {canGenerateTomorrowQuiz ? (
                 <ActionButton
                   icon={<Zap aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />}
-                  label="Generate now"
+                  label={repairDailyQuizLabel}
                   onClick={() => void runLocalAction("generate_tomorrow_quiz")}
                   disabled={activeAction !== null || refreshing}
                   busy={activeAction === "generate_tomorrow_quiz"}
@@ -1145,10 +1202,10 @@ export function AdminOpsDashboard({
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {source === "local" && test.id === "tomorrow_quiz" && canGenerateTomorrowQuiz ? (
+                {source === "local" && test.id === repairDailyQuizTestId && canGenerateTomorrowQuiz ? (
                   <ActionButton
                     icon={<Zap aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />}
-                    label="Fix"
+                    label="Repair"
                     onClick={() => void runLocalAction("generate_tomorrow_quiz")}
                     disabled={activeAction !== null || refreshing}
                     busy={activeAction === "generate_tomorrow_quiz"}

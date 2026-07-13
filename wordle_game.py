@@ -1,4 +1,6 @@
+import json
 import random
+from functools import lru_cache
 from pathlib import Path
 
 WORD_LENGTH = 5
@@ -6,6 +8,9 @@ MAX_ATTEMPTS = 6
 WORDLE_DIR = Path(__file__).resolve().parent
 USED_WORDS_FILE = WORDLE_DIR / "used_words.txt"
 WORD_LIST_FILE = WORDLE_DIR / "wordle_words.txt"
+WORDLE_RATINGS_FILE = WORDLE_DIR / "wordle_difficulty_ratings.json"
+MIN_WORDLE_DIFFICULTY = 1
+MAX_WORDLE_DIFFICULTY = 20
 
 
 def load_word_list() -> list[str]:
@@ -26,6 +31,123 @@ def load_word_list() -> list[str]:
             if len(word) == WORD_LENGTH and word.isalpha() and word.isascii()
         }
     )
+
+
+@lru_cache(maxsize=1)
+def load_word_difficulty_ratings() -> dict[str, int]:
+    """Return the answer-word difficulty map used for streak-based selection."""
+    try:
+        payload = json.loads(WORDLE_RATINGS_FILE.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise RuntimeError(
+            f"Word difficulty ratings file not found: {WORDLE_RATINGS_FILE}"
+        ) from error
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"Word difficulty ratings file is invalid JSON: {WORDLE_RATINGS_FILE}"
+        ) from error
+
+    raw_ratings = payload.get("ratings")
+    if not isinstance(raw_ratings, dict):
+        buckets = payload.get("buckets")
+        if isinstance(buckets, dict):
+            raw_ratings = {}
+            for level, words in buckets.items():
+                if not isinstance(words, list):
+                    continue
+                for word in words:
+                    raw_ratings[str(word)] = level
+
+    if not isinstance(raw_ratings, dict):
+        raise RuntimeError(
+            f"Word difficulty ratings file has no ratings or buckets map: {WORDLE_RATINGS_FILE}"
+        )
+
+    normalized: dict[str, int] = {}
+    for raw_word, raw_rating in raw_ratings.items():
+        word = str(raw_word).strip().lower()
+        try:
+            rating = int(raw_rating)
+        except (TypeError, ValueError):
+            continue
+        if (
+            len(word) == WORD_LENGTH
+            and word.isalpha()
+            and word.isascii()
+            and MIN_WORDLE_DIFFICULTY <= rating <= MAX_WORDLE_DIFFICULTY
+        ):
+            normalized[word] = rating
+
+    if not normalized:
+        raise RuntimeError(
+            f"Word difficulty ratings file has no usable entries: {WORDLE_RATINGS_FILE}"
+        )
+
+    return normalized
+
+
+@lru_cache(maxsize=1)
+def available_difficulty_levels() -> tuple[int, ...]:
+    """Return every difficulty value that has at least one answer word."""
+    return tuple(sorted(set(load_word_difficulty_ratings().values())))
+
+
+@lru_cache(maxsize=1)
+def answer_words_by_difficulty() -> dict[int, tuple[str, ...]]:
+    """Group answer words by difficulty level."""
+    grouped: dict[int, list[str]] = {}
+    for word, level in sorted(load_word_difficulty_ratings().items()):
+        grouped.setdefault(level, []).append(word)
+    return {level: tuple(words) for level, words in grouped.items()}
+
+
+def load_answer_words() -> list[str]:
+    """Return the curated answer words used for daily secret selection."""
+    return sorted(load_word_difficulty_ratings())
+
+
+def difficulty_for_streak(streak: int) -> int:
+    """Map a correct-solve streak to the next available difficulty bucket."""
+    target = max(
+        MIN_WORDLE_DIFFICULTY,
+        min(MAX_WORDLE_DIFFICULTY, int(streak) + 1),
+    )
+    for level in available_difficulty_levels():
+        if level >= target:
+            return level
+    return available_difficulty_levels()[-1]
+
+
+def preferred_difficulty_levels(target_difficulty: int) -> tuple[int, ...]:
+    """Prefer the target bucket and then progressively easier fallback levels."""
+    target = difficulty_for_streak(target_difficulty - 1)
+    levels = available_difficulty_levels()
+    higher_or_equal = [level for level in levels if level >= target]
+    lower = [level for level in reversed(levels) if level < target]
+    return tuple(higher_or_equal + lower)
+
+
+def choose_secret_for_difficulty(
+    target_difficulty: int,
+    used_words: set[str] | None = None,
+) -> tuple[str, int]:
+    """Choose an unused answer word from the target difficulty band or nearest harder pool."""
+    normalized_used = {word.lower() for word in used_words or set()}
+    grouped_words = answer_words_by_difficulty()
+
+    for level in preferred_difficulty_levels(target_difficulty):
+        candidates = [
+            word
+            for word in grouped_words.get(level, ())
+            if word not in normalized_used
+        ]
+        if candidates:
+            return random.choice(candidates), level
+
+    if normalized_used:
+        return choose_secret_for_difficulty(target_difficulty, set())
+
+    raise RuntimeError("No Wordle answer words are available for selection.")
 
 
 def load_used_words() -> set[str]:

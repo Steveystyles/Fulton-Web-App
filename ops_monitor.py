@@ -737,6 +737,17 @@ def main() -> None:
         )
         errors.append(f"Internal health probe failed: {error}")
 
+    today_quiz = sqlite.get("todayQuiz") or {}
+    today_status = str(today_quiz.get("status") or "missing")
+    tests.append(
+        {
+            "id": "today_quiz",
+            "label": "Today quiz",
+            "status": "pass" if today_status == "published" else "fail",
+            "detail": f"{today_status} / accepted {today_quiz.get('acceptedQuestions', 0)}",
+        }
+    )
+
     tomorrow_quiz = sqlite.get("tomorrowQuiz") or {}
     tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
     tests.append(
@@ -1131,11 +1142,36 @@ class MonitorConfig:
 _CACHE_LOCK = threading.Lock()
 _CACHED_SNAPSHOT: dict[str, Any] | None = None
 _CACHED_AT_MONOTONIC = 0.0
+_SSH_REFRESH_LOCK = threading.Lock()
+_SSH_REFRESH_IN_PROGRESS = False
+_LOCAL_ACTION_JOBS_LOCK = threading.Lock()
+_LOCAL_ACTION_JOBS: dict[str, dict[str, Any]] = {}
+CACHE_FILE_PATH = Path(__file__).resolve().parent / "data" / "local-ops-snapshot.json"
 SSH_RETRY_ATTEMPTS = 3
+ASYNC_LOCAL_ACTIONS = frozenset({"generate_tomorrow_quiz", "regenerate_question"})
+LOCAL_ACTION_JOB_LIMIT = 32
+FALLBACK_HOST_CACHE_MAX_AGE_SEC = 300
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def london_dates() -> tuple[str, str]:
@@ -1164,6 +1200,12 @@ def is_retryable_ssh_error(message: str) -> bool:
             "could not resolve hostname",
         )
     )
+
+
+def can_attempt_ssh_snapshot(config: MonitorConfig) -> bool:
+    if not config.ssh_target or not config.ssh_key_path:
+        return False
+    return Path(config.ssh_key_path).exists()
 
 
 def ssh_python_command(config: MonitorConfig, encoded_payload: str) -> list[str]:
@@ -1421,6 +1463,113 @@ def internal_quiz_request(
     return decoded
 
 
+def current_tomorrow_quiz_preview(config: MonitorConfig) -> dict[str, Any]:
+    _, tomorrow_date = london_dates()
+    summary = internal_ops_request(
+        config,
+        "/internal/ops-summary",
+        timeout_sec=12,
+    )
+    quiz = summary.get("quiz") if isinstance(summary.get("quiz"), dict) else {}
+    preview = quiz.get("tomorrow") if isinstance(quiz.get("tomorrow"), dict) else None
+    if preview is None:
+        application = summary.get("application") if isinstance(summary.get("application"), dict) else {}
+        sqlite = application.get("sqlite") if isinstance(application.get("sqlite"), dict) else {}
+        preview = sqlite.get("tomorrowQuiz") if isinstance(sqlite.get("tomorrowQuiz"), dict) else None
+    if preview is None:
+        raise RuntimeError("Internal ops summary did not include tomorrow quiz state.")
+    return quiz_preview_from_payload(preview, fallback_date=tomorrow_date)
+
+
+def current_active_quiz_target(config: MonitorConfig) -> tuple[str, dict[str, Any], str]:
+    today_date, tomorrow_date = london_dates()
+    summary = internal_ops_request(
+        config,
+        "/internal/ops-summary",
+        timeout_sec=12,
+    )
+    quiz = summary.get("quiz") if isinstance(summary.get("quiz"), dict) else {}
+    application = summary.get("application") if isinstance(summary.get("application"), dict) else {}
+    sqlite = application.get("sqlite") if isinstance(application.get("sqlite"), dict) else {}
+
+    today_payload = (
+        quiz.get("today")
+        if isinstance(quiz.get("today"), dict)
+        else sqlite.get("todayQuiz")
+        if isinstance(sqlite.get("todayQuiz"), dict)
+        else {"date": today_date, "status": "missing", "acceptedQuestions": 0, "questions": []}
+    )
+    tomorrow_payload = (
+        quiz.get("tomorrow")
+        if isinstance(quiz.get("tomorrow"), dict)
+        else sqlite.get("tomorrowQuiz")
+        if isinstance(sqlite.get("tomorrowQuiz"), dict)
+        else {"date": tomorrow_date, "status": "missing", "acceptedQuestions": 0, "questions": []}
+    )
+
+    today_preview = quiz_preview_from_payload(today_payload, fallback_date=today_date)
+    if today_preview["status"] != "published":
+        return today_date, today_preview, "today"
+
+    tomorrow_preview = quiz_preview_from_payload(tomorrow_payload, fallback_date=tomorrow_date)
+    return tomorrow_date, tomorrow_preview, "tomorrow"
+
+
+def internal_ops_request(
+    config: MonitorConfig,
+    path: str,
+    *,
+    timeout_sec: int,
+) -> dict[str, Any]:
+    base_url = config.internal_base_url.rstrip("/")
+    if not base_url:
+        raise RuntimeError("Internal base URL is not configured in local ops settings.")
+    if not config.internal_quiz_token:
+        raise RuntimeError("Internal quiz token is not configured in local ops settings.")
+
+    request = Request(
+        f"{base_url}{path}",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {config.internal_quiz_token}",
+            "User-Agent": "FultonsOpsMonitor/1.0 (+https://fultons-quiz.co.uk)",
+        },
+        method="GET",
+    )
+    started = time.perf_counter()
+    try:
+        with urlopen(request, timeout=timeout_sec) as response:
+            body = response.read().decode("utf-8")
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+    except HTTPError as error:
+        detail = f"HTTP {error.code}"
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                detail = str(payload.get("error") or payload)
+        except Exception:
+            reason = getattr(error, "reason", None)
+            if reason:
+                detail = f"{detail}: {reason}"
+        raise RuntimeError(f"Internal ops request failed: {detail}") from error
+    except (OSError, URLError, TimeoutError) as error:
+        raise RuntimeError(f"Internal ops request failed: {error}") from error
+
+    try:
+        decoded = json.loads(body)
+    except json.JSONDecodeError as error:
+        trimmed = body.lstrip().lower()
+        if trimmed.startswith("<!doctype") or trimmed.startswith("<html"):
+            raise RuntimeError(
+                "Remote HTTPS summary endpoint is not live on the server yet."
+            ) from error
+        raise RuntimeError("Internal ops request returned invalid JSON.") from error
+    if not isinstance(decoded, dict):
+        raise RuntimeError("Internal ops request returned an unexpected payload.")
+    decoded["responseTimeMs"] = elapsed_ms
+    return decoded
+
+
 def quiz_preview_from_payload(
     payload: dict[str, Any],
     *,
@@ -1435,6 +1584,10 @@ def quiz_preview_from_payload(
         accepted_questions = payload.get("accepted_questions")
     if not isinstance(accepted_questions, int):
         accepted_questions = len(questions)
+    if not questions and accepted_questions > 0:
+        previous_questions = previous.get("questions")
+        if isinstance(previous_questions, list):
+            questions = previous_questions
     failed_attempts = payload.get("failedAttempts")
     if not isinstance(failed_attempts, int):
         failed_attempts = payload.get("failed_attempts")
@@ -1509,6 +1662,58 @@ def empty_remote_snapshot() -> dict[str, Any]:
     }
 
 
+def cached_full_remote_is_recent(existing_remote: dict[str, Any] | None) -> bool:
+    if not isinstance(existing_remote, dict):
+        return False
+    if existing_remote.get("partial"):
+        return False
+    generated_at = parse_iso_datetime(str(existing_remote.get("generatedAt") or ""))
+    if generated_at is None:
+        return False
+    age_sec = (datetime.now(timezone.utc) - generated_at).total_seconds()
+    if age_sec < 0:
+        age_sec = 0
+    return age_sec <= FALLBACK_HOST_CACHE_MAX_AGE_SEC
+
+
+def merge_internal_remote_summary(
+    existing_remote: dict[str, Any] | None,
+    summary_remote: dict[str, Any],
+) -> dict[str, Any]:
+    remote = copy.deepcopy(existing_remote) if isinstance(existing_remote, dict) else empty_remote_snapshot()
+    for section in ("application", "quiz", "tests", "errors"):
+        if isinstance(summary_remote.get(section), (dict, list)):
+            remote[section] = copy.deepcopy(summary_remote[section])
+    for section in ("host", "resources", "docker"):
+        current_value = remote.get(section)
+        if not current_value:
+            remote[section] = copy.deepcopy(summary_remote.get(section))
+    using_recent_full_cache = cached_full_remote_is_recent(existing_remote)
+    remote["ok"] = bool(summary_remote.get("ok"))
+    remote["generatedAt"] = str(summary_remote.get("generatedAt") or utc_now_iso())
+    remote["responseTimeMs"] = summary_remote.get("responseTimeMs")
+    remote["partial"] = not using_recent_full_cache
+    remote["transport"] = (
+        "hybrid-cache"
+        if using_recent_full_cache
+        else str(summary_remote.get("transport") or "https-fallback")
+    )
+    if using_recent_full_cache and isinstance(existing_remote, dict):
+        remote["hostSnapshotGeneratedAt"] = existing_remote.get("generatedAt")
+    return remote
+
+
+def collect_remote_snapshot_via_internal_api(config: MonitorConfig) -> dict[str, Any]:
+    payload = internal_ops_request(
+        config,
+        "/internal/ops-summary",
+        timeout_sec=12,
+    )
+    payload["partial"] = True
+    payload["transport"] = str(payload.get("transport") or "https-fallback")
+    return payload
+
+
 def merge_quiz_action_snapshot(
     snapshot: dict[str, Any],
     action: str,
@@ -1541,32 +1746,67 @@ def merge_quiz_action_snapshot(
         sqlite = {"todayQuiz": None, "tomorrowQuiz": None}
         application["sqlite"] = sqlite
 
-    existing_preview = quiz_section.get("tomorrow")
+    generated_date = str(
+        details.get("generatedDate")
+        or details.get("date")
+        or result.get("date")
+        or ""
+    )
+    today_date, tomorrow_date = london_dates()
+    result_date = str(result.get("date") or generated_date)
+    existing_today = quiz_section.get("today")
+    existing_tomorrow = quiz_section.get("tomorrow")
+    existing_today_date = (
+        str(existing_today.get("date") or "")
+        if isinstance(existing_today, dict)
+        else today_date
+    )
+    existing_tomorrow_date = (
+        str(existing_tomorrow.get("date") or "")
+        if isinstance(existing_tomorrow, dict)
+        else tomorrow_date
+    )
+    if result_date == existing_today_date:
+        target_slot = "today"
+    elif result_date == existing_tomorrow_date:
+        target_slot = "tomorrow"
+    else:
+        target_slot = "today" if result_date == today_date else "tomorrow"
+    sqlite_key = "todayQuiz" if target_slot == "today" else "tomorrowQuiz"
+    existing_preview = quiz_section.get(target_slot)
     preview = quiz_preview_from_payload(
         result,
-        fallback_date=str(details.get("generatedDate") or details.get("date") or ""),
+        fallback_date=generated_date,
         previous=existing_preview if isinstance(existing_preview, dict) else None,
     )
-    quiz_section["tomorrow"] = preview
-    sqlite["tomorrowQuiz"] = copy.deepcopy(preview)
+    quiz_section[target_slot] = preview
+    sqlite[sqlite_key] = copy.deepcopy(preview)
 
     tests = remote.get("tests")
     if not isinstance(tests, list):
         tests = []
         remote["tests"] = tests
-    test_row = {
-        "id": "tomorrow_quiz",
-        "label": "Tomorrow quiz",
-        "status": "pass"
-        if preview["status"] == "published"
-        else "warn"
-        if preview["status"] in {"generating", "ready", "draft"}
-        else "fail",
-        "detail": f"{preview['status']} / accepted {preview['acceptedQuestions']}",
-    }
+    if target_slot == "today":
+        test_row = {
+            "id": "today_quiz",
+            "label": "Today quiz",
+            "status": "pass" if preview["status"] == "published" else "fail",
+            "detail": f"{preview['status']} / accepted {preview['acceptedQuestions']}",
+        }
+    else:
+        test_row = {
+            "id": "tomorrow_quiz",
+            "label": "Tomorrow quiz",
+            "status": "pass"
+            if preview["status"] == "published"
+            else "warn"
+            if preview["status"] in {"generating", "ready", "draft"}
+            else "fail",
+            "detail": f"{preview['status']} / accepted {preview['acceptedQuestions']}",
+        }
     replaced = False
     for index, row in enumerate(tests):
-        if isinstance(row, dict) and row.get("id") == "tomorrow_quiz":
+        if isinstance(row, dict) and row.get("id") == test_row["id"]:
             tests[index] = test_row
             replaced = True
             break
@@ -1588,7 +1828,30 @@ def snapshot_cache_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
     payload.pop("cacheAgeSec", None)
     payload.pop("stale", None)
     payload.pop("lastError", None)
+    payload.pop("hostRefreshInProgress", None)
+    payload.pop("reason", None)
     return payload
+
+
+def load_persisted_snapshot() -> tuple[dict[str, Any] | None, int]:
+    try:
+        raw = json.loads(CACHE_FILE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None, 0
+        age_sec = max(0, int(time.time() - CACHE_FILE_PATH.stat().st_mtime))
+        return raw, age_sec
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None, 0
+
+
+def persist_cached_snapshot(snapshot: dict[str, Any]) -> None:
+    try:
+        CACHE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = CACHE_FILE_PATH.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(snapshot, ensure_ascii=True), encoding="utf-8")
+        temp_path.replace(CACHE_FILE_PATH)
+    except OSError:
+        return
 
 
 def update_cached_snapshot(snapshot: dict[str, Any]) -> None:
@@ -1596,21 +1859,228 @@ def update_cached_snapshot(snapshot: dict[str, Any]) -> None:
     with _CACHE_LOCK:
         _CACHED_SNAPSHOT = snapshot_cache_payload(snapshot)
         _CACHED_AT_MONOTONIC = time.monotonic()
+        persist_cached_snapshot(_CACHED_SNAPSHOT)
+
+
+def local_action_response_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    response = copy.deepcopy(payload)
+    response["done"] = response.get("status") in {"succeeded", "failed"}
+    return response
+
+
+def is_async_local_action(action: str) -> bool:
+    return action in ASYNC_LOCAL_ACTIONS
+
+
+def create_local_action_job_id() -> str:
+    token = base64.urlsafe_b64encode(os.urandom(9)).decode("ascii").rstrip("=")
+    return f"ops-{token}"
+
+
+def prune_local_action_jobs_locked() -> None:
+    if len(_LOCAL_ACTION_JOBS) <= LOCAL_ACTION_JOB_LIMIT:
+        return
+    completed_jobs = sorted(
+        (
+            (job_id, job)
+            for job_id, job in _LOCAL_ACTION_JOBS.items()
+            if job.get("status") in {"succeeded", "failed"}
+        ),
+        key=lambda item: str(item[1].get("finishedAt") or item[1].get("createdAt") or ""),
+    )
+    while len(_LOCAL_ACTION_JOBS) > LOCAL_ACTION_JOB_LIMIT and completed_jobs:
+        job_id, _ = completed_jobs.pop(0)
+        _LOCAL_ACTION_JOBS.pop(job_id, None)
+
+
+def queued_local_action_message(action: str, params: dict[str, Any] | None) -> str:
+    if action == "regenerate_question":
+        question_date = str((params or {}).get("date") or "the selected quiz")
+        subject = str((params or {}).get("subject") or "question").replace("_", " ")
+        difficulty = str((params or {}).get("difficulty") or "").strip()
+        if difficulty:
+            return f"Refreshing {subject} / {difficulty} for {question_date}."
+        return f"Refreshing {subject} for {question_date}."
+    if action == "generate_tomorrow_quiz":
+        return "Repairing the active daily quiz in the background."
+    return "Running action in the background."
+
+
+def execute_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = MonitorConfig.from_env()
+    if not config.enabled:
+        raise RuntimeError("Local ops actions are disabled because the monitor is off.")
+    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
+        raise ValueError(f"Unsupported ops action: {action}")
+    if action == "generate_tomorrow_quiz":
+        details = generate_tomorrow_quiz_action(config)
+    elif action == "regenerate_question":
+        details = regenerate_question_action(config, params or {})
+    else:
+        details = run_remote_action(config, action, params=params)
+    snapshot = collect_dashboard_snapshot(force=True)
+    snapshot = merge_quiz_action_snapshot(snapshot, action, details)
+    update_cached_snapshot(snapshot)
+    return {
+        "action": action,
+        "status": "succeeded",
+        "done": True,
+        "message": str(details.get("message") or "Action completed."),
+        "details": details,
+        "snapshot": snapshot,
+    }
+
+
+def run_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    return execute_local_action(action, params=params)
+
+
+def local_action_job_response(job: dict[str, Any]) -> dict[str, Any]:
+    return local_action_response_payload(job)
+
+
+def _run_local_action_job(job_id: str) -> None:
+    with _LOCAL_ACTION_JOBS_LOCK:
+        job = _LOCAL_ACTION_JOBS.get(job_id)
+        if job is None:
+            return
+        action = str(job["action"])
+        params = copy.deepcopy(job.get("params")) if isinstance(job.get("params"), dict) else None
+        job["status"] = "running"
+        job["startedAt"] = utc_now_iso()
+        job["message"] = queued_local_action_message(action, params)
+
+    try:
+        result = execute_local_action(action, params=params)
+    except Exception as error:
+        with _LOCAL_ACTION_JOBS_LOCK:
+            current = _LOCAL_ACTION_JOBS.get(job_id)
+            if current is None:
+                return
+            current["status"] = "failed"
+            current["error"] = str(error)
+            current["message"] = str(error)
+            current["finishedAt"] = utc_now_iso()
+            prune_local_action_jobs_locked()
+        return
+
+    with _LOCAL_ACTION_JOBS_LOCK:
+        current = _LOCAL_ACTION_JOBS.get(job_id)
+        if current is None:
+            return
+        current["status"] = "succeeded"
+        current["message"] = str(result.get("message") or "Action completed.")
+        current["details"] = copy.deepcopy(result.get("details") or {})
+        current["snapshot"] = copy.deepcopy(result.get("snapshot"))
+        current["finishedAt"] = utc_now_iso()
+        prune_local_action_jobs_locked()
+
+
+def start_local_action_job(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = MonitorConfig.from_env()
+    if not config.enabled:
+        raise RuntimeError("Local ops actions are disabled because the monitor is off.")
+    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
+        raise ValueError(f"Unsupported ops action: {action}")
+    if not is_async_local_action(action):
+        return execute_local_action(action, params=params)
+
+    normalized_params = copy.deepcopy(params) if isinstance(params, dict) else None
+    with _LOCAL_ACTION_JOBS_LOCK:
+        for existing in _LOCAL_ACTION_JOBS.values():
+            if (
+                existing.get("action") == action
+                and existing.get("params") == normalized_params
+                and existing.get("status") in {"queued", "running"}
+            ):
+                payload = local_action_job_response(existing)
+                payload["reused"] = True
+                return payload
+
+        job_id = create_local_action_job_id()
+        job = {
+            "jobId": job_id,
+            "action": action,
+            "status": "queued",
+            "message": queued_local_action_message(action, normalized_params),
+            "params": normalized_params,
+            "createdAt": utc_now_iso(),
+            "startedAt": None,
+            "finishedAt": None,
+        }
+        _LOCAL_ACTION_JOBS[job_id] = job
+        prune_local_action_jobs_locked()
+
+    thread = threading.Thread(target=_run_local_action_job, args=(job_id,), daemon=True)
+    thread.start()
+    return local_action_job_response(job)
+
+
+def get_local_action_job(job_id: str) -> dict[str, Any]:
+    job_key = str(job_id or "").strip()
+    if not job_key:
+        raise ValueError("jobId is required.")
+    with _LOCAL_ACTION_JOBS_LOCK:
+        job = _LOCAL_ACTION_JOBS.get(job_key)
+        if job is None:
+            raise LookupError(f"Local ops job {job_key} was not found.")
+        return local_action_job_response(job)
 
 
 def generate_tomorrow_quiz_action(config: MonitorConfig) -> dict[str, Any]:
-    _, tomorrow_date = london_dates()
-    payload = internal_quiz_request(
-        config,
-        "/internal/generate-daily-quiz",
-        {"date": tomorrow_date},
-        timeout_sec=240,
+    try:
+        quiz_date, existing_preview, target_label = current_active_quiz_target(config)
+    except RuntimeError:
+        _, tomorrow_date = london_dates()
+        quiz_date = tomorrow_date
+        existing_preview = {
+            "date": tomorrow_date,
+            "status": "missing",
+            "acceptedQuestions": 0,
+            "failedAttempts": 0,
+            "failureReason": None,
+            "questions": [],
+        }
+        target_label = "tomorrow"
+    try:
+        payload = internal_quiz_request(
+            config,
+            "/internal/generate-daily-quiz",
+            {"date": quiz_date},
+            timeout_sec=120,
+        )
+    except RuntimeError as error:
+        if "timed out" not in str(error).casefold():
+            raise
+        try:
+            _, preview, preview_label = current_active_quiz_target(config)
+        except RuntimeError:
+            preview = current_tomorrow_quiz_preview(config)
+            preview_label = "tomorrow"
+        accepted = int(preview.get("acceptedQuestions") or 0)
+        status = str(preview.get("status") or "generating")
+        label = "Today" if preview_label == "today" else "Tomorrow"
+        return {
+            "ok": status in {"generating", "published"},
+            "generatedDate": str(preview.get("date") or quiz_date),
+            "result": preview,
+            "message": (
+                f"{label} quiz generation is still running for {preview.get('date') or quiz_date}; "
+                f"{accepted}/6 approved so far."
+            ),
+            "transport": "https",
+        }
+    label = "Today" if target_label == "today" else "Tomorrow"
+    result_preview = (
+        quiz_preview_from_payload(payload, fallback_date=quiz_date, previous=existing_preview)
+        if isinstance(payload, dict)
+        else existing_preview
     )
     return {
         "ok": True,
-        "generatedDate": str(payload.get("date") or tomorrow_date),
-        "result": payload,
-        "message": f"Tomorrow quiz generated for {tomorrow_date}.",
+        "generatedDate": str(payload.get("date") or quiz_date),
+        "result": result_preview,
+        "message": f"{label} quiz repair triggered for {quiz_date}.",
         "transport": "https",
     }
 
@@ -1626,16 +2096,34 @@ def regenerate_question_action(config: MonitorConfig, params: dict[str, Any]) ->
     if difficulty not in {"easy", "medium", "hard"}:
         raise RuntimeError("difficulty must be easy, medium, or hard.")
 
-    payload = internal_quiz_request(
-        config,
-        "/internal/regenerate-daily-quiz-question",
-        {
+    try:
+        payload = internal_quiz_request(
+            config,
+            "/internal/regenerate-daily-quiz-question",
+            {
+                "date": quiz_date,
+                "subject": subject,
+                "difficulty": difficulty,
+            },
+            timeout_sec=120,
+        )
+    except RuntimeError as error:
+        if "timed out" not in str(error).casefold():
+            raise
+        preview = current_tomorrow_quiz_preview(config)
+        accepted = int(preview.get("acceptedQuestions") or 0)
+        return {
+            "ok": True,
             "date": quiz_date,
             "subject": subject,
             "difficulty": difficulty,
-        },
-        timeout_sec=240,
-    )
+            "result": preview,
+            "message": (
+                f"Question refresh is still running for {quiz_date}; "
+                f"{accepted}/6 approved so far."
+            ),
+            "transport": "https",
+        }
     return {
         "ok": True,
         "date": quiz_date,
@@ -1656,6 +2144,9 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
     if remote is None:
         alerts.append("SSH monitor could not collect a live server snapshot.")
         return alerts
+
+    if remote.get("partial"):
+        alerts.append("Using HTTPS fallback for app state; host and Docker metrics may be stale.")
 
     application = remote.get("application") if isinstance(remote.get("application"), dict) else {}
     health = application.get("health") if isinstance(application.get("health"), dict) else {}
@@ -1714,11 +2205,25 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
                     f"{battery.get('name', 'Battery')} is low at {battery['capacityPct']}%."
                 )
 
-    tomorrow_quiz = (
-        remote.get("quiz", {}).get("tomorrow", {})
+    today_quiz = (
+        remote.get("quiz", {}).get("today")
         if isinstance(remote.get("quiz"), dict)
         else {}
     )
+    if not isinstance(today_quiz, dict):
+        today_quiz = {}
+    today_status = str(today_quiz.get("status") or "missing")
+    today_accepted = int(today_quiz.get("acceptedQuestions") or 0)
+    if today_status != "published":
+        alerts.append(f"Today quiz is {today_status} with {today_accepted}/6 approved questions.")
+
+    tomorrow_quiz = (
+        remote.get("quiz", {}).get("tomorrow")
+        if isinstance(remote.get("quiz"), dict)
+        else {}
+    )
+    if not isinstance(tomorrow_quiz, dict):
+        tomorrow_quiz = {}
     quiz_status = str(tomorrow_quiz.get("status") or "missing")
     accepted = int(tomorrow_quiz.get("acceptedQuestions") or 0)
     if quiz_status != "published":
@@ -1734,9 +2239,45 @@ def summarize_status(remote: dict[str, Any] | None, public_probe: dict[str, Any]
         return "degraded"
     if remote is None:
         return "degraded"
+    if remote.get("partial"):
+        return "degraded"
     if remote.get("errors"):
         return "degraded"
     return "healthy"
+
+
+def build_snapshot(
+    public_probe: dict[str, Any],
+    remote: dict[str, Any] | None,
+    *,
+    errors: list[str] | None = None,
+    stale: bool = False,
+) -> dict[str, Any]:
+    if remote is None:
+        snapshot = {
+            "enabled": True,
+            "generatedAt": utc_now_iso(),
+            "publicProbe": public_probe,
+            "remote": None,
+            "alerts": build_alerts(None, public_probe),
+            "errors": errors or [],
+        }
+    else:
+        snapshot = {
+            "enabled": True,
+            "generatedAt": utc_now_iso(),
+            "publicProbe": public_probe,
+            "remote": remote,
+            "alerts": build_alerts(remote, public_probe),
+            "errors": errors
+            if errors is not None
+            else list(remote.get("errors", []))
+            if isinstance(remote.get("errors"), list)
+            else [],
+        }
+    snapshot["status"] = summarize_status(remote, public_probe, stale)
+    snapshot["ok"] = snapshot["status"] == "healthy" and not snapshot["alerts"]
+    return snapshot
 
 
 def attach_runtime_metadata(
@@ -1754,6 +2295,44 @@ def attach_runtime_metadata(
     return payload
 
 
+def _background_ssh_refresh_worker(
+    config: MonitorConfig,
+    public_probe: dict[str, Any],
+) -> None:
+    global _SSH_REFRESH_IN_PROGRESS
+
+    try:
+        remote = collect_remote_snapshot(config)
+        snapshot = build_snapshot(public_probe, remote, stale=False)
+        update_cached_snapshot(snapshot)
+    finally:
+        with _SSH_REFRESH_LOCK:
+            _SSH_REFRESH_IN_PROGRESS = False
+
+
+def schedule_background_ssh_refresh(
+    config: MonitorConfig,
+    public_probe: dict[str, Any],
+) -> bool:
+    global _SSH_REFRESH_IN_PROGRESS
+
+    if not can_attempt_ssh_snapshot(config):
+        return False
+
+    with _SSH_REFRESH_LOCK:
+        if _SSH_REFRESH_IN_PROGRESS:
+            return False
+        _SSH_REFRESH_IN_PROGRESS = True
+
+    thread = threading.Thread(
+        target=_background_ssh_refresh_worker,
+        args=(config, copy.deepcopy(public_probe)),
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
 def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
     global _CACHED_AT_MONOTONIC, _CACHED_SNAPSHOT
 
@@ -1763,6 +2342,11 @@ def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
 
     now_monotonic = time.monotonic()
     with _CACHE_LOCK:
+        if _CACHED_SNAPSHOT is None:
+            persisted_snapshot, persisted_age_sec = load_persisted_snapshot()
+            if persisted_snapshot is not None:
+                _CACHED_SNAPSHOT = persisted_snapshot
+                _CACHED_AT_MONOTONIC = now_monotonic - persisted_age_sec
         if (
             not force
             and _CACHED_SNAPSHOT is not None
@@ -1777,69 +2361,65 @@ def collect_dashboard_snapshot(*, force: bool = False) -> dict[str, Any]:
         cached_age = int(now_monotonic - _CACHED_AT_MONOTONIC) if _CACHED_SNAPSHOT else 0
 
     public_probe = probe_public_health(config.public_health_url)
+    internal_remote: dict[str, Any] | None = None
+    internal_error: str | None = None
     try:
-        remote = collect_remote_snapshot(config)
+        internal_remote = collect_remote_snapshot_via_internal_api(config)
     except Exception as error:
-        if cached_snapshot is not None:
-            cached_snapshot["status"] = summarize_status(None, public_probe, True)
-            cached_snapshot["ok"] = False
-            cached_snapshot["publicProbe"] = public_probe
-            cached_snapshot["alerts"] = build_alerts(None, public_probe)
-            cached_snapshot["errors"] = [str(error)]
-            return attach_runtime_metadata(
-                cached_snapshot,
-                cache_age_sec=cached_age,
-                stale=True,
-                last_error=str(error),
-            )
-        return {
-            "enabled": True,
-            "status": summarize_status(None, public_probe, True),
-            "ok": False,
-            "generatedAt": utc_now_iso(),
-            "cacheAgeSec": 0,
-            "stale": True,
-            "publicProbe": public_probe,
-            "remote": None,
-            "alerts": build_alerts(None, public_probe),
-            "errors": [str(error)],
-            "reason": "Initial SSH snapshot failed.",
-        }
+        internal_error = str(error)
+    if internal_remote is not None:
+        existing_remote = cached_snapshot.get("remote") if isinstance(cached_snapshot, dict) else None
+        merged_remote = merge_internal_remote_summary(
+            existing_remote if isinstance(existing_remote, dict) else None,
+            internal_remote,
+        )
+        snapshot = build_snapshot(
+            public_probe,
+            merged_remote,
+            errors=[internal_error] if internal_error else [],
+            stale=False,
+        )
+        if schedule_background_ssh_refresh(config, public_probe):
+            snapshot["hostRefreshInProgress"] = True
+        update_cached_snapshot(snapshot)
+        return attach_runtime_metadata(
+            snapshot,
+            cache_age_sec=0,
+            stale=False,
+            last_error=internal_error,
+        )
+    refresh_started = schedule_background_ssh_refresh(config, public_probe)
+    if cached_snapshot is not None:
+        remote = cached_snapshot.get("remote") if isinstance(cached_snapshot.get("remote"), dict) else None
+        snapshot = build_snapshot(
+            public_probe,
+            remote,
+            errors=[internal_error] if internal_error else [],
+            stale=True,
+        )
+        if refresh_started:
+            snapshot["hostRefreshInProgress"] = True
+        return attach_runtime_metadata(
+            snapshot,
+            cache_age_sec=cached_age,
+            stale=True,
+            last_error=internal_error,
+        )
 
-    snapshot = {
-        "enabled": True,
-        "generatedAt": utc_now_iso(),
-        "publicProbe": public_probe,
-        "remote": remote,
-        "alerts": build_alerts(remote, public_probe),
-        "errors": list(remote.get("errors", [])) if isinstance(remote.get("errors"), list) else [],
-    }
-    snapshot["status"] = summarize_status(remote, public_probe, False)
-    snapshot["ok"] = snapshot["status"] == "healthy" and not snapshot["alerts"]
-
-    update_cached_snapshot(snapshot)
-
-    return attach_runtime_metadata(snapshot, cache_age_sec=0, stale=False)
-
-
-def run_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    config = MonitorConfig.from_env()
-    if not config.enabled:
-        raise RuntimeError("Local ops actions are disabled because the monitor is off.")
-    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
-        raise ValueError(f"Unsupported ops action: {action}")
-    if action == "generate_tomorrow_quiz":
-        details = generate_tomorrow_quiz_action(config)
-    elif action == "regenerate_question":
-        details = regenerate_question_action(config, params or {})
+    snapshot = build_snapshot(
+        public_probe,
+        None,
+        errors=[internal_error] if internal_error else [],
+        stale=True,
+    )
+    if refresh_started:
+        snapshot["hostRefreshInProgress"] = True
+        snapshot["reason"] = "Live host snapshot is refreshing in the background."
     else:
-        details = run_remote_action(config, action, params=params)
-    snapshot = collect_dashboard_snapshot(force=True)
-    snapshot = merge_quiz_action_snapshot(snapshot, action, details)
-    update_cached_snapshot(snapshot)
-    return {
-        "action": action,
-        "message": str(details.get("message") or "Action completed."),
-        "details": details,
-        "snapshot": snapshot,
-    }
+        snapshot["reason"] = "Live remote summary was unavailable and no cached host snapshot exists."
+    return attach_runtime_metadata(
+        snapshot,
+        cache_age_sec=0,
+        stale=True,
+        last_error=internal_error,
+    )
