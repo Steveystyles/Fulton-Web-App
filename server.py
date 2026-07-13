@@ -3030,25 +3030,26 @@ def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
     seen_dates: set[str] = set()
     with DAILY_QUIZ_OPERATION_LOCK:
         with closing(connect_db()) as conn:
-            for quiz_date in target_dates:
-                normalized_date = daily_quiz.valid_quiz_date(quiz_date)
-                if normalized_date in seen_dates:
-                    continue
-                seen_dates.add(normalized_date)
-                status = daily_quiz.quiz_status(conn, normalized_date)
-                if status["status"] == "published":
-                    safe_log(f"Daily quiz for {normalized_date} is already published")
-                    results.append(status)
-                    continue
-                result = daily_quiz.generate_daily_quiz(
-                    conn,
-                    quiz_date=normalized_date,
-                    config=DAILY_QUIZ_CONFIG,
-                    log=lambda message: safe_log(f"Daily quiz: {message}"),
-                )
-                results.append(result)
-                if result.get("status") != "published":
-                    break
+            with conn:
+                for quiz_date in target_dates:
+                    normalized_date = daily_quiz.valid_quiz_date(quiz_date)
+                    if normalized_date in seen_dates:
+                        continue
+                    seen_dates.add(normalized_date)
+                    status = daily_quiz.quiz_status(conn, normalized_date)
+                    if status["status"] == "published":
+                        safe_log(f"Daily quiz for {normalized_date} is already published")
+                        results.append(status)
+                        continue
+                    result = daily_quiz.generate_daily_quiz(
+                        conn,
+                        quiz_date=normalized_date,
+                        config=DAILY_QUIZ_CONFIG,
+                        log=lambda message: safe_log(f"Daily quiz: {message}"),
+                    )
+                    results.append(result)
+                    if result.get("status") != "published":
+                        break
     return results
 
 
