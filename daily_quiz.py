@@ -136,6 +136,7 @@ GENERIC_TOPIC_TAGS = {
 DEFAULT_COMPATIBLE_BASE_URLS = {
     "groq": "https://api.groq.com/openai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "openai-compatible": "https://api.openai.com/v1",
 }
 
 
@@ -171,6 +172,7 @@ class QuizConfig:
     transient_retries: int
     max_attempts_per_slot: int
     question_history_days: int
+    learning_profile_path: str
     internal_token: str
 
     @classmethod
@@ -229,6 +231,7 @@ class QuizConfig:
                 1,
                 int(os.environ.get("QUESTION_HISTORY_DAYS", "90")),
             ),
+            learning_profile_path=os.environ.get("QUIZ_LEARNING_PROFILE_PATH", "").strip(),
             internal_token=os.environ.get("INTERNAL_QUIZ_TOKEN", "").strip(),
         )
 
@@ -1190,6 +1193,16 @@ def check_repetition(
             return RepetitionResult(False, "Question is too similar to a recent accepted question.")
         if correct_answer == normalize_text(previous["correct_answer"]):
             answer_count += 1
+            if (
+                normalize_text(question.get("subject", ""))
+                == normalize_text(previous.get("subject", ""))
+                and normalize_text(question.get("difficulty", ""))
+                == normalize_text(previous.get("difficulty", ""))
+            ):
+                return RepetitionResult(
+                    False,
+                    "Correct answer already appeared recently in this quiz slot.",
+                )
         for tag in previous.get("tags", []):
             clean_tag = normalize_text(str(tag))
             if clean_tag and not is_generic_topic_tag(clean_tag):
@@ -1347,6 +1360,49 @@ def prior_attempt_feedback(
     return feedback
 
 
+def merge_feedback_entries(*groups: list[str], limit: int = 8) -> list[str]:
+    feedback: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for entry in group:
+            text = str(entry or "").strip()
+            normalized = normalize_text(text)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            feedback.append(text)
+            if len(feedback) >= limit:
+                return feedback
+    return feedback
+
+
+def learning_profile_feedback(
+    profile_path: str,
+    *,
+    subject: str,
+    difficulty: str,
+    limit: int = 5,
+) -> list[str]:
+    if not profile_path:
+        return []
+    try:
+        with open(profile_path, "r", encoding="utf-8") as handle:
+            profile = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(profile, dict):
+        return []
+    by_slot = profile.get("feedback_by_slot")
+    if not isinstance(by_slot, dict):
+        return []
+    groups: list[list[str]] = []
+    for key in ("global", f"{subject}/*", f"*/{difficulty}", f"{subject}/{difficulty}"):
+        values = by_slot.get(key)
+        if isinstance(values, list):
+            groups.append([str(value) for value in values if str(value).strip()])
+    return merge_feedback_entries(*groups, limit=limit)
+
+
 def is_transient_provider_failure(reason: str) -> bool:
     normalized = str(reason or "").casefold()
     return any(
@@ -1381,12 +1437,18 @@ def generate_slot(
     config: QuizConfig,
     log: Callable[[str], None],
 ) -> bool | None:
-    feedback = prior_attempt_feedback(
+    attempt_feedback = prior_attempt_feedback(
         conn,
         quiz_date=quiz_date,
         subject=subject,
         difficulty=difficulty,
     )
+    profile_feedback = learning_profile_feedback(
+        config.learning_profile_path,
+        subject=subject,
+        difficulty=difficulty,
+    )
+    feedback = merge_feedback_entries(attempt_feedback, profile_feedback)
     saw_transient_provider_failure = False
     saw_non_transient_failure = False
     recent = recent_questions(

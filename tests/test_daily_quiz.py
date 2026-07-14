@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import daily_quiz
@@ -33,6 +35,7 @@ def config(max_attempts: int = 3) -> daily_quiz.QuizConfig:
         transient_retries=0,
         max_attempts_per_slot=max_attempts,
         question_history_days=90,
+        learning_profile_path="",
         internal_token="test-token",
     )
 
@@ -295,6 +298,34 @@ class DailyQuizTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("answer", result.reason.lower())
 
+    def test_repetition_rejects_recent_answer_in_same_slot(self) -> None:
+        question = {
+            **valid_question(subject="football", difficulty="easy"),
+            "question": (
+                "The term \"hat-trick\" is famously used in football when a player scores "
+                "three goals in a single match. From which other sport did this popular "
+                "phrase originally derive?"
+            ),
+            "correct_answer": "Cricket",
+            "tags": ["hat-trick", "cricket"],
+        }
+        previous = [
+            {
+                **valid_question(subject="football", difficulty="easy"),
+                "question": (
+                    "The football term \"hat-trick\" originated from a tradition in which "
+                    "sport, where a player who achieved three of a kind was awarded a hat?"
+                ),
+                "correct_answer": "Cricket",
+                "tags": ["hat-trick", "cricket"],
+            }
+        ]
+
+        result = daily_quiz.check_repetition(question, previous)
+
+        self.assertFalse(result.passed)
+        self.assertIn("quiz slot", result.reason)
+
     def test_repetition_rejects_answer_already_used_in_same_quiz(self) -> None:
         question = valid_question(difficulty="medium")
         previous = [
@@ -432,6 +463,37 @@ class DailyQuizTests(unittest.TestCase):
         self.assertTrue(
             any("Missing required fields" in entry for entry in provider.feedback_calls[1])
         )
+
+    def test_generation_includes_learning_profile_feedback(self) -> None:
+        provider = FeedbackReuseProvider()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_path = Path(tmpdir) / "profile.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "feedback_by_slot": {
+                            "football/*": [
+                                "Avoid arbitrary dated fixture recall.",
+                                "Prefer season-level football hooks.",
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-08",
+                config=daily_quiz.QuizConfig(
+                    **{**config().__dict__, "learning_profile_path": str(profile_path)}
+                ),
+                provider=provider,
+                log=lambda _: None,
+            )
+
+        self.assertEqual(result["status"], "published")
+        self.assertTrue(provider.feedback_calls)
+        self.assertIn("Avoid arbitrary dated fixture recall.", provider.feedback_calls[0])
 
     def test_generation_keeps_quiz_generating_after_transient_provider_failures(self) -> None:
         result = daily_quiz.generate_daily_quiz(

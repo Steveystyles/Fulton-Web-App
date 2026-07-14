@@ -58,7 +58,79 @@ Production defaults are intentionally stricter than local development:
 
 - User accounts, sessions, daily Wordle games, guesses, and results are stored in `data/fultons.db` locally or `/app/data/fultons.db` inside the container.
 - Daily quiz state is stored in the SQLite database tables `daily_quiz_sets`, `daily_quiz_questions`, and `daily_quiz_attempts`. Unfinished AI-generated quizzes stay in `generating` and retry missing slots rather than falling back to local bank content.
+- Daily map game state is stored in `map_place_pool`, `daily_map_puzzles`, `daily_map_levels`, and `daily_map_guesses`.
 - The local used-word tracker is stored beside `wordle_game.py` as `used_words.txt`.
+
+## Quiz Model Training Data
+
+The first step toward a trained quiz-generation model is exporting reviewed production history into repeatable datasets. The exporter uses accepted published questions as supervised fine-tuning examples, carries recent accepted questions and prior failed-attempt feedback into each prompt, and holds out the newest quiz dates for evaluation.
+
+```bash
+python tools/export_quiz_training_data.py --db data/fultons.db --out-dir data/training --eval-days 7
+```
+
+Generated files are written under `data/training/`, which is ignored by git:
+
+- `quiz_sft_train_*.jsonl`: OpenAI chat fine-tuning JSONL with `messages`.
+- `quiz_eval_*.jsonl`: held-out prompt, expected output, and metadata for offline evals.
+- `quiz_export_manifest_*.json`: counts, source dates, eval dates, and export settings.
+
+Reviewed football workbooks can be added as a second, curated data source. This exporter treats high-scoring confirmed rows as positive examples, holds out every fifth high-scoring row for evals, and keeps failures plus low-scoring confirmed rows in a separate negative file for review or later preference training.
+
+```bash
+python tools/export_reviewed_football_training_data.py --workbook path/to/football_quiz_review_corrected_verified.xlsx --out-dir data/training
+```
+
+Reviewed workbook outputs use the same JSONL shapes where possible:
+
+- `football_review_sft_train_*.jsonl`: high-score confirmed football examples for SFT.
+- `football_review_eval_*.jsonl`: held-out reviewed football examples for offline evals.
+- `football_review_negative_*.jsonl`: ambiguous, incorrect, and low-score examples to avoid as positives.
+- `football_review_manifest_*.json`: counts, filters, skipped rows, and validation failures.
+
+Validate reviewed-football evals with the same fixture evaluator, using the `football_review_eval_*.jsonl` file as input.
+
+Prepare an OpenAI fine-tuning dataset and registry entry without making API calls:
+
+```bash
+python tools/openai_quiz_finetune.py --dry-run --out-dir data/training
+```
+
+When OpenAI credentials and a fine-tunable base model are available, create and poll a job explicitly:
+
+```bash
+set OPENAI_FT_BASE_MODEL=your-base-model
+python tools/openai_quiz_finetune.py --create-job --out-dir data/training
+python tools/openai_quiz_finetune.py --poll-job
+```
+
+Evaluate a candidate fine-tuned model before changing live config:
+
+```bash
+python tools/evaluate_quiz_generator.py --eval-file data/training/football_review_eval_YYYYMMDDTHHMMSSZ.jsonl --provider openai-compatible --generator-model ft:model-id --out data/training/eval_report_ft_football.json
+```
+
+If fine-tuning access is unavailable, build a deployable learning profile from reviewed negative examples:
+
+```bash
+python tools/build_quiz_learning_profile.py --out-dir data/training
+```
+
+Set `QUIZ_LEARNING_PROFILE_PATH` to the generated JSON file to add compact learned feedback to future quiz generation prompts while keeping the existing validators and critic active.
+
+Run the safe fixture evaluator to confirm the held-out eval file is structurally valid:
+
+```bash
+python tools/evaluate_quiz_generator.py --eval-file data/training/quiz_eval_YYYYMMDDTHHMMSSZ.jsonl --provider fixture --out data/training/eval_report_fixture.json
+```
+
+Run the configured generator against the same eval file only when the required AI provider credentials are available:
+
+```bash
+python tools/evaluate_quiz_generator.py --eval-file data/training/quiz_eval_YYYYMMDDTHHMMSSZ.jsonl --provider current --out data/training/eval_report_current.json
+```
+
+Do not upload a training file until the manifest and eval examples have been reviewed. The current deterministic validators and duplicate checks must remain in the generation path even when using a fine-tuned model.
 
 ## Checks
 
