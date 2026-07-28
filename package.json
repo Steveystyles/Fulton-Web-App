@@ -9,9 +9,15 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "remotion:studio": "remotion studio src/remotion/index.ts",
+    "remotion:render:landscape": "remotion render src/remotion/index.ts MapGamePromo out/map-game-promo-landscape.mp4 --codec h264 --crf 20",
+    "remotion:render:square": "remotion render src/remotion/index.ts MapGamePromoSquare out/map-game-promo-square.mp4 --codec h264 --crf 20",
+    "remotion:render:vertical": "remotion render src/remotion/index.ts MapGamePromoVertical out/map-game-promo-vertical.mp4 --codec h264 --crf 20",
+    "remotion:still": "remotion still src/remotion/index.ts MapGamePromo out/map-game-promo-smoke.png --frame=450",
     "start": "python production_server.py",
     "start:dev": "python server.py",
-    "test:server": "python -m unittest discover -s tests -p test_*.py"
+    "test:server": "python -m unittest discover -s tests -p test_*.py",
+    "test:remotion": "vitest run src/remotion"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
@@ -22,14 +28,19 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "@remotion/cli": "^4.0.490",
+    "@remotion/google-fonts": "^4.0.490",
+    "@remotion/media": "^4.0.490",
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.20",
     "playwright": "^1.60.0",
     "postcss": "^8.4.49",
+    "remotion": "^4.0.490",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^4.1.10"
   }
 }
