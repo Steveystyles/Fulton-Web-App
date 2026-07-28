@@ -208,27 +208,35 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertTrue(all("result" not in level for level in payload["levels"]))
 
     def test_generation_can_publish_a_specific_quality_place_for_qa(self) -> None:
-        london_id = self.make_london_quality_ready(current_profile=True)
-
-        with patch.object(daily_map_game, "initialize_database", return_value=None):
-            status = daily_map_game.generate_daily_map_game(
-                self.conn,
-                puzzle_date="2026-07-13",
-                preferred_place_id=london_id,
-            )
+        with patch.object(
+            daily_map_game,
+            "map_learning_profile_hash",
+            return_value="test-profile",
+        ):
+            london_id = self.make_london_quality_ready(current_profile=True)
+            with patch.object(daily_map_game, "initialize_database", return_value=None):
+                status = daily_map_game.generate_daily_map_game(
+                    self.conn,
+                    puzzle_date="2026-07-13",
+                    preferred_place_id=london_id,
+                )
 
         self.assertEqual(status["status"], "published")
         self.assertEqual(self.first_level()["canonical_name"], "London")
 
     def test_qa_generation_rejects_legacy_place_not_reviewed_under_current_profile(self) -> None:
-        london_id = self.make_london_quality_ready(current_profile=False)
-
-        with patch.object(daily_map_game, "initialize_database", return_value=None):
-            status = daily_map_game.generate_daily_map_game(
-                self.conn,
-                puzzle_date="2026-07-13",
-                preferred_place_id=london_id,
-            )
+        with patch.object(
+            daily_map_game,
+            "map_learning_profile_hash",
+            return_value="test-profile",
+        ):
+            london_id = self.make_london_quality_ready(current_profile=False)
+            with patch.object(daily_map_game, "initialize_database", return_value=None):
+                status = daily_map_game.generate_daily_map_game(
+                    self.conn,
+                    puzzle_date="2026-07-13",
+                    preferred_place_id=london_id,
+                )
 
         self.assertEqual(status["status"], "failed")
         self.assertIn("unavailable", status["failureReason"])

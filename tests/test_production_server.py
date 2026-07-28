@@ -3850,19 +3850,30 @@ class ProductionServerHardeningTests(unittest.TestCase):
     def test_daily_quiz_scheduler_repairs_today_before_generating_tomorrow(self) -> None:
         import server
 
-        with patch("daily_quiz.generate_daily_quiz") as generate_daily_quiz:
-            generate_daily_quiz.side_effect = [
-                {
-                    "date": "2026-06-24",
-                    "status": "generating",
-                    "accepted_questions": 4,
-                    "failed_attempts": 12,
-                    "failure_reason": None,
-                }
-            ]
-            results = server.ensure_active_daily_quizzes(
-                datetime(2026, 6, 24, 0, 10, tzinfo=timezone.utc)
-            )
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with patch("daily_quiz.generate_daily_quiz") as generate_daily_quiz:
+                generate_daily_quiz.side_effect = [
+                    {
+                        "date": "2026-06-24",
+                        "status": "generating",
+                        "accepted_questions": 4,
+                        "failed_attempts": 12,
+                        "failure_reason": None,
+                    }
+                ]
+                results = server.ensure_active_daily_quizzes(
+                    datetime(2026, 6, 24, 0, 10, tzinfo=timezone.utc)
+                )
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
 
         self.assertEqual([result["date"] for result in results], ["2026-06-24"])
         self.assertEqual(generate_daily_quiz.call_count, 1)
