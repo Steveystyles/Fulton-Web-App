@@ -8,6 +8,7 @@ import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1336,6 +1337,50 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn(("Cache-Control", "no-store, max-age=0"), sent_headers)
         self.assertIn(("Pragma", "no-cache"), sent_headers)
         self.assertIn(("Expires", "0"), sent_headers)
+
+    def test_static_media_advertises_byte_range_support(self) -> None:
+        import server
+
+        sent_headers: list[tuple[str, str]] = []
+
+        class DummyHandler:
+            path = "/videos/map-game-promo-vertical.mp4"
+
+            def send_header(self, name: str, value: str) -> None:
+                sent_headers.append((name, value))
+
+        server.FultonsHandler.send_static_cache_headers(DummyHandler())  # type: ignore[arg-type]
+
+        self.assertIn(("Accept-Ranges", "bytes"), sent_headers)
+
+    def test_static_byte_ranges_support_fixed_open_and_suffix_requests(self) -> None:
+        import server
+
+        self.assertEqual(server.parse_static_byte_range("bytes=2-5", 10), (2, 5))
+        self.assertEqual(server.parse_static_byte_range("bytes=7-", 10), (7, 9))
+        self.assertEqual(server.parse_static_byte_range("bytes=-4", 10), (6, 9))
+        self.assertEqual(server.parse_static_byte_range("bytes=8-20", 10), (8, 9))
+
+        for invalid in ("bytes=-0", "bytes=10-", "bytes=6-2", "bytes=0-1,4-5"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    server.parse_static_byte_range(invalid, 10)
+
+    def test_static_range_copy_stops_at_requested_length(self) -> None:
+        import server
+
+        source = BytesIO(b"0123456789")
+        source.seek(3)
+        output = BytesIO()
+
+        class DummyHandler:
+            _static_range_remaining = 4
+
+        handler = DummyHandler()
+        server.FultonsHandler.copyfile(handler, source, output)  # type: ignore[arg-type]
+
+        self.assertEqual(output.getvalue(), b"3456")
+        self.assertIsNone(handler._static_range_remaining)
 
     def test_static_hashed_assets_are_immutable(self) -> None:
         import server

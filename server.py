@@ -7211,6 +7211,34 @@ def requested_dist_asset(parsed_path: str) -> Path | None:
     return None
 
 
+STATIC_MEDIA_RANGE_SUFFIXES = {".m4v", ".mov", ".mp3", ".mp4", ".wav", ".webm"}
+
+
+def parse_static_byte_range(value: str, file_size: int) -> tuple[int, int]:
+    match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
+    if match is None or file_size <= 0:
+        raise ValueError("Invalid byte range.")
+
+    start_text, end_text = match.groups()
+    if not start_text and not end_text:
+        raise ValueError("Invalid byte range.")
+
+    if not start_text:
+        suffix_length = int(end_text)
+        if suffix_length <= 0:
+            raise ValueError("Invalid byte range.")
+        return max(0, file_size - suffix_length), file_size - 1
+
+    start = int(start_text)
+    if start >= file_size:
+        raise ValueError("Byte range starts beyond the file.")
+
+    end = file_size - 1 if not end_text else min(int(end_text), file_size - 1)
+    if end < start:
+        raise ValueError("Invalid byte range.")
+    return start, end
+
+
 class FultonsHandler(SimpleHTTPRequestHandler):
     server_version = "FultonsQuiz/0.1"
 
@@ -7254,6 +7282,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             else:
                 self.send_header("Cache-Control", "no-store, max-age=0")
             return
+
+        if Path(parsed_path).suffix.lower() in STATIC_MEDIA_RANGE_SUFFIXES:
+            self.send_header("Accept-Ranges", "bytes")
 
         self.send_header("Cache-Control", "no-store, max-age=0")
         self.send_header("Pragma", "no-cache")
@@ -8436,6 +8467,57 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         if target is None:
             return str(DIST_DIR / "index.html")
         return str(target)
+
+    def send_head(self) -> Any:
+        self._static_range_remaining = None
+        range_header = self.headers.get("Range", "").strip()
+        parsed_path = urlparse(self.path).path
+        if (
+            not range_header
+            or Path(parsed_path).suffix.lower() not in STATIC_MEDIA_RANGE_SUFFIXES
+        ):
+            return super().send_head()
+
+        target = Path(self.translate_path(self.path))
+        if not target.is_file():
+            return super().send_head()
+
+        file_size = target.stat().st_size
+        try:
+            start, end = parse_static_byte_range(range_header, file_size)
+        except ValueError:
+            self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+            self.send_header("Content-Range", f"bytes */{file_size}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+
+        source = target.open("rb")
+        self.send_response(HTTPStatus.PARTIAL_CONTENT)
+        self.send_header("Content-Type", self.guess_type(str(target)))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+        self.send_header("Content-Length", str(end - start + 1))
+        self.send_header("Last-Modified", self.date_time_string(target.stat().st_mtime))
+        self.end_headers()
+        source.seek(start)
+        self._static_range_remaining = end - start + 1
+        return source
+
+    def copyfile(self, source: Any, outputfile: Any) -> None:
+        remaining = getattr(self, "_static_range_remaining", None)
+        if remaining is None:
+            super().copyfile(source, outputfile)
+            return
+
+        try:
+            while remaining > 0:
+                chunk = source.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                outputfile.write(chunk)
+                remaining -= len(chunk)
+        finally:
+            self._static_range_remaining = None
 
     def serve_static(self) -> None:
         if not (DIST_DIR / "index.html").exists():
