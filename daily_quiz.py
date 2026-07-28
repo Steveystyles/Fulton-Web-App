@@ -395,7 +395,30 @@ class GeminiProvider:
         )
         self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
 
-    def _request(self, model: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def _http_error_detail(self, error: HTTPError) -> str:
+        try:
+            payload = json.loads(error.read().decode("utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        error_payload = payload.get("error")
+        if not isinstance(error_payload, dict):
+            return ""
+        status = str(error_payload.get("status") or "").strip()
+        code = str(error_payload.get("code") or "").strip()
+        message = str(error_payload.get("message") or "").strip()
+        detail = " ".join(part for part in (status, code, message) if part)
+        return detail[:700]
+
+    def _request(
+        self,
+        model: str,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             f"{quote(model, safe='')}:generateContent"
@@ -408,6 +431,8 @@ class GeminiProvider:
                 "responseJsonSchema": schema,
             },
         }
+        if tools:
+            payload["tools"] = tools
         request = Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -427,7 +452,9 @@ class GeminiProvider:
                 if error.code in {429, 500, 502, 503, 504} and attempt < self.config.transient_retries:
                     self._defer_retry(attempt, error)
                     continue
-                raise RuntimeError(f"Gemini request failed with HTTP {error.code}.") from error
+                detail = self._http_error_detail(error)
+                suffix = f": {detail}" if detail else "."
+                raise RuntimeError(f"Gemini request failed with HTTP {error.code}{suffix}") from error
         else:  # pragma: no cover - loop always exits through break or raise
             raise RuntimeError("Gemini request failed.")
         try:
@@ -496,6 +523,21 @@ class OpenAICompatibleProvider:
         )
         self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
 
+    def _http_error_detail(self, error: HTTPError) -> str:
+        try:
+            payload = json.loads(error.read().decode("utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        error_payload = payload.get("error")
+        if not isinstance(error_payload, dict):
+            return ""
+        code = str(error_payload.get("code") or error_payload.get("type") or "").strip()
+        message = str(error_payload.get("message") or "").strip()
+        detail = " ".join(part for part in (code, message) if part)
+        return detail[:700]
+
     def _request(self, model: str, prompt: str) -> dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self.config.compatible_api_key}",
@@ -535,7 +577,9 @@ class OpenAICompatibleProvider:
                 if error.code in {408, 429, 500, 502, 503, 504} and attempt < self.config.transient_retries:
                     self._defer_retry(attempt, error)
                     continue
-                raise RuntimeError(f"{self.name} request failed with HTTP {error.code}.") from error
+                detail = self._http_error_detail(error)
+                suffix = f": {detail}" if detail else "."
+                raise RuntimeError(f"{self.name} request failed with HTTP {error.code}{suffix}") from error
             except (TimeoutError, URLError, OSError) as error:
                 if attempt < self.config.transient_retries:
                     self._defer_retry(attempt)

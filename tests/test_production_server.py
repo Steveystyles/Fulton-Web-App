@@ -161,6 +161,64 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(calls, [("GET", "/internal/ops-summary", "force=1")])
 
+    def test_map_review_feedback_route_rejects_anonymous_submission(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers: dict[str, str] = {}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+            def read_json(self) -> dict[str, object]:
+                raise AssertionError("Unauthorized review body must not be read.")
+
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value=None),
+            patch("server.current_user", return_value=None),
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/map-place-review-feedback",
+                "",
+            )
+
+        self.assertEqual(sent_errors, [(HTTPStatus.UNAUTHORIZED, "Login required.")])
+
+    def test_map_review_feedback_route_allows_admin_to_reach_validation(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+            def read_json(self) -> dict[str, object]:
+                return {}
+
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1, "role": "admin"}),
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/api/map-place-review-feedback",
+                "",
+            )
+
+        self.assertEqual(sent_errors, [(HTTPStatus.BAD_REQUEST, "rows must be a list.")])
+
     def test_local_ops_config_route_returns_saved_settings(self) -> None:
         import server
 
@@ -2455,6 +2513,162 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_wordle_assignment_keeps_level_after_skipped_wordle_days(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-24T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    for game_date in ("2026-06-20", "2026-06-21"):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                            VALUES (?, 'raise', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
+                            )
+                            VALUES (?, ?, 'won', 3, 4, ?, ?, ?)
+                            """,
+                            (user_id, game_id, now, now, now),
+                        )
+                    today_game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-06-24', 'saint', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    today_game = conn.execute(
+                        "SELECT * FROM daily_wordle_games WHERE id = ?",
+                        (today_game_id,),
+                    ).fetchone()
+
+                with patch("server.today_game_date", return_value="2026-06-24"):
+                    state = server.serialize_wordle_state(conn, user_id, today_game)
+
+                assignment = conn.execute(
+                    """
+                    SELECT difficulty
+                    FROM wordle_user_assignments
+                    WHERE user_id = ? AND game_id = ?
+                    """,
+                    (user_id, today_game_id),
+                ).fetchone()
+
+            self.assertEqual(state["game"]["difficulty"], 3)
+            self.assertEqual(state["stats"]["currentSolveStreak"], 0)
+            self.assertEqual(state["stats"]["bestSolveStreak"], 2)
+            self.assertEqual(assignment["difficulty"], 3)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_assignment_refreshes_unstarted_reset_level(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-24T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    for game_date in ("2026-06-20", "2026-06-21"):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                            VALUES (?, 'raise', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
+                            )
+                            VALUES (?, ?, 'won', 3, 4, ?, ?, ?)
+                            """,
+                            (user_id, game_id, now, now, now),
+                        )
+                    today_game_id = conn.execute(
+                        """
+                        INSERT INTO daily_wordle_games (game_date, secret_word, cycle, created_at)
+                        VALUES ('2026-06-24', 'saint', 1, ?)
+                        """,
+                        (now,),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO wordle_user_assignments
+                            (user_id, game_id, secret_word, difficulty, created_at)
+                        VALUES (?, ?, 'saint', 1, ?)
+                        """,
+                        (user_id, today_game_id, now),
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO wordle_results (
+                            user_id, game_id, status, attempts_used, score,
+                            completed_at, created_at, updated_at
+                        )
+                        VALUES (?, ?, 'in_progress', 0, 0, NULL, ?, ?)
+                        """,
+                        (user_id, today_game_id, now, now),
+                    )
+                    today_game = conn.execute(
+                        "SELECT * FROM daily_wordle_games WHERE id = ?",
+                        (today_game_id,),
+                    ).fetchone()
+
+                state = server.serialize_wordle_state(conn, user_id, today_game)
+                assignment = conn.execute(
+                    """
+                    SELECT difficulty
+                    FROM wordle_user_assignments
+                    WHERE user_id = ? AND game_id = ?
+                    """,
+                    (user_id, today_game_id),
+                ).fetchone()
+
+            self.assertEqual(state["game"]["difficulty"], 3)
+            self.assertEqual(assignment["difficulty"], 3)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
     def test_wordle_assignment_preserves_legacy_secret_for_started_game(self) -> None:
         import server
 
@@ -2615,9 +2829,12 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
                 with patch("server.today_game_date", return_value="2026-05-20"):
                     stats = server.wordle_stats(conn, user_id)
+                    level_progress = server.user_wordle_level_progress(conn, user_id)
 
             self.assertEqual(stats["currentSolveStreak"], 0)
             self.assertEqual(stats["bestSolveStreak"], 2)
+            self.assertEqual(level_progress["current"], 0)
+            self.assertEqual(level_progress["best"], 2)
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
@@ -3039,8 +3256,8 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
             self.assertEqual(payload["players"][0]["currentStreak"], 2)
             self.assertEqual(payload["players"][0]["bestStreak"], 2)
-            self.assertEqual(payload["players"][0]["wordleLevel"], 3)
-            self.assertEqual(payload["players"][0]["bestWordleLevel"], 3)
+            self.assertEqual(payload["players"][0]["wordleLevel"], 5)
+            self.assertEqual(payload["players"][0]["bestWordleLevel"], 5)
             self.assertEqual(payload["summary"]["bestStreak"], 2)
         finally:
             server.DATA_DIR = original_data_dir
@@ -3101,7 +3318,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
             self.assertEqual(payload["players"][0]["currentStreak"], 0)
             self.assertEqual(payload["players"][0]["bestStreak"], 2)
-            self.assertEqual(payload["players"][0]["wordleLevel"], 1)
+            self.assertEqual(payload["players"][0]["wordleLevel"], 3)
             self.assertEqual(payload["players"][0]["bestWordleLevel"], 3)
         finally:
             server.DATA_DIR = original_data_dir
@@ -3707,6 +3924,41 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(sleep_calls, [3600.0])
 
+    def test_daily_map_scheduler_uses_longer_retry_after_transient_provider_failure(self) -> None:
+        import server
+
+        now = datetime(2026, 6, 1, 0, 10, tzinfo=timezone.utc)
+        next_run = datetime(2026, 6, 2, 0, 2, tzinfo=timezone.utc)
+        sleep_calls: list[float] = []
+
+        def stop_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            raise RuntimeError("stop loop")
+
+        with (
+            patch(
+                "server.ensure_active_daily_map_games",
+                return_value=[
+                    {
+                        "status": "failed",
+                        "failureReason": "Gemini request failed with HTTP 429.",
+                    }
+                ],
+            ),
+            patch("server.next_daily_map_game_run", return_value=next_run),
+            patch("server.DAILY_MAP_GAME_RETRY_INTERVAL_SEC", 300),
+            patch("server.DAILY_MAP_GAME_TRANSIENT_RETRY_INTERVAL_SEC", 3600),
+            patch("server.time.sleep", side_effect=stop_sleep),
+            patch("server.safe_log"),
+            patch("server.datetime") as mocked_datetime,
+        ):
+            mocked_datetime.now.return_value = now
+            mocked_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            with self.assertRaisesRegex(RuntimeError, "stop loop"):
+                server.daily_map_game_scheduler_loop()
+
+        self.assertEqual(sleep_calls, [3600.0])
+
     def test_daily_quiz_write_helpers_commit_immediately(self) -> None:
         import daily_quiz
 
@@ -3795,6 +4047,60 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIn("football club won", event_text)
         self.assertIn("famous singer and actor", event_text)
         self.assertNotEqual(events[0]["year"], "45 BC")
+
+    def test_daily_map_scheduler_discovers_candidates_before_clue_generation(self) -> None:
+        import daily_map_game
+        import server
+
+        db_path = Path(self.temp_dir.name) / "fultons.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+        provider = object()
+        generated = {
+            "place": "Fresh Stadium",
+            "learning_profile_hash": "profile-hash",
+            "critic_mode": "ai",
+            "publish_result": {"date": "2026-07-29", "status": "published"},
+        }
+
+        with (
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ENABLED", True),
+            patch.object(server, "DAILY_MAP_AI_DISCOVER_COUNT", 4),
+            patch.object(server, "DAILY_MAP_AI_DISCOVERY_ATTEMPTS", 2),
+            patch(
+                "server.map_clue_rewriter.ConfiguredMapClueProvider.from_env",
+                return_value=provider,
+            ),
+            patch(
+                "server.generate_ai_daily_map_round.discover_uncurated_candidates",
+                return_value={
+                    "accepted_count": 1,
+                    "candidate_names": ["fresh stadium"],
+                },
+            ) as discover,
+            patch(
+                "server.generate_ai_daily_map_round.generate_round",
+                return_value=generated,
+            ) as generate,
+        ):
+            result = server.generate_daily_map_game_for_date(
+                conn,
+                puzzle_date="2026-07-29",
+            )
+
+        self.assertEqual(result["status"], "published")
+        discover.assert_called_once_with(
+            db_path=db_path,
+            provider=provider,
+            puzzle_date="2026-07-29",
+            count=4,
+            max_attempts=2,
+        )
+        self.assertEqual(generate.call_args.kwargs["eligible_names"], {"fresh stadium"})
 
 
 if __name__ == "__main__":

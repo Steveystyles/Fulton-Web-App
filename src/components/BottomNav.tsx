@@ -1,4 +1,4 @@
-import { CircleHelp, Hash, MapPin, Newspaper, Trophy } from "lucide-react";
+import { CircleHelp, Hash, MapPinned, Newspaper, Trophy } from "lucide-react";
 import { NavItem } from "./NavItem";
 
 const navItems = [
@@ -6,7 +6,7 @@ const navItems = [
   { to: "/wordle", label: "Wordle", icon: Hash },
   { to: "/quiz", label: "Quiz", icon: CircleHelp },
   { to: "/news", label: "News", icon: Newspaper },
-  { to: "/facts", label: "Facts", icon: MapPin },
+  { to: "/map", label: "Map", icon: MapPinned },
 ];
 
 export function BottomNav() {

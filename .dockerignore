@@ -1,0 +1,15 @@
+.git
+.github
+.codex-logs
+.env
+.env.*
+__pycache__
+data
+dist
+docs
+logs
+node_modules
+tests
+*.log
+*.pid
+public/map-place-review.html

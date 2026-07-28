@@ -4,6 +4,7 @@ import base64
 import hashlib
 import html
 import hmac
+import ipaddress
 import json
 import os
 import queue
@@ -31,9 +32,18 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
+import daily_map_game
 import daily_quiz
 import local_ops_settings
 import ops_monitor
+from tools import generate_ai_daily_map_round
+from tools import build_map_selector_profile
+from tools import install_map_training_seed
+from tools import map_clue_quality_model
+from tools import map_selector_model
+from tools import refresh_map_learning_profile
+from tools import rewrite_map_clues_with_ai as map_clue_rewriter
+from tools import training_data_store
 
 try:
     from zoneinfo import ZoneInfo
@@ -79,6 +89,42 @@ DAILY_QUIZ_RETRY_INTERVAL_SEC = max(
 DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC = max(
     DAILY_QUIZ_RETRY_INTERVAL_SEC,
     int(os.environ.get("FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC", "3600")),
+)
+DAILY_MAP_GAME_SCHEDULER_ENABLED = (
+    os.environ.get("FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED", "1") != "0"
+)
+DAILY_MAP_GAME_SCHEDULER_HOUR = int(
+    os.environ.get("FULTONS_DAILY_MAP_GAME_SCHEDULER_HOUR", "0")
+)
+DAILY_MAP_GAME_SCHEDULER_MINUTE = int(
+    os.environ.get("FULTONS_DAILY_MAP_GAME_SCHEDULER_MINUTE", "2")
+)
+DAILY_MAP_GAME_RETRY_INTERVAL_SEC = max(
+    60,
+    int(os.environ.get("FULTONS_DAILY_MAP_GAME_RETRY_INTERVAL_SEC", "300")),
+)
+DAILY_MAP_GAME_TRANSIENT_RETRY_INTERVAL_SEC = max(
+    DAILY_MAP_GAME_RETRY_INTERVAL_SEC,
+    int(os.environ.get("FULTONS_DAILY_MAP_TRANSIENT_RETRY_INTERVAL_SEC", "3600")),
+)
+DAILY_MAP_AI_GENERATION_ENABLED = (
+    os.environ.get("FULTONS_DAILY_MAP_AI_GENERATION_ENABLED", "1") != "0"
+)
+DAILY_MAP_AI_SHORTLIST_LIMIT = max(
+    4,
+    int(os.environ.get("FULTONS_DAILY_MAP_AI_SHORTLIST_LIMIT", "24")),
+)
+DAILY_MAP_AI_MAX_CLUE_ATTEMPTS = max(
+    1,
+    int(os.environ.get("FULTONS_DAILY_MAP_AI_MAX_CLUE_ATTEMPTS", "7")),
+)
+DAILY_MAP_AI_DISCOVER_COUNT = max(
+    0,
+    int(os.environ.get("FULTONS_DAILY_MAP_AI_DISCOVER_COUNT", "4")),
+)
+DAILY_MAP_AI_DISCOVERY_ATTEMPTS = max(
+    1,
+    int(os.environ.get("FULTONS_DAILY_MAP_AI_DISCOVERY_ATTEMPTS", "2")),
 )
 NEWS_USER_AGENT = os.environ.get(
     "FULTONS_NEWS_USER_AGENT",
@@ -594,6 +640,7 @@ LOGIN_ATTEMPTS_LOCK = threading.Lock()
 FACTS_AI_LOCK = threading.Lock()
 FACTS_AI_CONTEXT = threading.local()
 DAILY_QUIZ_OPERATION_LOCK = threading.Lock()
+DAILY_MAP_GAME_OPERATION_LOCK = threading.Lock()
 FACTS_AI_NEXT_REQUEST_AT = 0.0
 HISTORY_FACT_ROTATION_VERSION = "v4"
 HISTORY_FACT_PREWARM_EVENT = threading.Event()
@@ -645,8 +692,101 @@ def safe_log(message: str) -> None:
         pass
 
 
+def refresh_map_learning_after_review(training_dir: Path) -> dict[str, Any]:
+    feedback_files = training_data_store.default_map_place_review_feedback_files(
+        training_dir
+    )
+    feedback_rows = training_data_store.read_map_place_review_feedback_rows(
+        feedback_files
+    )
+
+    selector_profile = build_map_selector_profile.build_profile(
+        feedback_rows,
+        source_files=feedback_files,
+    )
+    selector_profile_path = training_dir / "map_selector_profile_latest.json"
+    selector_profile_path.write_text(
+        json.dumps(selector_profile, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
+
+    selector_model = map_selector_model.fit_model(feedback_rows)
+    selector_model_path = training_dir / "map_selector_model_latest.json"
+    map_selector_model.save_model(selector_model, selector_model_path)
+
+    clue_model = map_clue_quality_model.build_model_from_training_dir(training_dir)
+    clue_model_path = training_dir / "map_clue_quality_model_latest.json"
+    map_clue_quality_model.save_model(clue_model, clue_model_path)
+
+    generation_profile_path = ""
+    generation_profile_validation: dict[str, Any] = {}
+    try:
+        generation_profile = refresh_map_learning_profile.build_candidate_profile(
+            negative_files=refresh_map_learning_profile.latest_negative_files(
+                training_dir
+            ),
+            failure_log_files=refresh_map_learning_profile.latest_failure_log_files(
+                training_dir
+            ),
+            review_rows_files=refresh_map_learning_profile.latest_review_rows_files(
+                training_dir
+            ),
+            place_review_feedback_files=feedback_files,
+            gold_examples_file=None,
+        )
+        generation_profile_validation = (
+            generation_profile.get("validation")
+            if isinstance(generation_profile.get("validation"), dict)
+            else {}
+        )
+        if generation_profile_validation.get("passed", False):
+            generation_profile_path = str(
+                training_dir / "map_learning_profile_latest.json"
+            )
+            Path(generation_profile_path).write_text(
+                json.dumps(generation_profile, indent=2, ensure_ascii=True),
+                encoding="utf-8",
+            )
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        generation_profile_validation = {
+            "passed": False,
+            "errors": [str(error)],
+        }
+
+    return {
+        "feedbackRowCount": len(feedback_rows),
+        "selectorModel": {
+            "path": str(selector_model_path),
+            "rowCount": selector_model.get("row_count", 0),
+            "trainingMae": selector_model.get("training_mae"),
+            "baselineMae": selector_model.get("baseline_mae"),
+        },
+        "clueQualityModel": {
+            "path": str(clue_model_path),
+            "rowCount": clue_model.get("row_count", 0),
+            "validation": clue_model.get("validation", {}),
+            "validationByLevel": clue_model.get("validation_by_level", {}),
+        },
+        "selectorProfilePath": str(selector_profile_path),
+        "generationProfilePath": generation_profile_path,
+        "generationProfileValidation": generation_profile_validation,
+    }
+
+
 def is_loopback_ip(value: str) -> bool:
     return value in {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+
+
+def is_development_origin_host(value: str | None) -> bool:
+    if value in {"localhost", "127.0.0.1"}:
+        return True
+    if value is None:
+        return False
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private
 
 
 def db_user_count(conn: sqlite3.Connection) -> int | None:
@@ -1188,6 +1328,7 @@ def initialize_database() -> None:
             backfill_wordle_assignment_difficulties(conn)
             backfill_wordle_scores(conn)
             daily_quiz.initialize_database(conn)
+            daily_map_game.initialize_database(conn)
             backfill_daily_quiz_scores(conn)
             user_count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
             if user_count == 0:
@@ -1606,22 +1747,104 @@ def user_wordle_solve_streak(
     )
 
 
+def score_wordle_level_progress(outcomes: list[tuple[str, str]]) -> dict[str, int]:
+    if not outcomes:
+        return {"current": 0, "best": 0}
+
+    ordered_outcomes: list[tuple[date, str]] = []
+    for date_value, status in outcomes:
+        if status not in {"won", "lost"}:
+            continue
+        try:
+            day = datetime.strptime(date_value, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        ordered_outcomes.append((day, status))
+
+    if not ordered_outcomes:
+        return {"current": 0, "best": 0}
+
+    ordered_outcomes.sort(key=lambda item: item[0])
+    best = 0
+    run = 0
+    for _day, status in ordered_outcomes:
+        if status == "won":
+            run += 1
+            best = max(best, run)
+        else:
+            run = 0
+
+    return {"current": run, "best": best}
+
+
+def user_wordle_level_progress(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    before_date: str | None = None,
+) -> dict[str, int]:
+    return score_wordle_level_progress(
+        wordle_result_outcomes(conn, user_id, before_date=before_date),
+    )
+
+
 def ensure_wordle_assignment(
     conn: sqlite3.Connection,
     user_id: int,
     game: sqlite3.Row,
 ) -> sqlite3.Row:
-    assignment = wordle_assignment_row(conn, user_id, game["id"])
-    if assignment is not None:
-        return assignment
-
-    streak = user_wordle_solve_streak(
+    progress = user_wordle_level_progress(
         conn,
         user_id,
-        current_date=game["game_date"],
         before_date=game["game_date"],
     )["current"]
-    target_difficulty = difficulty_for_streak(streak)
+    target_difficulty = difficulty_for_streak(progress)
+    assignment = wordle_assignment_row(conn, user_id, game["id"])
+    if assignment is not None:
+        existing_result = existing_wordle_result(conn, user_id, game["id"])
+        has_guesses = (
+            existing_result is not None
+            and conn.execute(
+                "SELECT 1 FROM wordle_guesses WHERE result_id = ? LIMIT 1",
+                (existing_result["id"],),
+            ).fetchone()
+            is not None
+        )
+        can_refresh_assignment = (
+            existing_result is None
+            or (
+                existing_result["status"] == "in_progress"
+                and existing_result["attempts_used"] == 0
+                and not has_guesses
+            )
+        )
+        if can_refresh_assignment and assignment["difficulty"] < target_difficulty:
+            used_words = {
+                row["secret_word"]
+                for row in conn.execute(
+                    """
+                    SELECT secret_word
+                    FROM wordle_user_assignments
+                    WHERE user_id = ? AND game_id != ?
+                    """,
+                    (user_id, game["id"]),
+                )
+            }
+            secret_word, actual_difficulty = choose_secret_for_difficulty(
+                target_difficulty,
+                used_words,
+            )
+            conn.execute(
+                """
+                UPDATE wordle_user_assignments
+                SET secret_word = ?, difficulty = ?
+                WHERE id = ?
+                """,
+                (secret_word, actual_difficulty, assignment["id"]),
+            )
+            assignment = wordle_assignment_row(conn, user_id, game["id"])
+        return assignment
+
     existing_result = existing_wordle_result(conn, user_id, game["id"])
     legacy_secret_word = None
     if (
@@ -2215,7 +2438,7 @@ def backfill_daily_quiz_scores(conn: sqlite3.Connection) -> None:
             )
 
 
-def player_wordle_solve_streaks(conn: sqlite3.Connection) -> dict[int, dict[str, int]]:
+def player_wordle_outcomes(conn: sqlite3.Connection) -> dict[int, list[tuple[str, str]]]:
     outcome_rows = conn.execute(
         """
         SELECT
@@ -2233,9 +2456,13 @@ def player_wordle_solve_streaks(conn: sqlite3.Connection) -> dict[int, dict[str,
             (row["game_date"], row["status"])
         )
 
+    return outcomes_by_user
+
+
+def player_wordle_solve_streaks(conn: sqlite3.Connection) -> dict[int, dict[str, int]]:
     return {
         user_id: score_wordle_solve_streak(outcomes)
-        for user_id, outcomes in outcomes_by_user.items()
+        for user_id, outcomes in player_wordle_outcomes(conn).items()
     }
 
 
@@ -2300,6 +2527,26 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             FROM daily_quiz_results
             WHERE game_date >= ?
             GROUP BY user_id
+        ),
+        map_scores AS (
+            SELECT
+                user_id,
+                SUM(score) AS points,
+                COUNT(*) AS played
+            FROM daily_map_guesses
+            GROUP BY user_id
+        ),
+        weekly_map_scores AS (
+            SELECT
+                daily_map_guesses.user_id,
+                SUM(daily_map_guesses.score) AS points
+            FROM daily_map_guesses
+            INNER JOIN daily_map_levels
+                ON daily_map_levels.id = daily_map_guesses.level_id
+            INNER JOIN daily_map_puzzles
+                ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+            WHERE daily_map_puzzles.puzzle_date >= ?
+            GROUP BY daily_map_guesses.user_id
         )
         SELECT
             users.id,
@@ -2314,35 +2561,60 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             COALESCE(weekly_quiz_scores.points, 0) AS weekly_quiz_points,
             COALESCE(quiz_scores.max_points, 0) AS quiz_max_points,
             COALESCE(quiz_scores.played, 0) AS quiz_played,
-            COALESCE(quiz_scores.correct_count, 0) AS quiz_correct
+            COALESCE(quiz_scores.correct_count, 0) AS quiz_correct,
+            COALESCE(map_scores.points, 0) AS map_points,
+            COALESCE(weekly_map_scores.points, 0) AS weekly_map_points,
+            COALESCE(map_scores.played, 0) AS map_played
         FROM users
         LEFT JOIN wordle_scores ON wordle_scores.user_id = users.id
         LEFT JOIN weekly_wordle_scores ON weekly_wordle_scores.user_id = users.id
         LEFT JOIN quiz_scores ON quiz_scores.user_id = users.id
         LEFT JOIN weekly_quiz_scores ON weekly_quiz_scores.user_id = users.id
+        LEFT JOIN map_scores ON map_scores.user_id = users.id
+        LEFT JOIN weekly_map_scores ON weekly_map_scores.user_id = users.id
         WHERE users.role != 'admin'
         ORDER BY
-            (COALESCE(weekly_wordle_scores.points, 0) + COALESCE(weekly_quiz_scores.points, 0)) DESC,
-            (COALESCE(wordle_scores.points, 0) + COALESCE(quiz_scores.points, 0)) DESC,
+            (
+                COALESCE(weekly_wordle_scores.points, 0)
+                + COALESCE(weekly_quiz_scores.points, 0)
+                + COALESCE(weekly_map_scores.points, 0)
+            ) DESC,
+            (
+                COALESCE(wordle_scores.points, 0)
+                + COALESCE(quiz_scores.points, 0)
+                + COALESCE(map_scores.points, 0)
+            ) DESC,
             COALESCE(wordle_scores.wins, 0) DESC,
             LOWER(users.username)
         """,
-        (WORDLE_DIFFICULTY_BONUS_PER_LEVEL, period_start, period_start),
+        (WORDLE_DIFFICULTY_BONUS_PER_LEVEL, period_start, period_start, period_start),
     ).fetchall()
 
-    streaks = player_wordle_solve_streaks(conn)
+    outcomes_by_user = player_wordle_outcomes(conn)
+    streaks = {
+        user_id: score_wordle_solve_streak(outcomes)
+        for user_id, outcomes in outcomes_by_user.items()
+    }
+    level_progress_by_user = {
+        user_id: score_wordle_level_progress(outcomes)
+        for user_id, outcomes in outcomes_by_user.items()
+    }
     players = []
     for index, row in enumerate(rows):
         streak = streaks.get(row["id"], {"current": 0, "best": 0})
+        level_progress = level_progress_by_user.get(row["id"], {"current": 0, "best": 0})
         players.append(
             {
                 "rank": index + 1,
                 "id": row["id"],
                 "username": row["username"],
-                "weeklyPoints": row["weekly_wordle_points"] + row["weekly_quiz_points"],
+                "weeklyPoints": row["weekly_wordle_points"]
+                + row["weekly_quiz_points"]
+                + row["weekly_map_points"],
                 "weeklyWordlePoints": row["weekly_wordle_points"],
                 "weeklyQuizPoints": row["weekly_quiz_points"],
-                "totalPoints": row["wordle_points"] + row["quiz_points"],
+                "weeklyMapPoints": row["weekly_map_points"],
+                "totalPoints": row["wordle_points"] + row["quiz_points"] + row["map_points"],
                 "wordlePoints": row["wordle_points"],
                 "weeklyWordleDifficultyBonus": row["weekly_wordle_difficulty_bonus"],
                 "wordleDifficultyBonus": row["wordle_difficulty_bonus"],
@@ -2352,10 +2624,12 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 "quizMaxPoints": row["quiz_max_points"],
                 "quizPlayed": row["quiz_played"],
                 "quizCorrect": row["quiz_correct"],
+                "mapPoints": row["map_points"],
+                "mapPlayed": row["map_played"],
                 "currentStreak": streak["current"],
                 "bestStreak": streak["best"],
-                "wordleLevel": difficulty_for_streak(streak["current"]),
-                "bestWordleLevel": difficulty_for_streak(streak["best"]),
+                "wordleLevel": difficulty_for_streak(level_progress["current"]),
+                "bestWordleLevel": difficulty_for_streak(level_progress["best"]),
             }
         )
 
@@ -2369,6 +2643,7 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             "totalPoints": sum(player["totalPoints"] for player in players),
             "quizPlays": sum(player["quizPlayed"] for player in players),
             "wordlePlays": sum(player["wordlePlayed"] for player in players),
+            "mapPlays": sum(player["mapPlayed"] for player in players),
             "bestStreak": max((player["bestStreak"] for player in players), default=0),
         },
     }
@@ -3100,6 +3375,177 @@ def start_daily_quiz_scheduler() -> None:
         safe_log("Daily quiz scheduler disabled")
         return
     thread = threading.Thread(target=daily_quiz_scheduler_loop, daemon=True)
+    thread.start()
+
+
+def next_daily_map_game_run(now: datetime | None = None) -> datetime:
+    tz = server_timezone()
+    local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    next_run = local_now.replace(
+        hour=DAILY_MAP_GAME_SCHEDULER_HOUR,
+        minute=DAILY_MAP_GAME_SCHEDULER_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    if next_run <= local_now:
+        next_run += timedelta(days=1)
+    return next_run
+
+
+def active_daily_map_game_dates(now: datetime | None = None) -> list[str]:
+    tz = server_timezone()
+    local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    today = local_now.date()
+    tomorrow = today + timedelta(days=1)
+    return [today.isoformat(), tomorrow.isoformat()]
+
+
+def generate_daily_map_game_for_date(
+    conn: sqlite3.Connection,
+    *,
+    puzzle_date: str,
+    force: bool = False,
+    preferred_place_id: int | None = None,
+) -> dict[str, Any]:
+    normalized_date = daily_map_game.valid_game_date(puzzle_date)
+    existing = daily_map_game.puzzle_status(conn, normalized_date)
+    if existing["status"] == "published" and not force:
+        return existing
+    if not DAILY_MAP_AI_GENERATION_ENABLED or preferred_place_id is not None:
+        return daily_map_game.generate_daily_map_game(
+            conn,
+            puzzle_date=normalized_date,
+            force=force,
+            preferred_place_id=preferred_place_id,
+            log=lambda message: safe_log(f"Daily map game: {message}"),
+        )
+
+    eligible_names: set[str] | None = None
+    if DAILY_MAP_AI_DISCOVER_COUNT > 0:
+        try:
+            discovery = generate_ai_daily_map_round.discover_uncurated_candidates(
+                db_path=DB_PATH,
+                provider=map_clue_rewriter.ConfiguredMapClueProvider.from_env(),
+                puzzle_date=normalized_date,
+                count=DAILY_MAP_AI_DISCOVER_COUNT,
+                max_attempts=DAILY_MAP_AI_DISCOVERY_ATTEMPTS,
+            )
+            eligible_names = set(discovery["candidate_names"])
+            safe_log(
+                "Daily map AI: discovered "
+                f"{discovery['accepted_count']} eligible candidates for {normalized_date}."
+            )
+        except Exception as error:
+            daily_map_game.get_or_create_puzzle(conn, normalized_date)
+            daily_map_game.set_puzzle_status(
+                conn,
+                normalized_date,
+                "failed",
+                failure_reason=f"AI map discovery failed: {error}",
+            )
+            safe_log(f"Daily map AI discovery failed for {normalized_date}: {error}")
+            return daily_map_game.puzzle_status(conn, normalized_date)
+
+    conn.execute("SAVEPOINT ai_daily_map_round")
+    try:
+        provider = map_clue_rewriter.ConfiguredMapClueProvider.from_env()
+        generated = generate_ai_daily_map_round.generate_round(
+            conn,
+            provider=provider,
+            puzzle_date=normalized_date,
+            shortlist_limit=DAILY_MAP_AI_SHORTLIST_LIMIT,
+            max_clue_attempts=DAILY_MAP_AI_MAX_CLUE_ATTEMPTS,
+            eligible_names=eligible_names,
+        )
+        conn.execute("RELEASE SAVEPOINT ai_daily_map_round")
+        safe_log(
+            "Daily map AI: selected "
+            f"{generated['place']} with profile {generated['learning_profile_hash']} "
+            f"and {generated['critic_mode']} criticism."
+        )
+        return dict(generated["publish_result"])
+    except Exception as error:
+        conn.execute("ROLLBACK TO SAVEPOINT ai_daily_map_round")
+        conn.execute("RELEASE SAVEPOINT ai_daily_map_round")
+        daily_map_game.get_or_create_puzzle(conn, normalized_date)
+        daily_map_game.set_puzzle_status(
+            conn,
+            normalized_date,
+            "failed",
+            failure_reason=f"AI map generation failed: {error}",
+        )
+        safe_log(f"Daily map AI generation failed for {normalized_date}: {error}")
+        return daily_map_game.puzzle_status(conn, normalized_date)
+
+
+def ensure_daily_map_game_dates(target_dates: list[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    seen_dates: set[str] = set()
+    with DAILY_MAP_GAME_OPERATION_LOCK:
+        with closing(connect_db()) as conn:
+            with conn:
+                for puzzle_date in target_dates:
+                    normalized_date = daily_map_game.valid_game_date(puzzle_date)
+                    if normalized_date in seen_dates:
+                        continue
+                    seen_dates.add(normalized_date)
+                    status = daily_map_game.puzzle_status(conn, normalized_date)
+                    if status["status"] == "published":
+                        results.append(status)
+                        continue
+                    result = generate_daily_map_game_for_date(
+                        conn,
+                        puzzle_date=normalized_date,
+                    )
+                    results.append(result)
+                    if result.get("status") != "published":
+                        break
+    return results
+
+
+def ensure_active_daily_map_games(now: datetime | None = None) -> list[dict[str, Any]]:
+    return ensure_daily_map_game_dates(active_daily_map_game_dates(now))
+
+
+def daily_map_game_retry_interval_sec(results: list[dict[str, Any]]) -> int:
+    if any(
+        daily_quiz.is_transient_provider_failure(str(result.get("failureReason") or ""))
+        for result in results
+    ):
+        return DAILY_MAP_GAME_TRANSIENT_RETRY_INTERVAL_SEC
+    return DAILY_MAP_GAME_RETRY_INTERVAL_SEC
+
+
+def daily_map_game_scheduler_loop() -> None:
+    safe_log("Daily map game scheduler started")
+    while True:
+        results: list[dict[str, Any]] = []
+        retry_required = False
+        try:
+            results = ensure_active_daily_map_games()
+            retry_required = any(result.get("status") != "published" for result in results)
+        except Exception as error:
+            safe_log(f"Daily map game scheduler generation failed: {error}")
+            results = [{"failureReason": str(error)}]
+            retry_required = True
+
+        next_run = next_daily_map_game_run()
+        now = datetime.now(next_run.tzinfo)
+        if retry_required:
+            retry_at = now + timedelta(seconds=daily_map_game_retry_interval_sec(results))
+            wake_at = retry_at if retry_at < next_run else next_run
+        else:
+            wake_at = next_run
+        delay = max(1.0, (wake_at - now).total_seconds())
+        safe_log(f"Daily map game scheduler sleeping until {wake_at.isoformat()}")
+        time.sleep(delay)
+
+
+def start_daily_map_game_scheduler() -> None:
+    if not DAILY_MAP_GAME_SCHEDULER_ENABLED:
+        safe_log("Daily map game scheduler disabled")
+        return
+    thread = threading.Thread(target=daily_map_game_scheduler_loop, daemon=True)
     thread.start()
 
 
@@ -6856,7 +7302,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         if parsed_origin.netloc == host:
             return True
 
-        if not COOKIE_SECURE and parsed_origin.hostname in {"127.0.0.1", "localhost"}:
+        if not COOKIE_SECURE and is_development_origin_host(parsed_origin.hostname):
             return True
 
         return False
@@ -7105,6 +7551,40 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             self.send_json(status, result)
             return
 
+        if path == "/internal/generate-daily-map-game" and method == "POST":
+            configured_token = DAILY_QUIZ_CONFIG.internal_token
+            submitted_token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not configured_token:
+                self.send_error_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Internal generation token is not configured.",
+                )
+                return
+            if not hmac.compare_digest(submitted_token, configured_token):
+                self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")
+                return
+            payload = self.read_json()
+            puzzle_date = str(payload.get("date") or today_game_date())
+            with DAILY_MAP_GAME_OPERATION_LOCK:
+                with connect_db() as conn:
+                    result = generate_daily_map_game_for_date(
+                        conn,
+                        puzzle_date=puzzle_date,
+                        force=bool(payload.get("force", False)),
+                        preferred_place_id=(
+                            int(payload["placeId"])
+                            if payload.get("placeId") is not None
+                            else None
+                        ),
+                    )
+            status = (
+                HTTPStatus.OK
+                if result.get("status") == "published"
+                else HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            self.send_json(status, result)
+            return
+
         if path == "/internal/ops-summary" and method == "GET":
             configured_token = DAILY_QUIZ_CONFIG.internal_token
             submitted_token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
@@ -7118,6 +7598,207 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")
                 return
             self.send_json(HTTPStatus.OK, internal_ops_summary_payload())
+            return
+
+        if path in {"/internal/map-place-review-feedback", "/api/map-place-review-feedback"} and method == "POST":
+            if path.startswith("/internal/"):
+                configured_token = DAILY_QUIZ_CONFIG.internal_token
+                submitted_token = (
+                    self.headers.get("Authorization", "")
+                    .removeprefix("Bearer ")
+                    .strip()
+                )
+                if not configured_token:
+                    self.send_error_json(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        "Internal generation token is not configured.",
+                    )
+                    return
+                if not hmac.compare_digest(submitted_token, configured_token):
+                    self.send_error_json(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")
+                    return
+            else:
+                with connect_db() as auth_conn:
+                    token = get_cookie_value(self.headers, SESSION_COOKIE)
+                    review_user = current_user(auth_conn, token)
+                if review_user is None:
+                    self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
+                    return
+                if review_user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+            payload = self.read_json()
+            rows = payload.get("rows")
+            if not isinstance(rows, list):
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "rows must be a list.")
+                return
+            clean_rows: list[dict[str, Any]] = []
+            for row in rows[:500]:
+                if not isinstance(row, dict):
+                    continue
+                clue_uses: list[dict[str, Any]] = []
+                if isinstance(row.get("clue_uses"), list):
+                    for clue in row.get("clue_uses", [])[:4]:
+                        if not isinstance(clue, dict):
+                            continue
+                        clue_uses.append(
+                            {
+                                "level": str(clue.get("level") or "").strip(),
+                                "maxPoints": clue.get("maxPoints"),
+                                "role": str(clue.get("role") or "").strip(),
+                                "fact": str(clue.get("fact") or "").strip(),
+                                "usedAs": str(clue.get("usedAs") or "").strip(),
+                                "yourScore": clue.get("yourScore"),
+                            }
+                        )
+                clues = row.get("clues") if isinstance(row.get("clues"), dict) else {}
+                clue_scores_source = row.get("clue_scores") if isinstance(row.get("clue_scores"), dict) else {}
+                clue_reviews_source = (
+                    row.get("clue_reviews")
+                    if isinstance(row.get("clue_reviews"), dict)
+                    else {}
+                )
+                clue_reviews: dict[str, dict[str, str]] = {}
+                for level in ("hard", "medium", "easy"):
+                    source = (
+                        clue_reviews_source.get(level)
+                        if isinstance(clue_reviews_source.get(level), dict)
+                        else {}
+                    )
+                    verdict = str(
+                        source.get("pass_fail") or source.get("passFail") or ""
+                    ).strip().casefold()
+                    if verdict not in {"pass", "fail"}:
+                        verdict = ""
+                    clue_reviews[level] = {
+                        "level": level,
+                        "clue": str(source.get("clue") or clues.get(level) or "").strip(),
+                        "pass_fail": verdict,
+                        "reason": str(source.get("reason") or "").strip(),
+                    }
+                overall_review_source = (
+                    row.get("overall_review")
+                    if isinstance(row.get("overall_review"), dict)
+                    else {}
+                )
+                overall_verdict = str(
+                    overall_review_source.get("pass_fail")
+                    or overall_review_source.get("passFail")
+                    or ""
+                ).strip().casefold()
+                if overall_verdict not in {"pass", "fail"}:
+                    overall_verdict = ""
+                hard_review_source = row.get("hard_review") if isinstance(row.get("hard_review"), dict) else {}
+                hard_pass_fail = str(
+                    hard_review_source.get("pass_fail")
+                    or hard_review_source.get("passFail")
+                    or clue_reviews["hard"]["pass_fail"]
+                    or ""
+                ).strip().casefold()
+                if hard_pass_fail not in {"pass", "fail"}:
+                    hard_pass_fail = ""
+                clean_rows.append(
+                    {
+                        "rank": row.get("rank"),
+                        "review_phase": str(row.get("review_phase") or "").strip(),
+                        "place": str(row.get("place") or "").strip(),
+                        "machine_score": row.get("machine_score"),
+                        "ml_score": row.get("ml_score"),
+                        "ml_confidence": row.get("ml_confidence"),
+                        "ml_rank_score": row.get("ml_rank_score"),
+                        "your_score": row.get("your_score"),
+                        "notes": str(row.get("notes") or "").strip(),
+                        "type": str(row.get("type") or "").strip(),
+                        "difficulty": str(row.get("difficulty") or "").strip(),
+                        "categories": str(row.get("categories") or "").strip(),
+                        "source": str(row.get("source") or "").strip(),
+                        "candidate_id": str(row.get("candidate_id") or "").strip(),
+                        "facts": [
+                            str(fact).strip()
+                            for fact in row.get("facts", [])
+                            if str(fact).strip()
+                        ]
+                        if isinstance(row.get("facts"), list)
+                        else [],
+                        "clue_uses": clue_uses,
+                        "clue_scores": {
+                            str(level).strip(): score
+                            for level, score in clue_scores_source.items()
+                            if str(level).strip()
+                        },
+                        "clue_reviews": clue_reviews,
+                        "overall_review": {
+                            "pass_fail": overall_verdict,
+                            "reason": str(overall_review_source.get("reason") or "").strip(),
+                        },
+                        "clues": {
+                            "hard": str(clues.get("hard") or "").strip(),
+                            "medium": str(clues.get("medium") or "").strip(),
+                            "easy": str(clues.get("easy") or "").strip(),
+                            "reveal": str(clues.get("reveal") or "").strip(),
+                        },
+                        "hard_review": {
+                            "level": "Hard",
+                            "clue": str(
+                                hard_review_source.get("clue")
+                                or clue_reviews["hard"]["clue"]
+                                or ""
+                            ).strip(),
+                            "fact": str(hard_review_source.get("fact") or "").strip(),
+                            "pass_fail": hard_pass_fail,
+                            "reason": str(
+                                hard_review_source.get("reason")
+                                or clue_reviews["hard"]["reason"]
+                                or ""
+                            ).strip(),
+                            "better_direction": str(
+                                hard_review_source.get("better_direction")
+                                or hard_review_source.get("betterDirection")
+                                or ""
+                            ).strip(),
+                        },
+                        "why_fun": str(row.get("why_fun") or "").strip(),
+                        "map_guessability": str(row.get("map_guessability") or "").strip(),
+                    }
+                )
+            output_dir = DATA_DIR / "training"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"map_place_review_feedback_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json"
+            output_path.write_text(
+                json.dumps(
+                    {
+                        "created_at": utc_now(),
+                        "row_count": len(clean_rows),
+                        "rows": clean_rows,
+                    },
+                    indent=2,
+                    ensure_ascii=True,
+                ),
+                encoding="utf-8",
+            )
+            consolidated_path = training_data_store.write_consolidated_map_place_review_feedback(
+                output_dir
+            )
+            try:
+                training_summary = refresh_map_learning_after_review(output_dir)
+            except Exception as error:
+                safe_log(f"Map review was saved but model refresh failed: {error}")
+                training_summary = {
+                    "ok": False,
+                    "error": str(error),
+                }
+            else:
+                training_summary["ok"] = True
+            self.send_json(
+                HTTPStatus.CREATED,
+                {
+                    "ok": True,
+                    "rowCount": len(clean_rows),
+                    "path": str(output_path),
+                    "consolidatedPath": str(consolidated_path),
+                    "training": training_summary,
+                },
+            )
             return
 
         if path == "/internal/regenerate-daily-quiz-question" and method == "POST":
@@ -7241,6 +7922,50 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_json(status, result_payload)
                 return
 
+            if path == "/api/daily-map-game" and method == "GET":
+                puzzle_date = str(params.get("date", [today_game_date()])[0]).strip()
+                try:
+                    normalized_date = daily_map_game.valid_game_date(puzzle_date)
+                    if normalized_date > today_game_date():
+                        self.send_error_json(
+                            HTTPStatus.NOT_FOUND,
+                            "No published map game exists for that date.",
+                        )
+                        return
+                    self.send_json(
+                        HTTPStatus.OK,
+                        daily_map_game.daily_bundle_payload(
+                            conn,
+                            puzzle_date=normalized_date,
+                            user_id=user["id"],
+                        ),
+                    )
+                except LookupError:
+                    active_dates = active_daily_map_game_dates()
+                    if puzzle_date not in active_dates:
+                        self.send_error_json(
+                            HTTPStatus.NOT_FOUND,
+                            "No published map game exists for that date.",
+                        )
+                        return
+                    with DAILY_MAP_GAME_OPERATION_LOCK:
+                        result = generate_daily_map_game_for_date(
+                            conn,
+                            puzzle_date=puzzle_date,
+                        )
+                    if result.get("status") != "published":
+                        self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, result)
+                        return
+                    self.send_json(
+                        HTTPStatus.OK,
+                        daily_map_game.daily_bundle_payload(
+                            conn,
+                            puzzle_date=puzzle_date,
+                            user_id=user["id"],
+                        ),
+                    )
+                return
+
             if path == "/api/leaderboard" and method == "GET":
                 self.send_json(HTTPStatus.OK, leaderboard_payload(conn))
                 return
@@ -7282,12 +8007,50 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.handle_wordle_guess(conn, user)
                 return
 
+            map_snap_match = re.fullmatch(r"/api/daily-map-game/(\d+)/snap", path)
+            if map_snap_match is not None and method == "POST":
+                payload = self.read_json()
+                selection_payload, status = daily_map_game.snap_guess(
+                    conn,
+                    level_id=int(map_snap_match.group(1)),
+                    lat=payload.get("lat"),
+                    lng=payload.get("lng"),
+                    zoom=payload.get("zoom"),
+                    today=today_game_date(),
+                )
+                self.send_json(status, selection_payload)
+                return
+
+            map_guess_match = re.fullmatch(r"/api/daily-map-game/(\d+)/guess", path)
+            if map_guess_match is not None and method == "POST":
+                payload = self.read_json()
+                result_payload, status = daily_map_game.submit_guess(
+                    conn,
+                    user_id=user["id"],
+                    level_id=int(map_guess_match.group(1)),
+                    lat=payload.get("lat"),
+                    lng=payload.get("lng"),
+                    selected_name=payload.get("selectedName"),
+                    revealed_hint_count=payload.get("revealedHintCount"),
+                    today=today_game_date(),
+                )
+                self.send_json(status, result_payload)
+                return
+
             if path == "/api/admin/daily-quiz-status" and method == "GET":
                 if user["role"] != "admin":
                     self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
                     return
                 quiz_date = str(params.get("date", [today_game_date()])[0]).strip()
                 self.send_json(HTTPStatus.OK, daily_quiz.quiz_status(conn, quiz_date))
+                return
+
+            if path == "/api/admin/daily-map-game-status" and method == "GET":
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                puzzle_date = str(params.get("date", [today_game_date()])[0]).strip()
+                self.send_json(HTTPStatus.OK, daily_map_game.puzzle_status(conn, puzzle_date))
                 return
 
             if path == "/api/admin/question-attempts" and method == "GET":
@@ -7689,10 +8452,20 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
 def run() -> None:
     assert_runtime_storage_ready("before database initialization")
+    training_seed = install_map_training_seed.install_seed(
+        Path(os.environ.get("FULTONS_MAP_TRAINING_SEED_DIR", APP_DIR / "map-training-seed")),
+        DATA_DIR / "training",
+    )
+    safe_log(
+        "Map training seed: "
+        f"copied={len(training_seed['copied'])}, "
+        f"feedback_rows_added={training_seed['feedback_rows_added']}"
+    )
     initialize_database()
     assert_runtime_storage_ready("after database initialization")
     start_news_monitor()
     start_daily_quiz_scheduler()
+    start_daily_map_game_scheduler()
     start_history_fact_prewarm_worker()
     host = os.environ.get("FULTONS_HOST", "127.0.0.1")
     port = int(os.environ.get("FULTONS_PORT", "8000"))

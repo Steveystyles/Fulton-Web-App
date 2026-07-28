@@ -6,10 +6,10 @@ import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
 import { Account } from "../pages/Account";
 import { Admin } from "../pages/Admin";
-import { Facts } from "../pages/Facts";
 import { Leaderboard } from "../pages/Leaderboard";
 import { Login } from "../pages/Login";
 import { LocalOps } from "../pages/LocalOps";
+import { MapGame } from "../pages/MapGame";
 import { News } from "../pages/News";
 import { Quiz } from "../pages/Quiz";
 import { Wordle } from "../pages/Wordle";
@@ -22,7 +22,7 @@ function AppFrame({
   compact?: boolean;
 }) {
   return (
-    <div className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10">
+    <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10">
       <div className="top-shell">
         <Header />
       </div>
@@ -121,13 +121,14 @@ export function AppRouter() {
             }
           />
           <Route
-            path="/facts"
+            path="/map"
             element={
               <AppFrame>
-                <Facts />
+                <MapGame />
               </AppFrame>
             }
           />
+          <Route path="/facts" element={<Navigate to="/map" replace />} />
           <Route
             path="/account"
             element={

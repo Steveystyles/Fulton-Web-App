@@ -325,6 +325,82 @@ export type DailyQuizResult = {
   completedAt: string;
 };
 
+export type MapPoint = {
+  lat: number;
+  lng: number;
+};
+
+export type DailyMapGameResult = {
+  guessedPoint: MapPoint;
+  answerPoint: MapPoint;
+  distanceMeters: number;
+  distanceKm: number;
+  distanceFromCentreMeters: number;
+  gradedDistanceMeters: number;
+  gradedDistanceKm: number;
+  targetRadiusMeters: number;
+  insideTargetArea: boolean;
+  correct: boolean;
+  revealedHintCount: number;
+  score: number;
+  maxPoints: number;
+  band: string;
+  completedAt: string;
+  selectedPlace: {
+    name: string | null;
+  };
+  place: {
+    name: string;
+    countryCode: string;
+    admin1: string | null;
+    revealText: string;
+  };
+};
+
+export type DailyMapClue = {
+  id: "hard" | "medium" | "easy" | "name";
+  title: string;
+  text: string;
+  maxPoints: number;
+  revealsName?: boolean;
+};
+
+export type DailyMapGameLevel = {
+  id: number;
+  slug: QuizDifficulty;
+  title: string;
+  clueText: string;
+  clues: DailyMapClue[];
+  maxPoints: number;
+  submitted: boolean;
+  result?: DailyMapGameResult;
+};
+
+export type DailyMapGameResponse = {
+  date: string;
+  status: "published";
+  maxScore: number;
+  completedLevels: number;
+  levels: DailyMapGameLevel[];
+};
+
+export type DailyMapSnapOption = {
+  point: MapPoint;
+  clickedPoint: MapPoint;
+  snapped: boolean;
+  name: string;
+  kind: string;
+  distanceMeters: number;
+  snapRadiusMeters: number;
+  countryCode: string | null;
+  admin1: string | null;
+};
+
+export type DailyMapSnapSelection = DailyMapSnapOption & {
+  alternatives?: DailyMapSnapOption[];
+  selectedIndex?: number;
+};
+
 export type NewsItem = {
   id: number;
   sourceKey: string;
@@ -363,6 +439,7 @@ export type LeaderboardPlayer = {
   weeklyPoints: number;
   weeklyWordlePoints: number;
   weeklyQuizPoints: number;
+  weeklyMapPoints: number;
   totalPoints: number;
   wordlePoints: number;
   weeklyWordleDifficultyBonus: number;
@@ -373,6 +450,8 @@ export type LeaderboardPlayer = {
   quizMaxPoints: number;
   quizPlayed: number;
   quizCorrect: number;
+  mapPoints: number;
+  mapPlayed: number;
   currentStreak: number;
   bestStreak: number;
   wordleLevel: number;
@@ -389,6 +468,7 @@ export type LeaderboardResponse = {
     totalPoints: number;
     quizPlays: number;
     wordlePlays: number;
+    mapPlays: number;
     bestStreak: number;
   };
 };
@@ -683,6 +763,29 @@ export const api = {
     return request<{ result: DailyQuizResult }>("/api/daily-quiz/result", {
       method: "POST",
       body: jsonBody(payload),
+    });
+  },
+
+  dailyMapGame(date?: string) {
+    const query = date ? `?date=${encodeURIComponent(date)}` : "";
+    return request<DailyMapGameResponse>(`/api/daily-map-game${query}`);
+  },
+
+  snapDailyMapGuess(levelId: number, point: MapPoint, zoom?: number) {
+    return request<DailyMapSnapSelection>(`/api/daily-map-game/${levelId}/snap`, {
+      method: "POST",
+      body: jsonBody({ ...point, zoom }),
+    });
+  },
+
+  submitDailyMapGuess(
+    levelId: number,
+    point: MapPoint,
+    options?: { selectedName?: string; revealedHintCount?: number },
+  ) {
+    return request<{ result: DailyMapGameResult }>(`/api/daily-map-game/${levelId}/guess`, {
+      method: "POST",
+      body: jsonBody({ ...point, ...options }),
     });
   },
 

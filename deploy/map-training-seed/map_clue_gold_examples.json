@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "examples": [
+    {
+      "example_id": "gold_maracana_complete_ladder_v1",
+      "status": "human_approved",
+      "approved_on": "2026-07-27",
+      "audience": "adult player; the owner's father",
+      "place": "Maracan\u00e3 Stadium",
+      "place_type": "stadium",
+      "place_selection": {
+        "why_it_passed": "Famous, interesting, globally recognisable, supported by memorable facts, and reasonably findable on the map after using the clue ladder."
+      },
+      "clue_ladder": {
+        "hard": "Uruguay stunned Brazil here in 1950 before the World Cup's record crowd.",
+        "medium": "The venue is officially named after the Brazilian journalist M\u00e1rio Filho.",
+        "easy": "Find this massive oval stadium in northern Rio, situated just north of the Tijuca area."
+      },
+      "clue_reviews": {
+        "hard": "Uses the teams, famous upset, and still-current record. Those associations are more memorable and useful than quoting an arbitrary attendance figure.",
+        "medium": "Succeeds through the combination of a place-owned naming fact, a named person, Brazilian geographic scope, and help toward recognising the formal name.",
+        "easy": "Provides a practical city and district search anchor that is visible at a reasonable zoom, so street-level map knowledge is not needed to begin."
+      },
+      "why_the_ladder_passed": "Each level performs a different job: a memorable hook, a place-specific solving aid, and a practical map route. The clues progressively increase the player's chance of success.",
+      "generalisation_note": "This is one successful pattern, not a mandatory template. Medium must materially reduce the broad geographic search area; an extra place-owned fact may add character. Easy must then narrow within that area to a borough, district, quarter, city sector, or visible local feature."
+    }
+  ]
+}

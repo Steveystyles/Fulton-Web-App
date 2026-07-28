@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - beta/daily-map-game
   pull_request:
 
 permissions:
@@ -30,3 +31,12 @@ jobs:
 
       - name: Run server tests
         run: npm run test:server
+
+      - name: Build production container
+        run: docker build -t fultons-quiz:test .
+
+      - name: Verify production Python imports
+        run: >-
+          docker run --rm --entrypoint python fultons-quiz:test -c
+          "import server; from tools import generate_map_place_candidates_with_ai,
+          install_map_training_seed, map_clue_quality_model"

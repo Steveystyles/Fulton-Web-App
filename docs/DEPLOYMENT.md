@@ -51,16 +51,29 @@ FULTONS_WORD_DEFINITION_TIMEOUT_SEC=5
 FULTONS_EXPECT_DATA_DIR=/app/data
 FULTONS_REQUIRE_EXISTING_DB=1
 FULTONS_MIN_DB_USERS=1
+FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED=1
+FULTONS_DAILY_MAP_GAME_RETRY_INTERVAL_SEC=300
+FULTONS_DAILY_MAP_TRANSIENT_RETRY_INTERVAL_SEC=3600
+FULTONS_DAILY_MAP_AI_GENERATION_ENABLED=1
+FULTONS_DAILY_MAP_AI_SHORTLIST_LIMIT=24
+FULTONS_DAILY_MAP_AI_MAX_CLUE_ATTEMPTS=7
+FULTONS_DAILY_MAP_AI_DISCOVER_COUNT=4
+FULTONS_DAILY_MAP_AI_DISCOVERY_ATTEMPTS=2
 AI_PROVIDER=gemini
 AI_GENERATOR_MODEL=gemini-3.5-flash
 AI_CRITIC_MODEL=gemini-3.1-flash-lite
 GEMINI_API_KEY=<private-gemini-api-key>
+MAP_CLUE_GEMINI_API_KEY=<private-map-gemini-api-key>
+MAP_CLUE_GENERATOR_MODEL=gemini-3.1-flash-lite
+MAP_CLUE_CRITIC_MODEL=gemini-3.1-flash-lite
+MAP_CLUE_MAX_ATTEMPTS=6
+MAP_CLUE_REQUIRE_AI_CRITIC=1
 AI_FALLBACK_PROVIDER=gemini
 AI_FALLBACK_GENERATOR_MODEL=gemini-2.5-flash
 AI_FALLBACK_CRITIC_MODEL=gemini-2.5-flash-lite
 AI_FALLBACK2_PROVIDER=gemini
-AI_FALLBACK2_GENERATOR_MODEL=gemini-2.0-flash
-AI_FALLBACK2_CRITIC_MODEL=gemini-2.0-flash-lite
+AI_FALLBACK2_GENERATOR_MODEL=gemini-3.1-flash-lite
+AI_FALLBACK2_CRITIC_MODEL=gemini-3.1-flash-lite
 AI_TIMEOUT_SEC=90
 AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
@@ -152,6 +165,12 @@ docker exec fultons-quiz python -c "import json,urllib.request; print(json.dumps
 
 The container healthcheck calls `/api/health` internally.
 
+The image contains a versioned baseline of the map selector and clue-quality
+training data. At startup it merges missing baseline feedback into
+`/app/data/training` and replaces a learned model only when the image contains
+a newer `created_at` value. Production reviews and newer production-trained
+models are preserved.
+
 The app also runs storage checks at startup. In production, keep these enabled after the first real database exists:
 
 ```env
@@ -189,8 +208,8 @@ AI_FALLBACK_PROVIDER=gemini
 AI_FALLBACK_GENERATOR_MODEL=gemini-2.5-flash
 AI_FALLBACK_CRITIC_MODEL=gemini-2.5-flash-lite
 AI_FALLBACK2_PROVIDER=gemini
-AI_FALLBACK2_GENERATOR_MODEL=gemini-2.0-flash
-AI_FALLBACK2_CRITIC_MODEL=gemini-2.0-flash-lite
+AI_FALLBACK2_GENERATOR_MODEL=gemini-3.1-flash-lite
+AI_FALLBACK2_CRITIC_MODEL=gemini-3.1-flash-lite
 AI_TIMEOUT_SEC=90
 AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
@@ -209,6 +228,12 @@ From a Windows workstation, the setup helper prompts for the Gemini key securely
 The system generates one question at a time for six slots: easy, medium, and hard general knowledge plus easy, medium, and hard football. Each candidate passes local validation, recent-question repetition checks, and a separate AI critic before it is stored. A quiz is published only after all six slots are approved. Failed attempts and critic feedback are retained in SQLite for review.
 
 Generation and critique use separate Gemini models so their free-tier request quotas are independent. Keep `gemini-3.5-flash` for writing questions and the stable `gemini-3.1-flash-lite` model for the narrower critic task. When the primary Gemini model hits per-model quota or times out, the default fallback chain uses other Gemini text models under the same key. Avoid `:free` OpenRouter models for quiz generation unless a separate paid/BYOK limit is configured; they can be upstream rate-limited independently of this app.
+
+Map generation can use a separate Gemini project and quota. Set
+`MAP_CLUE_GEMINI_API_KEY` to the map-specific key; when it is blank, the map
+generator falls back to `GEMINI_API_KEY`. Quota and other transient map failures
+use `FULTONS_DAILY_MAP_TRANSIENT_RETRY_INTERVAL_SEC` so the scheduler does not
+retry every few minutes while waiting for the provider to recover.
 
 Generate a quiz through the protected internal endpoint:
 
@@ -268,6 +293,14 @@ GET /api/daily-quiz?date=2026-06-02
 To switch fully to an OpenAI-compatible provider such as Groq or OpenRouter later, set `AI_PROVIDER=groq`, `AI_PROVIDER=openrouter`, or `AI_PROVIDER=openai-compatible`, then provide `AI_BASE_URL` and `AI_API_KEY`. Gemini remains the default because its API supports structured JSON output directly, while `AI_FALLBACK_*` lets you keep Gemini primary and use alternate Gemini models or a paid compatible provider as backup.
 
 ## 8. Unexpected Shutdown Checks
+
+From the Windows workstation, the helper performs the public health, SSH,
+storage, Docker, and SQLite checks and only restarts when required:
+
+```powershell
+.\deploy\check-and-fix-after-power-outage.cmd
+```
+
 If the server powers off or must be unplugged before it will restart, inspect the host before running heavy workloads:
 
 ```bash

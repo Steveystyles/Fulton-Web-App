@@ -1,9 +1,0 @@
-<svg width="80" height="96" viewBox="0 0 80 96" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Shield placeholder</title>
-  <desc id="desc">A simple black, white, and red shield placeholder for Fulton's Quiz.</desc>
-  <path d="M40 4L72 16V42C72 64.5 58.4 82.8 40 92C21.6 82.8 8 64.5 8 42V16L40 4Z" fill="#0A0A0D"/>
-  <path d="M40 10L66 19.75V42.25C66 60.25 55.95 75.75 40 84.9C24.05 75.75 14 60.25 14 42.25V19.75L40 10Z" fill="#F6F7F9"/>
-  <path d="M40 10L66 19.75V42.25C66 60.25 55.95 75.75 40 84.9V10Z" fill="#D71920"/>
-  <path d="M25 32H55V40H25V32Z" fill="#0A0A0D"/>
-  <path d="M30 49H50V57H30V49Z" fill="#0A0A0D"/>
-</svg>

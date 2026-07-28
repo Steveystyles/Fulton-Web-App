@@ -1,0 +1,1041 @@
+{
+  "created_at": "2026-07-28T16:06:52.986689+00:00",
+  "source_files": [
+    "data\\training\\map_place_review_feedback_all.jsonl"
+  ],
+  "row_count": 183,
+  "unique_row_count": 183,
+  "duplicate_row_count": 0,
+  "accepted_row_count": 183,
+  "ignored_rows": [],
+  "place_scores": {
+    "Yankee Stadium": 0,
+    "Old Bridge Area of the Old City of Mostar": 0,
+    "Historic Centre of the City of Salzburg": 0,
+    "Rideau Canal": 0,
+    "Historic Walled Town of Cuenca": 0,
+    "Skellig Michael": 8,
+    "Prague": 5,
+    "Charles Bridge": 5,
+    "Santo Domingo": 3,
+    "Nashville": 8,
+    "Milan": 8,
+    "Memphis": 8,
+    "Dublin": 10,
+    "Utrecht": 5,
+    "St. Louis": 8,
+    "National Stadium, Warsaw": 10,
+    "Moses Mabhida Stadium": 5,
+    "Leicester": 3,
+    "Yr Wyddfa": 8,
+    "Wembley Stadium": 8,
+    "Sydney Harbour Bridge": 8,
+    "Signal Iduna Park": 8,
+    "Pont du Gard": 8,
+    "Petra": 8,
+    "Mont-Saint-Michel": 0,
+    "Maracan\u00e3 Stadium": 8,
+    "Madrid": 5,
+    "Louvre Museum": 5,
+    "Est\u00e1dio da Luz": 10,
+    "Edinburgh Castle": 10,
+    "Budapest": 5,
+    "Brandenburg Gate": 5,
+    "Beijing": 5,
+    "Auschwitz II\u2013Birkenau Gate": 5,
+    "Atomium": 3,
+    "Athens": 5,
+    "Stirling Castle": 8,
+    "Stadio Olimpico": 8,
+    "Stade de France": 8,
+    "Seville": 5,
+    "Riga": 3,
+    "Porto": 8,
+    "Pisa": 5,
+    "Munich": 5,
+    "Marseille": 5,
+    "Liverpool": 8,
+    "Johan Cruyff Arena": 10,
+    "Etihad Stadium": 8,
+    "Central Sector of the Imperial Citadel of Thang Long - Hanoi": 0,
+    "Canterbury": 3,
+    "Brussels": 3,
+    "Agra Fort": 0,
+    "Ram\u00f3n S\u00e1nchez-Pizju\u00e1n Stadium": 10,
+    "Nuremberg": 3,
+    "Newcastle upon Tyne": 5,
+    "Narendra Modi Stadium": 3,
+    "Ko\u0161ice": 3,
+    "Japan National Stadium": 8,
+    "Inverness": 5,
+    "Hong Kong": 5,
+    "Estadio Centenario": 10,
+    "Durham": 3,
+    "Bristol": 5,
+    "Alicante": 5,
+    "Aberdeen": 5,
+    "Golden Gate Bridge": 3,
+    "Persepolis": 5,
+    "Mysore Palace": 3,
+    "Mexico City": 3,
+    "Machu Picchu": 5,
+    "Canterbury Cathedral": 10,
+    "Brooklyn Bridge": 5,
+    "Alhambra": 8,
+    "Vat Phou and Associated Ancient Settlements within the Champasak Cultural Landscape": 0,
+    "Temple of Apollo Epicurius at Bassae": 0,
+    "San Pedro de la Roca Castle, Santiago de Cuba": 0,
+    "Port, Fortresses and Group of Monuments, Cartagena": 0,
+    "Palace of Westminster and Westminster Abbey including Saint Margaret\u2019s Church": 0,
+    "Mount Taishan": 0,
+    "Mount Huangshan": 0,
+    "Manchester": 5,
+    "Humayun's Tomb, Delhi": 0,
+    "Historic Mosque City of Bagerhat": 0,
+    "Glasgow": 8,
+    "C\u00f3rdoba, Spain": 3,
+    "Conwy Castle": 5,
+    "Archaeological Site of Aigai (modern name Vergina)": 0,
+    "Al Qal'a of Beni Hammad": 0,
+    "Tottenham Hotspur Stadium": 8,
+    "Indianapolis": 3,
+    "De Kuip": 10,
+    "Chester": 3,
+    "Beijing National Stadium": 5,
+    "Himeji Castle": 3,
+    "Terracotta Army": 8,
+    "Camp Nou": 8,
+    "Big Ben": 5,
+    "Allianz Arena": 10,
+    "Stade Velodrome": 5,
+    "Suncorp Stadium": 8,
+    "Ponte 25 de Abril": 8,
+    "Akashi Kaikyo Bridge": 5,
+    "Capri": 3,
+    "The Royal Ontario Museum": 3,
+    "The O2 Arena": 5,
+    "Royal Observatory, Greenwich": 10,
+    "The Shard": 5,
+    "The National Museum of African American History and Culture": 3,
+    "The Museum of Islamic Art": 3,
+    "The Gherkin": 8,
+    "Bolshoi Theatre": 5,
+    "The National Museum of Modern and Contemporary Art": 3,
+    "The Flatiron Building": 5,
+    "Teatro Amazonas": 3,
+    "Palais Garnier": 5,
+    "The Tsukiji Hongwan-ji Temple": 3,
+    "The Getty Villa": 3,
+    "Eden Park": 5,
+    "Svalbard Global Seed Vault": 5,
+    "Vasco da Gama Bridge": 3,
+    "Kansai International Airport": 5,
+    "Krestovsky Stadium": 3,
+    "Optus Stadium": 3,
+    "The High Line": 0,
+    "Tower Bridge": 8,
+    "Gateway Arch": 8,
+    "Palm Jumeirah": 8,
+    "San Siro": 10,
+    "Akashi Kaiky\u014d Bridge": 8,
+    "Rialto Bridge": 5,
+    "Forth Bridge": 10,
+    "Petronas Twin Towers": 0,
+    "Sydney Opera House": 10,
+    "Millau Viaduct": 3,
+    "Alcatraz Island": 8,
+    "Burj Khalifa": 5,
+    "Taj Mahal": 8,
+    "Leaning Tower of Pisa": 3,
+    "Old Trafford": 10,
+    "Anfield": 8,
+    "Statue of Liberty": 3,
+    "Sz\u00e9chenyi Chain Bridge": 3,
+    "Clifton Suspension Bridge": 5,
+    "Space Needle": 3,
+    "Estadio Azteca": 5,
+    "Colosseum": 5,
+    "Table Mountain": 5,
+    "The Kelpies": 8,
+    "Ponte Vecchio": 3,
+    "Marina Bay Sands": 5,
+    "Eiffel Tower": 5,
+    "St. James' Park": 8,
+    "Guggenheim Museum Bilbao": 5,
+    "Christ the Redeemer": 8,
+    "La Bombonera": 5,
+    "CN Tower": 8,
+    "Mount Fuji": 5,
+    "Estadio Monumental": 10,
+    "Tower of London": 8,
+    "Lion of Lucerne": 5,
+    "Burj Al Arab": 3,
+    "Sydney Tower": 3,
+    "Estadio da Luz": 10,
+    "Ibrox Stadium": 8,
+    "Celtic Park": 5,
+    "S\u00e3o Paulo Museum of Art": 5,
+    "Giant's Causeway": 10,
+    "AAMI Park": 5,
+    "San Mam\u00e9s Stadium": 8,
+    "Hampden Park": 8,
+    "Goodison Park": 8,
+    "Craven Cottage": 8,
+    "Bled Island": 5,
+    "Tyne Bridge": 5,
+    "Dancing House": 5,
+    "Historic Centre of Warsaw": 0
+  },
+  "type_adjustments": {
+    "archaeological_site": -8,
+    "bridge": 0,
+    "castle": -6,
+    "cathedral": 24,
+    "citadel": -30,
+    "city": 0,
+    "fort": -30,
+    "historic_site": 12,
+    "island": 2,
+    "landmark": 16,
+    "mausoleum": -6,
+    "monument": 2,
+    "mountain": -8,
+    "museum": 0,
+    "observation_tower": 3,
+    "old_town": -30,
+    "palace": -21,
+    "religious_site": -30,
+    "skyscraper": -15,
+    "stadium": 17
+  },
+  "category_adjustments": {
+    "culture_event": 0,
+    "engineering_industry": 1,
+    "history": 0,
+    "natural_setting": 2,
+    "sport": 8,
+    "visual_landmark": -1
+  },
+  "clue_level_scores": {
+    "easy": {
+      "count": 13,
+      "mean_score": 10,
+      "low_score_count": 0
+    },
+    "hard": {
+      "count": 12,
+      "mean_score": 5,
+      "low_score_count": 6
+    },
+    "medium": {
+      "count": 12,
+      "mean_score": 5.83,
+      "low_score_count": 5
+    }
+  },
+  "hard_clue_review": {
+    "count": 33,
+    "pass_count": 19,
+    "fail_count": 13,
+    "strong_pass_count": 12,
+    "qualified_pass_count": 7,
+    "unmarked_count": 1,
+    "pass_rate": 0.576,
+    "pass_examples": [
+      {
+        "place": "Sydney Harbour Bridge",
+        "clue": "During the 2000 Sydney Olympics, the bridge was the site of a massive fireworks display that cemented its status as a global icon.",
+        "reason": "",
+        "better_direction": ""
+      },
+      {
+        "place": "Stade de France",
+        "clue": "It was built for the 1998 FIFA World Cup and was the site where France won their first-ever World Cup title by defeating Brazil.",
+        "reason": "",
+        "better_direction": ""
+      },
+      {
+        "place": "Alhambra",
+        "clue": "It was the site where Christopher Columbus received royal endorsement for his expedition to the Americas from Queen Isabella in 1492.",
+        "reason": "",
+        "better_direction": ""
+      },
+      {
+        "place": "Camp Nou",
+        "clue": "It hosted the 1999 UEFA Champions League final, famously decided by two stoppage-time goals from Manchester United.",
+        "reason": "",
+        "better_direction": ""
+      },
+      {
+        "place": "Tower Bridge",
+        "clue": "In 1997, the bridge was opened for the royal yacht Britannia, forcing US President Bill Clinton's motorcade to wait on the other side.",
+        "reason": "",
+        "better_direction": ""
+      },
+      {
+        "place": "Alcatraz Island",
+        "clue": "In 1962, Frank Morris and the Anglin brothers executed a daring escape from this federal penitentiary using makeshift rafts, a mystery that remains unsolved.",
+        "reason": "",
+        "better_direction": ""
+      },
+      {
+        "place": "Estadio Monumental",
+        "clue": "The host nation won the 1978 World Cup final on this pitch.",
+        "reason": "",
+        "better_direction": ""
+      },
+      {
+        "place": "Canterbury Cathedral",
+        "clue": "Archbishop Thomas Becket was murdered inside the church in 1170.",
+        "reason": "Still a bit bland and not very informative.",
+        "better_direction": ""
+      }
+    ],
+    "qualified_pass_examples": [
+      {
+        "place": "Wembley Stadium",
+        "clue": "This venue hosted the 1966 World Cup final and the 2011 and 2013 Champions League finals.",
+        "reason": "This passes as unique but id prefer to see it more specific about an exciting incident, as this just reads as three dates at the moment",
+        "better_direction": ""
+      },
+      {
+        "place": "Maracan\u00e3 Stadium",
+        "clue": "It was the site of the infamous 'Maracanazo' in 1950, where the home team suffered a shocking defeat in the World Cup final.",
+        "reason": "I dont like this clue but it technically passes. Theres no context to the unique clue other than it was during the defeat of the home nation? I would have preferred to hear about the incident more.",
+        "better_direction": ""
+      },
+      {
+        "place": "Atomium",
+        "clue": "Originally built for the 1958 World's Fair, this structure represents an iron crystal magnified 165 billion times.",
+        "reason": "Just passes. The specific piece if data is quite niche to know. World fare is not a particularly well know thing so knowing what was built for one might be a bit niche",
+        "better_direction": ""
+      },
+      {
+        "place": "Millau Viaduct",
+        "clue": "This cable-stayed bridge in southern France is the tallest in the world, with one mast reaching higher than the Eiffel Tower.",
+        "reason": "This just passes also. Being the tallest is certainly unique but its just data. Its not something uniquely interesting about the location. So although it scrapes through as a pass due to it being a unique fact it is quite a boring and flowery language. Also is it the tallest bridge or the tallest example of this style of bridge, clue is unclear.",
+        "better_direction": ""
+      },
+      {
+        "place": "Old Trafford",
+        "clue": "During the 1966 World Cup, it hosted a group stage game where Pel\u00e9 was famously injured by a brutal tackle.",
+        "reason": "The grammar of this feels a bit off but technically a good clue",
+        "better_direction": ""
+      },
+      {
+        "place": "Statue of Liberty",
+        "clue": "This copper statue was a gift from France to the United States and has served as a symbol of freedom for over a century.",
+        "reason": "This is a bit too vague. Should be about a specific event or incident. It still passes as France gifted only one copper statue",
+        "better_direction": ""
+      },
+      {
+        "place": "La Bombonera",
+        "clue": "Known for its steep, vertical stands, the stadium is famous for shaking when the home fans of Boca Juniors jump in unison.",
+        "reason": "Passes just because the fact is unique (boca juniors home ground) the rest is just padding unless there is a specific incident where the ground shook because of fans but otherwise there are numerous football stadiums that have high stands and could be described as shaking when fans jumped. Its bot unique about the location. We dont need flowery language, we need a good, interesting and unique fact about the location. Something that if the user knows the information they could work out the name of the location. The interesting fact for this place is boca juniors stadium which although it is unique to this stadium, it is not very interesting as all stadiums have a home team. This one just happens to be the locations.",
+        "better_direction": ""
+      }
+    ],
+    "fail_examples": [
+      {
+        "place": "Yankee Stadium",
+        "clue": "Monument Park honors legendary figures like Babe Ruth and Lou Gehrig within this venue.",
+        "reason": "It states the name of the location and is just pretty generic. Hard show be about a specific thing",
+        "better_direction": ""
+      },
+      {
+        "place": "Old Bridge Area of the Old City of Mostar",
+        "clue": "Designed by the architect Sinan, this structure was tragically destroyed during the 1990s conflict.",
+        "reason": "What 1990s conflict? How does this narrow the scope. There was probably a lot of bridges destroyed in a conflict",
+        "better_direction": ""
+      },
+      {
+        "place": "Rideau Canal",
+        "clue": "This historic waterway was built for military defense during tensions between Britain and America.",
+        "reason": "How is this specific?",
+        "better_direction": ""
+      },
+      {
+        "place": "Historic Walled Town of Cuenca",
+        "clue": "This site features famous houses suspended from sheer cliffs overlooking a deep river gorge.",
+        "reason": "Not specific",
+        "better_direction": ""
+      },
+      {
+        "place": "Charles Bridge",
+        "clue": "Commissioned by King Charles IV in 1357, this historic stone bridge features 30 statues of saints lining its balustrades.",
+        "reason": "What is the specific thing?",
+        "better_direction": "Maybe an incident that happened on the bridge. If having 30 statues is a unique, famous and interesting fact then eplain it better in the clue. What is it about the statues that make it identifiable?"
+      },
+      {
+        "place": "Mont-Saint-Michel",
+        "clue": "This tidal island is famous for its medieval abbey, which appears to rise directly out of the sea at high tide.",
+        "reason": "There are numerous examples of an abbey on a cliff. Its not unique or interesting",
+        "better_direction": "If i were to cite a place such as this, it would need to be something famous and interesting happened there. A famous birth or death for example. Maybe there was a famous murder or such. It needs to be unique by something other than default. Like its location is unique as there is only one there but every abbey has a location"
+      },
+      {
+        "place": "Golden Gate Bridge",
+        "clue": "The bridge is famous for its distinct 'International Orange' colour, chosen to ensure visibility in the heavy fog that frequently rolls into the bay.",
+        "reason": "I could guess golden gate bridge but its still not about a specific thing. There are lots of bridges painted that colour.",
+        "better_direction": ""
+      },
+      {
+        "place": "Brooklyn Bridge",
+        "clue": "When it opened in 1883, it was the first steel-wire suspension bridge in the world and the longest suspension bridge of its time.",
+        "reason": "Previous records and not unique or interesting. Just data",
+        "better_direction": ""
+      }
+    ],
+    "guidance": "Hard clue pass/fail reviews are the strongest signal for writing the first clue. Strong pass examples show acceptable place-owned hooks. Qualified passes are technically acceptable but should not be copied without improving the issue described in the reason. Failed examples and better_direction fields show what to avoid and how to rewrite."
+  },
+  "clue_level_guidance": [
+    {
+      "level": "hard",
+      "count": 12,
+      "mean_score": 5,
+      "low_score_count": 6,
+      "guidance": "Select one source-backed recognition hook first. Prefer a unique incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment."
+    },
+    {
+      "level": "medium",
+      "count": 12,
+      "mean_score": 5.83,
+      "low_score_count": 5,
+      "guidance": "Materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope; an additional place-owned fact may add character."
+    }
+  ],
+  "note_category_counts": {
+    "answer_leak": 1,
+    "bad_difficulty_progression": 5,
+    "dry_stat_fact": 1,
+    "former_record_weak_hook": 1,
+    "insufficient_event_detail": 1,
+    "medium_filler": 1,
+    "missing_place_link": 1,
+    "needs_significant_event": 2,
+    "needs_specific_incident": 8,
+    "niche_fact": 2,
+    "off_target_fact": 2,
+    "poor_map_guessability": 3,
+    "poor_narrowing_ladder": 3,
+    "repeated_fact": 1,
+    "subjective_fact": 5,
+    "vague_fact": 9,
+    "weak_colour_hook": 2,
+    "wording_clarity": 2
+  },
+  "note_guidance": [
+    {
+      "category": "subjective_fact",
+      "count": 5,
+      "guidance": "Avoid subjective or generic facts; every fact should be concrete, specific, and useful for identifying the place.",
+      "examples": [
+        {
+          "place": "Yankee Stadium",
+          "score": 0,
+          "note": "It states the name of the location and is just pretty generic. Hard show be about a specific thing"
+        },
+        {
+          "place": "Signal Iduna Park",
+          "score": 8,
+          "note": "No 3 is subjective and not helpful"
+        },
+        {
+          "place": "Tower Bridge",
+          "score": 8,
+          "note": "First clue should be something specific to that bridge, not subjective information like most recognisable. Thats not a fact about it"
+        },
+        {
+          "place": "Sydney Opera House",
+          "score": 10,
+          "note": "No 3 is true of any venue The last one would be increased if it was written differently because it could be written in a way that was less directional and more a hint at finding it Again this is more about the designer than the location but still technically a pass"
+        },
+        {
+          "place": "Anfield",
+          "score": 8,
+          "note": "Number 3 is subjective"
+        }
+      ]
+    },
+    {
+      "category": "vague_fact",
+      "count": 9,
+      "guidance": "Replace vague facts with specific events, records, visual features, or map-visible details.",
+      "examples": [
+        {
+          "place": "Old Bridge Area of the Old City of Mostar",
+          "score": 0,
+          "note": "This is a terrible pick. Its vague and doesn't have an exciting story incident associated"
+        },
+        {
+          "place": "Historic Centre of the City of Salzburg",
+          "score": 0,
+          "note": "Too vague and still no exciting hook. Is the historic centre defined or is it just center of town"
+        },
+        {
+          "place": "Historic Walled Town of Cuenca",
+          "score": 0,
+          "note": "Not specific"
+        },
+        {
+          "place": "Golden Gate Bridge",
+          "score": 3,
+          "note": "The third clue is very vague I could guess golden gate bridge but its still not about a specific thing. There are lots of bridges painted that colour."
+        },
+        {
+          "place": "Machu Picchu",
+          "score": 5,
+          "note": "The facts let this one down"
+        }
+      ]
+    },
+    {
+      "category": "wording_clarity",
+      "count": 2,
+      "guidance": "Keep clue wording direct and readable. If a pronoun hides the target type, use phrasing such as 'this bridge' or 'this stadium' to help the player work it out.",
+      "examples": [
+        {
+          "place": "Brooklyn Bridge",
+          "score": 5,
+          "note": "The easy clue is just data about the bridge. the medium clue doesnt acually help if you dont know the name of the bridge, it should help zero in on the specific location not so vague that could be a thousand places Pass but id maybe change its to this bridge\u2019s to give the user a better chance to guess it"
+        },
+        {
+          "place": "Old Trafford",
+          "score": 10,
+          "note": "The grammar of this feels a bit off but technically a good clue"
+        }
+      ]
+    },
+    {
+      "category": "needs_specific_incident",
+      "count": 8,
+      "guidance": "Choose the recognition hook before choosing the place. Prefer a unique, specific incident or story; allow another hook type only when it is equally recognisable.",
+      "examples": [
+        {
+          "place": "Wembley Stadium",
+          "score": 8,
+          "note": "This passes as unique but id prefer to see it more specific about an exciting incident, as this just reads as three dates at the moment This is a good place but the clues could be more significant things that happened there like finals"
+        },
+        {
+          "place": "Wembley Stadium",
+          "score": 8,
+          "note": "This passes as unique but id prefer to see it more specific about an exciting incident, as this just reads as three dates at the moment"
+        },
+        {
+          "place": "Maracan\u00e3 Stadium",
+          "score": 8,
+          "note": "I dont like this clue but it technically passes. Theres no context to the unique clue other than it was during the defeat of the home nation? I would have preferred to hear about the incident more. I like that one clue provided a hint to find the location as this stadium name may be known but location is not part of the title of the stadium"
+        },
+        {
+          "place": "Maracan\u00e3 Stadium",
+          "score": 8,
+          "note": "I dont like this clue but it technically passes. Theres no context to the unique clue other than it was during the defeat of the home nation? I would have preferred to hear about the incident more."
+        },
+        {
+          "place": "Statue of Liberty",
+          "score": 3,
+          "note": "This is a bit too vague. Should be about a specific event or incident. It still passes as France gifted only one copper statue"
+        }
+      ]
+    },
+    {
+      "category": "insufficient_event_detail",
+      "count": 1,
+      "guidance": "Keep the selected recognition hook, but retain the people, action, outcome, consequence, record, or significance that makes it memorable.",
+      "examples": [
+        {
+          "place": "Canterbury Cathedral",
+          "score": 10,
+          "note": "Still a bit bland and not very informative."
+        }
+      ]
+    },
+    {
+      "category": "missing_place_link",
+      "count": 1,
+      "guidance": "Tie the hard-clue recognition hook to the target with an answer-safe phrase such as 'here', 'on this pitch', 'inside this building', or 'at this site'.",
+      "examples": [
+        {
+          "place": "Estadio Monumental",
+          "score": 10,
+          "note": "This doesn't mention where the match took place. Still feelw"
+        }
+      ]
+    },
+    {
+      "category": "medium_filler",
+      "count": 1,
+      "guidance": "Make medium reduce the geographic search area directly; remove generic crowd, popularity, prestige, fame, or historic-venue padding.",
+      "examples": [
+        {
+          "place": "Canterbury Cathedral",
+          "score": 10,
+          "note": "Still a bit bland and not very informative."
+        }
+      ]
+    },
+    {
+      "category": "niche_fact",
+      "count": 2,
+      "guidance": "Avoid hard clues that depend on niche knowledge unless the fact is memorable, clearly interesting, and strongly identifies the place.",
+      "examples": [
+        {
+          "place": "Atomium",
+          "score": 3,
+          "note": "Just passes. The specific piece if data is quite niche to know. World fare is not a particularly well know thing so knowing what was built for one might be a bit niche The easy fact is weak"
+        },
+        {
+          "place": "Atomium",
+          "score": 3,
+          "note": "Just passes. The specific piece if data is quite niche to know. World fare is not a particularly well know thing so knowing what was built for one might be a bit niche"
+        }
+      ]
+    },
+    {
+      "category": "weak_colour_hook",
+      "count": 2,
+      "guidance": "Do not rely on colour or paint as the main hard clue unless it is tied to a memorable event, person, record, or story.",
+      "examples": [
+        {
+          "place": "Golden Gate Bridge",
+          "score": 3,
+          "note": "The third clue is very vague I could guess golden gate bridge but its still not about a specific thing. There are lots of bridges painted that colour."
+        },
+        {
+          "place": "Golden Gate Bridge",
+          "score": 3,
+          "note": "I could guess golden gate bridge but its still not about a specific thing. There are lots of bridges painted that colour."
+        }
+      ]
+    },
+    {
+      "category": "repeated_fact",
+      "count": 1,
+      "guidance": "Make the three facts distinct; do not restate the same stadium, event, or location clue in different wording.",
+      "examples": [
+        {
+          "place": "Stade de France",
+          "score": 8,
+          "note": "2 and 3 are essentially the same"
+        }
+      ]
+    },
+    {
+      "category": "poor_map_guessability",
+      "count": 3,
+      "guidance": "Prefer places with a clear map route; include city, water/route/district/shape anchors when the name alone does not locate it.",
+      "examples": [
+        {
+          "place": "Maracan\u00e3 Stadium",
+          "score": 8,
+          "note": "I dont like this clue but it technically passes. Theres no context to the unique clue other than it was during the defeat of the home nation? I would have preferred to hear about the incident more. I like that one clue provided a hint to find the location as this stadium name may be known but location is not part of the title of the stadium"
+        },
+        {
+          "place": "Gateway Arch",
+          "score": 8,
+          "note": "This one was low for guessablity as even with the answer i would not be able to start finding its lication"
+        },
+        {
+          "place": "Sydney Opera House",
+          "score": 10,
+          "note": "No 3 is true of any venue The last one would be increased if it was written differently because it could be written in a way that was less directional and more a hint at finding it Again this is more about the designer than the location but still technically a pass"
+        }
+      ]
+    },
+    {
+      "category": "answer_leak",
+      "count": 1,
+      "guidance": "Do not leak the answer or a near-alias inside the playable facts.",
+      "examples": [
+        {
+          "place": "Akashi Kaiky\u014d Bridge",
+          "score": 8,
+          "note": "No 2 feels a bit like its giving the answer"
+        }
+      ]
+    },
+    {
+      "category": "needs_significant_event",
+      "count": 2,
+      "guidance": "For stadiums and venues, require a particular major final, historic match, incident, result, or record-setting moment; architecture and crowd features are not substitutes.",
+      "examples": [
+        {
+          "place": "Wembley Stadium",
+          "score": 8,
+          "note": "This passes as unique but id prefer to see it more specific about an exciting incident, as this just reads as three dates at the moment This is a good place but the clues could be more significant things that happened there like finals"
+        },
+        {
+          "place": "Mont-Saint-Michel",
+          "score": 0,
+          "note": "If i were to cite a place such as this, it would need to be something famous and interesting happened there. A famous birth or death for example. Maybe there was a famous murder or such. It needs to be unique by something other than default. Like its location is unique as there is only one there but every abbey has a location"
+        }
+      ]
+    },
+    {
+      "category": "poor_narrowing_ladder",
+      "count": 3,
+      "guidance": "Build each clue ladder as a narrowing path: distinctive hook, then area/context clue, then a practical map anchor.",
+      "examples": [
+        {
+          "place": "Old Bridge Area of the Old City of Mostar",
+          "score": 0,
+          "note": "What 1990s conflict? How does this narrow the scope. There was probably a lot of bridges destroyed in a conflict"
+        },
+        {
+          "place": "Space Needle",
+          "score": 3,
+          "note": "2nd clue doesnt narrow scope. 3rd clue just non identifying stats No 3 is just stats"
+        },
+        {
+          "place": "Estadio Azteca",
+          "score": 5,
+          "note": "The high score for location and fact 1 and 3 however i dont agree with difficulty as the facts dont help you find it"
+        }
+      ]
+    },
+    {
+      "category": "bad_difficulty_progression",
+      "count": 5,
+      "guidance": "Order clues by solving value: hard should hook interest, medium should narrow the area, and easy should add the strongest practical map anchor.",
+      "examples": [
+        {
+          "place": "Atomium",
+          "score": 3,
+          "note": "Just passes. The specific piece if data is quite niche to know. World fare is not a particularly well know thing so knowing what was built for one might be a bit niche The easy fact is weak"
+        },
+        {
+          "place": "Sz\u00e9chenyi Chain Bridge",
+          "score": 3,
+          "note": "The difficulty progression is all wrong"
+        },
+        {
+          "place": "Estadio Azteca",
+          "score": 5,
+          "note": "The high score for location and fact 1 and 3 however i dont agree with difficulty as the facts dont help you find it"
+        },
+        {
+          "place": "Ponte Vecchio",
+          "score": 3,
+          "note": "Medium would have scored higher as a hard clue"
+        },
+        {
+          "place": "Marina Bay Sands",
+          "score": 5,
+          "note": "Medium would have scored higher as hard clue"
+        }
+      ]
+    },
+    {
+      "category": "off_target_fact",
+      "count": 2,
+      "guidance": "Keep facts centred on the target place; associated people are useful only when they make the place itself more recognisable.",
+      "examples": [
+        {
+          "place": "Sydney Opera House",
+          "score": 10,
+          "note": "No 3 is true of any venue The last one would be increased if it was written differently because it could be written in a way that was less directional and more a hint at finding it Again this is more about the designer than the location but still technically a pass"
+        },
+        {
+          "place": "Clifton Suspension Bridge",
+          "score": 5,
+          "note": "These seem more about the engineer than the bridge Last clue more about the engineer than bridge This geels more avout the designer yhan the bridge. Its famous by association rather than something interesting about the location itself"
+        }
+      ]
+    },
+    {
+      "category": "dry_stat_fact",
+      "count": 1,
+      "guidance": "Avoid dry numerical statistics unless they are famous, surprising, and help the player narrow or remember the place.",
+      "examples": [
+        {
+          "place": "Space Needle",
+          "score": 3,
+          "note": "2nd clue doesnt narrow scope. 3rd clue just non identifying stats No 3 is just stats"
+        }
+      ]
+    },
+    {
+      "category": "former_record_weak_hook",
+      "count": 1,
+      "guidance": "Avoid former-height-record hooks as hard clues. Prefer a current record, specific incident, story, achievement, tradition, or other recognition hook that remains distinctive.",
+      "examples": [
+        {
+          "place": "CN Tower",
+          "score": 8,
+          "note": "The hard clue is not grounded in an interesting fact. This isnt the tallest it just used to be. there are loads of things that adorn city skylines its not unique"
+        }
+      ]
+    }
+  ],
+  "scoring": {
+    "place": "(user_score - 5) * 4",
+    "type": "mean(user_scores_for_type - 5) * 6",
+    "category": "mean(user_scores_for_category - 5) * 3",
+    "presentation_notes": [
+      "name being in each clue",
+      "name in each clue",
+      "answer in each clue"
+    ],
+    "note_categories": [
+      {
+        "category": "subjective_fact",
+        "tokens": [
+          "subjective",
+          "not helpful",
+          "true of any",
+          "could be any",
+          "generic",
+          "recognisable",
+          "recognizable"
+        ],
+        "guidance": "Avoid subjective or generic facts; every fact should be concrete, specific, and useful for identifying the place."
+      },
+      {
+        "category": "vague_fact",
+        "tokens": [
+          "vague",
+          "unspecific",
+          "not specific",
+          "nothing specific",
+          "facts let this one down"
+        ],
+        "guidance": "Replace vague facts with specific events, records, visual features, or map-visible details."
+      },
+      {
+        "category": "wording_clarity",
+        "tokens": [
+          "grammar",
+          "feels a bit off",
+          "maybe change",
+          "better chance to guess"
+        ],
+        "guidance": "Keep clue wording direct and readable. If a pronoun hides the target type, use phrasing such as 'this bridge' or 'this stadium' to help the player work it out."
+      },
+      {
+        "category": "needs_specific_incident",
+        "tokens": [
+          "what is the specific incident",
+          "should be about a specific",
+          "make it about a specific",
+          "preferred to hear about the incident",
+          "prefer to see it more specific"
+        ],
+        "guidance": "Choose the recognition hook before choosing the place. Prefer a unique, specific incident or story; allow another hook type only when it is equally recognisable."
+      },
+      {
+        "category": "insufficient_event_detail",
+        "tokens": [
+          "bland",
+          "not very informative",
+          "more information about the event",
+          "more detail about the event"
+        ],
+        "guidance": "Keep the selected recognition hook, but retain the people, action, outcome, consequence, record, or significance that makes it memorable."
+      },
+      {
+        "category": "missing_place_link",
+        "tokens": [
+          "doesn't mention where",
+          "does not mention where",
+          "happened here",
+          "took place"
+        ],
+        "guidance": "Tie the hard-clue recognition hook to the target with an answer-safe phrase such as 'here', 'on this pitch', 'inside this building', or 'at this site'."
+      },
+      {
+        "category": "medium_filler",
+        "tokens": [
+          "bland",
+          "not worded fully",
+          "draw enormous crowds",
+          "historic venue"
+        ],
+        "guidance": "Make medium reduce the geographic search area directly; remove generic crowd, popularity, prestige, fame, or historic-venue padding."
+      },
+      {
+        "category": "unnamed_cultural_reference",
+        "tokens": [
+          "famous collection",
+          "well-known writer",
+          "vague and unhelpful",
+          "vague amd unhelpful"
+        ],
+        "guidance": "Name an answer-safe creator, person, group, or work instead of using a vague famous or well-known label; if a title leaks the target, name its creator and explain the connection."
+      },
+      {
+        "category": "niche_fact",
+        "tokens": [
+          "niche",
+          "not particularly well known",
+          "not well known"
+        ],
+        "guidance": "Avoid hard clues that depend on niche knowledge unless the fact is memorable, clearly interesting, and strongly identifies the place."
+      },
+      {
+        "category": "weak_colour_hook",
+        "tokens": [
+          "colour",
+          "color",
+          "paint"
+        ],
+        "guidance": "Do not rely on colour or paint as the main hard clue unless it is tied to a memorable event, person, record, or story."
+      },
+      {
+        "category": "repeated_fact",
+        "tokens": [
+          "essentially the same",
+          "same info",
+          "same information",
+          "repeated",
+          "repeat"
+        ],
+        "guidance": "Make the three facts distinct; do not restate the same stadium, event, or location clue in different wording."
+      },
+      {
+        "category": "poor_map_guessability",
+        "tokens": [
+          "guessabl",
+          "where to look",
+          "finding",
+          "find its location",
+          "start finding",
+          "location is not part"
+        ],
+        "guidance": "Prefer places with a clear map route; include city, water/route/district/shape anchors when the name alone does not locate it."
+      },
+      {
+        "category": "answer_leak",
+        "tokens": [
+          "giving the answer",
+          "gives the answer",
+          "name being in each clue",
+          "name in each clue",
+          "answer in each clue"
+        ],
+        "guidance": "Do not leak the answer or a near-alias inside the playable facts."
+      },
+      {
+        "category": "needs_significant_event",
+        "tokens": [
+          "finals",
+          "significant things",
+          "happened there",
+          "major event"
+        ],
+        "guidance": "For stadiums and venues, require a particular major final, historic match, incident, result, or record-setting moment; architecture and crowd features are not substitutes."
+      },
+      {
+        "category": "poor_narrowing_ladder",
+        "tokens": [
+          "narrow",
+          "scope",
+          "work it out",
+          "beat the game",
+          "succeed",
+          "challenging",
+          "help you find",
+          "find it"
+        ],
+        "guidance": "Build each clue ladder as a narrowing path: distinctive hook, then area/context clue, then a practical map anchor."
+      },
+      {
+        "category": "bad_difficulty_progression",
+        "tokens": [
+          "difficulty progression",
+          "progression is wrong",
+          "wrong difficulty",
+          "dont agree with difficulty",
+          "don't agree with difficulty",
+          "easy fact is weak",
+          "would have scored higher as hard",
+          "would have scored higher as a hard",
+          "higher as hard clue",
+          "higher as a hard clue"
+        ],
+        "guidance": "Order clues by solving value: hard should hook interest, medium should narrow the area, and easy should add the strongest practical map anchor."
+      },
+      {
+        "category": "off_target_fact",
+        "tokens": [
+          "about the engineer",
+          "more about the engineer",
+          "about the designer",
+          "more about the designer",
+          "not about the place",
+          "about the person",
+          "famous by association"
+        ],
+        "guidance": "Keep facts centred on the target place; associated people are useful only when they make the place itself more recognisable."
+      },
+      {
+        "category": "dry_stat_fact",
+        "tokens": [
+          "just stats",
+          "only stats",
+          "dry stats",
+          "capacity",
+          "mph",
+          "magnitude"
+        ],
+        "guidance": "Avoid dry numerical statistics unless they are famous, surprising, and help the player narrow or remember the place."
+      },
+      {
+        "category": "former_record_weak_hook",
+        "tokens": [
+          "used to be",
+          "isnt the tallest",
+          "isn't the tallest",
+          "not the tallest",
+          "used to be tallest",
+          "once the tallest"
+        ],
+        "guidance": "Avoid former-height-record hooks as hard clues. Prefer a current record, specific incident, story, achievement, tradition, or other recognition hook that remains distinctive."
+      }
+    ],
+    "clue_level_guidance": {
+      "hard": "Select one source-backed recognition hook first. Prefer a unique incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment.",
+      "medium": "Materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope; an additional place-owned fact may add character.",
+      "easy": "Narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom."
+    },
+    "hard_clue_review": {
+      "pass_fail": "pass only if the hard clue is a unique, specific event or incident that would identify this place to a player who knows it; fail architects, construction, appearance, broad history, generic associations, and reusable events",
+      "reason": "why the hard clue passed or failed",
+      "better_direction": "which particular event or incident should have been selected before choosing the place",
+      "qualified_pass_tokens": [
+        "just passes",
+        "technically passes",
+        "scrapes through",
+        "dont like",
+        "don't like",
+        "would have preferred",
+        "prefer to see",
+        "boring",
+        "flowery",
+        "grammar",
+        "feels a bit off",
+        "maybe change",
+        "better chance to guess",
+        "unclear",
+        "not very interesting",
+        "not something uniquely interesting",
+        "too vague",
+        "bit too vague",
+        "should be about a specific",
+        "make it about a specific",
+        "what is the specific",
+        "just data",
+        "just reads",
+        "padding",
+        "could be dropped",
+        "expanded on",
+        "about the designer",
+        "more about the designer",
+        "famous by association",
+        "rather than something interesting about the location itself",
+        "needs context",
+        "niche",
+        "not particularly well known",
+        "not well known"
+      ]
+    }
+  }
+}

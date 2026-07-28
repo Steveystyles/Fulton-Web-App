@@ -4,8 +4,10 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import daily_quiz
 
@@ -648,6 +650,66 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
         self.assertEqual([provider.name for provider in chain.providers], ["gemini", "openrouter"])
+
+    def test_openai_compatible_provider_keeps_http_error_details(self) -> None:
+        provider = daily_quiz.OpenAICompatibleProvider(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "provider": "openai-compatible",
+                    "generator_model": "gpt-test",
+                    "critic_model": "gpt-test",
+                    "compatible_api_key": "test-key",
+                    "compatible_base_url": "https://api.openai.com/v1",
+                }
+            )
+        )
+        error = HTTPError(
+            "https://api.openai.com/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            hdrs=None,
+            fp=BytesIO(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": "insufficient_quota",
+                            "message": "You exceeded your current quota.",
+                        }
+                    }
+                ).encode("utf-8")
+            ),
+        )
+
+        detail = provider._http_error_detail(error)
+
+        self.assertIn("insufficient_quota", detail)
+        self.assertIn("current quota", detail)
+
+    def test_gemini_provider_keeps_http_error_details(self) -> None:
+        provider = daily_quiz.GeminiProvider(config())
+        error = HTTPError(
+            "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent",
+            429,
+            "Too Many Requests",
+            hdrs=None,
+            fp=BytesIO(
+                json.dumps(
+                    {
+                        "error": {
+                            "code": 429,
+                            "status": "RESOURCE_EXHAUSTED",
+                            "message": "Quota exceeded for quota metric.",
+                        }
+                    }
+                ).encode("utf-8")
+            ),
+        )
+
+        detail = provider._http_error_detail(error)
+
+        self.assertIn("RESOURCE_EXHAUSTED", detail)
+        self.assertIn("Quota exceeded", detail)
 
     def test_provider_chain_reuses_primary_gemini_key_for_gemini_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(

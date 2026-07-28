@@ -9,9 +9,11 @@ import {
   Hash,
   Info,
   LoaderCircle,
+  MapPinned,
   Medal,
   Star,
   TrendingUp,
+  Trophy,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -308,10 +310,11 @@ function CurrentPlayerCard({
           </div>
         </div>
         <ContributionBar
+          mapPoints={player.weeklyMapPoints}
           quizPoints={player.weeklyQuizPoints}
           wordlePoints={player.weeklyWordlePoints}
         />
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           <CompactScoreMetric
             icon={Hash}
             label="Wordle"
@@ -323,6 +326,11 @@ function CurrentPlayerCard({
             label="Quiz"
             value={player.weeklyQuizPoints}
             tone="red"
+          />
+          <CompactScoreMetric
+            icon={MapPinned}
+            label="Map"
+            value={player.weeklyMapPoints}
           />
           <CompactScoreMetric
             icon={TrendingUp}
@@ -385,8 +393,16 @@ function ScoreRow({
   );
 }
 
-function ContributionBar({ quizPoints, wordlePoints }: { quizPoints: number; wordlePoints: number }) {
-  const scoredPoints = Math.max(1, quizPoints + wordlePoints);
+function ContributionBar({
+  mapPoints,
+  quizPoints,
+  wordlePoints,
+}: {
+  mapPoints: number;
+  quizPoints: number;
+  wordlePoints: number;
+}) {
+  const scoredPoints = Math.max(1, quizPoints + wordlePoints + mapPoints);
   return (
     <div>
       <div className="h-3 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
@@ -398,10 +414,15 @@ function ContributionBar({ quizPoints, wordlePoints }: { quizPoints: number; wor
           className="h-full bg-saints-red"
           style={{ width: percent(quizPoints, scoredPoints), float: "left" }}
         />
+        <div
+          className="h-full bg-emerald-500"
+          style={{ width: percent(mapPoints, scoredPoints), float: "left" }}
+        />
       </div>
-      <div className="mt-1 flex items-center justify-between text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
+      <div className="mt-1 grid grid-cols-3 gap-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
         <span>Wordle {wordlePoints}</span>
-        <span>Quiz {quizPoints}</span>
+        <span className="text-center">Quiz {quizPoints}</span>
+        <span className="text-right">Map {mapPoints}</span>
       </div>
     </div>
   );
@@ -508,6 +529,7 @@ function PlayerDetailDialog({
 
         <div className="mt-4 space-y-3">
           <ContributionBar
+            mapPoints={player.weeklyMapPoints}
             quizPoints={player.weeklyQuizPoints}
             wordlePoints={player.weeklyWordlePoints}
           />
@@ -529,6 +551,12 @@ function PlayerDetailDialog({
               label="Quiz points"
               value={`${player.quizPoints} pts`}
               detail={`${quizAccuracy(player)} accuracy from ${player.quizCorrect} correct answers`}
+            />
+            <DetailMetricRow
+              icon={MapPinned}
+              label="Map points"
+              value={`${player.mapPoints} pts`}
+              detail={`${player.mapPlayed} locked map guesses`}
             />
             <DetailMetricRow
               icon={Hash}
@@ -563,7 +591,7 @@ function ScoreGuide() {
               How points work
             </h2>
             <p className="mt-1 text-[0.82rem] font-semibold leading-snug text-slate-500 min-[390px]:text-sm">
-              Your guide to earning points in Quiz and Wordle.
+              Your guide to earning points in Quiz, Wordle and Map.
             </p>
           </div>
           <div className="col-start-2 flex min-w-0 items-center self-center justify-self-start rounded-full border border-saints-red/35 bg-white px-3 py-2 text-saints-red min-[720px]:col-start-3 min-[720px]:row-start-1 min-[720px]:justify-self-end">
@@ -589,6 +617,35 @@ function ScoreGuide() {
                 variant={step.label === "Perfect round" ? "perfect" : "standard"}
               />
             ))}
+          </div>
+        </section>
+
+        <div className="h-px bg-slate-200" aria-hidden="true" />
+
+        <section className="space-y-4">
+          <GuideSectionTitle icon={MapPinned} title="Map" />
+          <div className="grid grid-cols-3 gap-2">
+            <JourneyInfoCard
+              body="3 pins"
+              cardClassName="border-slate-200 bg-gradient-to-br from-white via-white to-slate-50"
+              icon={MapPinned}
+              iconClassName="bg-slate-100 text-slate-950 ring-1 ring-slate-200"
+              title="Daily"
+            />
+            <JourneyInfoCard
+              body="1000 max"
+              cardClassName="border-red-200 bg-gradient-to-br from-white via-white to-red-50/70"
+              icon={Trophy}
+              iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
+              title="Level"
+            />
+            <JourneyInfoCard
+              body="Closer wins"
+              cardClassName="border-emerald-200 bg-gradient-to-br from-white via-white to-emerald-50/70"
+              icon={Gauge}
+              iconClassName="bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100"
+              title="Score"
+            />
           </div>
         </section>
 

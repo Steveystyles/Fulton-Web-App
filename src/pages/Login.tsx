@@ -26,7 +26,7 @@ export function Login() {
 
   return (
     <div className="saints-shell-bg min-h-dvh overflow-x-hidden text-slate-950">
-      <main className="mx-auto flex min-h-dvh w-screen max-w-[430px] flex-col justify-center overflow-x-hidden bg-saints-paper px-4 py-8 shadow-2xl ring-1 ring-white/10">
+      <main className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col justify-center overflow-x-hidden bg-saints-paper px-4 py-8 shadow-2xl ring-1 ring-white/10">
         <section className="max-w-full overflow-hidden rounded-[1.75rem] saints-card p-5">
           <div className="flex items-center gap-3">
             <img

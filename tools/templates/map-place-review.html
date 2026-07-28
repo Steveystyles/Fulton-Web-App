@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map Learning QA</title>
+<style>
+:root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #f3f4f6; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.header { position: sticky; top: 0; z-index: 4; background: #09090b; color: white; padding: 15px 16px; box-shadow: 0 2px 16px rgba(0,0,0,.24); }
+.header h1 { margin: 0; font-size: 24px; line-height: 1.1; }
+.header p { margin: 6px 0 0; color: #d1d5db; font-size: 15px; line-height: 1.35; }
+.actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.save-status { margin-top: 9px; color: #d1d5db; font-size: 14px; font-weight: 800; }
+button { border: 0; border-radius: 8px; font: inherit; font-weight: 850; padding: 11px 14px; cursor: pointer; }
+.save { background: #dc2626; color: white; }
+.clear { background: #374151; color: white; }
+.wrap { max-width: 820px; margin: 0 auto; padding: 14px; }
+.card { background: white; border: 1px solid #d1d5db; border-radius: 8px; margin: 0 0 16px; overflow: hidden; box-shadow: 0 8px 20px rgba(0,0,0,.06); }
+.top { display: grid; grid-template-columns: 44px 1fr; gap: 9px; padding: 14px; border-bottom: 1px solid #e5e7eb; }
+.rank { font-size: 22px; font-weight: 900; color: #dc2626; }
+.name { font-size: 23px; font-weight: 900; line-height: 1.1; }
+.meta { margin-top: 5px; color: #4b5563; font-size: 14px; font-weight: 750; }
+.context { display: grid; gap: 8px; padding: 12px 14px; background: #f9fafb; border-bottom: 1px solid #e5e7eb; }
+.context p { margin: 0; font-size: 14px; line-height: 1.38; color: #374151; }
+.context strong { color: #111827; }
+.review-block { padding: 14px; border-bottom: 1px solid #e5e7eb; }
+.review-block:last-child { border-bottom: 0; }
+.review-block.overall { background: #fff7ed; }
+.review-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+.level { color: #dc2626; font-size: 14px; font-weight: 900; text-transform: uppercase; }
+.purpose { color: #6b7280; font-size: 12px; font-weight: 850; }
+.role { margin: 0 0 9px; color: #4b5563; font-size: 14px; line-height: 1.35; font-weight: 700; }
+.clue-label { margin: 9px 0 4px; color: #6b7280; font-size: 11px; font-weight: 900; text-transform: uppercase; }
+.clue { margin: 0 0 12px; font-size: 18px; line-height: 1.38; font-weight: 850; }
+.source-fact { margin: 0 0 9px; color: #374151; font-size: 16px; line-height: 1.35; font-weight: 700; }
+.verdicts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.verdicts button { min-height: 46px; background: #e5e7eb; color: #111827; }
+.verdicts button.selected.pass { background: #047857; color: white; outline: 3px solid #10b981; }
+.verdicts button.selected.fail { background: #dc2626; color: white; outline: 3px solid #fca5a5; }
+.note { display: grid; gap: 5px; margin-top: 10px; }
+.note span { color: #6b7280; font-size: 12px; font-weight: 900; text-transform: uppercase; }
+textarea { width: 100%; min-height: 70px; resize: vertical; border: 1px solid #cbd5e1; border-radius: 7px; padding: 10px; font: inherit; font-size: 16px; color: #111827; background: white; }
+.progress { padding: 10px 14px; color: #4b5563; font-size: 13px; font-weight: 850; background: #f9fafb; }
+.toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 10; max-width: calc(100vw - 32px); padding: 12px 15px; border-radius: 8px; color: white; background: #111827; font-weight: 850; display: none; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
+@media (max-width: 520px) {
+  .header h1 { font-size: 22px; }
+  .wrap { padding: 10px; }
+  .name { font-size: 21px; }
+  .clue { font-size: 17px; }
+}
+</style>
+</head>
+<body>
+<header class="header">
+  <h1>Map Learning QA</h1>
+  <p>Pass or fail the place choice and each clue independently. Notes are most useful when they explain the solving value that is present or missing.</p>
+  <div class="actions">
+    <button class="save" id="saveResults">Save reviews</button>
+    <button class="clear" id="clearResults">Clear local reviews</button>
+  </div>
+  <div class="save-status" id="saveStatus">Not saved yet.</div>
+</header>
+<main class="wrap" id="app"></main>
+<div class="toast" id="toast"></div>
+<script>
+const places = [];
+const storageKey = 'fultons-map-place-review-8c9ddeac0799';
+const reviewPhase = 'recognition_ladder_v2';
+const levels = ['hard', 'medium', 'easy'];
+const levelRoles = {
+  hard: 'Recognition hook: preferably a unique incident or story, or another genuinely distinctive place-owned hook.',
+  medium: 'Geographic narrowing: materially reduces the world to a useful country, region, culture, language, city, or equivalent scope.',
+  easy: 'Local map route: narrows within medium\'s area to a borough, district, quarter, city sector, crossing, or visible local feature.',
+};
+
+function loadState() {
+  try { return JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch { return {}; }
+}
+function saveState(state) { localStorage.setItem(storageKey, JSON.stringify(state)); }
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
+}
+function showToast(text) {
+  const toast = document.getElementById('toast');
+  toast.textContent = text;
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 2800);
+}
+function setSaveStatus(text) { document.getElementById('saveStatus').textContent = text; }
+function placeKey(place, index) { return `${place.candidateId || index}:${place.place}`; }
+function reviewFor(state, place, index) {
+  const key = placeKey(place, index);
+  state[key] = state[key] || {overall: {}, clues: {}};
+  state[key].overall = state[key].overall || {};
+  state[key].clues = state[key].clues || {};
+  return state[key];
+}
+function verdictButtons(scope, value) {
+  return `
+    <div class="verdicts">
+      <button data-scope="${escapeHtml(scope)}" data-verdict="pass" class="${value === 'pass' ? 'selected pass' : ''}">Pass</button>
+      <button data-scope="${escapeHtml(scope)}" data-verdict="fail" class="${value === 'fail' ? 'selected fail' : ''}">Fail</button>
+    </div>`;
+}
+function clueUseFor(place, level) {
+  return (place.clueUses || []).find(item => String(item.level || '').toLowerCase() === level) || {};
+}
+function reviewBlock(level, clue, review, clueUse) {
+  const fact = String(clueUse.fact || '').trim();
+  const usedAs = String(clueUse.usedAs || clue || '').trim();
+  const hasSeparateFact = fact && fact.toLowerCase() !== usedAs.toLowerCase();
+  return `
+    <section class="review-block">
+      <div class="review-head">
+        <span class="level">${escapeHtml(level)}</span>
+        <span class="purpose">pass / fail</span>
+      </div>
+      <p class="role">${escapeHtml(levelRoles[level])}</p>
+      ${hasSeparateFact
+        ? `<p class="clue-label">Fact</p><p class="source-fact">${escapeHtml(fact)}</p><p class="clue-label">Used as</p><p class="clue">${escapeHtml(usedAs)}</p>`
+        : `<p class="clue-label">Clue</p><p class="clue">${escapeHtml(usedAs)}</p>`}
+      ${verdictButtons(level, review.passFail || '')}
+      <label class="note">
+        <span>Why?</span>
+        <textarea data-note="${escapeHtml(level)}" placeholder="What specifically made this clue pass or fail?">${escapeHtml(review.reason || '')}</textarea>
+      </label>
+    </section>`;
+}
+function render() {
+  const state = loadState();
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+  places.forEach((place, index) => {
+    const review = reviewFor(state, place, index);
+    const card = document.createElement('article');
+    card.className = 'card';
+    card.dataset.index = String(index);
+    card.innerHTML = `
+      <div class="top">
+        <div class="rank">${index + 1}</div>
+        <div>
+          <div class="name">${escapeHtml(place.place)}</div>
+          <div class="meta">${escapeHtml(place.type)} - ${escapeHtml(place.country)}${place.admin1 ? ' - ' + escapeHtml(place.admin1) : ''}</div>
+        </div>
+      </div>
+      <div class="context">
+        ${place.whyFun ? `<p><strong>Why selected:</strong> ${escapeHtml(place.whyFun)}</p>` : ''}
+        ${place.mapGuessability ? `<p><strong>Expected map route:</strong> ${escapeHtml(place.mapGuessability)}</p>` : ''}
+      </div>
+      <section class="review-block overall">
+        <div class="review-head">
+          <span class="level">Place choice</span>
+          <span class="purpose">pass / fail</span>
+        </div>
+        <p class="role">Is this an interesting, relevant and reasonably findable place for the game?</p>
+        ${verdictButtons('overall', review.overall.passFail || '')}
+        <label class="note">
+          <span>Why?</span>
+          <textarea data-note="overall" placeholder="Why is the place fun, fair, obscure, dull, or difficult to locate?">${escapeHtml(review.overall.reason || '')}</textarea>
+        </label>
+      </section>
+      ${levels.map(level => reviewBlock(level, place.clues[level] || '', review.clues[level] || {}, clueUseFor(place, level))).join('')}
+      <div class="progress">${levels.filter(level => review.clues[level]?.passFail).length + (review.overall.passFail ? 1 : 0)} of 4 decisions made</div>
+    `;
+    card.querySelectorAll('button[data-verdict]').forEach(button => {
+      button.addEventListener('click', () => {
+        const next = loadState();
+        const current = reviewFor(next, place, index);
+        const scope = button.dataset.scope;
+        if (scope === 'overall') current.overall.passFail = button.dataset.verdict;
+        else {
+          current.clues[scope] = current.clues[scope] || {};
+          current.clues[scope].passFail = button.dataset.verdict;
+        }
+        saveState(next);
+        render();
+      });
+    });
+    card.querySelectorAll('textarea[data-note]').forEach(input => {
+      input.addEventListener('input', event => {
+        const next = loadState();
+        const current = reviewFor(next, place, index);
+        const scope = event.target.dataset.note;
+        if (scope === 'overall') current.overall.reason = event.target.value;
+        else {
+          current.clues[scope] = current.clues[scope] || {};
+          current.clues[scope].reason = event.target.value;
+        }
+        saveState(next);
+      });
+    });
+    app.appendChild(card);
+  });
+}
+function scoredRows() {
+  const state = loadState();
+  return places.map((place, index) => {
+    const review = reviewFor(state, place, index);
+    const clueReviews = Object.fromEntries(levels.map(level => [
+      level,
+      {
+        level,
+        clue: place.clues[level] || '',
+        pass_fail: review.clues[level]?.passFail || '',
+        reason: review.clues[level]?.reason || '',
+      },
+    ]));
+    const touched = review.overall.passFail || review.overall.reason
+      || levels.some(level => clueReviews[level].pass_fail || clueReviews[level].reason);
+    return {
+      rank: index + 1,
+      review_phase: reviewPhase,
+      place: place.place,
+      machine_score: place.score,
+      ml_score: place.mlScore ?? '',
+      ml_confidence: place.mlConfidence ?? '',
+      ml_rank_score: place.mlRankScore ?? '',
+      your_score: review.overall.passFail || '',
+      notes: review.overall.reason || '',
+      type: place.type,
+      difficulty: place.difficulty,
+      categories: place.categories,
+      source: place.source || '',
+      candidate_id: place.candidateId || '',
+      facts: place.facts || [],
+      clue_uses: (place.clueUses || []).map(clue => ({
+        ...clue,
+        yourScore: clueReviews[String(clue.level || '').toLowerCase()]?.pass_fail || '',
+      })),
+      clue_scores: Object.fromEntries(levels.map(level => [level, clueReviews[level].pass_fail])),
+      clues: place.clues || {},
+      clue_reviews: clueReviews,
+      overall_review: {
+        pass_fail: review.overall.passFail || '',
+        reason: review.overall.reason || '',
+      },
+      hard_review: clueReviews.hard,
+      why_fun: place.whyFun || '',
+      map_guessability: place.mapGuessability || '',
+      touched,
+    };
+  }).filter(row => row.touched).map(({touched, ...row}) => row);
+}
+document.getElementById('saveResults').addEventListener('click', async () => {
+  const rows = scoredRows();
+  if (!rows.length) { showToast('No reviews to save yet.'); return; }
+  try {
+    const response = await fetch('/api/map-place-review-feedback', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({rows}),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || 'Save failed');
+    const fileName = String(payload.path || '').split(/[\\/]/).pop();
+    const text = `Saved ${payload.rowCount} reviewed places${fileName ? ': ' + fileName : '.'}`;
+    setSaveStatus(text);
+    showToast(text);
+  } catch (error) {
+    const text = `Save failed: ${error.message || error}`;
+    setSaveStatus(text);
+    showToast(text);
+  }
+});
+document.getElementById('clearResults').addEventListener('click', () => {
+  localStorage.removeItem(storageKey);
+  render();
+  setSaveStatus('Local reviews cleared. Not saved yet.');
+  showToast('Reviews cleared on this device.');
+});
+render();
+</script>
+</body>
+</html>

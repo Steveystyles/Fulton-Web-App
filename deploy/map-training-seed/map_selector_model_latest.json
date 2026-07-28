@@ -1,0 +1,161 @@
+{
+  "version": 2,
+  "created_at": "2026-07-28T16:06:53+00:00",
+  "row_count": 183,
+  "feature_count": 54,
+  "ridge": 1.25,
+  "intercept": 5.3551894522881005,
+  "coefficients": {
+    "category:culture_event": 0.7661448584484527,
+    "category:engineering_industry": -0.3052745218104323,
+    "category:history": -0.5146993648457502,
+    "category:natural_setting": 0.3350667743162743,
+    "category:sport": 1.9013301115076504,
+    "category:visual_landmark": -0.86826827102636,
+    "difficulty:easy": 0.3142813727323236,
+    "difficulty:hard": 0.24823397321930793,
+    "difficulty:medium": -0.4245759232865779,
+    "difficulty:unknown": -0.1379394226649112,
+    "flag:former_height_record": -2.0497677754721315,
+    "num:base_score": 0.815032407750292,
+    "num:easy_map_score": -0.22206460676708537,
+    "num:hard_hook_score": 0.7928977675856983,
+    "num:machine_score": -1.409638877610633,
+    "num:medium_scope_score": -0.7594841290039123,
+    "num:workoutability_score": -0.6287749803643502,
+    "type:archaeological_site": -1.43938897051731,
+    "type:bell_tower": -0.49510191758256644,
+    "type:bridge": 0.5488619922181165,
+    "type:castle": -0.007758052910782649,
+    "type:cathedral": 3.90332171333174,
+    "type:citadel": -2.4049470369515835,
+    "type:city": 0.33894321948281986,
+    "type:clock_tower": -0.06361827127693356,
+    "type:fort": -2.8036137511577253,
+    "type:fortified_historic_district": -1.3820260643613924,
+    "type:historic_site": 1.6808146190680169,
+    "type:hotel": -0.16857719150723224,
+    "type:island": 0.3938972174432619,
+    "type:landmark": 1.4885524934788725,
+    "type:mausoleum": -0.1867216661591693,
+    "type:memorial": 0.4774749753665828,
+    "type:monument": 0.6103951542231986,
+    "type:mountain": -0.6869899498882562,
+    "type:museum": 0.05445734128775894,
+    "type:natural_feature": 1.8221059134465023,
+    "type:observation_tower": 0.15772226548838772,
+    "type:old_town": -2.8970559606620703,
+    "type:palace": -1.7256313487998596,
+    "type:place": 1.2173388449649338,
+    "type:religious_site": -1.9927997204797965,
+    "type:sculpture": 1.3684254653824712,
+    "type:skyscraper": -0.7967189990295326,
+    "type:stadium": 1.8491981272119422,
+    "type:tower": 2.2658246233214543,
+    "type:transport_landmark": -0.9884456417668196,
+    "type:unknown": -0.13793942266491116
+  },
+  "mean_score": 5.316939890710382,
+  "training_mae": 1.7729602232041095,
+  "baseline_mae": 2.4455194242885723,
+  "top_positive_features": [
+    {
+      "feature": "type:cathedral",
+      "weight": 3.9033
+    },
+    {
+      "feature": "type:tower",
+      "weight": 2.2658
+    },
+    {
+      "feature": "category:sport",
+      "weight": 1.9013
+    },
+    {
+      "feature": "type:stadium",
+      "weight": 1.8492
+    },
+    {
+      "feature": "type:natural_feature",
+      "weight": 1.8221
+    },
+    {
+      "feature": "type:historic_site",
+      "weight": 1.6808
+    },
+    {
+      "feature": "type:landmark",
+      "weight": 1.4886
+    },
+    {
+      "feature": "type:sculpture",
+      "weight": 1.3684
+    },
+    {
+      "feature": "type:place",
+      "weight": 1.2173
+    },
+    {
+      "feature": "num:base_score",
+      "weight": 0.815
+    },
+    {
+      "feature": "num:hard_hook_score",
+      "weight": 0.7929
+    },
+    {
+      "feature": "category:culture_event",
+      "weight": 0.7661
+    }
+  ],
+  "top_negative_features": [
+    {
+      "feature": "type:old_town",
+      "weight": -2.8971
+    },
+    {
+      "feature": "type:fort",
+      "weight": -2.8036
+    },
+    {
+      "feature": "type:citadel",
+      "weight": -2.4049
+    },
+    {
+      "feature": "flag:former_height_record",
+      "weight": -2.0498
+    },
+    {
+      "feature": "type:religious_site",
+      "weight": -1.9928
+    },
+    {
+      "feature": "type:palace",
+      "weight": -1.7256
+    },
+    {
+      "feature": "type:archaeological_site",
+      "weight": -1.4394
+    },
+    {
+      "feature": "num:machine_score",
+      "weight": -1.4096
+    },
+    {
+      "feature": "type:fortified_historic_district",
+      "weight": -1.382
+    },
+    {
+      "feature": "type:transport_landmark",
+      "weight": -0.9884
+    },
+    {
+      "feature": "category:visual_landmark",
+      "weight": -0.8683
+    },
+    {
+      "feature": "type:skyscraper",
+      "weight": -0.7967
+    }
+  ]
+}
