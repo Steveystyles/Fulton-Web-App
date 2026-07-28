@@ -32,9 +32,13 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
-      - "traefik.http.routers.fultons-promo-test.rule=Host(`test.fultons-quiz.com`) || Host(`test.fultons-quiz.co.uk`) || Host(`${FULTONS_PROMO_FALLBACK_HOST:-fultons-promo.81-102-195-20.sslip.io}`)"
+      - "traefik.http.routers.fultons-promo-test.rule=Host(`${FULTONS_PROMO_FALLBACK_HOST:-fultons-promo.81-102-195-20.sslip.io}`)"
       - "traefik.http.routers.fultons-promo-test.entrypoints=websecure"
       - "traefik.http.routers.fultons-promo-test.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.fultons-promo-test-vanity.rule=Host(`test.fultons-quiz.com`) || Host(`test.fultons-quiz.co.uk`)"
+      - "traefik.http.routers.fultons-promo-test-vanity.entrypoints=websecure"
+      - "traefik.http.routers.fultons-promo-test-vanity.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.fultons-promo-test-vanity.service=fultons-promo-test"
       - "traefik.http.services.fultons-promo-test.loadbalancer.server.port=80"
 
 networks:
