@@ -1,4 +1,45 @@
 services:
+  promo-api:
+    image: local/fulton-promo-test:${FULTONS_PROMO_BUILD_COMMIT:?Set FULTONS_PROMO_BUILD_COMMIT}
+    container_name: fultons-promo-api
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      FULTONS_HOST: 0.0.0.0
+      FULTONS_PORT: 3000
+      FULTONS_TIMEZONE: Europe/London
+      FULTONS_COOKIE_SECURE: "1"
+      FULTONS_SEED_DEMO_USERS: "0"
+      FULTONS_NEWS_MONITOR_ENABLED: "0"
+      FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED: "0"
+      FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED: "0"
+      FULTONS_FACT_PREWARM_ENABLED: "0"
+    volumes:
+      - ${FULTONS_PROMO_DATA_DIR:?Set FULTONS_PROMO_DATA_DIR}:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:3000/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') else 1)",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - proxy
+
   promo-test:
     image: nginx:1.27-alpine
     container_name: fultons-promo-test
@@ -7,6 +48,9 @@ services:
       - "80"
     environment:
       FULTONS_PROMO_GUEST_SESSION: ${FULTONS_PROMO_GUEST_SESSION:?Set FULTONS_PROMO_GUEST_SESSION}
+    depends_on:
+      promo-api:
+        condition: service_healthy
     volumes:
       - ${FULTONS_PROMO_DIST_DIR:?Set FULTONS_PROMO_DIST_DIR}:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/templates/default.conf.template:ro
