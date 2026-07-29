@@ -6,7 +6,7 @@ import { useAuth } from "../context/AuthContext";
 const headerButtonClass =
   "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white transition hover:bg-white/[0.16] active:bg-saints-red active:text-white saints-focus";
 
-export function Header() {
+export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
   const { logout, user } = useAuth();
 
   return (
@@ -21,14 +21,30 @@ export function Header() {
           Fulton's Quiz
         </h1>
         <p className="truncate text-xs font-bold uppercase tracking-normal text-white/60">
-          {user?.username}
+          {reviewMode ? "Guest review" : user?.username}
         </p>
       </div>
-      <div className="flex shrink-0 items-center gap-1">
-        {user?.role === "admin" || user?.role === "mod" ? (
+      {!reviewMode ? (
+        <div className="flex shrink-0 items-center gap-1">
+          {user?.role === "admin" || user?.role === "mod" ? (
+            <NavLink
+              to="/admin"
+              aria-label={user.role === "admin" ? "Admin" : "Players"}
+              className={({ isActive }) =>
+                [
+                  headerButtonClass,
+                  isActive
+                    ? "bg-saints-red shadow-lg shadow-red-950/30"
+                    : "bg-white/[0.08]",
+                ].join(" ")
+              }
+            >
+              <ShieldCheck aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
+            </NavLink>
+          ) : null}
           <NavLink
-            to="/admin"
-            aria-label={user.role === "admin" ? "Admin" : "Players"}
+            to="/account"
+            aria-label="Account"
             className={({ isActive }) =>
               [
                 headerButtonClass,
@@ -36,30 +52,18 @@ export function Header() {
               ].join(" ")
             }
           >
-            <ShieldCheck aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
+            <UserRound aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
           </NavLink>
-        ) : null}
-        <NavLink
-          to="/account"
-          aria-label="Account"
-          className={({ isActive }) =>
-            [
-              headerButtonClass,
-              isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]",
-            ].join(" ")
-          }
-        >
-          <UserRound aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
-        </NavLink>
-        <button
-          type="button"
-          aria-label="Sign out"
-          onClick={() => void logout()}
-          className={`${headerButtonClass} bg-white/[0.08]`}
-        >
-          <LogOut aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
-        </button>
-      </div>
+          <button
+            type="button"
+            aria-label="Sign out"
+            onClick={() => void logout()}
+            className={`${headerButtonClass} bg-white/[0.08]`}
+          >
+            <LogOut aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
+          </button>
+        </div>
+      ) : null}
     </header>
   );
 }

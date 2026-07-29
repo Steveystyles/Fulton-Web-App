@@ -16,13 +16,14 @@ import { Quiz } from "../pages/Quiz";
 import { Wordle } from "../pages/Wordle";
 
 const mapPromoStorageKey = "fultons:promo:daily-map:v1";
+const mapTestHostnames = new Set([
+  "test.fultons-quiz.com",
+  "test.fultons-quiz.co.uk",
+  "fultons-promo.81-102-195-20.sslip.io",
+]);
 
-function isPromoReviewLocation(pathname: string, hostname: string) {
-  return (
-    pathname === "/promo" ||
-    hostname === "test.fultons-quiz.com" ||
-    hostname === "test.fultons-quiz.co.uk"
-  );
+function isMapTestHostname(hostname: string) {
+  return mapTestHostnames.has(hostname);
 }
 
 function shouldShowFirstVisitPromo() {
@@ -51,26 +52,31 @@ function markMapPromoSeen() {
 function AppFrame({
   children,
   compact = false,
+  reviewMode = false,
 }: {
   children: ReactNode;
   compact?: boolean;
+  reviewMode?: boolean;
 }) {
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10">
       <div className="top-shell">
-        <Header />
+        <Header reviewMode={reviewMode} />
       </div>
       <div className="h-[4rem] shrink-0" aria-hidden="true" />
       <main
         id="main-content"
         className={[
-          "flex-1 overflow-x-hidden px-4 pb-[calc(5rem+env(safe-area-inset-bottom))]",
+          "flex-1 overflow-x-hidden px-4",
+          reviewMode
+            ? "pb-[max(1rem,env(safe-area-inset-bottom))]"
+            : "pb-[calc(5rem+env(safe-area-inset-bottom))]",
           compact ? "pt-2" : "pt-4",
         ].join(" ")}
       >
         {children}
       </main>
-      <BottomNav />
+      {!reviewMode ? <BottomNav /> : null}
     </div>
   );
 }
@@ -85,7 +91,8 @@ export function AppRouter() {
   const hostname =
     typeof window === "undefined" ? "" : window.location.hostname.toLowerCase();
   const localOpsMode = pathname === "/ops";
-  const promoReviewMode = isPromoReviewLocation(pathname, hostname);
+  const promoReviewMode = pathname === "/promo";
+  const mapTestMode = isMapTestHostname(hostname);
 
   useEffect(() => {
     if (user !== null) {
@@ -107,7 +114,8 @@ export function AppRouter() {
     return (
       <MapGamePromo
         reviewMode
-        playHref="https://fultons-quiz.co.uk/map"
+        playHref={mapTestMode ? "/map" : "https://fultons-quiz.co.uk/map"}
+        onPlay={mapTestMode ? markMapPromoSeen : undefined}
       />
     );
   }
@@ -123,6 +131,26 @@ export function AppRouter() {
         onDismiss={dismissPromo}
         onPlay={dismissPromo}
       />
+    );
+  }
+
+  if (mapTestMode) {
+    return (
+      <BrowserRouter>
+        <div className="saints-shell-bg min-h-dvh overflow-x-hidden text-slate-950">
+          <Routes>
+            <Route
+              path="/map"
+              element={
+                <AppFrame reviewMode>
+                  <MapGame />
+                </AppFrame>
+              }
+            />
+            <Route path="*" element={<Navigate to="/map" replace />} />
+          </Routes>
+        </div>
+      </BrowserRouter>
     );
   }
 

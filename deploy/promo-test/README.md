@@ -1,15 +1,22 @@
 # Promo Test Deployment
 
-This static deployment exposes the map-game promo without authentication and
-does not replace the production Fulton Quiz container.
+This deployment exposes the map-game promo and a restricted guest map session
+without showing the login page. It does not replace the production Fulton Quiz
+container. The proxy permits only the session check and daily-map endpoints;
+all other API routes are unavailable.
 
-Set `FULTONS_PROMO_DIST_DIR` to an absolute directory containing the built
-Vite `dist` output, then start it from this directory:
+Set `FULTONS_PROMO_DIST_DIR` to an absolute directory containing the built Vite
+`dist` output. Set `FULTONS_PROMO_GUEST_SESSION` to a valid session belonging
+to a dedicated non-admin review user, then start it from this directory:
 
 ```bash
 FULTONS_PROMO_DIST_DIR=/home/ste/fultons-promo-test/releases/<commit> \
+FULTONS_PROMO_GUEST_SESSION=<server-held-session-token> \
   docker compose up -d
 ```
+
+The session token is injected upstream by Nginx and is never returned to the
+browser. Review attempts share the dedicated user's daily map result.
 
 The Traefik router accepts:
 

@@ -5,13 +5,16 @@ services:
     restart: unless-stopped
     expose:
       - "80"
+    environment:
+      FULTONS_PROMO_GUEST_SESSION: ${FULTONS_PROMO_GUEST_SESSION:?Set FULTONS_PROMO_GUEST_SESSION}
     volumes:
       - ${FULTONS_PROMO_DIST_DIR:?Set FULTONS_PROMO_DIST_DIR}:/usr/share/nginx/html:ro
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx.conf:/etc/nginx/templates/default.conf.template:ro
     read_only: true
     tmpfs:
       - /var/cache/nginx
       - /var/run
+      - /etc/nginx/conf.d
     cap_drop:
       - ALL
     cap_add:
