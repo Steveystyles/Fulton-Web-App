@@ -47,6 +47,24 @@ CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(r"\b(?:not visible on (?:the )?map|map cannot show|colour indicator|color indicator|seat colou?r|roof colou?r|interior detail|aerial imagery)\b", re.IGNORECASE),
     ),
     (
+        "deep_zoom_anchor",
+        re.compile(
+            r"\b(?:only appears? (?:at|after) zoom|first appears? (?:at|after) zoom|"
+            r"zoom 1[2-9]|street-level label|too deep(?:ly)? zoomed|"
+            r"not labelled until)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "incorrect_local_area",
+        re.compile(
+            r"\b(?:incorrect (?:district|neighbou?rhood|borough|quarter)|"
+            r"technically (?:in|outside)|popular(?:ly)? associated|"
+            r"not actually in)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "weak_known_for_hook",
         re.compile(r"\b(?:known-for hook|known for|weak fields|concrete hook|distinct known-for)\b", re.IGNORECASE),
     ),

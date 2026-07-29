@@ -412,6 +412,17 @@ class MapClueLearningTests(unittest.TestCase):
         self.assertIn("location_based", categories)
         self.assertNotIn("broad_multi_site_target", categories)
 
+    def test_failure_log_classifier_tracks_deep_zoom_and_incorrect_area(self) -> None:
+        categories = failure_log.classify_failure_reasons(
+            [
+                "The district only appears at zoom 13.",
+                "The stadium is popularly associated with Nunez but technically in Belgrano.",
+            ]
+        )
+
+        self.assertIn("deep_zoom_anchor", categories)
+        self.assertIn("incorrect_local_area", categories)
+
     def test_export_map_clue_training_data_writes_reviewed_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

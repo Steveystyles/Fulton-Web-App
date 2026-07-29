@@ -44,6 +44,8 @@ VALID_FAILURE_CATEGORIES = {
     "weak_hard_hook",
     "weak_medium_narrowing",
     "weak_easy_map_anchor",
+    "deep_zoom_anchor",
+    "incorrect_local_area",
     "too_broad",
     "repetitive",
     "fact_unclear",
@@ -57,7 +59,9 @@ CATEGORY_GUIDANCE = {
     "static_description": "Avoid static filler and fulfil the assigned clue role with concrete information.",
     "weak_hard_hook": "Hard clues need a memorable incident, event, record, person, story, oddity, or surprising fact.",
     "weak_medium_narrowing": "Medium clues must materially reduce the geographic search area; a place-owned fact may add character when it also advances that narrowing.",
-    "weak_easy_map_anchor": "Easy clues must narrow within medium's area to a visible local district, sector, crossing, park, station, or named landmark.",
+    "weak_easy_map_anchor": "Easy clues must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Street Map.",
+    "deep_zoom_anchor": "Replace an essential anchor that first appears after zoom 11 with a larger visible anchor and a practical directional relationship. A later district label may only supplement that route.",
+    "incorrect_local_area": "Verify the target's technical local area; do not present a popular association with a nearby district as its actual location.",
     "too_broad": "Narrow the clue toward one identifiable map target.",
     "repetitive": "Avoid repeating the same clue idea in different words.",
     "fact_unclear": "Use clear, concrete wording that obviously attaches to the target place.",
@@ -68,7 +72,7 @@ CATEGORY_GUIDANCE = {
 LEVEL_INTENT = {
     "hard": "One recognition hook: preferably a unique incident or story, or another genuinely distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment.",
     "medium": "A geographic narrowing clue that reduces the search to a useful country, region, culture, language, city, or equivalent scope.",
-    "easy": "A local map route within medium's area, using a visible borough, district, quarter, city sector, crossing, park, station, or named landmark.",
+    "easy": "A local map route within medium's area, using an anchor visible by zoom 11 or earlier and a practical direction or relationship.",
 }
 GENERIC_LEAK_TOKENS = {
     "arena",

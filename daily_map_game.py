@@ -1929,7 +1929,7 @@ def map_clue_schema() -> dict[str, Any]:
     return {
         "hard": "A clear answer-safe rendering of the locked recognition hook; no answer name or geography.",
         "medium": "A different clue that materially narrows the broad geographic scope; no answer name.",
-        "easy": "A practical local-area map route within the area established by medium; no answer name.",
+        "easy": "A practical local-area map route using anchors visible by map zoom 11; no answer name.",
         "reveal": "A concise explanation that may name the place.",
     }
 
@@ -2151,7 +2151,9 @@ Rules:
 - Do not anonymise the medium clue's distinctive detail as "a famous journalist", "a prominent architect", or another unnamed role. Name the person when answer-safe, or use a different precise fact.
 - Easy continues from medium rather than repeating its country, region, or city.
 - Easy must narrow to a local area inside that scope: for example a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
-- The easy clue's local anchor must be visible or labelled at a reasonable city zoom. The player may zoom further to place the pin, but should not need street-level knowledge.
+- The easy clue's essential local anchor must be visible or labelled by zoom 11 or earlier on the quiz's Esri World Street Map. The player may zoom further to place the pin, but should not need a label that first appears at zoom 12 or later.
+- A later neighbourhood or district label may only supplement a lower-zoom route. Base the route on a larger visible anchor such as the city, municipality, major river or coast, major park, transport feature, or similarly useful map feature, then give a practical direction or relationship within it.
+- Verify that a claimed borough, district, quarter, or neighbourhood is the target's technical location. Do not use a place's popular association with a nearby district as though the target were inside it.
 - Easy must work on the quiz's street map at normal playable zoom; do not rely on roof colours, seat colours, interior details, or aerial imagery.
 - A city or country name alone is not an easy clue. It must tell the player where to work within that area.
 - Use different information at each level; do not write three rewordings of the same feature.
@@ -2214,7 +2216,8 @@ Fail the ladder if:
 - Medium replaces its distinctive detail with an unnamed generic role such as "a famous journalist" or "a prominent architect".
 - Easy does not continue from medium into a local area such as a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
 - Easy merely repeats a country, region, or city without saying where to work inside it.
-- Easy's local anchor would only appear at street-level zoom rather than a reasonable city starting zoom.
+- Easy's essential local anchor first appears after zoom 11 on the quiz's Esri World Street Map. A later district label is acceptable only as supplementary information beside a usable lower-zoom route.
+- Easy claims that the target is inside a borough, district, quarter, or neighbourhood based only on popular association rather than its verified technical location.
 - Easy relies on colour, interior detail, or another feature that is not visible on the quiz's street map.
 - A clue gives generic geography without helping the player narrow or pin the answer.
 - A clue is bland, generic, unverifiable, or could fit many places.

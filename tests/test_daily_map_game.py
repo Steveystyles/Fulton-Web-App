@@ -948,8 +948,29 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertIn("geographic progress is mandatory", prompt)
         self.assertIn("Do not force every medium clue into the same template", prompt)
         self.assertIn("Easy must narrow to a local area", prompt)
-        self.assertIn("reasonable city zoom", prompt)
+        self.assertIn("zoom 11 or earlier", prompt)
+        self.assertIn("popular association", prompt)
         self.assertNotIn("Write for a child", prompt)
+
+    def test_map_clue_critic_rejects_deep_zoom_or_incorrect_local_anchors(self) -> None:
+        prompt = daily_map_game.map_clue_critic_prompt(
+            {
+                "canonical_name": "Example Stadium",
+                "acceptable_aliases": [],
+                "verified_facts": ["The stadium is in the city's northern area."],
+            },
+            {
+                "hard": "A memorable event happened on this pitch.",
+                "medium": "Its resident club represents this capital city.",
+                "easy": "Search a nearby district.",
+                "reveal": "This is Example Stadium.",
+            },
+            [],
+        )
+
+        self.assertIn("after zoom 11", prompt)
+        self.assertIn("popular association", prompt)
+        self.assertIn("verified technical location", prompt)
 
     def test_hard_hook_gate_requires_a_recognition_hook_not_architecture(self) -> None:
         qualifying = (
