@@ -941,6 +941,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertIn("adult player", prompt)
         self.assertIn("Hard is a recognition hook", prompt)
+        self.assertIn("answer-safe functional identity", prompt)
         self.assertIn("Do not manufacture a hook", prompt)
         self.assertIn("commissioner, ruler, architect", prompt)
         self.assertIn("Medium must materially reduce the geographic search area", prompt)
@@ -971,6 +972,7 @@ class DailyMapGameTests(unittest.TestCase):
         )
 
         self.assertIn("after zoom 11", prompt)
+        self.assertIn("supported answer-safe target identity", prompt)
         self.assertIn("neither medium nor easy explicitly names it", prompt)
         self.assertIn("popular association", prompt)
         self.assertIn("verified technical location", prompt)
@@ -1429,6 +1431,39 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertNotIn(
             "both competing sides",
             daily_map_game.hard_hook_missing_requirements(clue),
+        )
+
+    def test_hard_target_identity_rejects_generic_site_for_an_island_prison(self) -> None:
+        place = {
+            "canonical_name": "Alcatraz Island",
+            "place_type": "island",
+            "verified_facts": [
+                "In 1962, three inmates escaped using a makeshift raft."
+            ],
+            "validation_reasoning": (
+                "The history of the prison and the escape make this compelling."
+            ),
+        }
+
+        self.assertEqual(
+            daily_map_game.hard_missing_target_identities(
+                (
+                    "In 1962, Frank Morris and the Anglin brothers escaped from "
+                    "this site using a makeshift raft."
+                ),
+                place,
+            ),
+            ["island", "prison"],
+        )
+        self.assertEqual(
+            daily_map_game.hard_missing_target_identities(
+                (
+                    "In 1962, Frank Morris and the Anglin brothers escaped from "
+                    "the federal prison on this island using a makeshift raft."
+                ),
+                place,
+            ),
+            [],
         )
 
     def test_local_critic_rejects_geographic_scope_in_locked_hard_clue(self) -> None:

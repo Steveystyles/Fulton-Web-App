@@ -529,6 +529,31 @@ MAP_HARD_PLACE_LINK_RE = re.compile(
     r"monastery|fort|fortress|cave))\b",
     re.IGNORECASE,
 )
+MAP_HARD_TARGET_IDENTITY_TERMS = {
+    "arena": (r"\barena\b", r"\bvenue\b"),
+    "bridge": (r"\bbridge\b", r"\bcrossing\b"),
+    "castle": (r"\bcastle\b", r"\bfort(?:ress)?\b"),
+    "cathedral": (r"\bcathedral\b", r"\bchurch\b"),
+    "church": (r"\bchurch\b", r"\bcathedral\b"),
+    "fort": (r"\bfort(?:ress)?\b", r"\bcastle\b"),
+    "fortress": (r"\bfort(?:ress)?\b", r"\bcastle\b"),
+    "island": (r"\bisland\b",),
+    "museum": (r"\bmuseum\b", r"\bbuilding\b"),
+    "palace": (r"\bpalace\b", r"\broyal residence\b"),
+    "prison": (r"\bprison\b", r"\bpenitentiary\b", r"\bimprison\w*\b"),
+    "stadium": (
+        r"\bstadium\b",
+        r"\bground\b",
+        r"\bpitch\b",
+        r"\bvenue\b",
+        r"\barena\b",
+    ),
+    "temple": (r"\btemple\b", r"\bshrine\b"),
+    "tower": (r"\btower\b", r"\bstructure\b"),
+}
+MAP_HARD_SECONDARY_IDENTITY_SIGNALS = {
+    "prison": re.compile(r"\b(?:prison|penitentiary|imprison\w*)\b", re.IGNORECASE),
+}
 MAP_MEDIUM_FILLER_RE = re.compile(
     r"\b(?:(?:draws?|attracts?) (?:enormous|huge|large|many) crowds|"
     r"(?:popular|prestigious|historic|iconic|famous) venue)\b",
@@ -2155,6 +2180,7 @@ Rules:
 - For a team match or final, name both teams and the result; do not substitute a scorer or attendance figure for the competing sides.
 - Country names are allowed in hard only when they are the proper names of teams or other essential participants in the event. Do not anonymise a national team as "the host nation" to avoid its name.
 - Tie the hook to the target with an answer-safe phrase such as "here", "on this pitch", "inside this church", or "at this site".
+- Preserve the target's answer-safe functional identity. Say "this island prison", "on this pitch", "inside this church", or "this bridge" when supported. Do not replace a useful identity such as prison, island, stadium, bridge, or church with only "this site" or "here".
 - Hard must contain only the recognition hook. Do not add country, nationality, capital, region, river, direction, or nearby-place hints; those belong later.
 - A date, founder, commissioner, ruler, architect, construction fact, or former record is not enough by itself.
 - Medium must materially reduce the geographic search area from the world to a useful country, region, culture, language, city, or equivalent scope.
@@ -2226,6 +2252,7 @@ Fail the ladder if:
 - An event hook merely says that something happened without the people, action, defining method, outcome, consequence, record, or significance needed to make it memorable.
 - A team match or final anonymises either competing side as "the host nation", "the visitors", or another generic label instead of naming both teams.
 - Hard does not make clear that its hook belongs to this target.
+- Hard hides a supported answer-safe target identity such as island, prison, stadium, bridge, or church behind only "this site" or "here".
 - Hard includes a distinctive word from the target name, even when it avoids the full canonical name.
 - Hard only gives a construction date, founder, commissioner, ruler, architect, or opening date without an unusual one-place detail.
 - Medium does not materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope.
@@ -2416,6 +2443,47 @@ def hard_event_information_score(text: object) -> int:
 
 def hard_event_has_enough_information(text: object) -> bool:
     return not hard_hook_missing_requirements(text)
+
+
+def required_hard_target_identities(place: dict[str, Any]) -> list[str]:
+    place_type = re.sub(
+        r"[\s-]+",
+        "_",
+        str(place.get("place_type") or "").strip().casefold(),
+    )
+    identities: list[str] = []
+    if place_type in MAP_HARD_TARGET_IDENTITY_TERMS:
+        identities.append(place_type)
+    support_parts = [
+        str(place.get("validation_reasoning") or ""),
+        str(place.get("nearby_context") or ""),
+        *[
+            str(fact)
+            for fact in (
+                place.get("verified_facts")
+                if isinstance(place.get("verified_facts"), list)
+                else []
+            )
+        ],
+    ]
+    support = " ".join(support_parts)
+    for identity, signal in MAP_HARD_SECONDARY_IDENTITY_SIGNALS.items():
+        if signal.search(support) and identity not in identities:
+            identities.append(identity)
+    return identities
+
+
+def hard_missing_target_identities(
+    text: object,
+    place: dict[str, Any],
+) -> list[str]:
+    value = str(text or "")
+    missing: list[str] = []
+    for identity in required_hard_target_identities(place):
+        patterns = MAP_HARD_TARGET_IDENTITY_TERMS[identity]
+        if not any(re.search(pattern, value, re.IGNORECASE) for pattern in patterns):
+            missing.append(identity)
+    return missing
 
 
 def hard_hook_missing_requirements(text: object) -> list[str]:
@@ -2875,6 +2943,16 @@ def local_map_clue_critique(
             reasons.append("Hard clue does not make clear that the recognition hook belongs to the target.")
             feedback.append(
                 "Tie the hook to the target with an answer-safe phrase such as 'here', 'on this pitch', 'inside this building', or 'at this site'."
+            )
+        missing_identities = hard_missing_target_identities(ladder["hard"], place)
+        if missing_identities:
+            reasons.append(
+                "Hard clue replaces the target's answer-safe identity with a generic site reference: "
+                f"{', '.join(missing_identities)}."
+            )
+            feedback.append(
+                "State what the target is without naming it. Preserve these answer-safe identities: "
+                f"{', '.join(missing_identities)}; do not reduce them to 'this site' or 'here'."
             )
 
     for field in ("hard", "medium", "easy"):

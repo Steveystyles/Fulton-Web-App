@@ -20,6 +20,14 @@ CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
+        "generic_target_identity",
+        re.compile(
+            r"\b(?:answer-safe target identity|generic site reference|"
+            r"reduce them to ['\"]?this site|collapse useful identities)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "non_specific_incident",
         re.compile(
             r"\b(?:not specific|specific incident|generic incident|broad conflict|"

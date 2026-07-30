@@ -461,6 +461,7 @@ Return one answer-safe enriched hook:
 - For a team match or final, name both teams and the result; do not replace the competing sides with a scorer or attendance figure.
 - Country names are allowed when they are the proper names of national teams or other essential event participants. Never replace one with "the host nation", "the visitors", or a similar generic label.
 - Tie the hook to the target with "here", "on this pitch", "inside this building", "at this site", or another answer-safe equivalent.
+- State the target's concrete answer-safe identity when the supplied place data supports it. For example, write "the federal prison on this island", "on this pitch", or "inside this church"; never collapse useful identities such as prison and island into only "this site" or "here".
 - Do not merely state that an event happened or that a record existed.
 - Reject a bare headline, date, former record, or destruction percentage even when it is factually correct.
 - Apart from essential named event participants, do not add country, nationality, capital, city, region, river, direction, or nearby-place hints.
@@ -594,6 +595,15 @@ def validate_event_brief(
         errors.append("revealed a distinctive target-name word")
     if daily_map_game.MAP_HARD_GEO_SCOPE_RE.search(enriched):
         errors.append("borrowed geographic scope from medium or easy")
+    missing_target_identities = daily_map_game.hard_missing_target_identities(
+        enriched,
+        place,
+    )
+    if missing_target_identities:
+        errors.append(
+            "replaced answer-safe target identity with a generic site reference "
+            f"(missing {', '.join(missing_target_identities)})"
+        )
     if not daily_map_game.clue_preserves_required_hard_hook(
         enriched,
         str(selected_hook["verified_hard_hook"]),

@@ -64,6 +64,40 @@ class CorrectingEventResearchProvider(EventResearchProvider):
 
 
 class AiDailyMapRoundTests(unittest.TestCase):
+    def test_event_brief_rejects_a_generic_site_that_drops_target_identity(self) -> None:
+        selected_hook = {
+            "verified_hard_hook": (
+                "In 1962, three inmates executed a daring escape using makeshift "
+                "rafts, a mystery that remains unsolved."
+            )
+        }
+        place = {
+            "canonical_name": "Alcatraz Island",
+            "place_type": "island",
+            "acceptable_aliases": ["Alcatraz"],
+            "verified_facts": [selected_hook["verified_hard_hook"]],
+            "validation_reasoning": (
+                "The history of the prison and the escape make this compelling."
+            ),
+        }
+        payload = {
+            "enriched_hard_hook": (
+                "In 1962, Frank Morris and the Anglin brothers escaped from this "
+                "site using a raft made from raincoats, leaving a mystery that "
+                "remains unsolved."
+            ),
+            "supporting_details": ["The raft was made from raincoats."],
+            "used_source_urls": ["https://www.nps.gov/alca/"],
+            "confidence": 95,
+        }
+
+        with self.assertRaisesRegex(ValueError, "missing island, prison"):
+            generate_ai_daily_map_round.validate_event_brief(
+                payload,
+                selected_hook,
+                place=place,
+            )
+
     def test_reverse_geocoded_locality_uses_a_low_zoom_city_anchor(self) -> None:
         with patch.object(
             generate_ai_daily_map_round.daily_map_game,
