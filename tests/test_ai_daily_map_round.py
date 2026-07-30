@@ -208,6 +208,116 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(selected["place_id"], 42)
         self.assertIn("trained place-ranking profile", reason)
 
+    def test_round_moves_to_next_place_when_first_ladder_is_rejected(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+        first_id = conn.execute(
+            "SELECT id FROM map_place_pool WHERE canonical_name = 'London'"
+        ).fetchone()["id"]
+        second_id = conn.execute(
+            "SELECT id FROM map_place_pool WHERE canonical_name = 'Paris'"
+        ).fetchone()["id"]
+        hooks = [
+            {
+                "hook_id": "first",
+                "place_id": first_id,
+                "place": "London",
+                "verified_hard_hook": "A first recognisable event happened here.",
+                "learned_score": 9.0,
+                "learned_confidence": 0.9,
+                "selector_score": 90,
+            },
+            {
+                "hook_id": "second",
+                "place_id": second_id,
+                "place": "Paris",
+                "verified_hard_hook": "A second recognisable event happened here.",
+                "learned_score": 8.0,
+                "learned_confidence": 0.9,
+                "selector_score": 80,
+            },
+        ]
+        rejected = {
+            "status": "rejected",
+            "saved": False,
+            "attempts": [
+                {
+                    "critic_source": "local",
+                    "critic": {"failure_reasons": ["easy leaks the answer"]},
+                    "local_critic": {"failure_reasons": []},
+                }
+            ],
+        }
+        accepted = {
+            "status": "accepted",
+            "saved": True,
+            "attempts": [{}],
+            "critic_mode": "ai",
+            "clue_ladder": {
+                "hard": "Hard",
+                "medium": "Medium",
+                "easy": "Easy",
+                "reveal": "Reveal",
+            },
+        }
+        event_briefs = [
+            {
+                "enriched_hard_hook": "A first recognisable event happened here.",
+                "supporting_details": [],
+                "used_source_urls": ["https://example.com/first"],
+                "confidence": 90,
+            },
+            {
+                "enriched_hard_hook": "A second recognisable event happened here.",
+                "supporting_details": [],
+                "used_source_urls": ["https://example.com/second"],
+                "confidence": 90,
+            },
+        ]
+
+        with (
+            patch.object(
+                generate_ai_daily_map_round,
+                "hard_hook_shortlist",
+                return_value=hooks,
+            ),
+            patch.object(
+                generate_ai_daily_map_round,
+                "research_event_brief",
+                side_effect=event_briefs,
+            ),
+            patch.object(
+                generate_ai_daily_map_round.daily_map_game,
+                "generate_reviewed_clue_ladder",
+                side_effect=[rejected, accepted],
+            ) as generate_clues,
+            patch.object(
+                generate_ai_daily_map_round.daily_map_game,
+                "generate_daily_map_game",
+                return_value={"status": "published"},
+            ),
+            patch.object(
+                generate_ai_daily_map_round.daily_map_game,
+                "map_learning_profile_hash",
+                return_value="profile-hash",
+            ),
+        ):
+            result = generate_ai_daily_map_round.generate_round(
+                conn,
+                provider=object(),
+                puzzle_date="2026-07-30",
+                shortlist_limit=8,
+                max_clue_attempts=2,
+                max_place_attempts=2,
+            )
+
+        self.assertEqual(result["place"], "Paris")
+        self.assertEqual(result["place_attempts"], 2)
+        self.assertEqual(result["rejected_places"][0]["place"], "London")
+        self.assertEqual(generate_clues.call_count, 2)
+
     def test_event_research_uses_grounding_and_returns_a_richer_capsule(self) -> None:
         provider = EventResearchProvider()
         result = generate_ai_daily_map_round.research_event_brief(

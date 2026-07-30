@@ -509,14 +509,18 @@ MAP_HARD_TEAM_SIDES_RE = re.compile(
 )
 MAP_HARD_PLACE_LINK_RE = re.compile(
     r"\b(?:here|"
-    r"this (?:site|ground|venue|stadium|arena|church|cathedral|building|"
+    r"this (?:[a-z-]+ ){0,2}(?:site|ground|venue|stadium|arena|church|cathedral|building|"
     r"bridge|tower|district|quarter|neighbourhood|neighborhood|island|park|"
-    r"mountain|monument|fort|castle|palace|museum)|"
-    r"at this (?:site|ground|venue|stadium|arena|church|building|bridge)|"
+    r"mountain|monument|fort|fortress|castle|palace|museum|prison|penitentiary|"
+    r"temple|mosque|monastery|ruin|cave)|"
+    r"at this (?:site|ground|venue|stadium|arena|church|building|bridge|"
+    r"prison|penitentiary|temple|mosque|monastery|fort|fortress)|"
     r"on this (?:pitch|court|track|stage|site)|"
-    r"inside this (?:church|cathedral|building|venue|ground|district|quarter)|"
+    r"inside this (?:church|cathedral|building|venue|ground|district|quarter|"
+    r"prison|penitentiary|temple|mosque|monastery|fort|fortress|cave)|"
     r"within this (?:site|building|venue|ground|district|quarter|"
-    r"neighbourhood|neighborhood))\b",
+    r"neighbourhood|neighborhood|prison|penitentiary|temple|mosque|"
+    r"monastery|fort|fortress|cave))\b",
     re.IGNORECASE,
 )
 MAP_MEDIUM_FILLER_RE = re.compile(
@@ -542,7 +546,9 @@ MAP_MEDIUM_FICTION_CONTEXT_RE = re.compile(
 MAP_HARD_EVENT_SIGNIFICANCE_RE = re.compile(
     r"\b(?:after|because|following|in retaliation|trigger\w*|spark\w*|prompt\w*|"
     r"led to|resulted in|bringing|making|forcing|allowing|first(?:-ever)?|record|decisive|extra time|"
-    r"consequence|controversy|turning point|"
+    r"consequence|controversy|turning point|stoppage time|comeback|treble|"
+    r"(?:by )?using .{4,100}\bto\b|"
+    r"\d+\s*[-–—]\s*\d+|"
     r"remains?.{0,80}\b(?:unsolved|famous|notorious|mystery|symbol)\b|"
     r"to (?:suppress|crush|prevent|retaliate|avenge)|"
     r"reduc\w*.{0,50}\bto rubble)\b",
@@ -2132,8 +2138,8 @@ Rules:
 - Hard is a recognition hook that could identify this place to somebody who knows the story.
 - Prefer a unique, specific incident or story. A genuinely distinctive record, achievement, discovery, person-linked episode, tradition, natural occurrence, or cultural moment is also valid.
 - Do not manufacture a hook from architecture, an architect, construction, appearance, age, dimensions, generic destruction, or a broad association.
-- When a locked verified hook is supplied, preserve the people, action, outcome, record, consequence, or other details that make it recognisable.
-- An event hook must contain enough of the event to be memorable rather than reducing it to a headline.
+- When a locked verified hook is supplied, preserve the people, action, defining method, outcome, record, consequence, or other details that make it recognisable.
+- An event hook must contain enough of the event to be memorable rather than reducing it to a headline. A concrete defining method can provide that detail even when the event has no settled outcome.
 - For a team match or final, name both teams and the result; do not substitute a scorer or attendance figure for the competing sides.
 - Country names are allowed in hard only when they are the proper names of teams or other essential participants in the event. Do not anonymise a national team as "the host nation" to avoid its name.
 - Tie the hook to the target with an answer-safe phrase such as "here", "on this pitch", "inside this church", or "at this site".
@@ -2202,7 +2208,7 @@ Fail the ladder if:
 - Hard is technically true but too generic to associate with one place.
 - Hard substitutes architecture, an architect, construction, appearance, age, dimensions, generic destruction, broad history, or a former record for a recognisable place-owned hook.
 - A locked verified hook is supplied but hard changes or omits the details that make it distinctive.
-- An event hook merely says that something happened without the people, action, outcome, consequence, record, or significance needed to make it memorable.
+- An event hook merely says that something happened without the people, action, defining method, outcome, consequence, record, or significance needed to make it memorable.
 - A team match or final anonymises either competing side as "the host nation", "the visitors", or another generic label instead of naming both teams.
 - Hard does not make clear that its hook belongs to this target.
 - Hard includes a distinctive word from the target name, even when it avoids the full canonical name.
@@ -2426,7 +2432,9 @@ def hard_hook_missing_requirements(text: object) -> list[str]:
     if not MAP_HARD_PLACE_LINK_RE.search(value):
         missing.append("an answer-safe link showing the hook belongs to this target")
     if is_event and not MAP_HARD_EVENT_SIGNIFICANCE_RE.search(value):
-        missing.append("a trigger, consequence, result, record, or reason the event mattered")
+        missing.append(
+            "a trigger, consequence, result, record, defining method, or reason the event mattered"
+        )
     if is_event and hard_event_information_score(value) < 5:
         missing.append("enough concrete event information")
     if not is_event and len(clue_support_terms(value)) < 5:
@@ -2947,7 +2955,7 @@ def apply_learned_map_clue_quality_gate(
         )
         for level in ("hard", "medium", "easy")
     }
-    failed_levels = [
+    advisory_levels = [
         level
         for level, prediction in predictions.items()
         if prediction
@@ -2960,27 +2968,16 @@ def apply_learned_map_clue_quality_gate(
         "failure_reasons": list(critic.get("failure_reasons") or []),
         "feedback_to_generator": list(critic.get("feedback_to_generator") or []),
         "learned_quality": predictions,
+        "learned_advisories": [
+            {
+                "level": level,
+                "pass_probability": predictions[level].get("pass_probability"),
+                "confidence": predictions[level].get("confidence"),
+                "negative_signals": predictions[level].get("negative_signals") or [],
+            }
+            for level in advisory_levels
+        ],
     }
-    if failed_levels:
-        details = ", ".join(
-            f"{level} {float(predictions[level]['pass_probability']):.2f}"
-            for level in failed_levels
-        )
-        result["failure_reasons"].append(
-            f"The trained clue-quality model rejected: {details}."
-        )
-        for level in failed_levels:
-            signals = predictions[level].get("negative_signals") or []
-            signal_text = f" Avoid patterns associated with: {', '.join(signals)}." if signals else ""
-            result["feedback_to_generator"].append(
-                f"Rewrite {level} against its role using the previous human pass/fail examples."
-                f"{signal_text}"
-            )
-        result["passed"] = False
-        result["scores"]["distinctiveness"] = min(
-            int(result["scores"].get("distinctiveness", 10)),
-            5,
-        )
     result["feedback_to_generator"] = merge_feedback_entries(
         [str(item) for item in result["feedback_to_generator"]],
         limit=8,

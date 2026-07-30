@@ -972,6 +972,82 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertIn("popular association", prompt)
         self.assertIn("verified technical location", prompt)
 
+    def test_low_confidence_learned_failure_is_advisory_not_a_veto(self) -> None:
+        place = {"place_type": "island"}
+        ladder = {
+            "hard": "A specific escape happened at this site.",
+            "medium": "This prison operated in the United States.",
+            "easy": "Look on an island inside a major bay.",
+            "reveal": "This is Example Island.",
+        }
+        critic = {
+            "passed": True,
+            "scores": {field: 10 for field in daily_map_game.MAP_CLUE_CRITIC_THRESHOLDS},
+            "failure_reasons": [],
+            "feedback_to_generator": [],
+        }
+
+        def prediction(_model, level, _clue, **_kwargs):
+            probability = 0.40 if level == "hard" else 0.90
+            return {
+                "pass_probability": probability,
+                "confidence": abs(probability - 0.5) * 2,
+                "negative_signals": ["this site"] if level == "hard" else [],
+            }
+
+        with (
+            patch("tools.map_clue_quality_model.load_model", return_value={"version": 1}),
+            patch("tools.map_clue_quality_model.predict_level", side_effect=prediction),
+        ):
+            result = daily_map_game.apply_learned_map_clue_quality_gate(
+                place,
+                ladder,
+                critic,
+                model_path="model.json",
+            )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["learned_advisories"][0]["level"], "hard")
+        self.assertEqual(result["failure_reasons"], [])
+
+    def test_high_confidence_learned_failure_is_also_advisory(self) -> None:
+        place = {"place_type": "island"}
+        ladder = {
+            "hard": "A generic thing happened at this site.",
+            "medium": "This is in a country.",
+            "easy": "Look nearby.",
+            "reveal": "This is Example Island.",
+        }
+        critic = {
+            "passed": True,
+            "scores": {field: 10 for field in daily_map_game.MAP_CLUE_CRITIC_THRESHOLDS},
+            "failure_reasons": [],
+            "feedback_to_generator": [],
+        }
+
+        def prediction(_model, level, _clue, **_kwargs):
+            probability = 0.10 if level == "hard" else 0.90
+            return {
+                "pass_probability": probability,
+                "confidence": abs(probability - 0.5) * 2,
+                "negative_signals": ["generic"] if level == "hard" else [],
+            }
+
+        with (
+            patch("tools.map_clue_quality_model.load_model", return_value={"version": 1}),
+            patch("tools.map_clue_quality_model.predict_level", side_effect=prediction),
+        ):
+            result = daily_map_game.apply_learned_map_clue_quality_gate(
+                place,
+                ladder,
+                critic,
+                model_path="model.json",
+            )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["learned_advisories"][0]["level"], "hard")
+        self.assertEqual(result["failure_reasons"], [])
+
     def test_hard_hook_gate_requires_a_recognition_hook_not_architecture(self) -> None:
         qualifying = (
             "Uruguay beat host nation Brazil 2-1 in the decisive 1950 World Cup "
@@ -1167,7 +1243,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertFalse(daily_map_game.hard_event_has_enough_information(clue))
         self.assertIn(
-            "a trigger, consequence, result, record, or reason the event mattered",
+            "a trigger, consequence, result, record, defining method, or reason the event mattered",
             daily_map_game.hard_event_missing_requirements(clue),
         )
 
@@ -1255,6 +1331,16 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertTrue(daily_map_game.hard_event_has_enough_information(vanished))
         self.assertTrue(daily_map_game.MAP_HARD_GEO_SCOPE_RE.search(padded))
 
+    def test_escape_hook_accepts_a_prison_link_and_defining_method(self) -> None:
+        clue = (
+            "In 1962, Frank Morris and brothers John and Clarence Anglin escaped "
+            "from this federal penitentiary by using papier-mache dummy heads to "
+            "deceive guards before leaving on a raft made from raincoats."
+        )
+
+        self.assertTrue(daily_map_game.MAP_HARD_PLACE_LINK_RE.search(clue))
+        self.assertTrue(daily_map_game.hard_event_has_enough_information(clue))
+
     def test_named_national_teams_are_event_participants_not_directional_scope(self) -> None:
         clue = (
             "On this pitch, England defeated West Germany 4-2 in extra time "
@@ -1263,6 +1349,15 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertTrue(daily_map_game.hard_event_has_enough_information(clue))
         self.assertFalse(daily_map_game.MAP_HARD_GEO_SCOPE_RE.search(clue))
+
+    def test_hard_hook_gate_accepts_a_scored_stoppage_time_comeback(self) -> None:
+        clue = (
+            "On this pitch, Manchester United defeated Bayern Munich 2-1 in the "
+            "Champions League final, scoring twice in stoppage time to complete "
+            "a comeback that secured the continental treble."
+        )
+
+        self.assertTrue(daily_map_game.hard_event_has_enough_information(clue))
 
     def test_local_critic_rejects_vague_unnamed_cultural_reference_in_medium(self) -> None:
         place = {

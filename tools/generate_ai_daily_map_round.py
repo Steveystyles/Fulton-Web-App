@@ -451,7 +451,7 @@ Return one answer-safe enriched hook:
 - Prefer one clear sentence, but preserve the information needed to make the hook recognisable.
 - Preserve the selected incident, story, record, achievement, discovery, person-linked episode, tradition, natural occurrence, or cultural moment.
 - Add concrete narrative information, not adjectives or padding.
-- For an event, name useful actors or sides, say what happened, and add at least one of: trigger, consequence, score, record, or why it mattered.
+- For an event, name useful actors or sides, say what happened, and add at least one of: trigger, defining method, consequence, score, record, or why it mattered.
 - For a non-event hook, state the specific record, achievement, association, tradition, or phenomenon and why it is distinctive.
 - Name useful people, teams, organisations, forces, works, or records when answer-safe.
 - For a team match or final, name both teams and the result; do not replace the competing sides with a scorer or attendance figure.
@@ -598,6 +598,7 @@ def generate_round(
     puzzle_date: str,
     shortlist_limit: int,
     max_clue_attempts: int,
+    max_place_attempts: int = 4,
     eligible_names: set[str] | None = None,
 ) -> dict[str, Any]:
     daily_map_game.initialize_database(conn)
@@ -607,98 +608,168 @@ def generate_round(
         limit=shortlist_limit,
         eligible_names=eligible_names,
     )
-    selected_hook, selection_reason = choose_learned_hard_hook(hooks)
-    place_id = int(selected_hook["place_id"])
-    place = conn.execute(
-        "SELECT * FROM map_place_pool WHERE id = ?",
-        (place_id,),
-    ).fetchone()
-    if place is None:
-        raise LookupError("Selected map place disappeared before clue generation.")
-    place_payload = daily_map_game.public_place_payload(place)
-    event_brief = research_event_brief(
-        provider,
-        selected_hook,
-        place=place_payload,
-    )
-    enriched_hard_hook = str(event_brief["enriched_hard_hook"])
-    print(
-        json.dumps(
-            {
-                "stage": "place_selected",
-                "place_id": place_id,
-                "place": str(place["canonical_name"]),
-                "verified_hard_hook": str(selected_hook["verified_hard_hook"]),
-                "enriched_hard_hook": enriched_hard_hook,
-                "selection_reason": selection_reason,
-            },
-            ensure_ascii=False,
-        ),
-        flush=True,
-    )
-
-    clue_result = daily_map_game.generate_reviewed_clue_ladder(
-        conn,
-        place_id=place_id,
-        provider=provider,
-        config=daily_map_game.MapClueConfig(
-            learning_profile_path=daily_map_game.DEFAULT_MAP_LEARNING_PROFILE_PATH,
-            clue_quality_model_path=daily_map_game.DEFAULT_MAP_CLUE_QUALITY_MODEL_PATH,
-            max_attempts_per_place=max(1, max_clue_attempts),
-            require_ai_critic=True,
-        ),
-        save=True,
-        required_hard_hook=enriched_hard_hook,
-    )
-    if clue_result.get("status") != "accepted" or not clue_result.get("saved"):
-        attempt_summary = []
-        for attempt in clue_result.get("attempts") or []:
-            critic = attempt.get("critic") if isinstance(attempt.get("critic"), dict) else {}
-            local_critic = (
-                attempt.get("local_critic")
-                if isinstance(attempt.get("local_critic"), dict)
-                else {}
-            )
-            attempt_summary.append(
+    available = list(hooks)
+    rejected_places: list[dict[str, Any]] = []
+    while available and len(rejected_places) < max(1, max_place_attempts):
+        selected_hook, selection_reason = choose_learned_hard_hook(available)
+        place_id = int(selected_hook["place_id"])
+        available = [
+            hook for hook in available if int(hook["place_id"]) != place_id
+        ]
+        place = conn.execute(
+            "SELECT * FROM map_place_pool WHERE id = ?",
+            (place_id,),
+        ).fetchone()
+        if place is None:
+            rejected_places.append(
                 {
-                    "generated": attempt.get("generated"),
-                    "critic_source": attempt.get("critic_source"),
-                    "failure_reasons": critic.get("failure_reasons") or [],
-                    "local_failure_reasons": local_critic.get("failure_reasons") or [],
+                    "place_id": place_id,
+                    "place": str(selected_hook.get("place") or ""),
+                    "stage": "selection",
+                    "reason": "Place disappeared before generation.",
                 }
             )
-        raise RuntimeError(
-            "The selected place did not produce a critic-approved clue ladder: "
-            + json.dumps(attempt_summary, ensure_ascii=False)
+            continue
+
+        place_payload = daily_map_game.public_place_payload(place)
+        try:
+            event_brief = research_event_brief(
+                provider,
+                selected_hook,
+                place=place_payload,
+            )
+        except Exception as error:
+            rejection = {
+                "place_id": place_id,
+                "place": str(place["canonical_name"]),
+                "stage": "event_research",
+                "reason": str(error),
+            }
+            rejected_places.append(rejection)
+            print(json.dumps({"stage": "place_rejected", **rejection}), flush=True)
+            continue
+
+        enriched_hard_hook = str(event_brief["enriched_hard_hook"])
+        print(
+            json.dumps(
+                {
+                    "stage": "place_selected",
+                    "place_attempt": len(rejected_places) + 1,
+                    "place_id": place_id,
+                    "place": str(place["canonical_name"]),
+                    "verified_hard_hook": str(selected_hook["verified_hard_hook"]),
+                    "enriched_hard_hook": enriched_hard_hook,
+                    "selection_reason": selection_reason,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
         )
 
-    publish_result = daily_map_game.generate_daily_map_game(
-        conn,
-        puzzle_date=puzzle_date,
-        force=True,
-        preferred_place_id=place_id,
-        require_current_profile_for_qa=True,
-    )
-    if publish_result.get("status") != "published":
-        raise RuntimeError(
-            str(publish_result.get("failureReason") or "The AI-generated map round was not published.")
+        try:
+            clue_result = daily_map_game.generate_reviewed_clue_ladder(
+                conn,
+                place_id=place_id,
+                provider=provider,
+                config=daily_map_game.MapClueConfig(
+                    learning_profile_path=daily_map_game.DEFAULT_MAP_LEARNING_PROFILE_PATH,
+                    clue_quality_model_path=daily_map_game.DEFAULT_MAP_CLUE_QUALITY_MODEL_PATH,
+                    max_attempts_per_place=max(1, max_clue_attempts),
+                    require_ai_critic=True,
+                ),
+                save=True,
+                required_hard_hook=enriched_hard_hook,
+            )
+        except Exception as error:
+            rejection = {
+                "place_id": place_id,
+                "place": str(place["canonical_name"]),
+                "stage": "clue_generation",
+                "reason": str(error),
+            }
+            rejected_places.append(rejection)
+            print(json.dumps({"stage": "place_rejected", **rejection}), flush=True)
+            continue
+
+        if clue_result.get("status") != "accepted" or not clue_result.get("saved"):
+            attempt_summary = []
+            for attempt in clue_result.get("attempts") or []:
+                critic = (
+                    attempt.get("critic")
+                    if isinstance(attempt.get("critic"), dict)
+                    else {}
+                )
+                local_critic = (
+                    attempt.get("local_critic")
+                    if isinstance(attempt.get("local_critic"), dict)
+                    else {}
+                )
+                attempt_summary.append(
+                    {
+                        "critic_source": attempt.get("critic_source"),
+                        "failure_reasons": critic.get("failure_reasons") or [],
+                        "local_failure_reasons": local_critic.get("failure_reasons")
+                        or [],
+                    }
+                )
+            rejection = {
+                "place_id": place_id,
+                "place": str(place["canonical_name"]),
+                "stage": "clue_criticism",
+                "reason": "No clue ladder passed both critics.",
+                "attempts": attempt_summary,
+            }
+            rejected_places.append(rejection)
+            print(
+                json.dumps(
+                    {
+                        "stage": "place_rejected",
+                        "place_id": place_id,
+                        "place": str(place["canonical_name"]),
+                        "reason": rejection["reason"],
+                    }
+                ),
+                flush=True,
+            )
+            continue
+
+        publish_result = daily_map_game.generate_daily_map_game(
+            conn,
+            puzzle_date=puzzle_date,
+            force=True,
+            preferred_place_id=place_id,
+            require_current_profile_for_qa=True,
         )
-    return {
-        "created_at": utc_now(),
-        "puzzle_date": puzzle_date,
-        "place_id": place_id,
-        "place": str(place["canonical_name"]),
-        "place_type": str(place["place_type"]),
-        "selection_reason": selection_reason,
-        "verified_hard_hook": str(selected_hook["verified_hard_hook"]),
-        "event_brief": event_brief,
-        "shortlist_count": len(hooks),
-        "learning_profile_hash": daily_map_game.map_learning_profile_hash(),
-        "critic_mode": clue_result.get("critic_mode"),
-        "clue_ladder": clue_result.get("clue_ladder"),
-        "generation_attempts": len(clue_result.get("attempts") or []),
-        "publish_result": publish_result,
-    }
+        if publish_result.get("status") != "published":
+            raise RuntimeError(
+                str(
+                    publish_result.get("failureReason")
+                    or "The AI-generated map round was not published."
+                )
+            )
+        return {
+            "created_at": utc_now(),
+            "puzzle_date": puzzle_date,
+            "place_id": place_id,
+            "place": str(place["canonical_name"]),
+            "place_type": str(place["place_type"]),
+            "selection_reason": selection_reason,
+            "verified_hard_hook": str(selected_hook["verified_hard_hook"]),
+            "event_brief": event_brief,
+            "shortlist_count": len(hooks),
+            "place_attempts": len(rejected_places) + 1,
+            "rejected_places": rejected_places,
+            "learning_profile_hash": daily_map_game.map_learning_profile_hash(),
+            "critic_mode": clue_result.get("critic_mode"),
+            "clue_ladder": clue_result.get("clue_ladder"),
+            "generation_attempts": len(clue_result.get("attempts") or []),
+            "publish_result": publish_result,
+        }
+
+    raise RuntimeError(
+        "No shortlisted place produced a critic-approved clue ladder: "
+        + json.dumps(rejected_places, ensure_ascii=False)
+    )
 
 
 def discover_uncurated_candidates(
@@ -781,6 +852,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shortlist-limit", type=int, default=24)
     parser.add_argument("--max-clue-attempts", type=int, default=5)
     parser.add_argument(
+        "--max-place-attempts",
+        type=int,
+        default=4,
+        help="Try this many learned-ranked places before failing the round.",
+    )
+    parser.add_argument(
         "--discover-count",
         type=int,
         default=8,
@@ -827,6 +904,7 @@ def main() -> int:
             puzzle_date=args.date,
             shortlist_limit=max(4, args.shortlist_limit),
             max_clue_attempts=max(1, args.max_clue_attempts),
+            max_place_attempts=max(1, args.max_place_attempts),
             eligible_names=eligible_names,
         )
         result["discovery"] = discovery
