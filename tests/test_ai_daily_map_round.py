@@ -84,6 +84,25 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(locality, "Barcelona")
         reverse.assert_called_once_with(41.3809, 2.1228, 10)
 
+    def test_reverse_geocoded_locality_normalizes_an_administrative_city_name(self) -> None:
+        with patch.object(
+            generate_ai_daily_map_round.daily_map_game,
+            "fetch_reverse_geocode",
+            return_value={
+                "name": "London Borough of Brent",
+                "address": {
+                    "city_district": "London Borough of Brent",
+                    "city": "Greater London",
+                    "state": "England",
+                },
+            },
+        ):
+            locality = generate_ai_daily_map_round.reverse_geocoded_locality(
+                {"lat": 51.556, "lng": -0.2795}
+            )
+
+        self.assertEqual(locality, "London")
+
     def test_candidate_needs_one_strong_hook_not_three_persuading_facts(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -227,6 +246,36 @@ class AiDailyMapRoundTests(unittest.TestCase):
 
         self.assertEqual(selected["place_id"], 42)
         self.assertIn("trained place-ranking profile", reason)
+
+    def test_recent_place_ids_excludes_the_existing_round_when_regenerating(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+        place_id = conn.execute(
+            "SELECT id FROM map_place_pool WHERE canonical_name = 'London'"
+        ).fetchone()["id"]
+        puzzle_id = conn.execute(
+            """
+            INSERT INTO daily_map_puzzles (
+                puzzle_date, status, generated_at, published_at
+            )
+            VALUES ('2026-07-30', 'published', '2026-07-30', '2026-07-30')
+            """
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO daily_map_levels (
+                puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+            )
+            VALUES (?, 'easy', ?, 10, 1800, '2026-07-30')
+            """,
+            (puzzle_id, place_id),
+        )
+
+        recent = generate_ai_daily_map_round.recent_place_ids(conn, "2026-07-30")
+
+        self.assertIn(place_id, recent)
 
     def test_round_moves_to_next_place_when_first_ladder_is_rejected(self) -> None:
         conn = sqlite3.connect(":memory:")

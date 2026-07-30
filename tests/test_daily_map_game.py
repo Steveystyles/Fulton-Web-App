@@ -1056,6 +1056,61 @@ class DailyMapGameTests(unittest.TestCase):
             "Camp Nou; Nou Camp",
         )
 
+    def test_local_critic_rejects_a_city_name_followed_only_by_deep_map_details(self) -> None:
+        place = {
+            "canonical_name": "Camp Nou",
+            "acceptable_aliases": ["Nou Camp"],
+            "country_name": "Spain",
+            "admin1": "Catalonia",
+            "locality_name": "Barcelona",
+            "verified_facts": [
+                "Manchester United beat Bayern Munich 2-1 here in the 1999 Champions League final.",
+                "The venue is home to FC Barcelona.",
+                "The stadium is in Les Corts near Avinguda Diagonal and Palau Reial station.",
+            ],
+            "nearby_context": "Les Corts, Barcelona, near Avinguda Diagonal.",
+            "required_hard_hook": (
+                "Manchester United beat Bayern Munich 2-1 on this pitch in the "
+                "1999 Champions League final with two stoppage-time goals."
+            ),
+        }
+        critic = daily_map_game.local_map_clue_critique(
+            place,
+            {
+                "hard": place["required_hard_hook"],
+                "medium": "This is the permanent home ground for FC Barcelona in Spain.",
+                "easy": (
+                    "Locate this venue in the Les Corts district of Barcelona, "
+                    "near Avinguda Diagonal and Palau Reial metro station."
+                ),
+                "reveal": "Camp Nou is FC Barcelona's home stadium.",
+            },
+        )
+
+        self.assertFalse(critic["passed"])
+        self.assertTrue(
+            any(
+                "broad city-sector route within Barcelona" in reason
+                for reason in critic["failure_reasons"]
+            )
+        )
+
+    def test_locality_route_accepts_a_broad_city_sector_before_smaller_details(self) -> None:
+        place = {
+            "canonical_name": "Camp Nou",
+            "acceptable_aliases": ["Nou Camp"],
+            "locality_name": "Barcelona",
+        }
+        ladder = {
+            "medium": "This is the home of a football club from Catalonia.",
+            "easy": (
+                "In western Barcelona, search north of Avinguda Diagonal; "
+                "Les Corts provides a closer guide."
+            ),
+        }
+
+        self.assertTrue(daily_map_game.easy_has_broad_locality_route(ladder, place))
+
     def test_low_confidence_learned_failure_is_advisory_not_a_veto(self) -> None:
         place = {"place_type": "island"}
         ladder = {
@@ -1362,6 +1417,18 @@ class DailyMapGameTests(unittest.TestCase):
                 "After a 1944 uprising, Nazi troops deliberately destroyed over "
                 "85% of this district, triggering a meticulous postwar reconstruction."
             )
+        )
+
+    def test_team_event_accepts_indirect_wording_that_still_names_both_sides(self) -> None:
+        clue = (
+            "On this pitch, the national team of England secured their only major "
+            "international trophy by defeating West Germany 4-2 after extra time "
+            "in the 1966 World Cup final."
+        )
+
+        self.assertNotIn(
+            "both competing sides",
+            daily_map_game.hard_hook_missing_requirements(clue),
         )
 
     def test_local_critic_rejects_geographic_scope_in_locked_hard_clue(self) -> None:

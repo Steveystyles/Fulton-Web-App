@@ -23,6 +23,10 @@ DEFAULT_DB_PATH = PROJECT_DIR / "data" / "fultons.db"
 DEFAULT_REPORT_DIR = PROJECT_DIR / "data" / "training"
 DEFAULT_EVENT_BRIEF_CACHE_PATH = DEFAULT_REPORT_DIR / "map_event_brief_cache.json"
 MIN_RESEARCHABLE_HARD_HOOKS = 1
+PLAYER_FACING_LOCALITY_NAMES = {
+    "greater london": "London",
+    "greater manchester": "Manchester",
+}
 
 
 def utc_now() -> str:
@@ -145,7 +149,7 @@ def recent_place_ids(conn: sqlite3.Connection, puzzle_date: str) -> set[int]:
             INNER JOIN daily_map_puzzles
                 ON daily_map_puzzles.id = daily_map_levels.puzzle_id
             WHERE daily_map_puzzles.puzzle_date >= ?
-              AND daily_map_puzzles.puzzle_date < ?
+              AND daily_map_puzzles.puzzle_date <= ?
             """,
             (cutoff, puzzle_date),
         ).fetchall()
@@ -561,7 +565,7 @@ def reverse_geocoded_locality(place: dict[str, Any]) -> str:
     for key in ("city", "town", "municipality", "village"):
         value = str(address.get(key) or "").strip()
         if value:
-            return value
+            return PLAYER_FACING_LOCALITY_NAMES.get(value.casefold(), value)
     raise ValueError(
         "Reverse geocoding did not return a city, town, municipality, or village at zoom 10."
     )

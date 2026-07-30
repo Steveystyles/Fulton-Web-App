@@ -69,7 +69,8 @@ CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         re.compile(
             r"\b(?:required low-zoom locality|locality (?:was )?not named|"
             r"unnamed (?:city|town|municipality|locality)|"
-            r"before referring to ['\"]?the city|scope only reached (?:a )?region)\b",
+            r"before referring to ['\"]?the city|scope only reached (?:a )?region|"
+            r"broad city-sector route)\b",
             re.IGNORECASE,
         ),
     ),

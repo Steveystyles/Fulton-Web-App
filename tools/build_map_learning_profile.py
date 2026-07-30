@@ -84,7 +84,7 @@ CATEGORY_GUIDANCE = {
     "map_invisible_detail": "Easy clues must use features visible on the quiz street map; do not rely on colours, interiors, roof details, or aerial imagery.",
     "deep_zoom_anchor": "Easy's essential route must use an anchor labelled by zoom 11 or earlier on the quiz's Esri World Street Map. A later neighbourhood or district label may only supplement a usable lower-zoom route.",
     "incorrect_local_area": "Verify the target's technical borough, district, quarter, or neighbourhood. Do not present a popular association with a nearby area as the target's actual location.",
-    "unresolved_locality": "If medium has only reached a region or culture, easy must explicitly name the low-zoom city, town, or municipality before referring to 'the city', a district, a road, or a smaller feature.",
+    "unresolved_locality": "If medium has only reached a region or culture, easy must explicitly name the low-zoom city, town, or municipality and give a broad city-sector route before relying on a district, road, station, or smaller feature.",
     "non_specific_incident": "A hard clue must name or clearly describe one particular incident, with defining participants, outcome, event, or date context. Broad conflict or generic event wording fails.",
     "insufficient_event_detail": "Do not reduce a good hook to a headline. Retain the useful people, action, outcome, consequence, record, or significance that makes it recognisable.",
     "missing_place_link": "Tie hard's recognition hook to the target with an answer-safe phrase such as 'here', 'on this pitch', 'inside this building', or 'at this site'. Do not replace this link with geographic hints.",

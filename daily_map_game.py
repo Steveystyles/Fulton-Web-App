@@ -93,7 +93,7 @@ MAP_CLUE_CRITIC_THRESHOLDS = {
     "interestingness": 7,
 }
 MAP_CLUE_TEXT_LIMITS = {
-    "hard": 280,
+    "hard": 320,
     "medium": 220,
     "easy": 220,
     "reveal": 240,
@@ -507,6 +507,12 @@ MAP_HARD_TEAM_SIDES_RE = re.compile(
     r"(?:and|against)\s+(?:the\s+)?"
     r"[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2})\b"
 )
+MAP_HARD_TEAM_INDIRECT_SIDES_RE = re.compile(
+    r"\b(?:national\s+)?team\s+of\s+"
+    r"[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2}"
+    r".{0,100}?\b(?:beat|defeated|defeating)\s+(?:the\s+)?"
+    r"[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2}\b"
+)
 MAP_HARD_PLACE_LINK_RE = re.compile(
     r"\b(?:here|"
     r"this (?:[a-z-]+ ){0,2}(?:site|ground|venue|stadium|arena|church|cathedral|building|"
@@ -589,6 +595,12 @@ MAP_EASY_LOCAL_RELATION_RE = re.compile(
     r"above|below|"
     r"north(?:ern)?|south(?:ern)?|east(?:ern)?|west(?:ern)?|central|"
     r"at the edge of|on the bank of|on the shore of)\b",
+    re.IGNORECASE,
+)
+MAP_EASY_CITY_SECTOR_RE = re.compile(
+    r"\b(?:north(?:ern)?|south(?:ern)?|east(?:ern)?|west(?:ern)?|central|"
+    r"city centre|city center|downtown|inner city|outer city|"
+    r"on the (?:north|south|east|west) side)\b",
     re.IGNORECASE,
 )
 MAP_HARD_EVENT_ACTION_FAMILIES = {
@@ -2158,6 +2170,7 @@ Rules:
 - Easy continues from medium rather than repeating its country, region, or city.
 - The target includes locality_name when a city, town, or municipality is available from reverse geocoding at zoom 10. By the end of easy, medium or easy must explicitly name that locality unless the locality itself is the answer.
 - Never introduce an unnamed place with "the city", "this city", "the town", or "the area". If medium has only reached a region or culture, easy must explicitly name the locality before giving smaller directions.
+- Easy must also give a broad route within that locality, such as northern, southern, eastern, western, central, or the city centre. Merely naming the locality and then relying on a district, road, or station is not enough.
 - Easy must narrow to a local area inside that scope: for example a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
 - The easy clue's essential local anchor must be visible or labelled by zoom 11 or earlier on the quiz's Esri World Street Map. The player may zoom further to place the pin, but should not need a label that first appears at zoom 12 or later.
 - A later neighbourhood or district label may only supplement a lower-zoom route. Base the route on a larger visible anchor such as the city, municipality, major river or coast, major park, transport feature, or similarly useful map feature, then give a practical direction or relationship within it.
@@ -2224,6 +2237,7 @@ Fail the ladder if:
 - Medium replaces its distinctive detail with an unnamed generic role such as "a famous journalist" or "a prominent architect".
 - Easy does not continue from medium into a local area such as a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
 - A locality_name is supplied, but neither medium nor easy explicitly names it before referring to "the city", a district, a road, or another smaller feature.
+- Easy names the locality but gives no broad city-sector route before relying on a district, road, station, or other potentially deep-zoom detail.
 - Easy merely repeats a country, region, or city without saying where to work inside it.
 - Easy's essential local anchor first appears after zoom 11 on the quiz's Esri World Street Map. A later district label is acceptable only as supplementary information beside a usable lower-zoom route.
 - Easy claims that the target is inside a borough, district, quarter, or neighbourhood based only on popular association rather than its verified technical location.
@@ -2424,6 +2438,7 @@ def hard_hook_missing_requirements(text: object) -> list[str]:
     team_event_has_sides = bool(
         not MAP_HARD_TEAM_EVENT_RE.search(value)
         or MAP_HARD_TEAM_SIDES_RE.search(value)
+        or MAP_HARD_TEAM_INDIRECT_SIDES_RE.search(value)
     )
     missing: list[str] = []
     if not hard_hook_is_qualifying_recognition_hook(value):
@@ -2770,6 +2785,36 @@ def clue_ladder_reaches_required_locality(
     return bool(locality_key and locality_key in progression)
 
 
+def easy_has_broad_locality_route(
+    ladder: dict[str, str],
+    place: dict[str, Any],
+) -> bool:
+    locality = str(place.get("locality_name") or "").strip()
+    if not locality:
+        return True
+    if not clue_ladder_reaches_required_locality(ladder, place):
+        return False
+    locality_key = normalized_place_name(locality)
+    answer_names = [
+        str(place.get("canonical_name") or ""),
+        *[
+            str(alias)
+            for alias in (
+                place.get("acceptable_aliases")
+                if isinstance(place.get("acceptable_aliases"), list)
+                else []
+            )
+        ],
+    ]
+    if any(
+        locality_key == normalized_place_name(answer)
+        for answer in answer_names
+        if answer
+    ):
+        return True
+    return bool(MAP_EASY_CITY_SECTOR_RE.search(str(ladder.get("easy") or "")))
+
+
 def generation_avoid_in_clues(place: dict[str, Any]) -> str:
     geographic_names = {
         normalized_place_name(place.get(key))
@@ -2878,6 +2923,9 @@ def local_map_clue_critique(
     reaches_required_locality = clue_ladder_reaches_required_locality(ladder, place)
     if not reaches_required_locality and "easy" not in weak_role_fields:
         weak_role_fields.append("easy")
+    has_broad_locality_route = easy_has_broad_locality_route(ladder, place)
+    if not has_broad_locality_route and "easy" not in weak_role_fields:
+        weak_role_fields.append("easy")
     support_terms = dataset_support_terms(place)
     unsupported_fields = [
         field
@@ -2906,6 +2954,14 @@ def local_map_clue_critique(
         )
         feedback.append(
             f"Name {locality} in medium or easy before referring to 'the city', a district, a road, or a smaller local feature."
+        )
+    elif not has_broad_locality_route:
+        locality = str(place.get("locality_name") or "").strip()
+        reasons.append(
+            f"Easy does not give a broad city-sector route within {locality} before relying on smaller map details."
+        )
+        feedback.append(
+            f"Give a broad route such as northern, southern, eastern, western, or central {locality}; use districts, roads, or stations only as supplementary detail."
         )
     if clue_is_generic_origin_fact(ladder["hard"]):
         reasons.append(
