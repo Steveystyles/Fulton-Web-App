@@ -64,6 +64,26 @@ class CorrectingEventResearchProvider(EventResearchProvider):
 
 
 class AiDailyMapRoundTests(unittest.TestCase):
+    def test_reverse_geocoded_locality_uses_a_low_zoom_city_anchor(self) -> None:
+        with patch.object(
+            generate_ai_daily_map_round.daily_map_game,
+            "fetch_reverse_geocode",
+            return_value={
+                "name": "Barcelona",
+                "address": {
+                    "city": "Barcelona",
+                    "county": "Barcelones",
+                    "state": "Catalonia",
+                },
+            },
+        ) as reverse:
+            locality = generate_ai_daily_map_round.reverse_geocoded_locality(
+                {"lat": 41.3809, "lng": 2.1228}
+            )
+
+        self.assertEqual(locality, "Barcelona")
+        reverse.assert_called_once_with(41.3809, 2.1228, 10)
+
     def test_candidate_needs_one_strong_hook_not_three_persuading_facts(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
@@ -287,6 +307,11 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 generate_ai_daily_map_round,
                 "research_event_brief",
                 side_effect=event_briefs,
+            ),
+            patch.object(
+                generate_ai_daily_map_round,
+                "reverse_geocoded_locality",
+                side_effect=["London", "Paris"],
             ),
             patch.object(
                 generate_ai_daily_map_round.daily_map_game,

@@ -423,6 +423,16 @@ class MapClueLearningTests(unittest.TestCase):
         self.assertIn("deep_zoom_anchor", categories)
         self.assertIn("incorrect_local_area", categories)
 
+    def test_failure_log_classifier_tracks_an_unresolved_locality(self) -> None:
+        categories = failure_log.classify_failure_reasons(
+            [
+                "The ladder has not explicitly reached the required low-zoom "
+                "locality Barcelona by the end of easy."
+            ]
+        )
+
+        self.assertIn("unresolved_locality", categories)
+
     def test_export_map_clue_training_data_writes_reviewed_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

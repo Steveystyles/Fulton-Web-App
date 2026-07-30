@@ -559,6 +559,8 @@ Clue ladder intention:
 - Medium clue style: materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope.
 - Medium may add a place-owned fact, naming story, institution, or cultural connection for character, but that extra fact is optional and geographic progress is mandatory.
 - Easy clue style: narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark visible at city zoom.
+- map_guessability must explicitly name the city, town, or municipality that a player can see at zoom 10 or 11. Never use "the city" or "the area" as a substitute for that name.
+- The easy route may add a district, road, or smaller feature, but it must first establish a named low-zoom locality; do not make an unlabelled neighbourhood the essential anchor.
 - Medium should not be a full map instruction. Avoid "look for", "find", "locate", "scan", "search", or pin/map language in the medium clue.
 - Medium should not be merely another hard hook. If it uses a record, famous incident, survival story, or famous person, it must also narrow the search or help infer the name.
 - Before returning, check the order. If the first clue tells the player where to look, move it later. If the strongest story or famous incident is in clue 2 or 3, move it to clue 1 and rewrite the later clues to narrow the area and then the map target.
@@ -576,6 +578,7 @@ Clue ladder intention:
 Fact rules:
 - Provide exactly the three draft clues needed for each place, ordered as hard, medium, then easy.
 - Do not include the canonical_name or aliases inside fun_facts.
+- avoid_in_clues must contain only the canonical answer, accepted aliases, and distinctive answer-name fragments. Never add a country, region, city, district, road, river, station, or other map anchor unless it is itself the answer or an alias.
 - Hard must contain the interesting recognition hook.
 - Medium and Easy do not need separate spectacular stories: their primary job is to narrow the map search progressively.
 - Write facts in natural adult wording. Avoid dry official phrasing.

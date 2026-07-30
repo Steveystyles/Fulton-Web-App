@@ -446,6 +446,8 @@ class MapPlaceCandidateGenerationTests(unittest.TestCase):
         self.assertIn("fun but beatable", prompt)
         self.assertIn("ordered as hard, medium, then easy", prompt)
         self.assertIn("clue-level scores affect how the ladder should be written", prompt)
+        self.assertIn("explicitly name the city, town, or municipality", prompt)
+        self.assertIn("avoid_in_clues must contain only", prompt)
 
     def test_candidate_generation_prompt_includes_blocked_names_as_hard_stop(self) -> None:
         prompt = generator.candidate_generation_prompt(

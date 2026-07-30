@@ -65,6 +65,15 @@ CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (
+        "unresolved_locality",
+        re.compile(
+            r"\b(?:required low-zoom locality|locality (?:was )?not named|"
+            r"unnamed (?:city|town|municipality|locality)|"
+            r"before referring to ['\"]?the city|scope only reached (?:a )?region)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "weak_known_for_hook",
         re.compile(r"\b(?:known-for hook|known for|weak fields|concrete hook|distinct known-for)\b", re.IGNORECASE),
     ),

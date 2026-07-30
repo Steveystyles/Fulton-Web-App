@@ -2156,6 +2156,8 @@ Rules:
 - Generic narrowing such as cliffs, coast, hills, countryside, or a nearby city is not enough when it could describe many places.
 - Do not anonymise the medium clue's distinctive detail as "a famous journalist", "a prominent architect", or another unnamed role. Name the person when answer-safe, or use a different precise fact.
 - Easy continues from medium rather than repeating its country, region, or city.
+- The target includes locality_name when a city, town, or municipality is available from reverse geocoding at zoom 10. By the end of easy, medium or easy must explicitly name that locality unless the locality itself is the answer.
+- Never introduce an unnamed place with "the city", "this city", "the town", or "the area". If medium has only reached a region or culture, easy must explicitly name the locality before giving smaller directions.
 - Easy must narrow to a local area inside that scope: for example a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
 - The easy clue's essential local anchor must be visible or labelled by zoom 11 or earlier on the quiz's Esri World Street Map. The player may zoom further to place the pin, but should not need a label that first appears at zoom 12 or later.
 - A later neighbourhood or district label may only supplement a lower-zoom route. Base the route on a larger visible anchor such as the city, municipality, major river or coast, major park, transport feature, or similarly useful map feature, then give a practical direction or relationship within it.
@@ -2221,6 +2223,7 @@ Fail the ladder if:
 - Medium presents fictional characters or events as though they were historical facts.
 - Medium replaces its distinctive detail with an unnamed generic role such as "a famous journalist" or "a prominent architect".
 - Easy does not continue from medium into a local area such as a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
+- A locality_name is supplied, but neither medium nor easy explicitly names it before referring to "the city", a district, a road, or another smaller feature.
 - Easy merely repeats a country, region, or city without saying where to work inside it.
 - Easy's essential local anchor first appears after zoom 11 on the quiz's Esri World Street Map. A later district label is acceptable only as supplementary information beside a usable lower-zoom route.
 - Easy claims that the target is inside a borough, district, quarter, or neighbourhood based only on popular association rather than its verified technical location.
@@ -2599,6 +2602,7 @@ def dataset_support_terms(place: dict[str, Any]) -> set[str]:
         "country_name",
         "admin1",
         "continent",
+        "locality_name",
     ):
         value = str(place.get(key) or "").strip()
         if value:
@@ -2695,6 +2699,7 @@ def context_geographic_names(place: dict[str, Any]) -> set[str]:
         str(place.get("country_name") or ""),
         str(place.get("admin1") or ""),
         str(place.get("continent") or ""),
+        str(place.get("locality_name") or ""),
         str(place.get("nearby_context") or ""),
     ]
     names: set[str] = set()
@@ -2731,6 +2736,50 @@ def easy_has_local_map_route(text: str, place: dict[str, Any]) -> bool:
     has_named_local_feature = bool(named_context and has_local_relation)
     return has_directional_local_area or has_named_local_feature or bool(
         re.search(r"\b(?:old town|city centre|city center|downtown)\b", value, re.IGNORECASE)
+    )
+
+
+def clue_ladder_reaches_required_locality(
+    ladder: dict[str, str],
+    place: dict[str, Any],
+) -> bool:
+    locality = str(place.get("locality_name") or "").strip()
+    if not locality:
+        return True
+    locality_key = normalized_place_name(locality)
+    answer_names = [
+        str(place.get("canonical_name") or ""),
+        *[
+            str(alias)
+            for alias in (
+                place.get("acceptable_aliases")
+                if isinstance(place.get("acceptable_aliases"), list)
+                else []
+            )
+        ],
+    ]
+    if any(
+        locality_key == normalized_place_name(answer)
+        for answer in answer_names
+        if answer
+    ):
+        return True
+    progression = normalized_place_name(
+        f"{ladder.get('medium', '')} {ladder.get('easy', '')}"
+    )
+    return bool(locality_key and locality_key in progression)
+
+
+def generation_avoid_in_clues(place: dict[str, Any]) -> str:
+    geographic_names = {
+        normalized_place_name(place.get(key))
+        for key in ("locality_name", "country_name", "admin1", "continent")
+        if str(place.get(key) or "").strip()
+    }
+    return "; ".join(
+        value
+        for value in split_list_text(place.get("avoid_in_clues"))
+        if normalized_place_name(value) not in geographic_names
     )
 
 
@@ -2826,6 +2875,9 @@ def local_map_clue_critique(
         weak_role_fields.append("medium")
     if not easy_has_local_map_route(ladder["easy"], place):
         weak_role_fields.append("easy")
+    reaches_required_locality = clue_ladder_reaches_required_locality(ladder, place)
+    if not reaches_required_locality and "easy" not in weak_role_fields:
+        weak_role_fields.append("easy")
     support_terms = dataset_support_terms(place)
     unsupported_fields = [
         field
@@ -2846,6 +2898,14 @@ def local_map_clue_critique(
         )
         feedback.append(
             "Use a memorable hard recognition hook, make medium reduce the broad geography, and make easy identify a local area or feature within that scope."
+        )
+    if not reaches_required_locality:
+        locality = str(place.get("locality_name") or "").strip()
+        reasons.append(
+            f"The ladder has not explicitly reached the required low-zoom locality {locality} by the end of easy."
+        )
+        feedback.append(
+            f"Name {locality} in medium or easy before referring to 'the city', a district, a road, or a smaller local feature."
         )
     if clue_is_generic_origin_fact(ladder["hard"]):
         reasons.append(
@@ -3158,6 +3218,7 @@ def generate_reviewed_clue_ladder(
     config: MapClueConfig | None = None,
     save: bool = True,
     required_hard_hook: str = "",
+    locality_name: str = "",
 ) -> dict[str, Any]:
     config = config or MapClueConfig()
     place = conn.execute("SELECT * FROM map_place_pool WHERE id = ?", (place_id,)).fetchone()
@@ -3167,7 +3228,9 @@ def generate_reviewed_clue_ladder(
     generation_place = {
         **place_payload,
         "required_hard_hook": str(required_hard_hook or "").strip(),
+        "locality_name": str(locality_name or "").strip(),
     }
+    generation_place["avoid_in_clues"] = generation_avoid_in_clues(generation_place)
     if generation_place["required_hard_hook"] and not hard_hook_is_qualifying_recognition_hook(
         generation_place["required_hard_hook"]
     ):

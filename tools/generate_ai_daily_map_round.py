@@ -538,6 +538,35 @@ def research_event_brief(
     raise last_error or ValueError("Grounded hook research did not return a valid result.")
 
 
+def reverse_geocoded_locality(place: dict[str, Any]) -> str:
+    if str(place.get("place_type") or "").strip().casefold() in {
+        "city",
+        "town",
+        "municipality",
+        "village",
+    }:
+        canonical_name = str(place.get("canonical_name") or "").strip()
+        if canonical_name:
+            return canonical_name
+    result = daily_map_game.fetch_reverse_geocode(
+        float(place["lat"]),
+        float(place["lng"]),
+        10,
+    )
+    if not isinstance(result, dict):
+        raise ValueError("No low-zoom locality could be verified for this map target.")
+    address = result.get("address")
+    if not isinstance(address, dict):
+        address = {}
+    for key in ("city", "town", "municipality", "village"):
+        value = str(address.get(key) or "").strip()
+        if value:
+            return value
+    raise ValueError(
+        "Reverse geocoding did not return a city, town, municipality, or village at zoom 10."
+    )
+
+
 def validate_event_brief(
     payload: dict[str, Any],
     selected_hook: dict[str, Any],
@@ -633,6 +662,18 @@ def generate_round(
 
         place_payload = daily_map_game.public_place_payload(place)
         try:
+            locality_name = reverse_geocoded_locality(place_payload)
+        except Exception as error:
+            rejection = {
+                "place_id": place_id,
+                "place": str(place["canonical_name"]),
+                "stage": "locality_verification",
+                "reason": str(error),
+            }
+            rejected_places.append(rejection)
+            print(json.dumps({"stage": "place_rejected", **rejection}), flush=True)
+            continue
+        try:
             event_brief = research_event_brief(
                 provider,
                 selected_hook,
@@ -679,6 +720,7 @@ def generate_round(
                 ),
                 save=True,
                 required_hard_hook=enriched_hard_hook,
+                locality_name=locality_name,
             )
         except Exception as error:
             rejection = {

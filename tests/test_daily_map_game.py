@@ -948,6 +948,8 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertIn("geographic progress is mandatory", prompt)
         self.assertIn("Do not force every medium clue into the same template", prompt)
         self.assertIn("Easy must narrow to a local area", prompt)
+        self.assertIn("must explicitly name that locality", prompt)
+        self.assertIn('Never introduce an unnamed place with "the city"', prompt)
         self.assertIn("zoom 11 or earlier", prompt)
         self.assertIn("popular association", prompt)
         self.assertNotIn("Write for a child", prompt)
@@ -969,8 +971,90 @@ class DailyMapGameTests(unittest.TestCase):
         )
 
         self.assertIn("after zoom 11", prompt)
+        self.assertIn("neither medium nor easy explicitly names it", prompt)
         self.assertIn("popular association", prompt)
         self.assertIn("verified technical location", prompt)
+
+    def test_local_critic_rejects_an_unresolved_city_reference(self) -> None:
+        place = {
+            "canonical_name": "Camp Nou",
+            "acceptable_aliases": ["Nou Camp"],
+            "country_name": "Spain",
+            "admin1": "Catalonia",
+            "locality_name": "Barcelona",
+            "verified_facts": [
+                "Manchester United beat Bayern Munich 2-1 here in the 1999 Champions League final.",
+                "The venue is home to a Catalan football club.",
+                "The stadium lies north of Avinguda Diagonal in Les Corts.",
+            ],
+            "nearby_context": "A large oval in the western urban area north of Avinguda Diagonal.",
+            "required_hard_hook": (
+                "Manchester United beat Bayern Munich 2-1 on this pitch in the "
+                "1999 Champions League final with two stoppage-time goals."
+            ),
+        }
+        critic = daily_map_game.local_map_clue_critique(
+            place,
+            {
+                "hard": place["required_hard_hook"],
+                "medium": "Its resident football club represents Catalonia.",
+                "easy": (
+                    "Look for a large oval in the western urban area of the city, "
+                    "north of Avinguda Diagonal in Les Corts."
+                ),
+                "reveal": "Camp Nou is Barcelona's famous football stadium.",
+            },
+        )
+
+        self.assertFalse(critic["passed"])
+        self.assertTrue(
+            any(
+                "required low-zoom locality Barcelona" in reason
+                for reason in critic["failure_reasons"]
+            )
+        )
+
+    def test_locality_progression_accepts_the_city_named_by_medium_or_easy(self) -> None:
+        place = {
+            "canonical_name": "Camp Nou",
+            "acceptable_aliases": ["Nou Camp"],
+            "locality_name": "Barcelona",
+        }
+
+        self.assertTrue(
+            daily_map_game.clue_ladder_reaches_required_locality(
+                {
+                    "medium": "This is the home of a football club from Barcelona.",
+                    "easy": "Search west of the city centre.",
+                },
+                place,
+            )
+        )
+        self.assertTrue(
+            daily_map_game.clue_ladder_reaches_required_locality(
+                {
+                    "medium": "Its resident football club represents Catalonia.",
+                    "easy": "In Barcelona, search west of the city centre.",
+                },
+                place,
+            )
+        )
+
+    def test_generation_avoid_list_keeps_geography_available(self) -> None:
+        place = {
+            "canonical_name": "Camp Nou",
+            "acceptable_aliases": ["Nou Camp"],
+            "country_name": "Spain",
+            "admin1": "Catalonia",
+            "continent": "Europe",
+            "locality_name": "Barcelona",
+            "avoid_in_clues": "Camp Nou; Nou Camp; Barcelona; Spain; Catalonia; Europe",
+        }
+
+        self.assertEqual(
+            daily_map_game.generation_avoid_in_clues(place),
+            "Camp Nou; Nou Camp",
+        )
 
     def test_low_confidence_learned_failure_is_advisory_not_a_veto(self) -> None:
         place = {"place_type": "island"}
