@@ -63,6 +63,37 @@ class CorrectingEventResearchProvider(EventResearchProvider):
         return super().call_with_fallback(**kwargs)
 
 
+class EventPlaceVerificationProvider:
+    def __init__(self, *, passed: bool = True) -> None:
+        self.passed = passed
+        self.tools = []
+        self.prompt = ""
+
+    def call_with_fallback(self, **kwargs):
+        self.tools = list(kwargs.get("tools") or [])
+        self.prompt = str(kwargs.get("prompt") or "")
+        return {
+            "passed": self.passed,
+            "confidence": 96,
+            "failure_reasons": [] if self.passed else ["The match occurred at another stadium."],
+            "used_source_urls": ["https://example.com/match-record"],
+        }
+
+
+class FallbackEventPlaceVerificationProvider(EventPlaceVerificationProvider):
+    def call_with_fallback(self, **kwargs):
+        if kwargs.get("tools"):
+            raise RuntimeError("Grounded provider quota exhausted.")
+        self.tools = []
+        self.prompt = str(kwargs.get("prompt") or "")
+        return {
+            "passed": True,
+            "confidence": 96,
+            "failure_reasons": [],
+            "used_source_urls": ["https://en.wikipedia.org/?curid=42"],
+        }
+
+
 class AiDailyMapRoundTests(unittest.TestCase):
     def test_event_brief_rejects_a_generic_site_that_drops_target_identity(self) -> None:
         selected_hook = {
@@ -433,6 +464,16 @@ class AiDailyMapRoundTests(unittest.TestCase):
             ),
             patch.object(
                 generate_ai_daily_map_round,
+                "verify_event_place_connection",
+                return_value={
+                    "passed": True,
+                    "confidence": 96,
+                    "failure_reasons": [],
+                    "used_source_urls": ["https://example.com/verified"],
+                },
+            ),
+            patch.object(
+                generate_ai_daily_map_round,
                 "reverse_geocoded_locality",
                 side_effect=["London", "Paris"],
             ),
@@ -488,7 +529,7 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertIn("four knights", result["enriched_hard_hook"])
         self.assertEqual(
             provider.tools,
-            [{"urlContext": {}}],
+            [{"googleSearch": {}}],
         )
 
     def test_event_research_uses_search_when_no_source_url_exists(self) -> None:
@@ -509,6 +550,98 @@ class AiDailyMapRoundTests(unittest.TestCase):
         )
 
         self.assertEqual(provider.tools, [{"googleSearch": {}}])
+
+    def test_event_place_verifier_requires_exact_venue_connection(self) -> None:
+        provider = EventPlaceVerificationProvider()
+        result = generate_ai_daily_map_round.verify_event_place_connection(
+            provider,
+            {
+                "verified_hard_hook": (
+                    "A named team won a tournament match on this pitch."
+                )
+            },
+            {
+                "enriched_hard_hook": (
+                    "On this pitch, Team A defeated Team B 2-0 in the group stage."
+                )
+            },
+            place={"canonical_name": "Example Stadium"},
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(provider.tools, [{"googleSearch": {}}])
+        self.assertIn("exact stadium or venue", provider.prompt)
+
+    def test_event_place_verifier_fails_when_event_was_at_another_venue(self) -> None:
+        provider = EventPlaceVerificationProvider(passed=False)
+
+        with self.assertRaisesRegex(ValueError, "another stadium"):
+            generate_ai_daily_map_round.verify_event_place_connection(
+                provider,
+                {"verified_hard_hook": "A match happened on this pitch."},
+                {"enriched_hard_hook": "Team A defeated Team B here."},
+                place={"canonical_name": "Wrong Stadium"},
+            )
+
+    def test_event_place_verifier_can_use_independent_wikipedia_evidence(self) -> None:
+        provider = FallbackEventPlaceVerificationProvider()
+        evidence = [
+            {
+                "title": "Example match",
+                "url": "https://en.wikipedia.org/?curid=42",
+                "extract": "Team A defeated Team B 2-0 at Example Stadium.",
+            }
+        ]
+
+        with patch.object(
+            generate_ai_daily_map_round,
+            "wikipedia_verification_evidence",
+            return_value=evidence,
+        ):
+            result = generate_ai_daily_map_round.verify_event_place_connection(
+                provider,
+                {"verified_hard_hook": "Team A defeated Team B here."},
+                {"enriched_hard_hook": "Team A defeated Team B 2-0 here."},
+                place={"canonical_name": "Example Stadium"},
+            )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["evidence_source"], "wikipedia")
+        self.assertIn("Judge only", provider.prompt)
+
+    def test_event_place_verifier_rejects_fallback_urls_outside_evidence(self) -> None:
+        provider = FallbackEventPlaceVerificationProvider()
+
+        def unsupported_source_response(**kwargs):
+            if kwargs.get("tools"):
+                raise RuntimeError("Grounded provider quota exhausted.")
+            return {
+                "passed": True,
+                "confidence": 96,
+                "failure_reasons": [],
+                "used_source_urls": ["https://unsupported.example/source"],
+            }
+
+        provider.call_with_fallback = unsupported_source_response
+
+        with patch.object(
+            generate_ai_daily_map_round,
+            "wikipedia_verification_evidence",
+            return_value=[
+                {
+                    "title": "Evidence",
+                    "url": "https://en.wikipedia.org/?curid=42",
+                    "extract": "Evidence text.",
+                }
+            ],
+        ):
+            with self.assertRaisesRegex(ValueError, "outside the supplied evidence"):
+                generate_ai_daily_map_round.verify_event_place_connection(
+                    provider,
+                    {"verified_hard_hook": "A match happened here."},
+                    {"enriched_hard_hook": "A match happened here."},
+                    place={"canonical_name": "Example Stadium"},
+                )
 
     def test_event_research_reuses_a_validated_cache_entry(self) -> None:
         provider = EventResearchProvider()

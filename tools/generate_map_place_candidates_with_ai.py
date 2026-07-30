@@ -548,6 +548,7 @@ Selection rules:
 - A user should be able to tap the map target confidently after clues reveal the name.
 - The coordinates must identify the actual guessable object or city centre, not a whole region.
 - Use stable, source-checkable facts only. Avoid current events. Verify whether every claimed record is current or former.
+- For every event hook, verify that the event occurred at the exact target place. Do not transfer a match or incident from another venue in the same city, tournament, group, or institution.
 - Supply direct source_urls actually used for the hook, map identity, and coordinates. Do not invent URLs.
 
 Clue ladder intention:

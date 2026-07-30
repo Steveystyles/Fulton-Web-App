@@ -9,6 +9,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
@@ -27,6 +29,34 @@ PLAYER_FACING_LOCALITY_NAMES = {
     "greater london": "London",
     "greater manchester": "Manchester",
 }
+WIKIPEDIA_API_URL = "https://en.wikipedia.org/w/api.php"
+VERIFICATION_EVIDENCE_USER_AGENT = (
+    "FultonsQuiz/0.1 (+https://fultons-quiz.co.uk)"
+)
+VERIFICATION_SEARCH_STOPWORDS = {
+    "after",
+    "before",
+    "during",
+    "famous",
+    "famously",
+    "final",
+    "group",
+    "hosted",
+    "inside",
+    "match",
+    "place",
+    "stage",
+    "stadium",
+    "target",
+    "their",
+    "there",
+    "these",
+    "this",
+    "venue",
+    "where",
+    "which",
+    "world",
+}
 
 
 def utc_now() -> str:
@@ -35,7 +65,7 @@ def utc_now() -> str:
 
 def event_brief_cache_key(selected_hook: dict[str, Any], place: dict[str, Any]) -> str:
     identity = (
-        f"v2:{selected_hook.get('place_id') or place.get('canonical_name')}:"
+        f"v3:{selected_hook.get('place_id') or place.get('canonical_name')}:"
         f"{selected_hook.get('verified_hard_hook') or ''}"
     )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
@@ -113,6 +143,31 @@ def event_brief_schema() -> dict[str, Any]:
             "supporting_details",
             "used_source_urls",
             "confidence",
+        ],
+        "additionalProperties": False,
+    }
+
+
+def event_place_verification_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "passed": {"type": "boolean"},
+            "confidence": {"type": "integer"},
+            "failure_reasons": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "used_source_urls": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": [
+            "passed",
+            "confidence",
+            "failure_reasons",
+            "used_source_urls",
         ],
         "additionalProperties": False,
     }
@@ -459,8 +514,9 @@ Selected verified recognition hook:
 Preferred source URLs:
 {json.dumps(selected_hook.get("source_urls") or [], indent=2)}
 
-Use URL Context on the preferred source URLs to verify the event before writing.
-If no preferred source URL is supplied, use Google Search instead.
+Use Google Search to independently verify the event before writing.
+Treat preferred source URLs only as starting references; do not assume that they
+support the selected hook.
 
 Return one answer-safe enriched hook:
 - Prefer one clear sentence, but preserve the information needed to make the hook recognisable.
@@ -472,6 +528,7 @@ Return one answer-safe enriched hook:
 - For a team match or final, name both teams and the result; do not replace the competing sides with a scorer or attendance figure.
 - Keep the hook to one coherent event, record, or story. Never merge separate matches or incidents, or imply that an event happened during a different match.
 - Verify the exact competition stage, date, participants, result, and relationship between every claim. If the supplied capsule conflates separate events, retain only one accurately sourced recognition hook.
+- Verify that the event occurred at this exact target place, not merely in the same city, tournament, institution, or venue group.
 - A record may cite the separate events that establish it, but omit unrelated anecdotes from those events.
 - Country names are allowed when they are the proper names of national teams or other essential event participants. Never replace one with "the host nation", "the visitors", or a similar generic label.
 - Tie the hook to the target with "here", "on this pitch", "inside this building", "at this site", or another answer-safe equivalent.
@@ -512,11 +569,7 @@ def research_event_brief(
             except ValueError:
                 pass
 
-    grounding_tools = (
-        [{"urlContext": {}}]
-        if selected_hook.get("source_urls")
-        else [{"googleSearch": {}}]
-    )
+    grounding_tools = [{"googleSearch": {}}]
     feedback: list[str] = []
     last_error: ValueError | None = None
     for _attempt in range(3):
@@ -555,6 +608,249 @@ def research_event_brief(
             )
         return event_brief
     raise last_error or ValueError("Grounded hook research did not return a valid result.")
+
+
+def event_place_verification_prompt(
+    selected_hook: dict[str, Any],
+    event_brief: dict[str, Any],
+    *,
+    place: dict[str, Any],
+) -> str:
+    return f"""Independently verify that a proposed map-quiz recognition hook belongs to the exact target place.
+
+Target place:
+{json.dumps(place, indent=2, ensure_ascii=False)}
+
+Original proposed hook:
+{selected_hook["verified_hard_hook"]}
+
+Researched hook:
+{event_brief["enriched_hard_hook"]}
+
+Do not trust either hook or its supplied source list. Use Google Search and fail closed.
+
+Set passed to true only when reliable sources explicitly support all material claims:
+- The exact event, record, incident, person-linked episode, or achievement belongs to this exact target place.
+- A match or sporting event occurred at this exact stadium or venue, not another venue in the same city, tournament, group, or club.
+- The competition stage, date or year, named participants, score or outcome, and stated significance are accurate.
+- Separate events have not been merged or presented as one event.
+- A claimed current record is still current; a former record is labelled former.
+
+If the event is real but occurred somewhere else, passed must be false.
+If the exact target-event connection cannot be confirmed, passed must be false.
+Confidence must reflect the target-event connection, not merely whether the event itself happened.
+Return the direct URLs actually used to verify the connection and concise failure reasons.
+Return JSON only."""
+
+
+def wikipedia_verification_evidence(
+    selected_hook: dict[str, Any],
+    event_brief: dict[str, Any],
+    *,
+    place: dict[str, Any],
+    limit: int = 5,
+) -> list[dict[str, str]]:
+    canonical_name = str(place.get("canonical_name") or "").strip()
+    hook_text = re.sub(
+        r"\s+",
+        " ",
+        " ".join(
+            (
+                str(selected_hook.get("verified_hard_hook") or ""),
+                str(event_brief.get("enriched_hard_hook") or ""),
+            )
+        ),
+    ).strip()
+    keywords: list[str] = []
+    for token in re.findall(r"\b[0-9]{4}\b|\b[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'-]{3,}\b", hook_text):
+        normalized = token.casefold()
+        if normalized in VERIFICATION_SEARCH_STOPWORDS or normalized in {
+            item.casefold() for item in canonical_name.split()
+        }:
+            continue
+        if normalized not in {item.casefold() for item in keywords}:
+            keywords.append(token)
+        if len(keywords) >= 10:
+            break
+    quoted_target = f'"{canonical_name}"' if canonical_name else ""
+    search_queries = [
+        canonical_name,
+        " ".join((quoted_target, *keywords[:7])).strip(),
+        " ".join(keywords[:10]).strip(),
+    ]
+    page_ids: list[int] = []
+    max_pages = max(1, min(8, limit))
+    for query in dict.fromkeys(
+        re.sub(r"\s+", " ", item).strip()
+        for item in search_queries
+        if item.strip()
+    ):
+        search_url = f"{WIKIPEDIA_API_URL}?{urlencode({
+            'action': 'query',
+            'list': 'search',
+            'srsearch': query,
+            'srlimit': '4',
+            'format': 'json',
+            'formatversion': '2',
+        })}"
+        request = Request(
+            search_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": VERIFICATION_EVIDENCE_USER_AGENT,
+            },
+        )
+        with urlopen(request, timeout=10) as response:
+            search_payload = json.loads(response.read().decode("utf-8"))
+        raw_results = (
+            search_payload.get("query", {}).get("search", [])
+            if isinstance(search_payload, dict)
+            else []
+        )
+        for item in raw_results:
+            if not isinstance(item, dict) or not str(item.get("pageid") or "").isdigit():
+                continue
+            page_id = int(item["pageid"])
+            if page_id not in page_ids:
+                page_ids.append(page_id)
+            if len(page_ids) >= max_pages:
+                break
+        if len(page_ids) >= max_pages:
+            break
+    if not page_ids:
+        return []
+
+    extract_url = f"{WIKIPEDIA_API_URL}?{urlencode({
+        'action': 'query',
+        'prop': 'extracts',
+        'explaintext': '1',
+        'exintro': '1',
+        'exchars': '1200',
+        'exlimit': 'max',
+        'pageids': '|'.join(str(page_id) for page_id in page_ids),
+        'format': 'json',
+        'formatversion': '2',
+    })}"
+    extract_request = Request(
+        extract_url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": VERIFICATION_EVIDENCE_USER_AGENT,
+        },
+    )
+    with urlopen(extract_request, timeout=10) as response:
+        extract_payload = json.loads(response.read().decode("utf-8"))
+    pages = (
+        extract_payload.get("query", {}).get("pages", [])
+        if isinstance(extract_payload, dict)
+        else []
+    )
+    evidence: list[dict[str, str]] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        page_id = str(page.get("pageid") or "").strip()
+        title = str(page.get("title") or "").strip()
+        extract = re.sub(r"\s+", " ", str(page.get("extract") or "")).strip()
+        if not page_id.isdigit() or not title or not extract:
+            continue
+        evidence.append(
+            {
+                "title": title,
+                "url": f"https://en.wikipedia.org/?curid={page_id}",
+                "extract": extract[:1200],
+            }
+        )
+    return evidence
+
+
+def verify_event_place_connection(
+    provider: rewriter.ConfiguredMapClueProvider,
+    selected_hook: dict[str, Any],
+    event_brief: dict[str, Any],
+    *,
+    place: dict[str, Any],
+) -> dict[str, Any]:
+    prompt = event_place_verification_prompt(
+        selected_hook,
+        event_brief,
+        place=place,
+    )
+    evidence: list[dict[str, str]] = []
+    try:
+        payload = provider.call_with_fallback(
+            model_attr="critic_model",
+            prompt=prompt,
+            schema=event_place_verification_schema(),
+            tools=[{"googleSearch": {}}],
+        )
+    except RuntimeError as grounded_error:
+        try:
+            evidence = wikipedia_verification_evidence(
+                selected_hook,
+                event_brief,
+                place=place,
+            )
+        except Exception as evidence_error:
+            raise ValueError(
+                "Independent target-event verification had no grounded provider "
+                f"and Wikipedia evidence failed: {evidence_error}"
+            ) from evidence_error
+        if not evidence:
+            raise ValueError(
+                "Independent target-event verification had no grounded provider "
+                "and Wikipedia returned no evidence."
+            ) from grounded_error
+        payload = provider.call_with_fallback(
+            model_attr="critic_model",
+            prompt=(
+                prompt
+                + "\n\nThe live grounded provider was unavailable. Judge only the "
+                "following independently retrieved Wikipedia evidence. Do not use "
+                "memory or infer a target-event connection that the extracts do not "
+                "state explicitly. used_source_urls may contain only supplied URLs:\n"
+                + json.dumps(evidence, indent=2, ensure_ascii=False)
+            ),
+            schema=event_place_verification_schema(),
+        )
+    try:
+        confidence = int(payload.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    reasons = [
+        str(reason).strip()
+        for reason in payload.get("failure_reasons") or []
+        if str(reason).strip()
+    ]
+    used_urls = [
+        str(url).strip()
+        for url in payload.get("used_source_urls") or []
+        if str(url).strip()
+    ]
+    if evidence:
+        allowed_urls = {item["url"] for item in evidence}
+        unsupported_urls = [url for url in used_urls if url not in allowed_urls]
+        if unsupported_urls:
+            reasons.append(
+                "fallback verifier cited URLs outside the supplied evidence"
+            )
+    if (
+        payload.get("passed") is not True
+        or confidence < 90
+        or not used_urls
+        or reasons
+    ):
+        detail = "; ".join(reasons) or "exact target-event connection was not verified"
+        raise ValueError(
+            f"Independent target-event verification failed at confidence {confidence}: {detail}"
+        )
+    return {
+        "passed": True,
+        "confidence": confidence,
+        "failure_reasons": [],
+        "used_source_urls": used_urls,
+        "evidence_source": "wikipedia" if evidence else "provider_web_search",
+    }
 
 
 def reverse_geocoded_locality(place: dict[str, Any]) -> str:
@@ -731,6 +1027,23 @@ def generate_round(
             rejected_places.append(rejection)
             print(json.dumps({"stage": "place_rejected", **rejection}), flush=True)
             continue
+        try:
+            event_verification = verify_event_place_connection(
+                provider,
+                selected_hook,
+                event_brief,
+                place=place_payload,
+            )
+        except Exception as error:
+            rejection = {
+                "place_id": place_id,
+                "place": str(place["canonical_name"]),
+                "stage": "event_verification",
+                "reason": str(error),
+            }
+            rejected_places.append(rejection)
+            print(json.dumps({"stage": "place_rejected", **rejection}), flush=True)
+            continue
 
         enriched_hard_hook = str(event_brief["enriched_hard_hook"])
         print(
@@ -840,6 +1153,7 @@ def generate_round(
             "selection_reason": selection_reason,
             "verified_hard_hook": str(selected_hook["verified_hard_hook"]),
             "event_brief": event_brief,
+            "event_verification": event_verification,
             "shortlist_count": len(hooks),
             "place_attempts": len(rejected_places) + 1,
             "rejected_places": rejected_places,
