@@ -253,9 +253,18 @@ class ConfiguredMapClueProvider:
         prompt: str,
         schema: dict[str, Any],
         tools: list[dict[str, Any]] | None = None,
+        prefer_non_gemini: bool = False,
     ) -> dict[str, Any]:
         errors: list[str] = []
-        for client in self.clients:
+        clients = list(self.clients)
+        if prefer_non_gemini:
+            clients.sort(
+                key=lambda client: isinstance(
+                    client.provider,
+                    daily_quiz.GeminiProvider,
+                )
+            )
+        for client in clients:
             model = getattr(client.config, model_attr)
             try:
                 return self.request_json(

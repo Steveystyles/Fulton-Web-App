@@ -362,6 +362,34 @@ class MapClueRewriteTests(unittest.TestCase):
         self.assertEqual(provider.clients[0].config.critic_model, "gemini-test-critic")
         self.assertEqual(provider.clients[1].config.generator_model, "gemini-2.5-flash-lite")
 
+    def test_provider_can_prefer_non_gemini_for_evidence_only_criticism(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GEMINI_API_KEY": "gemini-key",
+                "OPENAI_API_KEY": "openai-key",
+            },
+            clear=True,
+        ):
+            provider = rewriter.ConfiguredMapClueProvider.from_env()
+
+        attempted: list[str] = []
+
+        def request_json(client, **_kwargs):
+            attempted.append(client.provider.name)
+            return {"provider": client.provider.name}
+
+        with patch.object(provider, "request_json", side_effect=request_json):
+            result = provider.call_with_fallback(
+                model_attr="critic_model",
+                prompt="Judge supplied evidence.",
+                schema={"type": "object"},
+                prefer_non_gemini=True,
+            )
+
+        self.assertEqual(attempted, ["openai-compatible"])
+        self.assertEqual(result["provider"], "openai-compatible")
+
     def test_apply_runtime_env_overrides_sets_timeout_and_retry_values(self) -> None:
         args = type(
             "Args",

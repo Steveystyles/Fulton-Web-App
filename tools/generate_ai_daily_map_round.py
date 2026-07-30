@@ -6,7 +6,9 @@ import json
 import re
 import sqlite3
 import sys
+import unicodedata
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -56,6 +58,33 @@ VERIFICATION_SEARCH_STOPWORDS = {
     "where",
     "which",
     "world",
+}
+DIRECT_EVIDENCE_STOPWORDS = VERIFICATION_SEARCH_STOPWORDS | {
+    "about",
+    "against",
+    "also",
+    "among",
+    "because",
+    "being",
+    "between",
+    "could",
+    "exact",
+    "from",
+    "happened",
+    "have",
+    "having",
+    "here",
+    "into",
+    "itself",
+    "local",
+    "occurred",
+    "their",
+    "through",
+    "upon",
+    "using",
+    "were",
+    "while",
+    "with",
 }
 
 
@@ -679,6 +708,7 @@ def wikipedia_verification_evidence(
         " ".join(keywords[:10]).strip(),
     ]
     page_ids: list[int] = []
+    search_snippets: dict[int, list[str]] = {}
     max_pages = max(1, min(8, limit))
     for query in dict.fromkeys(
         re.sub(r"\s+", " ", item).strip()
@@ -711,6 +741,13 @@ def wikipedia_verification_evidence(
             if not isinstance(item, dict) or not str(item.get("pageid") or "").isdigit():
                 continue
             page_id = int(item["pageid"])
+            snippet = re.sub(
+                r"\s+",
+                " ",
+                unescape(re.sub(r"<[^>]+>", " ", str(item.get("snippet") or ""))),
+            ).strip()
+            if snippet and snippet not in search_snippets.setdefault(page_id, []):
+                search_snippets[page_id].append(snippet)
             if page_id not in page_ids:
                 page_ids.append(page_id)
             if len(page_ids) >= max_pages:
@@ -754,14 +791,88 @@ def wikipedia_verification_evidence(
         extract = re.sub(r"\s+", " ", str(page.get("extract") or "")).strip()
         if not page_id.isdigit() or not title or not extract:
             continue
+        snippets = search_snippets.get(int(page_id), [])
+        evidence_text = " ".join(
+            [
+                *(f"Search excerpt: {snippet}" for snippet in snippets),
+                f"Page extract: {extract}",
+            ]
+        )
         evidence.append(
             {
                 "title": title,
                 "url": f"https://en.wikipedia.org/?curid={page_id}",
-                "extract": extract[:1200],
+                "extract": evidence_text[:1800],
             }
         )
     return evidence
+
+
+def verification_token(value: str) -> str:
+    folded = unicodedata.normalize("NFKD", value.casefold())
+    normalized = "".join(
+        character for character in folded if not unicodedata.combining(character)
+    )
+    if normalized.isdigit():
+        return normalized
+    if len(normalized) > 6 and normalized.endswith("ing"):
+        return normalized[:-3]
+    if len(normalized) > 5 and normalized.endswith("ied"):
+        return normalized[:-3] + "y"
+    if len(normalized) > 5 and normalized.endswith("ed"):
+        return normalized[:-2]
+    if len(normalized) > 5 and normalized.endswith("es"):
+        return normalized[:-2]
+    if len(normalized) > 4 and normalized.endswith("s"):
+        return normalized[:-1]
+    return normalized
+
+
+def exact_target_page_support(
+    evidence: list[dict[str, str]],
+    selected_hook: dict[str, Any],
+    *,
+    place: dict[str, Any],
+) -> dict[str, Any] | None:
+    canonical_name = verification_token(str(place.get("canonical_name") or ""))
+    target_page = next(
+        (
+            item
+            for item in evidence
+            if verification_token(str(item.get("title") or "")) == canonical_name
+        ),
+        None,
+    )
+    if target_page is None:
+        return None
+    hook_text = str(selected_hook.get("verified_hard_hook") or "")
+    claim_tokens = {
+        verification_token(token)
+        for token in re.findall(r"\b[0-9]{4}\b|\b[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'-]{3,}\b", hook_text)
+        if token.casefold() not in DIRECT_EVIDENCE_STOPWORDS
+    }
+    claim_tokens.discard("")
+    evidence_tokens = {
+        verification_token(token)
+        for token in re.findall(
+            r"\b[0-9]{4}\b|\b[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'-]{3,}\b",
+            str(target_page.get("extract") or ""),
+        )
+    }
+    years = set(re.findall(r"\b[0-9]{4}\b", hook_text))
+    matched = claim_tokens & evidence_tokens
+    coverage = len(matched) / max(1, len(claim_tokens))
+    if (
+        len(claim_tokens) < 4
+        or coverage < 0.8
+        or not years.issubset(evidence_tokens)
+    ):
+        return None
+    return {
+        "url": str(target_page.get("url") or ""),
+        "coverage": coverage,
+        "matched_tokens": sorted(matched),
+    }
 
 
 def verify_event_place_connection(
@@ -777,6 +888,7 @@ def verify_event_place_connection(
         place=place,
     )
     evidence: list[dict[str, str]] = []
+    payload: dict[str, Any] | None = None
     try:
         payload = provider.call_with_fallback(
             model_attr="critic_model",
@@ -784,7 +896,30 @@ def verify_event_place_connection(
             schema=event_place_verification_schema(),
             tools=[{"googleSearch": {}}],
         )
-    except RuntimeError as grounded_error:
+    except RuntimeError:
+        pass
+
+    try:
+        grounded_confidence = int((payload or {}).get("confidence") or 0)
+    except (TypeError, ValueError):
+        grounded_confidence = 0
+    grounded_reasons = [
+        str(reason).strip()
+        for reason in (payload or {}).get("failure_reasons") or []
+        if str(reason).strip()
+    ]
+    grounded_urls = [
+        str(url).strip()
+        for url in (payload or {}).get("used_source_urls") or []
+        if str(url).strip()
+    ]
+    grounded_passed = (
+        (payload or {}).get("passed") is True
+        and grounded_confidence >= 90
+        and not grounded_reasons
+        and bool(grounded_urls)
+    )
+    if not grounded_passed:
         try:
             evidence = wikipedia_verification_evidence(
                 selected_hook,
@@ -797,22 +932,36 @@ def verify_event_place_connection(
                 f"and Wikipedia evidence failed: {evidence_error}"
             ) from evidence_error
         if not evidence:
-            raise ValueError(
-                "Independent target-event verification had no grounded provider "
-                "and Wikipedia returned no evidence."
-            ) from grounded_error
-        payload = provider.call_with_fallback(
-            model_attr="critic_model",
-            prompt=(
-                prompt
-                + "\n\nThe live grounded provider was unavailable. Judge only the "
-                "following independently retrieved Wikipedia evidence. Do not use "
-                "memory or infer a target-event connection that the extracts do not "
-                "state explicitly. used_source_urls may contain only supplied URLs:\n"
-                + json.dumps(evidence, indent=2, ensure_ascii=False)
-            ),
-            schema=event_place_verification_schema(),
-        )
+            payload = payload or {}
+        else:
+            direct_support = exact_target_page_support(
+                evidence,
+                selected_hook,
+                place=place,
+            )
+            if direct_support and direct_support["url"]:
+                return {
+                    "passed": True,
+                    "confidence": 100,
+                    "failure_reasons": [],
+                    "used_source_urls": [direct_support["url"]],
+                    "evidence_source": "wikipedia_exact_page",
+                    "direct_evidence_coverage": direct_support["coverage"],
+                }
+            payload = provider.call_with_fallback(
+                model_attr="critic_model",
+                prompt=(
+                    prompt
+                    + "\n\nJudge only the following independently retrieved "
+                    "Wikipedia evidence. Do not use memory or infer a target-event "
+                    "connection that the extracts do not state explicitly. "
+                    "used_source_urls may contain only supplied URLs:\n"
+                    + json.dumps(evidence, indent=2, ensure_ascii=False)
+                ),
+                schema=event_place_verification_schema(),
+                prefer_non_gemini=True,
+            )
+    payload = payload or {}
     try:
         confidence = int(payload.get("confidence") or 0)
     except (TypeError, ValueError):

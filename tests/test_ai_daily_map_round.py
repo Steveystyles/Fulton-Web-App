@@ -575,13 +575,18 @@ class AiDailyMapRoundTests(unittest.TestCase):
     def test_event_place_verifier_fails_when_event_was_at_another_venue(self) -> None:
         provider = EventPlaceVerificationProvider(passed=False)
 
-        with self.assertRaisesRegex(ValueError, "another stadium"):
-            generate_ai_daily_map_round.verify_event_place_connection(
-                provider,
-                {"verified_hard_hook": "A match happened on this pitch."},
-                {"enriched_hard_hook": "Team A defeated Team B here."},
-                place={"canonical_name": "Wrong Stadium"},
-            )
+        with patch.object(
+            generate_ai_daily_map_round,
+            "wikipedia_verification_evidence",
+            return_value=[],
+        ):
+            with self.assertRaisesRegex(ValueError, "another stadium"):
+                generate_ai_daily_map_round.verify_event_place_connection(
+                    provider,
+                    {"verified_hard_hook": "A match happened on this pitch."},
+                    {"enriched_hard_hook": "Team A defeated Team B here."},
+                    place={"canonical_name": "Wrong Stadium"},
+                )
 
     def test_event_place_verifier_can_use_independent_wikipedia_evidence(self) -> None:
         provider = FallbackEventPlaceVerificationProvider()
@@ -608,6 +613,93 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertEqual(result["evidence_source"], "wikipedia")
         self.assertIn("Judge only", provider.prompt)
+
+    def test_event_place_verifier_rechecks_a_low_confidence_grounded_result(self) -> None:
+        provider = EventPlaceVerificationProvider(passed=False)
+        evidence = [
+            {
+                "title": "Example match",
+                "url": "https://en.wikipedia.org/?curid=42",
+                "extract": "Team A defeated Team B 2-0 at Example Stadium.",
+            }
+        ]
+
+        def low_confidence_then_evidence(**kwargs):
+            if kwargs.get("tools"):
+                return {
+                    "passed": False,
+                    "confidence": 5,
+                    "failure_reasons": ["The search result was inconclusive."],
+                    "used_source_urls": ["https://example.com/search"],
+                }
+            return {
+                "passed": True,
+                "confidence": 96,
+                "failure_reasons": [],
+                "used_source_urls": ["https://en.wikipedia.org/?curid=42"],
+            }
+
+        provider.call_with_fallback = low_confidence_then_evidence
+        with patch.object(
+            generate_ai_daily_map_round,
+            "wikipedia_verification_evidence",
+            return_value=evidence,
+        ):
+            result = generate_ai_daily_map_round.verify_event_place_connection(
+                provider,
+                {"verified_hard_hook": "Team A defeated Team B here."},
+                {"enriched_hard_hook": "Team A defeated Team B 2-0 here."},
+                place={"canonical_name": "Example Stadium"},
+            )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["evidence_source"], "wikipedia")
+
+    def test_exact_target_page_support_accepts_a_directly_corroborated_hook(self) -> None:
+        result = generate_ai_daily_map_round.exact_target_page_support(
+            [
+                {
+                    "title": "Terracotta Army",
+                    "url": "https://en.wikipedia.org/?curid=148653",
+                    "extract": (
+                        "The figures were buried with the emperor. Local farmers "
+                        "discovered the figures while digging a well in 1974."
+                    ),
+                }
+            ],
+            {
+                "verified_hard_hook": (
+                    "Farmers discovered the buried figures while digging a well in 1974."
+                )
+            },
+            place={"canonical_name": "Terracotta Army"},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["coverage"], 1.0)
+
+    def test_exact_target_page_support_rejects_an_event_from_another_venue(self) -> None:
+        result = generate_ai_daily_map_round.exact_target_page_support(
+            [
+                {
+                    "title": "Old Trafford",
+                    "url": "https://en.wikipedia.org/?curid=1234",
+                    "extract": (
+                        "This stadium hosted three group matches during the 1966 "
+                        "World Cup."
+                    ),
+                }
+            ],
+            {
+                "verified_hard_hook": (
+                    "Brazil beat Bulgaria here in 1966 while Pele was injured by "
+                    "a brutal tackle."
+                )
+            },
+            place={"canonical_name": "Old Trafford"},
+        )
+
+        self.assertIsNone(result)
 
     def test_event_place_verifier_rejects_fallback_urls_outside_evidence(self) -> None:
         provider = FallbackEventPlaceVerificationProvider()
