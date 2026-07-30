@@ -112,6 +112,7 @@ function MapCanvas({
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const displayedLevelIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (containerRef.current === null || mapRef.current !== null) {
@@ -189,6 +190,8 @@ function MapCanvas({
       return;
     }
 
+    const levelChanged = displayedLevelIdRef.current !== level.id;
+    displayedLevelIdRef.current = level.id;
     layer.clearLayers();
     const resizeTimer = window.setTimeout(() => {
       if (mapRef.current === map) {
@@ -244,7 +247,9 @@ function MapCanvas({
       return () => window.clearTimeout(resizeTimer);
     }
 
-    map.setView([25, 0], defaultMapZoom(), { animate: false });
+    if (levelChanged) {
+      map.setView([25, 0], defaultMapZoom(), { animate: false });
+    }
     return () => window.clearTimeout(resizeTimer);
   }, [acceptedSelection, draftSelection, level]);
 
