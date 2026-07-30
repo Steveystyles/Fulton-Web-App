@@ -598,6 +598,12 @@ MAP_HARD_GEO_SCOPE_RE = re.compile(
     r"west(?:ern)?(?!\s+(?:germany|indies)))\b",
     re.IGNORECASE,
 )
+MAP_HARD_NAMED_GEOGRAPHIC_FEATURE_RE = re.compile(
+    r"\b[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,3}\s+"
+    r"(?:Bay|Beach|Borough|City|Coast|District|Harbou?r|Island|Lake|"
+    r"Mountain|Neighbourhood|Neighborhood|Peninsula|Point|Quarter|River|"
+    r"Road|Sea|Station|Street|Valley|Waterfront)\b"
+)
 MAP_MEDIUM_GEO_NARROWING_RE = re.compile(
     r"\b(?:country|nation|national|region|state|province|county|city|capital|"
     r"language|community|island group|coast|river basin|"
@@ -2938,6 +2944,11 @@ def local_map_clue_critique(
             reasons.append("Hard clue borrows geographic scope that belongs in medium or easy.")
             feedback.append(
                 "Keep hard focused on the recognition hook; remove country, capital, region, direction, river, and nearby-place hints."
+            )
+        if MAP_HARD_NAMED_GEOGRAPHIC_FEATURE_RE.search(ladder["hard"]):
+            reasons.append("Hard clue names a geographic map feature that belongs in medium or easy.")
+            feedback.append(
+                "Remove named points, bays, rivers, districts, roads, stations, and other map locations from hard; preserve only the event and answer-safe target identity."
             )
         if not MAP_HARD_PLACE_LINK_RE.search(ladder["hard"]):
             reasons.append("Hard clue does not make clear that the recognition hook belongs to the target.")

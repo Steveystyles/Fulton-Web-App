@@ -595,6 +595,8 @@ def validate_event_brief(
         errors.append("revealed a distinctive target-name word")
     if daily_map_game.MAP_HARD_GEO_SCOPE_RE.search(enriched):
         errors.append("borrowed geographic scope from medium or easy")
+    if daily_map_game.MAP_HARD_NAMED_GEOGRAPHIC_FEATURE_RE.search(enriched):
+        errors.append("named a geographic map feature that belongs in medium or easy")
     missing_target_identities = daily_map_game.hard_missing_target_identities(
         enriched,
         place,

@@ -1466,6 +1466,16 @@ class DailyMapGameTests(unittest.TestCase):
             [],
         )
 
+    def test_hard_geography_gate_rejects_a_named_point(self) -> None:
+        clue = (
+            "During construction of this performing arts venue on Bennelong Point, "
+            "a worker became a local legend after falling into the foundation."
+        )
+
+        self.assertIsNotNone(
+            daily_map_game.MAP_HARD_NAMED_GEOGRAPHIC_FEATURE_RE.search(clue)
+        )
+
     def test_local_critic_rejects_geographic_scope_in_locked_hard_clue(self) -> None:
         place = {
             "canonical_name": "Example Old Town",
