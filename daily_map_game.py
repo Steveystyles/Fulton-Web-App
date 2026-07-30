@@ -50,9 +50,9 @@ SNAP_RADIUS_FLOOR_M = {
 SNAP_TOUCH_RADIUS_PX = 56
 
 SNAP_TOUCH_RADIUS_CAP_M = {
-    "easy": 650_000,
-    "medium": 350_000,
-    "hard": 180_000,
+    "easy": 200_000,
+    "medium": 120_000,
+    "hard": 75_000,
 }
 
 MAX_SNAP_ALTERNATIVES = 5
@@ -2209,6 +2209,7 @@ Rules:
 - Easy must also give a broad route within that locality, such as northern, southern, eastern, western, central, or the city centre. Merely naming the locality and then relying on a district, road, or station is not enough.
 - Easy must narrow to a local area inside that scope: for example a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
 - The easy clue's essential local anchor must be visible or labelled by zoom 11 or earlier on the quiz's Esri World Street Map. The player may zoom further to place the pin, but should not need a label that first appears at zoom 12 or later.
+- Prefer persistent visible geography such as a city centre, cardinal city sector, major river, coast, or large park over motorway and road numbers. A road number may only be supplementary after a complete route and must be visibly labelled on the quiz map.
 - A later neighbourhood or district label may only supplement a lower-zoom route. Base the route on a larger visible anchor such as the city, municipality, major river or coast, major park, transport feature, or similarly useful map feature, then give a practical direction or relationship within it.
 - Verify that a claimed borough, district, quarter, or neighbourhood is the target's technical location. Do not use a place's popular association with a nearby district as though the target were inside it.
 - Easy must work on the quiz's street map at normal playable zoom; do not rely on roof colours, seat colours, interior details, or aerial imagery.
@@ -2278,6 +2279,7 @@ Fail the ladder if:
 - Easy names the locality but gives no broad city-sector route before relying on a district, road, station, or other potentially deep-zoom detail.
 - Easy merely repeats a country, region, or city without saying where to work inside it.
 - Easy's essential local anchor first appears after zoom 11 on the quiz's Esri World Street Map. A later district label is acceptable only as supplementary information beside a usable lower-zoom route.
+- Easy depends on a motorway or road number that is absent, localised differently, or only visible at deep zoom on the quiz map.
 - Easy claims that the target is inside a borough, district, quarter, or neighbourhood based only on popular association rather than its verified technical location.
 - Easy relies on colour, interior detail, or another feature that is not visible on the quiz's street map.
 - A clue gives generic geography without helping the player narrow or pin the answer.
@@ -4139,9 +4141,8 @@ def snap_guess(
 
     nearby_places.sort(
         key=lambda candidate: (
-            0 if candidate[2]["id"] == level["answer_place_id"] else 1,
-            0 if candidate[2]["difficulty"] == level["level_slug"] else 1,
             candidate[0],
+            0 if candidate[2]["difficulty"] == level["level_slug"] else 1,
             candidate[2]["canonical_name"],
         )
     )

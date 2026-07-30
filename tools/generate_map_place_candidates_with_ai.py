@@ -564,6 +564,7 @@ Clue ladder intention:
 - map_guessability must explicitly name the city, town, or municipality that a player can see at zoom 10 or 11. Never use "the city" or "the area" as a substitute for that name.
 - The easy route may add a district, road, or smaller feature, but it must first establish a named low-zoom locality; do not make an unlabelled neighbourhood the essential anchor.
 - Give a broad route within that locality, such as northern, southern, eastern, western, central, or the city centre, before any smaller district, road, or station detail.
+- Prefer persistent map geography such as a city centre, cardinal city sector, major river, coast, or large park over motorway and road numbers. Treat a road number as supplementary only when it is visibly labelled on the quiz map.
 - Medium should not be a full map instruction. Avoid "look for", "find", "locate", "scan", "search", or pin/map language in the medium clue.
 - Medium should not be merely another hard hook. If it uses a record, famous incident, survival story, or famous person, it must also narrow the search or help infer the name.
 - Before returning, check the order. If the first clue tells the player where to look, move it later. If the strongest story or famous incident is in clue 2 or 3, move it to clue 1 and rewrite the later clues to narrow the area and then the map target.

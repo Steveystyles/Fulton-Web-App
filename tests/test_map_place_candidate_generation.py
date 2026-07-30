@@ -442,6 +442,7 @@ class MapPlaceCandidateGenerationTests(unittest.TestCase):
 
         self.assertIn("recognition hook -> broad area -> local map route", prompt)
         self.assertIn("Never bundle separate matches or incidents", prompt)
+        self.assertIn("Prefer persistent map geography", prompt)
         self.assertIn("One strong incident beats a bundled list of lesser facts", prompt)
         self.assertIn("this bridge", prompt)
         self.assertIn("fun but beatable", prompt)

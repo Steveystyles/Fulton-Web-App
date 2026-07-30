@@ -1940,7 +1940,7 @@ class DailyMapGameTests(unittest.TestCase):
             self.conn,
             level_id=level["id"],
             lat=level["lat"],
-            lng=float(level["lng"]) + 2.0,
+            lng=float(level["lng"]) + 0.5,
             today="2026-07-13",
             zoom=1,
         )
@@ -1950,8 +1950,9 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(selection["name"], "Cairo")
         self.assertGreater(selection["snapRadiusMeters"], 90_000)
         self.assertGreater(selection["snapRadiusMeters"], selection["distanceMeters"])
+        self.assertLessEqual(selection["snapRadiusMeters"], 200_000)
 
-    def test_snap_guess_keeps_answer_available_at_low_zoom(self) -> None:
+    def test_snap_guess_keeps_one_answer_option_within_tighter_low_zoom_radius(self) -> None:
         level = self.publish_named_level("Cairo")
         cairo = self.conn.execute(
             "SELECT * FROM map_place_pool WHERE canonical_name = 'Cairo'"
@@ -1986,7 +1987,7 @@ class DailyMapGameTests(unittest.TestCase):
             self.conn,
             level_id=level["id"],
             lat=float(level["lat"]),
-            lng=float(level["lng"]) + 4.0,
+            lng=float(level["lng"]) + 0.5,
             today="2026-07-13",
             zoom=1,
             allow_reverse_geocode=False,
@@ -1999,7 +2000,74 @@ class DailyMapGameTests(unittest.TestCase):
             [alternative["name"] for alternative in selection["alternatives"]].count("Cairo"),
             1,
         )
-        self.assertGreater(selection["snapRadiusMeters"], 350_000)
+        self.assertLessEqual(selection["snapRadiusMeters"], 200_000)
+
+    def test_snap_guess_does_not_select_answer_from_across_a_country(self) -> None:
+        level = self.publish_named_level("Cairo")
+        self.conn.execute(
+            "UPDATE map_place_pool SET active = 0 WHERE canonical_name <> 'Cairo'"
+        )
+
+        payload, status = daily_map_game.snap_guess(
+            self.conn,
+            level_id=level["id"],
+            lat=float(level["lat"]),
+            lng=float(level["lng"]) + 4.0,
+            today="2026-07-13",
+            zoom=1,
+            allow_reverse_geocode=False,
+        )
+
+        self.assertEqual(status, HTTPStatus.UNPROCESSABLE_ENTITY)
+        self.assertIn("No nearby place", payload["error"])
+
+    def test_snap_guess_selects_the_nearest_place_instead_of_preferring_answer(self) -> None:
+        level = self.publish_named_level("Cairo")
+        cairo = self.conn.execute(
+            "SELECT * FROM map_place_pool WHERE canonical_name = 'Cairo'"
+        ).fetchone()
+        clicked_lng = float(cairo["lng"]) + 0.5
+        self.conn.execute(
+            """
+            INSERT INTO map_place_pool (
+                slug, canonical_name, country_code, admin1, difficulty,
+                lat, lng, clue_text, reveal_text, scoring_radius_m,
+                active, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "closer-place-for-snap-test",
+                "Closer Place",
+                cairo["country_code"],
+                cairo["admin1"],
+                cairo["difficulty"],
+                cairo["lat"],
+                clicked_lng,
+                "A closer test place.",
+                "Closer Place.",
+                cairo["scoring_radius_m"],
+                1,
+                daily_map_game.utc_now(),
+            ),
+        )
+
+        selection, status = daily_map_game.snap_guess(
+            self.conn,
+            level_id=level["id"],
+            lat=float(cairo["lat"]),
+            lng=clicked_lng,
+            today="2026-07-13",
+            zoom=1,
+            allow_reverse_geocode=False,
+        )
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(selection["name"], "Closer Place")
+        self.assertIn(
+            "Cairo",
+            [alternative["name"] for alternative in selection["alternatives"]],
+        )
 
     def test_snap_guess_supports_landmark_places(self) -> None:
         level = self.publish_named_level("Falkirk Wheel")
