@@ -239,6 +239,18 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertIn("The hook determines the place", provider.prompt)
         self.assertIn("Reject architecture, architects, construction", provider.prompt)
 
+    def test_event_brief_prompt_requires_separate_events_to_stay_separate(self) -> None:
+        prompt = generate_ai_daily_map_round.event_brief_prompt(
+            {
+                "verified_hard_hook": "This stadium hosted two famous finals.",
+                "source_urls": ["https://example.com/stadium"],
+            },
+            place={"canonical_name": "Example Stadium"},
+        )
+
+        self.assertIn("Never merge separate matches or incidents", prompt)
+        self.assertIn("exact competition stage", prompt)
+
     def test_selector_rejects_hook_id_outside_verified_shortlist(self) -> None:
         provider = FakeProvider("outside")
 
@@ -310,6 +322,34 @@ class AiDailyMapRoundTests(unittest.TestCase):
         recent = generate_ai_daily_map_round.recent_place_ids(conn, "2026-07-30")
 
         self.assertIn(place_id, recent)
+
+    def test_candidate_shortlist_excludes_explicitly_seen_place_names(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+        hook = (
+            "Uruguay beat host nation Brazil 2-1 in the decisive 1950 World Cup "
+            "match here, an upset known as the Maracanazo."
+        )
+        conn.execute(
+            """
+            UPDATE map_place_pool
+            SET verified_facts_json = ?,
+                nearby_context = 'Maracana district, Rio de Janeiro, Brazil'
+            WHERE canonical_name = 'London'
+            """,
+            (json.dumps([hook]),),
+        )
+
+        candidates = generate_ai_daily_map_round.candidate_shortlist(
+            conn,
+            puzzle_date="2026-07-31",
+            eligible_names={"london"},
+            excluded_names={"london"},
+        )
+
+        self.assertEqual(candidates, [])
 
     def test_round_moves_to_next_place_when_first_ladder_is_rejected(self) -> None:
         conn = sqlite3.connect(":memory:")

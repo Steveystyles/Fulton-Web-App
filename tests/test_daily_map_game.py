@@ -1476,6 +1476,45 @@ class DailyMapGameTests(unittest.TestCase):
             daily_map_game.MAP_HARD_NAMED_GEOGRAPHIC_FEATURE_RE.search(clue)
         )
 
+    def test_hard_geography_gate_rejects_country_scope_but_allows_a_team(self) -> None:
+        place = {
+            "country_name": "England",
+            "admin1": "Kent",
+            "locality_name": "Canterbury",
+            "continent": "Europe",
+        }
+
+        self.assertEqual(
+            daily_map_game.hard_nonparticipant_geographic_names(
+                (
+                    "Inside this cathedral, Thomas Becket was murdered by four "
+                    "knights, transforming religious devotion in England."
+                ),
+                place,
+            ),
+            ["England"],
+        )
+        self.assertEqual(
+            daily_map_game.hard_nonparticipant_geographic_names(
+                (
+                    "On this pitch, England defeated West Germany 4-2 after "
+                    "extra time in the 1966 World Cup final."
+                ),
+                place,
+            ),
+            [],
+        )
+
+    def test_team_hook_accepts_country_name_before_national_football_team(self) -> None:
+        missing = daily_map_game.hard_hook_missing_requirements(
+            (
+                "On this pitch, the England national football team won the 1966 "
+                "World Cup final, defeating West Germany 4-2 after extra time."
+            )
+        )
+
+        self.assertNotIn("both named sides or participants", missing)
+
     def test_local_critic_rejects_geographic_scope_in_locked_hard_clue(self) -> None:
         place = {
             "canonical_name": "Example Old Town",

@@ -35,7 +35,7 @@ def utc_now() -> str:
 
 def event_brief_cache_key(selected_hook: dict[str, Any], place: dict[str, Any]) -> str:
     identity = (
-        f"{selected_hook.get('place_id') or place.get('canonical_name')}:"
+        f"v2:{selected_hook.get('place_id') or place.get('canonical_name')}:"
         f"{selected_hook.get('verified_hard_hook') or ''}"
     )
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
@@ -239,8 +239,14 @@ def candidate_shortlist(
     puzzle_date: str,
     limit: int = 24,
     eligible_names: set[str] | None = None,
+    excluded_names: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     excluded = recent_place_ids(conn, puzzle_date)
+    explicitly_excluded_names = {
+        str(name).strip().casefold()
+        for name in (excluded_names or set())
+        if str(name).strip()
+    }
     selector_profile = daily_map_game.load_map_selector_profile()
     selector_model = map_selector_model.load_model()
     clue_quality_model_payload = map_clue_quality_model.load_model()
@@ -256,10 +262,13 @@ def candidate_shortlist(
     ).fetchall()
     candidates: list[dict[str, Any]] = []
     for row in rows:
+        canonical_name = str(row["canonical_name"]).strip().casefold()
         if (
             eligible_names is not None
-            and str(row["canonical_name"]).strip().casefold() not in eligible_names
+            and canonical_name not in eligible_names
         ):
+            continue
+        if canonical_name in explicitly_excluded_names:
             continue
         if int(row["id"]) in excluded or daily_map_game.place_is_explicitly_excluded(row):
             continue
@@ -296,12 +305,14 @@ def hard_hook_shortlist(
     puzzle_date: str,
     limit: int = 48,
     eligible_names: set[str] | None = None,
+    excluded_names: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     places = candidate_shortlist(
         conn,
         puzzle_date=puzzle_date,
         limit=max(limit * 2, 80),
         eligible_names=eligible_names,
+        excluded_names=excluded_names,
     )
     hooks: list[dict[str, Any]] = []
     seen_hooks: set[tuple[str, str]] = set()
@@ -459,6 +470,9 @@ Return one answer-safe enriched hook:
 - For a non-event hook, state the specific record, achievement, association, tradition, or phenomenon and why it is distinctive.
 - Name useful people, teams, organisations, forces, works, or records when answer-safe.
 - For a team match or final, name both teams and the result; do not replace the competing sides with a scorer or attendance figure.
+- Keep the hook to one coherent event, record, or story. Never merge separate matches or incidents, or imply that an event happened during a different match.
+- Verify the exact competition stage, date, participants, result, and relationship between every claim. If the supplied capsule conflates separate events, retain only one accurately sourced recognition hook.
+- A record may cite the separate events that establish it, but omit unrelated anecdotes from those events.
 - Country names are allowed when they are the proper names of national teams or other essential event participants. Never replace one with "the host nation", "the visitors", or a similar generic label.
 - Tie the hook to the target with "here", "on this pitch", "inside this building", "at this site", or another answer-safe equivalent.
 - State the target's concrete answer-safe identity when the supplied place data supports it. For example, write "the federal prison on this island", "on this pitch", or "inside this church"; never collapse useful identities such as prison and island into only "this site" or "here".
@@ -597,6 +611,15 @@ def validate_event_brief(
         errors.append("borrowed geographic scope from medium or easy")
     if daily_map_game.MAP_HARD_NAMED_GEOGRAPHIC_FEATURE_RE.search(enriched):
         errors.append("named a geographic map feature that belongs in medium or easy")
+    hard_geographic_names = daily_map_game.hard_nonparticipant_geographic_names(
+        enriched,
+        place,
+    )
+    if hard_geographic_names:
+        errors.append(
+            "named geographic scope that belongs in medium or easy "
+            f"({', '.join(hard_geographic_names)})"
+        )
     missing_target_identities = daily_map_game.hard_missing_target_identities(
         enriched,
         place,
@@ -645,6 +668,7 @@ def generate_round(
     max_clue_attempts: int,
     max_place_attempts: int = 4,
     eligible_names: set[str] | None = None,
+    excluded_names: set[str] | None = None,
 ) -> dict[str, Any]:
     daily_map_game.initialize_database(conn)
     hooks = hard_hook_shortlist(
@@ -652,6 +676,7 @@ def generate_round(
         puzzle_date=puzzle_date,
         limit=shortlist_limit,
         eligible_names=eligible_names,
+        excluded_names=excluded_names,
     )
     available = list(hooks)
     rejected_places: list[dict[str, Any]] = []
@@ -689,6 +714,7 @@ def generate_round(
             rejected_places.append(rejection)
             print(json.dumps({"stage": "place_rejected", **rejection}), flush=True)
             continue
+        place_payload["locality_name"] = locality_name
         try:
             event_brief = research_event_brief(
                 provider,
@@ -925,6 +951,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", type=Path, default=rewriter.DEFAULT_ENV_FILE)
     parser.add_argument("--generator-model", default="")
     parser.add_argument("--critic-model", default="")
+    parser.add_argument(
+        "--exclude-place",
+        action="append",
+        default=[],
+        help="Exclude an exact canonical place name from this QA run; repeat as needed.",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--timeout-sec", type=int, default=None)
     parser.add_argument("--request-delay-sec", type=float, default=None)
@@ -944,6 +976,11 @@ def main() -> int:
     )
     discovery: dict[str, Any] | None = None
     eligible_names: set[str] | None = None
+    excluded_names = {
+        str(name).strip().casefold()
+        for name in args.exclude_place
+        if str(name).strip()
+    }
     if args.discover_count > 0:
         discovery = discover_uncurated_candidates(
             db_path=args.db,
@@ -964,8 +1001,10 @@ def main() -> int:
             max_clue_attempts=max(1, args.max_clue_attempts),
             max_place_attempts=max(1, args.max_place_attempts),
             eligible_names=eligible_names,
+            excluded_names=excluded_names,
         )
         result["discovery"] = discovery
+        result["excluded_places"] = sorted(excluded_names)
         conn.commit()
     except Exception:
         conn.rollback()

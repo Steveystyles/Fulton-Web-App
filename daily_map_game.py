@@ -508,8 +508,10 @@ MAP_HARD_TEAM_SIDES_RE = re.compile(
     r"[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2})\b"
 )
 MAP_HARD_TEAM_INDIRECT_SIDES_RE = re.compile(
-    r"\b(?:national\s+)?team\s+of\s+"
-    r"[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2}"
+    r"\b(?:(?:national\s+)?team\s+of\s+"
+    r"[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2}|"
+    r"[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2}\s+"
+    r"(?:national\s+)?(?:football\s+)?team)"
     r".{0,100}?\b(?:beat|defeated|defeating)\s+(?:the\s+)?"
     r"[A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,2}\b"
 )
@@ -2184,6 +2186,8 @@ Rules:
 - When a locked verified hook is supplied, preserve the people, action, defining method, outcome, record, consequence, or other details that make it recognisable.
 - An event hook must contain enough of the event to be memorable rather than reducing it to a headline. A concrete defining method can provide that detail even when the event has no settled outcome.
 - For a team match or final, name both teams and the result; do not substitute a scorer or attendance figure for the competing sides.
+- Keep hard to one coherent event, record, or story. Never merge separate matches or incidents, or imply that an event happened during a different match.
+- Verify the exact competition stage, date, participants, result, and relationship between claims. A record may cite the events that establish it, but must omit unrelated anecdotes.
 - Country names are allowed in hard only when they are the proper names of teams or other essential participants in the event. Do not anonymise a national team as "the host nation" to avoid its name.
 - Tie the hook to the target with an answer-safe phrase such as "here", "on this pitch", "inside this church", or "at this site".
 - Preserve the target's answer-safe functional identity. Say "this island prison", "on this pitch", "inside this church", or "this bridge" when supported. Do not replace a useful identity such as prison, island, stadium, bridge, or church with only "this site" or "here".
@@ -2257,6 +2261,7 @@ Fail the ladder if:
 - A locked verified hook is supplied but hard changes or omits the details that make it distinctive.
 - An event hook merely says that something happened without the people, action, defining method, outcome, consequence, record, or significance needed to make it memorable.
 - A team match or final anonymises either competing side as "the host nation", "the visitors", or another generic label instead of naming both teams.
+- Hard merges separate matches or incidents, misstates a competition stage, or implies that one event happened during another.
 - Hard does not make clear that its hook belongs to this target.
 - Hard hides a supported answer-safe target identity such as island, prison, stadium, bridge, or church behind only "this site" or "here".
 - Hard includes a distinctive word from the target name, even when it avoids the full canonical name.
@@ -2490,6 +2495,28 @@ def hard_missing_target_identities(
         if not any(re.search(pattern, value, re.IGNORECASE) for pattern in patterns):
             missing.append(identity)
     return missing
+
+
+def hard_nonparticipant_geographic_names(
+    text: object,
+    place: dict[str, Any],
+) -> list[str]:
+    value = str(text or "")
+    geographic_names = [
+        str(place.get(key) or "").strip()
+        for key in ("locality_name", "admin1", "country_name", "continent")
+        if str(place.get(key) or "").strip()
+    ]
+    found: list[str] = []
+    for name in geographic_names:
+        if re.search(
+            rf"\b(?:in|inside|within|near|outside|across|from|located in|"
+            rf"situated in|based in)\s+(?:the\s+)?{re.escape(name)}\b",
+            value,
+            re.IGNORECASE,
+        ):
+            found.append(name)
+    return list(dict.fromkeys(found))
 
 
 def hard_hook_missing_requirements(text: object) -> list[str]:
@@ -2949,6 +2976,18 @@ def local_map_clue_critique(
             reasons.append("Hard clue names a geographic map feature that belongs in medium or easy.")
             feedback.append(
                 "Remove named points, bays, rivers, districts, roads, stations, and other map locations from hard; preserve only the event and answer-safe target identity."
+            )
+        hard_geographic_names = hard_nonparticipant_geographic_names(
+            ladder["hard"],
+            place,
+        )
+        if hard_geographic_names:
+            reasons.append(
+                "Hard clue names geographic scope that belongs in medium or easy: "
+                f"{', '.join(hard_geographic_names)}."
+            )
+            feedback.append(
+                "Remove country, region, city, and continent locations from hard unless the name is an essential event participant such as a national team."
             )
         if not MAP_HARD_PLACE_LINK_RE.search(ladder["hard"]):
             reasons.append("Hard clue does not make clear that the recognition hook belongs to the target.")

@@ -554,6 +554,8 @@ Clue ladder intention:
 - The aim is a fun but beatable map puzzle for the tester, not a trivia trap.
 - The three fun_facts are draft clue text. They should narrow the answer step by step: recognition hook -> broad area -> local map route.
 - Hard clue style: prefer a unique incident or story. A distinctive current record, achievement, discovery, person-linked episode, tradition, natural occurrence, or cultural moment may also qualify.
+- Hard must use one coherent recognition hook. Never bundle separate matches or incidents, and never imply that an event occurred during a different match.
+- Verify the exact competition stage, date, participants, result, and relationship between claims. If a record needs multiple events to establish it, state only that record and those events; omit unrelated anecdotes.
 - Select the hook first; its place becomes the answer. Static facts like capacity, age, gift origin, height, plant count, or "built for an expo" are usually weak.
 - Keep hard clear, but do not delete defining people, action, outcome, consequence, record, or significance to meet a word count.
 - Medium clue style: materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope.
