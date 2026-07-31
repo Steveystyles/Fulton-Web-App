@@ -10,6 +10,7 @@ import {
   Lock,
   MapPinned,
   RotateCcw,
+  Ruler,
   Trophy,
   Type,
   X,
@@ -81,6 +82,13 @@ function markerIcon(kind: "guess" | "answer") {
   });
 }
 
+function formatMeasuredDistance(distanceMetres: number) {
+  const distanceKilometres = distanceMetres / 1000;
+  return `${new Intl.NumberFormat("en-GB", {
+    maximumFractionDigits: distanceKilometres < 100 ? 1 : 0,
+  }).format(distanceKilometres)} km`;
+}
+
 type MapCanvasProps = {
   level: DailyMapGameLevel;
   mapLabels: boolean;
@@ -111,8 +119,11 @@ function MapCanvas({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
+  const measurementLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const displayedLevelIdRef = useRef<number | null>(null);
+  const [measuring, setMeasuring] = useState(false);
+  const [measurementPoints, setMeasurementPoints] = useState<MapPoint[]>([]);
 
   useEffect(() => {
     if (containerRef.current === null || mapRef.current !== null) {
@@ -128,8 +139,10 @@ function MapCanvas({
 
     L.control.zoom({ position: "bottomright" }).addTo(map);
     const layer = L.layerGroup().addTo(map);
+    const measurementLayer = L.layerGroup().addTo(map);
     mapRef.current = map;
     layerRef.current = layer;
+    measurementLayerRef.current = measurementLayer;
 
     const resizeTimer = window.setTimeout(() => {
       if (mapRef.current === map) {
@@ -142,6 +155,7 @@ function MapCanvas({
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
+      measurementLayerRef.current = null;
       tileLayerRef.current = null;
     };
   }, []);
@@ -168,6 +182,14 @@ function MapCanvas({
     const currentMap = map;
 
     function handleClick(event: L.LeafletMouseEvent) {
+      if (measuring) {
+        const point = {
+          lat: event.latlng.lat,
+          lng: event.latlng.lng,
+        };
+        setMeasurementPoints((current) => (current.length === 1 ? [...current, point] : [point]));
+        return;
+      }
       if (level.submitted) {
         return;
       }
@@ -181,7 +203,48 @@ function MapCanvas({
     return () => {
       map.off("click", handleClick);
     };
-  }, [level.submitted, onMapPick]);
+  }, [level.submitted, measuring, onMapPick]);
+
+  useEffect(() => {
+    const layer = measurementLayerRef.current;
+    if (layer === null) {
+      return;
+    }
+    layer.clearLayers();
+
+    const positions = measurementPoints.map(
+      (point) => [point.lat, point.lng] as L.LatLngTuple,
+    );
+    if (positions.length === 2) {
+      L.polyline(positions, {
+        color: "#111827",
+        dashArray: "7 6",
+        opacity: 0.9,
+        weight: 4,
+      }).addTo(layer);
+    }
+    positions.forEach((position, index) => {
+      L.circleMarker(position, {
+        color: "#ffffff",
+        fillColor: index === 0 ? "#111827" : "#d71920",
+        fillOpacity: 1,
+        radius: 7,
+        weight: 3,
+      }).addTo(layer);
+    });
+  }, [measurementPoints]);
+
+  const measuredDistance =
+    measurementPoints.length === 2
+      ? L.latLng(measurementPoints[0].lat, measurementPoints[0].lng).distanceTo(
+          L.latLng(measurementPoints[1].lat, measurementPoints[1].lng),
+        )
+      : null;
+
+  function toggleMeasurement() {
+    setMeasuring((current) => !current);
+    setMeasurementPoints([]);
+  }
 
   useEffect(() => {
     const map = mapRef.current;
@@ -348,6 +411,38 @@ function MapCanvas({
           </div>
         </div>
       ) : null}
+      <div className="pointer-events-none absolute bottom-10 left-3 z-[700] flex max-w-[calc(100%-5rem)] items-stretch gap-2">
+        <button
+          type="button"
+          aria-label={measuring ? "Stop measuring distance" : "Measure distance"}
+          aria-pressed={measuring}
+          title={measuring ? "Stop measuring distance" : "Measure distance"}
+          onClick={toggleMeasurement}
+          disabled={snapLoading}
+          className={[
+            "pointer-events-auto inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-black shadow-lg saints-focus",
+            measuring
+              ? "border-slate-950 bg-slate-950 text-white"
+              : "border-slate-200 bg-white text-slate-800",
+            snapLoading ? "cursor-not-allowed opacity-50" : "",
+          ].join(" ")}
+        >
+          <Ruler aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
+          <span>{measuring ? "Done" : "Measure"}</span>
+        </button>
+        {measuring ? (
+          <div
+            className="flex min-h-11 min-w-0 items-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-black text-slate-800 shadow-lg"
+            aria-live="polite"
+          >
+            {measuredDistance !== null
+              ? formatMeasuredDistance(measuredDistance)
+              : measurementPoints.length === 1
+                ? "Tap end"
+                : "Tap start"}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
