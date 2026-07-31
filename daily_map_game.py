@@ -3744,15 +3744,21 @@ def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
         try:
             lat, lng = valid_coordinate(item.get("lat"), item.get("lng"))
             min_hint_count = int(item.get("min_hint_count", 1))
+            min_zoom = int(item.get("min_zoom", 4))
+            max_zoom = int(item.get("max_zoom", min_zoom))
         except (TypeError, ValueError):
             continue
         if not name:
             continue
+        normalized_min_zoom = min(19, max(1, min_zoom))
+        normalized_max_zoom = min(19, max(normalized_min_zoom, max_zoom))
         anchors.append(
             {
                 "name": name,
                 "point": {"lat": lat, "lng": lng},
                 "minHintCount": min(2, max(0, min_hint_count)),
+                "minZoom": normalized_min_zoom,
+                "maxZoom": normalized_max_zoom,
             }
         )
     return anchors[:3]

@@ -206,22 +206,38 @@ function MapCanvas({
   }, [mapLabels]);
 
   useEffect(() => {
+    const map = mapRef.current;
     const layer = mapAnchorLayerRef.current;
-    if (layer === null) {
+    if (map === null || layer === null) {
       return;
     }
-    layer.clearLayers();
-    if (!mapLabels) {
-      return;
+    const currentMap = map;
+    const currentLayer = layer;
+
+    function renderMapAnchors() {
+      currentLayer.clearLayers();
+      if (!mapLabels) {
+        return;
+      }
+      const zoom = currentMap.getZoom();
+      mapAnchors
+        .filter((anchor) => zoom >= anchor.minZoom && zoom <= anchor.maxZoom)
+        .forEach((anchor) => {
+          L.marker([anchor.point.lat, anchor.point.lng], {
+            icon: mapAnchorIcon(anchor.name),
+            interactive: false,
+            keyboard: false,
+            zIndexOffset: 150,
+          }).addTo(currentLayer);
+        });
     }
-    mapAnchors.forEach((anchor) => {
-      L.marker([anchor.point.lat, anchor.point.lng], {
-        icon: mapAnchorIcon(anchor.name),
-        interactive: false,
-        keyboard: false,
-        zIndexOffset: 250,
-      }).addTo(layer);
-    });
+
+    renderMapAnchors();
+    currentMap.on("zoomend", renderMapAnchors);
+    return () => {
+      currentMap.off("zoomend", renderMapAnchors);
+      currentLayer.clearLayers();
+    };
   }, [mapAnchors, mapLabels]);
 
   useEffect(() => {

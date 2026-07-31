@@ -1109,7 +1109,7 @@ def build_verified_map_search_anchors(
         query_text,
         country_code=str(place.get("country_code") or ""),
     )
-    verified: list[tuple[int, float, float]] = []
+    verified: list[tuple[int, float, float, float]] = []
     for result in results:
         if not geocode_result_matches_anchor(result, anchor_name):
             continue
@@ -1123,18 +1123,25 @@ def build_verified_map_search_anchors(
             point[1],
         )
         if distance_m <= 250_000:
-            verified.append((distance_m, point[0], point[1]))
+            try:
+                importance = float(result.get("importance") or 0)
+            except (TypeError, ValueError):
+                importance = 0
+            verified.append((distance_m, point[0], point[1], importance))
     if not verified:
         raise ValueError(
             f"The named map search anchor {anchor_name} could not be geocoded within 250 km of the answer."
         )
-    _distance_m, anchor_lat, anchor_lng = min(verified)
+    _distance_m, anchor_lat, anchor_lng, importance = min(verified)
+    display_zoom = 4 if importance >= 0.55 else 5 if importance >= 0.35 else 6
     return [
         {
             "name": anchor_name,
             "lat": anchor_lat,
             "lng": anchor_lng,
             "min_hint_count": min_hint_count,
+            "min_zoom": display_zoom,
+            "max_zoom": display_zoom,
         }
     ]
 

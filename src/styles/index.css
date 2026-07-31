@@ -174,31 +174,23 @@ input[type="date"] {
   display: block;
   max-width: 11rem;
   overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.96);
-  border-radius: 0.35rem;
-  padding: 0.18rem 0.42rem;
-  color: #111827;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 0.16rem 0.45rem rgba(15, 23, 42, 0.28);
-  font-size: 1.05rem;
-  font-weight: 950;
+  color: #385570;
+  font-size: 1rem;
+  font-weight: 800;
   line-height: 1.1;
   text-align: center;
+  text-shadow:
+    -2px -2px 0 rgba(255, 255, 255, 0.96),
+    2px -2px 0 rgba(255, 255, 255, 0.96),
+    -2px 2px 0 rgba(255, 255, 255, 0.96),
+    2px 2px 0 rgba(255, 255, 255, 0.96),
+    0 1px 2px rgba(15, 23, 42, 0.18);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .daily-map-search-anchor::after {
-  position: absolute;
-  left: calc(50% - 0.23rem);
-  bottom: 0.08rem;
-  width: 0.46rem;
-  height: 0.46rem;
-  border: 2px solid #ffffff;
-  border-radius: 999px;
-  content: "";
-  background: #111827;
-  box-shadow: 0 0.1rem 0.25rem rgba(15, 23, 42, 0.35);
+  content: none;
 }
 
 .leaflet-container {

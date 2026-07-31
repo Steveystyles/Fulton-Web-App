@@ -369,6 +369,8 @@ export type DailyMapAnchor = {
   name: string;
   point: MapPoint;
   minHintCount: number;
+  minZoom: number;
+  maxZoom: number;
 };
 
 export type DailyMapGameLevel = {

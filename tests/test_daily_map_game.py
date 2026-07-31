@@ -327,6 +327,8 @@ class DailyMapGameTests(unittest.TestCase):
                     "name": "Westminster",
                     "point": {"lat": 51.4995, "lng": -0.1248},
                     "minHintCount": 2,
+                    "minZoom": 4,
+                    "maxZoom": 4,
                 }
             ],
         )
