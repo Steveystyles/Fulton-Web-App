@@ -365,12 +365,19 @@ export type DailyMapClue = {
   revealsName?: boolean;
 };
 
+export type DailyMapAnchor = {
+  name: string;
+  point: MapPoint;
+  minHintCount: number;
+};
+
 export type DailyMapGameLevel = {
   id: number;
   slug: QuizDifficulty;
   title: string;
   clueText: string;
   clues: DailyMapClue[];
+  mapAnchors: DailyMapAnchor[];
   maxPoints: number;
   submitted: boolean;
   result?: DailyMapGameResult;

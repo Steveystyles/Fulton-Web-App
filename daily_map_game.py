@@ -71,6 +71,10 @@ REVERSE_GEOCODE_URL = os.environ.get(
     "FULTONS_REVERSE_GEOCODE_URL",
     "https://nominatim.openstreetmap.org/reverse",
 )
+FORWARD_GEOCODE_URL = os.environ.get(
+    "FULTONS_FORWARD_GEOCODE_URL",
+    "https://nominatim.openstreetmap.org/search",
+)
 REVERSE_GEOCODE_USER_AGENT = os.environ.get(
     "FULTONS_REVERSE_GEOCODE_USER_AGENT",
     "FultonsQuiz/0.1 (+https://fultons-quiz.co.uk)",
@@ -1125,6 +1129,7 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             lng REAL NOT NULL,
             coordinate_precision TEXT NOT NULL DEFAULT '',
             suggested_map_zoom INTEGER,
+            map_search_anchors_json TEXT NOT NULL DEFAULT '[]',
             clue_text TEXT NOT NULL,
             medium_clue_text TEXT NOT NULL DEFAULT '',
             easy_clue_text TEXT NOT NULL DEFAULT '',
@@ -1222,6 +1227,7 @@ def initialize_database(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "map_place_pool", "place_type", "TEXT NOT NULL DEFAULT 'place'")
     ensure_column(conn, "map_place_pool", "coordinate_precision", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "map_place_pool", "suggested_map_zoom", "INTEGER")
+    ensure_column(conn, "map_place_pool", "map_search_anchors_json", "TEXT NOT NULL DEFAULT '[]'")
     ensure_column(conn, "map_place_pool", "medium_clue_text", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "map_place_pool", "easy_clue_text", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "map_place_pool", "acceptable_aliases", "TEXT NOT NULL DEFAULT ''")
@@ -1648,6 +1654,7 @@ def level_rows(conn: sqlite3.Connection, puzzle_date: str, user_id: int) -> list
             map_place_pool.clue_text,
             map_place_pool.medium_clue_text,
             map_place_pool.easy_clue_text,
+            map_place_pool.map_search_anchors_json,
             map_place_pool.reveal_text,
             map_place_pool.scoring_radius_m,
             daily_map_guesses.id AS guess_id,
@@ -1787,6 +1794,7 @@ def public_place_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "lng": float(get("lng", 0)),
         "coordinate_precision": str(get("coordinate_precision")).strip(),
         "suggested_map_zoom": get("suggested_map_zoom", None),
+        "map_search_anchors": parse_json_list(get("map_search_anchors_json")),
         "acceptable_aliases": split_list_text(get("acceptable_aliases")),
         "nearby_context": str(get("nearby_context")).strip(),
         "verified_facts": [str(item).strip() for item in parse_json_list(get("verified_facts_json")) if str(item).strip()],
@@ -3566,6 +3574,7 @@ def serialize_level(row: sqlite3.Row) -> dict[str, Any]:
         "title": "Daily Place",
         "clueText": clues[0]["text"],
         "clues": clues,
+        "mapAnchors": serialize_map_search_anchors(row["map_search_anchors_json"]),
         "maxPoints": MAP_MAX_SCORE,
         "submitted": row["guess_id"] is not None,
     }
@@ -3724,6 +3733,29 @@ def selection_payload(
     if selected_index is not None:
         payload["selectedIndex"] = selected_index
     return payload
+
+
+def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
+    anchors: list[dict[str, Any]] = []
+    for item in parse_json_list(value):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        try:
+            lat, lng = valid_coordinate(item.get("lat"), item.get("lng"))
+            min_hint_count = int(item.get("min_hint_count", 1))
+        except (TypeError, ValueError):
+            continue
+        if not name:
+            continue
+        anchors.append(
+            {
+                "name": name,
+                "point": {"lat": lat, "lng": lng},
+                "minHintCount": min(2, max(0, min_hint_count)),
+            }
+        )
+    return anchors[:3]
 
 
 def reverse_geocode_zoom_for_level(level_slug: str, map_zoom: float | None) -> int:
@@ -3935,6 +3967,54 @@ def fetch_reverse_geocode(lat: float, lng: float, reverse_zoom: int) -> dict[str
                 return json.loads(response.read().decode("utf-8"))
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
             return None
+
+
+def fetch_forward_geocode(
+    query_text: str,
+    *,
+    country_code: str = "",
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    query_value = str(query_text or "").strip()
+    if (
+        not query_value
+        or not REVERSE_GEOCODE_ENABLED
+        or not FORWARD_GEOCODE_URL.strip()
+    ):
+        return []
+
+    global REVERSE_GEOCODE_NEXT_REQUEST_AT
+    with REVERSE_GEOCODE_LOCK:
+        now = time.monotonic()
+        if REVERSE_GEOCODE_NEXT_REQUEST_AT > now:
+            time.sleep(REVERSE_GEOCODE_NEXT_REQUEST_AT - now)
+        REVERSE_GEOCODE_NEXT_REQUEST_AT = time.monotonic() + REVERSE_GEOCODE_MIN_INTERVAL_SEC
+
+        params = {
+            "format": "jsonv2",
+            "q": query_value,
+            "limit": str(min(8, max(1, int(limit)))),
+            "addressdetails": "1",
+            "accept-language": REVERSE_GEOCODE_LANGUAGE,
+        }
+        country_value = str(country_code or "").strip().lower()
+        if country_value:
+            params["countrycodes"] = country_value
+        separator = "&" if "?" in FORWARD_GEOCODE_URL else "?"
+        request = Request(
+            f"{FORWARD_GEOCODE_URL}{separator}{urlencode(params)}",
+            headers={
+                "Accept": "application/json",
+                "Accept-Language": REVERSE_GEOCODE_LANGUAGE,
+                "User-Agent": REVERSE_GEOCODE_USER_AGENT,
+            },
+        )
+        try:
+            with urlopen(request, timeout=REVERSE_GEOCODE_TIMEOUT_SEC) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+            return []
+    return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
 
 
 def store_reverse_geocode_selection(

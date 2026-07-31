@@ -1031,6 +1031,126 @@ def reverse_geocoded_locality(place: dict[str, Any]) -> str:
     )
 
 
+def map_anchor_reveal_index(name: str, clue_ladder: dict[str, Any]) -> int | None:
+    name_key = daily_map_game.normalized_place_name(name)
+    if not name_key:
+        return None
+    for reveal_index, field in ((1, "medium"), (2, "easy")):
+        clue_key = daily_map_game.normalized_place_name(clue_ladder.get(field))
+        if name_key in clue_key:
+            return reveal_index
+    return None
+
+
+def geocode_result_matches_anchor(result: dict[str, Any], anchor_name: str) -> bool:
+    address = result.get("address") if isinstance(result.get("address"), dict) else {}
+    values = [
+        str(result.get("display_name") or ""),
+        *[
+            str(address.get(key) or "")
+            for key in (
+                "city",
+                "town",
+                "municipality",
+                "village",
+                "state",
+                "province",
+                "region",
+                "county",
+            )
+        ],
+    ]
+    anchor_key = daily_map_game.normalized_place_name(anchor_name)
+    return any(
+        anchor_key and anchor_key in daily_map_game.normalized_place_name(value)
+        for value in values
+    )
+
+
+def build_verified_map_search_anchors(
+    place: dict[str, Any],
+    clue_ladder: dict[str, Any],
+    *,
+    locality_name: str,
+) -> list[dict[str, Any]]:
+    answer_names = {
+        daily_map_game.normalized_place_name(name)
+        for name in (
+            str(place.get("canonical_name") or ""),
+            *[str(item) for item in place.get("acceptable_aliases") or []],
+        )
+        if str(name or "").strip()
+    }
+    candidates = [
+        str(locality_name or "").strip(),
+        str(place.get("admin1") or "").strip(),
+    ]
+    anchor_name = ""
+    min_hint_count: int | None = None
+    for candidate in candidates:
+        candidate_key = daily_map_game.normalized_place_name(candidate)
+        reveal_index = map_anchor_reveal_index(candidate, clue_ladder)
+        if candidate_key and candidate_key not in answer_names and reveal_index is not None:
+            anchor_name = candidate
+            min_hint_count = reveal_index
+            break
+    if not anchor_name or min_hint_count is None:
+        raise ValueError(
+            "No answer-safe locality or region named by the medium/easy clues could be used as a map search anchor."
+        )
+
+    query_parts = [
+        anchor_name,
+        str(place.get("admin1") or "").strip(),
+        str(place.get("country_name") or "").strip(),
+    ]
+    query_text = ", ".join(dict.fromkeys(part for part in query_parts if part))
+    results = daily_map_game.fetch_forward_geocode(
+        query_text,
+        country_code=str(place.get("country_code") or ""),
+    )
+    verified: list[tuple[int, float, float]] = []
+    for result in results:
+        if not geocode_result_matches_anchor(result, anchor_name):
+            continue
+        point = daily_map_game.reverse_geocode_point(result)
+        if point is None:
+            continue
+        distance_m = daily_map_game.haversine_m(
+            float(place["lat"]),
+            float(place["lng"]),
+            point[0],
+            point[1],
+        )
+        if distance_m <= 250_000:
+            verified.append((distance_m, point[0], point[1]))
+    if not verified:
+        raise ValueError(
+            f"The named map search anchor {anchor_name} could not be geocoded within 250 km of the answer."
+        )
+    _distance_m, anchor_lat, anchor_lng = min(verified)
+    return [
+        {
+            "name": anchor_name,
+            "lat": anchor_lat,
+            "lng": anchor_lng,
+            "min_hint_count": min_hint_count,
+        }
+    ]
+
+
+def save_map_search_anchors(
+    conn: sqlite3.Connection,
+    *,
+    place_id: int,
+    anchors: list[dict[str, Any]],
+) -> None:
+    conn.execute(
+        "UPDATE map_place_pool SET map_search_anchors_json = ? WHERE id = ?",
+        (json.dumps(anchors, ensure_ascii=False), place_id),
+    )
+
+
 def validate_event_brief(
     payload: dict[str, Any],
     selected_hook: dict[str, Any],
@@ -1277,6 +1397,28 @@ def generate_round(
                 ),
                 flush=True,
             )
+            continue
+
+        try:
+            map_anchors = build_verified_map_search_anchors(
+                place_payload,
+                clue_result.get("clue_ladder") or {},
+                locality_name=locality_name,
+            )
+            save_map_search_anchors(
+                conn,
+                place_id=place_id,
+                anchors=map_anchors,
+            )
+        except Exception as error:
+            rejection = {
+                "place_id": place_id,
+                "place": str(place["canonical_name"]),
+                "stage": "map_anchor_validation",
+                "reason": str(error),
+            }
+            rejected_places.append(rejection)
+            print(json.dumps({"stage": "place_rejected", **rejection}), flush=True)
             continue
 
         publish_result = daily_map_game.generate_daily_map_game(

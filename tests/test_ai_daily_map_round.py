@@ -488,6 +488,18 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 return_value={"status": "published"},
             ),
             patch.object(
+                generate_ai_daily_map_round,
+                "build_verified_map_search_anchors",
+                return_value=[
+                    {
+                        "name": "Paris",
+                        "lat": 48.8566,
+                        "lng": 2.3522,
+                        "min_hint_count": 2,
+                    }
+                ],
+            ),
+            patch.object(
                 generate_ai_daily_map_round.daily_map_game,
                 "map_learning_profile_hash",
                 return_value="profile-hash",
@@ -506,6 +518,71 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(result["place_attempts"], 2)
         self.assertEqual(result["rejected_places"][0]["place"], "London")
         self.assertEqual(generate_clues.call_count, 2)
+
+    def test_map_search_anchor_uses_named_locality_near_answer(self) -> None:
+        place = {
+            "canonical_name": "Camp Nou",
+            "acceptable_aliases": ["Nou Camp"],
+            "country_code": "ES",
+            "country_name": "Spain",
+            "admin1": "Catalonia",
+            "lat": 41.3809,
+            "lng": 2.1228,
+        }
+        result = {
+            "lat": "41.3829",
+            "lon": "2.1774",
+            "display_name": "Barcelona, Catalonia, Spain",
+            "address": {
+                "city": "Barcelona",
+                "state": "Catalonia",
+                "country_code": "es",
+            },
+        }
+        with patch.object(
+            generate_ai_daily_map_round.daily_map_game,
+            "fetch_forward_geocode",
+            return_value=[result],
+        ) as geocode:
+            anchors = generate_ai_daily_map_round.build_verified_map_search_anchors(
+                place,
+                {
+                    "hard": "A famous comeback happened on this pitch.",
+                    "medium": "Its resident club represents Catalonia.",
+                    "easy": "In western Barcelona, search north of a major avenue.",
+                    "reveal": "This is Camp Nou.",
+                },
+                locality_name="Barcelona",
+            )
+
+        self.assertEqual(anchors[0]["name"], "Barcelona")
+        self.assertEqual(anchors[0]["min_hint_count"], 2)
+        self.assertAlmostEqual(anchors[0]["lat"], 41.3829)
+        geocode.assert_called_once_with(
+            "Barcelona, Catalonia, Spain",
+            country_code="ES",
+        )
+
+    def test_map_search_anchor_rejects_unmapped_clue_route(self) -> None:
+        with self.assertRaisesRegex(ValueError, "No answer-safe locality or region"):
+            generate_ai_daily_map_round.build_verified_map_search_anchors(
+                {
+                    "canonical_name": "Example Stadium",
+                    "acceptable_aliases": [],
+                    "country_code": "GB",
+                    "country_name": "United Kingdom",
+                    "admin1": "Greater Manchester",
+                    "lat": 53.4631,
+                    "lng": -2.2913,
+                },
+                {
+                    "hard": "A memorable match happened on this pitch.",
+                    "medium": "This ground is in northern England.",
+                    "easy": "Search west of the city centre.",
+                    "reveal": "This is Example Stadium.",
+                },
+                locality_name="Manchester",
+            )
 
     def test_event_research_uses_grounding_and_returns_a_richer_capsule(self) -> None:
         provider = EventResearchProvider()

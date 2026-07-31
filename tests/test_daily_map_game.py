@@ -290,6 +290,47 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertNotIn("Cape Town", clues[1]["text"])
         self.assertNotIn("Cape Town", clues[2]["text"])
 
+    def test_daily_bundle_exposes_valid_map_search_anchors(self) -> None:
+        level = self.publish_named_level("London")
+        place_id = self.conn.execute(
+            "SELECT place_id FROM daily_map_levels WHERE id = ?",
+            (level["id"],),
+        ).fetchone()["place_id"]
+        self.conn.execute(
+            "UPDATE map_place_pool SET map_search_anchors_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    [
+                        {
+                            "name": "Westminster",
+                            "lat": 51.4995,
+                            "lng": -0.1248,
+                            "min_hint_count": 2,
+                        },
+                        {"name": "Broken", "lat": "north", "lng": 0},
+                    ]
+                ),
+                place_id,
+            ),
+        )
+
+        payload = daily_map_game.daily_bundle_payload(
+            self.conn,
+            puzzle_date="2026-07-13",
+            user_id=1,
+        )
+
+        self.assertEqual(
+            payload["levels"][0]["mapAnchors"],
+            [
+                {
+                    "name": "Westminster",
+                    "point": {"lat": 51.4995, "lng": -0.1248},
+                    "minHintCount": 2,
+                }
+            ],
+        )
+
     def test_local_map_clue_critic_rejects_repetition_and_answer_leak(self) -> None:
         place = {
             "canonical_name": "Cape Town",

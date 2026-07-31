@@ -20,6 +20,7 @@ import { Card } from "../components/Card";
 import {
   ApiError,
   api,
+  type DailyMapAnchor,
   type DailyMapGameLevel,
   type DailyMapGameResponse,
   type DailyMapGameResult,
@@ -50,11 +51,13 @@ function tileUrlForLabels(mapLabels: boolean) {
 function readableTileOptions(mapLabels: boolean): L.TileLayerOptions {
   const tileUrl = tileUrlForLabels(mapLabels);
   const usesRetinaTiles = tileUrl.includes("@2x");
+  const usesEnlargedLabels = mapLabels && !usesRetinaTiles;
   return {
     attribution: mapLabels ? tileAttribution : noLabelTileAttribution,
     maxZoom: 19,
-    tileSize: usesRetinaTiles ? 512 : 256,
-    zoomOffset: usesRetinaTiles ? -1 : 0,
+    maxNativeZoom: usesEnlargedLabels ? 18 : 19,
+    tileSize: usesRetinaTiles || usesEnlargedLabels ? 512 : 256,
+    zoomOffset: usesRetinaTiles || usesEnlargedLabels ? -1 : 0,
   };
 }
 
@@ -82,6 +85,28 @@ function markerIcon(kind: "guess" | "answer") {
   });
 }
 
+function escapedMapLabel(value: string) {
+  return value.replace(/[&<>"']/g, (character) => {
+    const entities: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return entities[character];
+  });
+}
+
+function mapAnchorIcon(name: string) {
+  return L.divIcon({
+    className: "daily-map-search-anchor",
+    html: `<span>${escapedMapLabel(name)}</span>`,
+    iconSize: [180, 42],
+    iconAnchor: [90, 21],
+  });
+}
+
 function formatMeasuredDistance(distanceMetres: number) {
   const distanceKilometres = distanceMetres / 1000;
   return `${new Intl.NumberFormat("en-GB", {
@@ -92,6 +117,7 @@ function formatMeasuredDistance(distanceMetres: number) {
 type MapCanvasProps = {
   level: DailyMapGameLevel;
   mapLabels: boolean;
+  mapAnchors: DailyMapAnchor[];
   acceptedSelection: DailyMapSnapSelection | undefined;
   draftSelection: DailyMapSnapSelection | null;
   selectionNotice: string;
@@ -106,6 +132,7 @@ type MapCanvasProps = {
 function MapCanvas({
   level,
   mapLabels,
+  mapAnchors,
   acceptedSelection,
   draftSelection,
   selectionNotice,
@@ -120,6 +147,7 @@ function MapCanvas({
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
   const measurementLayerRef = useRef<L.LayerGroup | null>(null);
+  const mapAnchorLayerRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const displayedLevelIdRef = useRef<number | null>(null);
   const [measuring, setMeasuring] = useState(false);
@@ -140,9 +168,11 @@ function MapCanvas({
     L.control.zoom({ position: "bottomright" }).addTo(map);
     const layer = L.layerGroup().addTo(map);
     const measurementLayer = L.layerGroup().addTo(map);
+    const mapAnchorLayer = L.layerGroup().addTo(map);
     mapRef.current = map;
     layerRef.current = layer;
     measurementLayerRef.current = measurementLayer;
+    mapAnchorLayerRef.current = mapAnchorLayer;
 
     const resizeTimer = window.setTimeout(() => {
       if (mapRef.current === map) {
@@ -156,6 +186,7 @@ function MapCanvas({
       mapRef.current = null;
       layerRef.current = null;
       measurementLayerRef.current = null;
+      mapAnchorLayerRef.current = null;
       tileLayerRef.current = null;
     };
   }, []);
@@ -173,6 +204,25 @@ function MapCanvas({
       readableTileOptions(mapLabels),
     ).addTo(map);
   }, [mapLabels]);
+
+  useEffect(() => {
+    const layer = mapAnchorLayerRef.current;
+    if (layer === null) {
+      return;
+    }
+    layer.clearLayers();
+    if (!mapLabels) {
+      return;
+    }
+    mapAnchors.forEach((anchor) => {
+      L.marker([anchor.point.lat, anchor.point.lng], {
+        icon: mapAnchorIcon(anchor.name),
+        interactive: false,
+        keyboard: false,
+        zIndexOffset: 250,
+      }).addTo(layer);
+    });
+  }, [mapAnchors, mapLabels]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -317,10 +367,10 @@ function MapCanvas({
   }, [acceptedSelection, draftSelection, level]);
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+    <div className="relative -mx-3 w-[calc(100%+1.5rem)] overflow-hidden border-y border-slate-200 bg-slate-100 min-[420px]:rounded-xl min-[420px]:border">
       <div
         ref={containerRef}
-        className="h-[22rem] w-full min-[420px]:h-[26rem]"
+        className="h-[30rem] w-full min-[420px]:h-[34rem]"
         aria-label={`${level.title} guessing map`}
       />
       {snapLoading ? (
@@ -774,6 +824,9 @@ export function MapGame() {
             key={selectedLevel.id}
             level={selectedLevel}
             mapLabels={mapLabels}
+            mapAnchors={(selectedLevel.mapAnchors ?? []).filter(
+              (anchor) => anchor.minHintCount <= currentRevealedHintCount,
+            )}
             acceptedSelection={pendingSelection}
             draftSelection={draftSelection}
             selectionNotice={selectionNotice}
