@@ -689,10 +689,25 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 ],
             },
         }
+        point_result = {
+            "lat": "41.3809",
+            "lon": "2.1228",
+            "display_name": "Barcelona, Catalonia, Spain",
+            "importance": 0.95,
+            "address": {
+                "city": "Barcelona",
+                "state": "Catalonia",
+                "country_code": "es",
+            },
+            "geojson": {
+                "type": "Point",
+                "coordinates": [2.1228, 41.3809],
+            },
+        }
         with patch.object(
             generate_ai_daily_map_round.daily_map_game,
             "fetch_forward_geocode",
-            return_value=[broader_result, result],
+            return_value=[point_result, broader_result, result],
         ) as geocode:
             anchors = generate_ai_daily_map_round.build_verified_map_search_anchors(
                 place,

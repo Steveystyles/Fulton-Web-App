@@ -1218,7 +1218,7 @@ def build_verified_map_search_anchors(
         )
     _scope_rank, _distance_m, anchor_lat, anchor_lng, importance, boundary = min(
         verified,
-        key=lambda item: (item[0], item[1], -item[4]),
+        key=lambda item: (item[0], item[5] is None, item[1], -item[4]),
     )
     display_zoom = 4 if importance >= 0.55 else 5 if importance >= 0.35 else 6
     anchors = [
