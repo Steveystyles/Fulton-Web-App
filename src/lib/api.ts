@@ -371,6 +371,11 @@ export type DailyMapAnchor = {
   minHintCount: number;
   minZoom: number;
   maxZoom: number;
+  boundary?: {
+    type: "Polygon" | "MultiPolygon";
+    coordinates: unknown;
+  };
+  boundaryMinZoom?: number;
 };
 
 export type DailyMapGameLevel = {

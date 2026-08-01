@@ -653,11 +653,45 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 "state": "Catalonia",
                 "country_code": "es",
             },
+            "geojson": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [2.05, 41.32],
+                        [2.23, 41.32],
+                        [2.23, 41.47],
+                        [2.05, 41.47],
+                        [2.05, 41.32],
+                    ]
+                ],
+            },
+        }
+        broader_result = {
+            "lat": "41.3809",
+            "lon": "2.1228",
+            "display_name": "Barcelona, Catalonia, Spain",
+            "address": {
+                "county": "Barcelona",
+                "state": "Catalonia",
+                "country_code": "es",
+            },
+            "geojson": {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [1.5, 40.9],
+                        [2.8, 40.9],
+                        [2.8, 42.0],
+                        [1.5, 42.0],
+                        [1.5, 40.9],
+                    ]
+                ],
+            },
         }
         with patch.object(
             generate_ai_daily_map_round.daily_map_game,
             "fetch_forward_geocode",
-            return_value=[result],
+            return_value=[broader_result, result],
         ) as geocode:
             anchors = generate_ai_daily_map_round.build_verified_map_search_anchors(
                 place,
@@ -673,6 +707,8 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(anchors[0]["name"], "Barcelona")
         self.assertEqual(anchors[0]["min_hint_count"], 2)
         self.assertAlmostEqual(anchors[0]["lat"], 41.3829)
+        self.assertEqual(anchors[0]["boundary"]["type"], "Polygon")
+        self.assertEqual(anchors[0]["boundary_min_zoom"], 6)
         self.assertEqual(
             anchors[1],
             {
@@ -687,6 +723,7 @@ class AiDailyMapRoundTests(unittest.TestCase):
         geocode.assert_called_once_with(
             "Barcelona, Catalonia, Spain",
             country_code="ES",
+            include_boundary_geometry=True,
         )
 
     def test_map_search_anchor_rejects_unmapped_clue_route(self) -> None:

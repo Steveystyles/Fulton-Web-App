@@ -1122,6 +1122,25 @@ def geocode_result_matches_anchor(result: dict[str, Any], anchor_name: str) -> b
     )
 
 
+def geocode_anchor_scope_rank(result: dict[str, Any], anchor_name: str) -> int:
+    address = result.get("address") if isinstance(result.get("address"), dict) else {}
+    anchor_key = daily_map_game.normalized_place_name(anchor_name)
+    for rank, keys in enumerate(
+        (
+            ("city", "town", "municipality", "village"),
+            ("state", "province", "region"),
+            ("county",),
+        )
+    ):
+        if any(
+            anchor_key
+            and anchor_key == daily_map_game.normalized_place_name(address.get(key))
+            for key in keys
+        ):
+            return rank
+    return 3
+
+
 def build_verified_map_search_anchors(
     place: dict[str, Any],
     clue_ladder: dict[str, Any],
@@ -1163,8 +1182,9 @@ def build_verified_map_search_anchors(
     results = daily_map_game.fetch_forward_geocode(
         query_text,
         country_code=str(place.get("country_code") or ""),
+        include_boundary_geometry=True,
     )
-    verified: list[tuple[int, float, float, float]] = []
+    verified: list[tuple[int, int, float, float, float, dict[str, Any] | None]] = []
     for result in results:
         if not geocode_result_matches_anchor(result, anchor_name):
             continue
@@ -1182,12 +1202,24 @@ def build_verified_map_search_anchors(
                 importance = float(result.get("importance") or 0)
             except (TypeError, ValueError):
                 importance = 0
-            verified.append((distance_m, point[0], point[1], importance))
+            verified.append(
+                (
+                    geocode_anchor_scope_rank(result, anchor_name),
+                    distance_m,
+                    point[0],
+                    point[1],
+                    importance,
+                    daily_map_game.serialize_map_boundary(result.get("geojson")),
+                )
+            )
     if not verified:
         raise ValueError(
             f"The named map search anchor {anchor_name} could not be geocoded within 250 km of the answer."
         )
-    _distance_m, anchor_lat, anchor_lng, importance = min(verified)
+    _scope_rank, _distance_m, anchor_lat, anchor_lng, importance, boundary = min(
+        verified,
+        key=lambda item: (item[0], item[1], -item[4]),
+    )
     display_zoom = 4 if importance >= 0.55 else 5 if importance >= 0.35 else 6
     anchors = [
         {
@@ -1199,6 +1231,9 @@ def build_verified_map_search_anchors(
             "max_zoom": display_zoom,
         }
     ]
+    if boundary is not None:
+        anchors[0]["boundary"] = boundary
+        anchors[0]["boundary_min_zoom"] = max(6, display_zoom)
     canonical_name = str(place.get("canonical_name") or "").strip()
     if canonical_name:
         anchors.append(

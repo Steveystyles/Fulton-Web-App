@@ -8,6 +8,7 @@ import {
   CircleAlert,
   LoaderCircle,
   Lock,
+  Layers,
   MapPinned,
   RotateCcw,
   Ruler,
@@ -28,9 +29,19 @@ import {
   type MapPoint,
 } from "../lib/api";
 
-const labelledTileUrl =
+type MapStyle = "clear" | "detail";
+
+const detailTileUrl =
   (import.meta.env.VITE_FULTONS_MAP_TILE_URL as string | undefined) ||
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}";
+
+const clearBaseTileUrl =
+  (import.meta.env.VITE_FULTONS_MAP_TILE_URL_CLEAR_BASE as string | undefined) ||
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}";
+
+const clearReferenceTileUrl =
+  (import.meta.env.VITE_FULTONS_MAP_TILE_URL_CLEAR_REFERENCE as string | undefined) ||
+  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 
 const noLabelTileUrl =
   (import.meta.env.VITE_FULTONS_MAP_TILE_URL_NO_LABELS as string | undefined) ||
@@ -44,19 +55,30 @@ const noLabelTileAttribution =
   (import.meta.env.VITE_FULTONS_MAP_TILE_ATTRIBUTION_NO_LABELS as string | undefined) ||
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
-function tileUrlForLabels(mapLabels: boolean) {
-  return mapLabels ? labelledTileUrl : noLabelTileUrl;
+function tileUrls(mapStyle: MapStyle, mapLabels: boolean) {
+  if (!mapLabels) {
+    return [noLabelTileUrl];
+  }
+  return mapStyle === "clear"
+    ? [clearBaseTileUrl, clearReferenceTileUrl]
+    : [detailTileUrl];
 }
 
-function readableTileOptions(mapLabels: boolean): L.TileLayerOptions {
-  const tileUrl = tileUrlForLabels(mapLabels);
+function readableTileOptions(tileUrl: string, mapLabels: boolean): L.TileLayerOptions {
   const usesRetinaTiles = tileUrl.includes("@2x");
   const usesEnlargedLabels = mapLabels && !usesRetinaTiles;
   const usesEsriTopographicTiles = tileUrl.includes("World_Topo_Map");
+  const usesEsriLightGrayTiles = tileUrl.includes("World_Light_Gray");
   return {
     attribution: mapLabels ? tileAttribution : noLabelTileAttribution,
     maxZoom: 19,
-    maxNativeZoom: usesEsriTopographicTiles ? 14 : usesEnlargedLabels ? 18 : 19,
+    maxNativeZoom: usesEsriTopographicTiles
+      ? 14
+      : usesEsriLightGrayTiles
+        ? 16
+        : usesEnlargedLabels
+          ? 18
+          : 19,
     tileSize: usesRetinaTiles || usesEnlargedLabels ? 512 : 256,
     zoomOffset: usesRetinaTiles || usesEnlargedLabels ? -1 : 0,
   };
@@ -118,6 +140,7 @@ function formatMeasuredDistance(distanceMetres: number) {
 type MapCanvasProps = {
   level: DailyMapGameLevel;
   mapLabels: boolean;
+  mapStyle: MapStyle;
   mapAnchors: DailyMapAnchor[];
   acceptedSelection: DailyMapSnapSelection | undefined;
   draftSelection: DailyMapSnapSelection | null;
@@ -133,6 +156,7 @@ type MapCanvasProps = {
 function MapCanvas({
   level,
   mapLabels,
+  mapStyle,
   mapAnchors,
   acceptedSelection,
   draftSelection,
@@ -149,7 +173,8 @@ function MapCanvas({
   const layerRef = useRef<L.LayerGroup | null>(null);
   const measurementLayerRef = useRef<L.LayerGroup | null>(null);
   const mapAnchorLayerRef = useRef<L.LayerGroup | null>(null);
-  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const mapBoundaryLayerRef = useRef<L.LayerGroup | null>(null);
+  const tileLayerRefs = useRef<L.TileLayer[]>([]);
   const displayedLevelIdRef = useRef<number | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [measurementPoints, setMeasurementPoints] = useState<MapPoint[]>([]);
@@ -169,10 +194,12 @@ function MapCanvas({
     L.control.zoom({ position: "bottomright" }).addTo(map);
     const layer = L.layerGroup().addTo(map);
     const measurementLayer = L.layerGroup().addTo(map);
+    const mapBoundaryLayer = L.layerGroup().addTo(map);
     const mapAnchorLayer = L.layerGroup().addTo(map);
     mapRef.current = map;
     layerRef.current = layer;
     measurementLayerRef.current = measurementLayer;
+    mapBoundaryLayerRef.current = mapBoundaryLayer;
     mapAnchorLayerRef.current = mapAnchorLayer;
 
     const resizeTimer = window.setTimeout(() => {
@@ -188,7 +215,8 @@ function MapCanvas({
       layerRef.current = null;
       measurementLayerRef.current = null;
       mapAnchorLayerRef.current = null;
-      tileLayerRef.current = null;
+      mapBoundaryLayerRef.current = null;
+      tileLayerRefs.current = [];
     };
   }, []);
 
@@ -197,14 +225,48 @@ function MapCanvas({
     if (map === null) {
       return;
     }
-    if (tileLayerRef.current !== null) {
-      tileLayerRef.current.remove();
+    tileLayerRefs.current.forEach((layer) => layer.remove());
+    tileLayerRefs.current = tileUrls(mapStyle, mapLabels).map((tileUrl) =>
+      L.tileLayer(tileUrl, readableTileOptions(tileUrl, mapLabels)).addTo(map),
+    );
+  }, [mapLabels, mapStyle]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const layer = mapBoundaryLayerRef.current;
+    if (map === null || layer === null) {
+      return;
     }
-    tileLayerRef.current = L.tileLayer(
-      tileUrlForLabels(mapLabels),
-      readableTileOptions(mapLabels),
-    ).addTo(map);
-  }, [mapLabels]);
+    const currentMap = map;
+    const currentLayer = layer;
+
+    function renderMapBoundaries() {
+      currentLayer.clearLayers();
+      const zoom = currentMap.getZoom();
+      mapAnchors
+        .filter((anchor) => anchor.boundary && zoom >= (anchor.boundaryMinZoom ?? 6))
+        .forEach((anchor) => {
+          L.geoJSON(anchor.boundary as Parameters<typeof L.geoJSON>[0], {
+            interactive: false,
+            style: {
+              color: "#087f73",
+              dashArray: "9 7",
+              fillColor: "#10b981",
+              fillOpacity: 0.035,
+              opacity: 0.95,
+              weight: 3,
+            },
+          }).addTo(currentLayer);
+        });
+    }
+
+    renderMapBoundaries();
+    currentMap.on("zoomend", renderMapBoundaries);
+    return () => {
+      currentMap.off("zoomend", renderMapBoundaries);
+      currentLayer.clearLayers();
+    };
+  }, [mapAnchors]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -533,6 +595,15 @@ export function MapGame() {
       return true;
     }
   });
+  const [mapStyle, setMapStyle] = useState<MapStyle>(() => {
+    try {
+      return window.localStorage.getItem("fultons:daily-map:style") === "detail"
+        ? "detail"
+        : "clear";
+    } catch {
+      return "clear";
+    }
+  });
 
   const loadGame = useCallback(async () => {
     try {
@@ -570,6 +641,14 @@ export function MapGame() {
       // The toggle still works for the current session if storage is unavailable.
     }
   }, [mapLabels]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("fultons:daily-map:style", mapStyle);
+    } catch {
+      // The toggle still works for the current session if storage is unavailable.
+    }
+  }, [mapStyle]);
 
   const levels = game?.levels ?? [];
   const selectedLevel = useMemo(
@@ -784,7 +863,7 @@ export function MapGame() {
         </div>
 
         <div className="space-y-3 p-3">
-          <div className="grid">
+          <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
               aria-pressed={mapLabels}
@@ -799,6 +878,16 @@ export function MapGame() {
             >
               <Type aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
               <span>{mapLabels ? "Map text on" : "Map text off"}</span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={mapStyle === "detail"}
+              aria-label={mapStyle === "clear" ? "Use detailed map" : "Use clear map"}
+              onClick={() => setMapStyle((current) => (current === "clear" ? "detail" : "clear"))}
+              className="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-base font-black leading-tight text-slate-700 transition saints-focus"
+            >
+              <Layers aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
+              <span>{mapStyle === "clear" ? "Clear map" : "Detail map"}</span>
             </button>
           </div>
 
@@ -841,6 +930,7 @@ export function MapGame() {
             key={selectedLevel.id}
             level={selectedLevel}
             mapLabels={mapLabels}
+            mapStyle={mapStyle}
             mapAnchors={(selectedLevel.mapAnchors ?? []).filter(
               (anchor) => anchor.minHintCount <= currentRevealedHintCount,
             )}

@@ -306,6 +306,19 @@ class DailyMapGameTests(unittest.TestCase):
                             "lat": 51.4995,
                             "lng": -0.1248,
                             "min_hint_count": 2,
+                            "boundary": {
+                                "type": "Polygon",
+                                "coordinates": [
+                                    [
+                                        [-0.15, 51.48],
+                                        [-0.10, 51.48],
+                                        [-0.10, 51.52],
+                                        [-0.15, 51.52],
+                                        [-0.15, 51.48],
+                                    ]
+                                ],
+                            },
+                            "boundary_min_zoom": 7,
                         },
                         {"name": "Broken", "lat": "north", "lng": 0},
                     ]
@@ -329,8 +342,36 @@ class DailyMapGameTests(unittest.TestCase):
                     "minHintCount": 2,
                     "minZoom": 4,
                     "maxZoom": 4,
+                    "boundary": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [-0.15, 51.48],
+                                [-0.1, 51.48],
+                                [-0.1, 51.52],
+                                [-0.15, 51.52],
+                                [-0.15, 51.48],
+                            ]
+                        ],
+                    },
+                    "boundaryMinZoom": 7,
                 }
             ],
+        )
+
+    def test_map_boundary_rejects_non_area_or_invalid_coordinates(self) -> None:
+        self.assertIsNone(
+            daily_map_game.serialize_map_boundary(
+                {"type": "LineString", "coordinates": [[0, 0], [1, 1]]}
+            )
+        )
+        self.assertIsNone(
+            daily_map_game.serialize_map_boundary(
+                {
+                    "type": "Polygon",
+                    "coordinates": [[[0, 95], [1, 0], [1, 1], [0, 95]]],
+                }
+            )
         )
 
     def test_local_map_clue_critic_rejects_repetition_and_answer_leak(self) -> None:

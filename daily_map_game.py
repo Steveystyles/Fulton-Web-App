@@ -3750,6 +3750,63 @@ def selection_payload(
     return payload
 
 
+def serialize_map_boundary(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    geometry_type = str(value.get("type") or "").strip()
+    coordinates = value.get("coordinates")
+
+    def position(item: object) -> list[float] | None:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            return None
+        try:
+            lng = float(item[0])
+            lat = float(item[1])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(lat) or not math.isfinite(lng):
+            return None
+        if not -90 <= lat <= 90 or not -180 <= lng <= 180:
+            return None
+        return [lng, lat]
+
+    def ring(item: object) -> list[list[float]] | None:
+        if not isinstance(item, list) or not 4 <= len(item) <= 10_000:
+            return None
+        normalized = [position(point) for point in item]
+        if any(point is None for point in normalized):
+            return None
+        return [point for point in normalized if point is not None]
+
+    def polygon(item: object) -> list[list[list[float]]] | None:
+        if not isinstance(item, list) or not 1 <= len(item) <= 500:
+            return None
+        normalized = [ring(candidate) for candidate in item]
+        if any(candidate is None for candidate in normalized):
+            return None
+        return [candidate for candidate in normalized if candidate is not None]
+
+    if geometry_type == "Polygon":
+        normalized_coordinates: object = polygon(coordinates)
+    elif geometry_type == "MultiPolygon" and isinstance(coordinates, list):
+        normalized_polygons = [polygon(candidate) for candidate in coordinates]
+        normalized_coordinates = (
+            None
+            if any(candidate is None for candidate in normalized_polygons)
+            else [candidate for candidate in normalized_polygons if candidate is not None]
+        )
+    else:
+        return None
+    if not normalized_coordinates:
+        return None
+    boundary = {"type": geometry_type, "coordinates": normalized_coordinates}
+    try:
+        encoded = json.dumps(boundary, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+    return boundary if len(encoded) <= 250_000 else None
+
+
 def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
     anchors: list[dict[str, Any]] = []
     for item in parse_json_list(value):
@@ -3767,15 +3824,22 @@ def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
             continue
         normalized_min_zoom = min(19, max(1, min_zoom))
         normalized_max_zoom = min(19, max(normalized_min_zoom, max_zoom))
-        anchors.append(
-            {
-                "name": name,
-                "point": {"lat": lat, "lng": lng},
-                "minHintCount": min(2, max(0, min_hint_count)),
-                "minZoom": normalized_min_zoom,
-                "maxZoom": normalized_max_zoom,
-            }
-        )
+        anchor = {
+            "name": name,
+            "point": {"lat": lat, "lng": lng},
+            "minHintCount": min(2, max(0, min_hint_count)),
+            "minZoom": normalized_min_zoom,
+            "maxZoom": normalized_max_zoom,
+        }
+        boundary = serialize_map_boundary(item.get("boundary"))
+        if boundary is not None:
+            try:
+                boundary_min_zoom = int(item.get("boundary_min_zoom", 6))
+            except (TypeError, ValueError):
+                boundary_min_zoom = 6
+            anchor["boundary"] = boundary
+            anchor["boundaryMinZoom"] = min(19, max(1, boundary_min_zoom))
+        anchors.append(anchor)
     return anchors[:3]
 
 
@@ -3995,6 +4059,7 @@ def fetch_forward_geocode(
     *,
     country_code: str = "",
     limit: int = 5,
+    include_boundary_geometry: bool = False,
 ) -> list[dict[str, Any]]:
     query_value = str(query_text or "").strip()
     if (
@@ -4018,6 +4083,9 @@ def fetch_forward_geocode(
             "addressdetails": "1",
             "accept-language": REVERSE_GEOCODE_LANGUAGE,
         }
+        if include_boundary_geometry:
+            params["polygon_geojson"] = "1"
+            params["polygon_threshold"] = "0.002"
         country_value = str(country_code or "").strip().lower()
         if country_value:
             params["countrycodes"] = country_value
