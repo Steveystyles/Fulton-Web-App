@@ -59,7 +59,7 @@ CATEGORY_GUIDANCE = {
     "static_description": "Avoid static filler and fulfil the assigned clue role with concrete information.",
     "weak_hard_hook": "Hard clues need a memorable incident, event, record, person, story, oddity, or surprising fact.",
     "weak_medium_narrowing": "Medium clues must materially reduce the geographic search area; a place-owned fact may add character when it also advances that narrowing.",
-    "weak_easy_map_anchor": "Easy clues must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Street Map.",
+    "weak_easy_map_anchor": "Easy clues must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
     "deep_zoom_anchor": "Replace an essential anchor that first appears after zoom 11 with a larger visible anchor and a practical directional relationship. A later district label may only supplement that route.",
     "incorrect_local_area": "Verify the target's technical local area; do not present a popular association with a nearby district as its actual location.",
     "too_broad": "Narrow the clue toward one identifiable map target.",

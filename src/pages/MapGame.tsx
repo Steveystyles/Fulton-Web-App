@@ -30,7 +30,7 @@ import {
 
 const labelledTileUrl =
   (import.meta.env.VITE_FULTONS_MAP_TILE_URL as string | undefined) ||
-  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}";
 
 const noLabelTileUrl =
   (import.meta.env.VITE_FULTONS_MAP_TILE_URL_NO_LABELS as string | undefined) ||
@@ -52,10 +52,11 @@ function readableTileOptions(mapLabels: boolean): L.TileLayerOptions {
   const tileUrl = tileUrlForLabels(mapLabels);
   const usesRetinaTiles = tileUrl.includes("@2x");
   const usesEnlargedLabels = mapLabels && !usesRetinaTiles;
+  const usesEsriTopographicTiles = tileUrl.includes("World_Topo_Map");
   return {
     attribution: mapLabels ? tileAttribution : noLabelTileAttribution,
     maxZoom: 19,
-    maxNativeZoom: usesEnlargedLabels ? 18 : 19,
+    maxNativeZoom: usesEsriTopographicTiles ? 14 : usesEnlargedLabels ? 18 : 19,
     tileSize: usesRetinaTiles || usesEnlargedLabels ? 512 : 256,
     zoomOffset: usesRetinaTiles || usesEnlargedLabels ? -1 : 0,
   };
