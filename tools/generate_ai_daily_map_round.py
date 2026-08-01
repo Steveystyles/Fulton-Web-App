@@ -1243,7 +1243,7 @@ def build_verified_map_search_anchors(
                 "lng": float(place["lng"]),
                 "min_hint_count": 2,
                 "min_zoom": 12,
-                "max_zoom": 13,
+                "max_zoom": 19,
             }
         )
     return anchors

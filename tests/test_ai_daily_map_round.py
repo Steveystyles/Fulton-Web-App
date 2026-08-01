@@ -734,7 +734,7 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 "lng": 2.1228,
                 "min_hint_count": 2,
                 "min_zoom": 12,
-                "max_zoom": 13,
+                "max_zoom": 19,
             },
         )
         geocode.assert_called_once_with(
