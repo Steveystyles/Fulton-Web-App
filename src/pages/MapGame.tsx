@@ -888,16 +888,29 @@ export function MapGame() {
               <Type aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
               <span>{mapLabels ? "Map text on" : "Map text off"}</span>
             </button>
-            <button
-              type="button"
-              aria-pressed={mapStyle === "detail"}
-              aria-label={mapStyle === "clear" ? "Use detailed map" : "Use clear map"}
-              onClick={() => setMapStyle((current) => (current === "clear" ? "detail" : "clear"))}
-              className="flex min-h-11 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-base font-black leading-tight text-slate-700 transition saints-focus"
+            <div
+              className="grid grid-cols-2 rounded-lg border border-slate-200 bg-slate-50 p-1"
+              role="group"
+              aria-label="Map style"
             >
-              <Layers aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
-              <span>{mapStyle === "clear" ? "Clear map" : "Detail map"}</span>
-            </button>
+              {(["clear", "detail"] as const).map((style) => (
+                <button
+                  key={style}
+                  type="button"
+                  aria-pressed={mapStyle === style}
+                  onClick={() => setMapStyle(style)}
+                  className={[
+                    "flex min-h-9 items-center justify-center gap-1 rounded-md px-2 text-sm font-black leading-none transition saints-focus",
+                    mapStyle === style
+                      ? "bg-slate-950 text-white shadow-sm"
+                      : "text-slate-500",
+                  ].join(" ")}
+                >
+                  <Layers aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+                  <span>{style === "clear" ? "Clear" : "Detail"}</span>
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="space-y-2" aria-label="Map game clues">
