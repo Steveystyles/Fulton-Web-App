@@ -178,6 +178,7 @@ function MapCanvas({
   const displayedLevelIdRef = useRef<number | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [measurementPoints, setMeasurementPoints] = useState<MapPoint[]>([]);
+  const [visibleBoundaryName, setVisibleBoundaryName] = useState("");
 
   useEffect(() => {
     if (containerRef.current === null || mapRef.current !== null) {
@@ -243,9 +244,11 @@ function MapCanvas({
     function renderMapBoundaries() {
       currentLayer.clearLayers();
       const zoom = currentMap.getZoom();
-      mapAnchors
-        .filter((anchor) => anchor.boundary && zoom >= (anchor.boundaryMinZoom ?? 6))
-        .forEach((anchor) => {
+      const visibleBoundaries = mapAnchors.filter(
+        (anchor) => anchor.boundary && zoom >= (anchor.boundaryMinZoom ?? 6),
+      );
+      setVisibleBoundaryName(visibleBoundaries[0]?.name ?? "");
+      visibleBoundaries.forEach((anchor) => {
           L.geoJSON(anchor.boundary as Parameters<typeof L.geoJSON>[0], {
             interactive: false,
             style: {
@@ -257,7 +260,7 @@ function MapCanvas({
               weight: 3,
             },
           }).addTo(currentLayer);
-        });
+      });
     }
 
     renderMapBoundaries();
@@ -538,6 +541,12 @@ function MapCanvas({
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+      {visibleBoundaryName ? (
+        <div className="pointer-events-none absolute bottom-24 left-3 z-[700] inline-flex min-h-9 max-w-[calc(100%-5rem)] items-center gap-2 rounded-lg border border-emerald-200 bg-white/95 px-3 text-xs font-black text-emerald-800 shadow-lg">
+          <span aria-hidden="true" className="w-7 border-t-[3px] border-dashed border-emerald-700" />
+          <span className="truncate">{visibleBoundaryName} boundary</span>
         </div>
       ) : null}
       <div className="pointer-events-none absolute bottom-10 left-3 z-[700] flex max-w-[calc(100%-5rem)] items-stretch gap-2">
