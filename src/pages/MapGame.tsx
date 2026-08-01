@@ -909,15 +909,32 @@ export function MapGame() {
 }
 
 function ResultPanel({ result }: { result: DailyMapGameResult }) {
+  const cluesSeen = result.revealedHintCount + 1;
+  const solvingStage = result.revealedHintCount === 0
+    ? "the hard clue"
+    : result.revealedHintCount === 1
+      ? "the medium clue"
+      : result.revealedHintCount === 2
+        ? "the easy clue"
+        : "the place name";
+  const progressSummary = result.correct
+    ? result.revealedHintCount >= 3
+      ? "You completed the round after revealing the place name."
+      : `You solved it after seeing ${solvingStage}.`
+    : `Your selected place was outside the answer area after seeing ${solvingStage}.`;
+
   return (
     <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
       <div className="grid grid-cols-3 gap-2 text-center">
         <ResultMetric label="Score" value={`${result.score}`} icon={<Trophy className="h-4 w-4" />} />
         <ResultMetric label="Result" value={result.correct ? "Correct" : "Wrong"} />
-        <ResultMetric label="Help used" value={`${result.revealedHintCount + 1}`} />
+        <ResultMetric label="Clues seen" value={`${cluesSeen}`} />
       </div>
-      <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2">
+      <div className="mt-3 border-t border-slate-200 pt-3">
         <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+          Correct answer
+        </p>
+        <p className="mt-1 text-xl font-black leading-tight text-slate-950">
           {result.place.name}
         </p>
         {result.selectedPlace.name && result.selectedPlace.name !== result.place.name ? (
@@ -925,8 +942,8 @@ function ResultPanel({ result }: { result: DailyMapGameResult }) {
             You selected {result.selectedPlace.name}
           </p>
         ) : null}
-        <p className="mt-1 text-sm font-black text-slate-700">{result.band}</p>
-        <p className="mt-1 text-sm font-semibold leading-snug text-slate-600">
+        <p className="mt-2 text-sm font-black leading-snug text-slate-700">{progressSummary}</p>
+        <p className="mt-2 text-sm font-semibold leading-snug text-slate-600">
           {result.place.revealText}
         </p>
       </div>

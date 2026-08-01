@@ -142,6 +142,9 @@ MAP_CLUE_REVEAL_PLACEHOLDER_PHRASES = (
     "target place",
     "the correct place",
     "the pin",
+    "fits because",
+    "matches because",
+    "ties together",
 )
 MAP_CLUE_SUPPORT_STOPWORDS = {
     "about",
@@ -1989,7 +1992,7 @@ def map_clue_schema() -> dict[str, Any]:
         "hard": "A clear answer-safe rendering of the locked recognition hook; no answer name or geography.",
         "medium": "A different clue that materially narrows the broad geographic scope; no answer name.",
         "easy": "A practical local-area map route using anchors visible by map zoom 11; no answer name.",
-        "reveal": "A concise explanation that may name the place.",
+        "reveal": "One or two player-facing sentences that name the place, say what it is, and explain a memorable fact.",
     }
 
 
@@ -2231,7 +2234,11 @@ Rules:
 - Do not write a proper-noun clue that only works by hiding the answer name, such as "Tower of [answer]"; choose another known-for hook or describe the landmark naturally.
 - Prefer source-backed, stable facts. State whether a record is current or former when that distinction matters.
 - Keep each clue comfortable to read on a phone without deleting essential information merely to meet a count.
-- The reveal must spell the canonical_name exactly and explain why the clue ladder fits in natural prose, not coordinate metadata.
+- The reveal is shown after scoring. Write one or two player-facing sentences, not a validation note about the clues.
+- Begin the reveal with the exact canonical_name and plainly say what kind of place it is or why it matters.
+- Explain one memorable fact and, when useful, its geographic connection. The player should learn something even after the round ends.
+- Do not write "fits because", "matches because", "ties together", "the clues point to", or discuss why the clue ladder is valid.
+- The reveal may name the answer, but must not use coordinate metadata or database language.
 
 Recent map places to avoid repeating:
 {json.dumps(recent_places[-12:], indent=2)}
@@ -2296,6 +2303,7 @@ Fail the ladder if:
 - The difficulty progression is wrong.
 - The reveal does not explain the answer.
 - The reveal does not spell the canonical_name exactly.
+- The reveal discusses how the clues fit, match, or validate the answer instead of teaching the player what the place is and why it matters.
 - A clue uses coordinates, ISO codes, time zones, or formulaic dataset phrasing.
 - A clue uses placeholder wording such as "the place", "the target place", or "the answer".
 - The reveal reads like database metadata instead of a short explanation.

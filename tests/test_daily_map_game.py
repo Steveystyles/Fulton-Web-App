@@ -622,6 +622,30 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertTrue(critic["passed"], critic["failure_reasons"])
 
+    def test_local_map_clue_critic_rejects_validation_style_reveal(self) -> None:
+        place = {
+            "canonical_name": "London",
+            "acceptable_aliases": [],
+            "verified_facts": [
+                "Guy Fawkes was arrested beneath Parliament in 1605 while guarding gunpowder.",
+                "This English capital is home to the world's oldest underground railway.",
+                "Westminster lies beside the Thames around Parliament and Big Ben.",
+            ],
+            "nearby_context": "Westminster, River Thames, central London",
+        }
+        critic = daily_map_game.local_map_clue_critique(
+            place,
+            {
+                "hard": "Guy Fawkes was arrested beneath Parliament here in 1605 while guarding gunpowder.",
+                "medium": "This English capital is home to the world's oldest underground railway.",
+                "easy": "Look within Westminster, beside the Thames river, around Parliament and its clock tower.",
+                "reveal": "London fits because of the Gunpowder Plot, the Underground, and Westminster.",
+            },
+        )
+
+        self.assertFalse(critic["passed"])
+        self.assertTrue(any("placeholder" in reason for reason in critic["failure_reasons"]))
+
     def test_local_map_clue_critic_rejects_unsupported_known_for_claims(self) -> None:
         place = {
             "canonical_name": "Abidjan",
