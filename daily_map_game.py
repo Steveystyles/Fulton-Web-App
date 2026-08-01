@@ -505,14 +505,21 @@ MAP_HARD_TEAM_EVENT_RE = re.compile(
     r"cup final|championship final|football match|soccer match)\b",
     re.IGNORECASE,
 )
+MAP_HARD_TEAM_NAME_PATTERN = (
+    r"[A-Z][^\W\d_]*(?:['’\-][^\W\d_]+)*"
+    r"(?:\s+[A-Z][^\W\d_]*(?:['’\-][^\W\d_]+)*){0,3}"
+)
 MAP_HARD_TEAM_SIDES_RE = re.compile(
-    r"\b(?:[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}\s+"
-    r"(?:beat|defeated)\s+(?:the\s+)?"
-    r"[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}|"
-    r"(?:between|against)\s+"
-    r"[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}\s+"
-    r"(?:and|against)\s+(?:the\s+)?"
-    r"[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2})\b"
+    rf"\b(?:{MAP_HARD_TEAM_NAME_PATTERN}\s+"
+    rf"(?:beat|defeated)\s+(?:the\s+|host nation\s+)?"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+"
+    rf"(?:secured|claimed|won|lifted)\b.{{0,100}}?\b"
+    rf"(?:by\s+)?defeating\s+(?:the\s+|host nation\s+)?"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"(?:between|against)\s+{MAP_HARD_TEAM_NAME_PATTERN}\s+"
+    rf"(?:and|against)\s+(?:the\s+|host nation\s+)?"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN})\b"
 )
 MAP_HARD_TEAM_INDIRECT_SIDES_RE = re.compile(
     r"\b(?:(?:national\s+)?team\s+of\s+"

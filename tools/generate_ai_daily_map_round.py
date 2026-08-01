@@ -41,12 +41,12 @@ VERIFICATION_SEARCH_STOPWORDS = {
     "during",
     "famous",
     "famously",
-    "final",
     "group",
     "hosted",
     "inside",
     "match",
     "place",
+    "pitch",
     "stage",
     "stadium",
     "target",
@@ -57,8 +57,28 @@ VERIFICATION_SEARCH_STOPWORDS = {
     "venue",
     "where",
     "which",
+}
+VERIFICATION_EVENT_QUERY_TERMS = {
+    "beat",
+    "defeat",
+    "defeated",
+    "defeating",
+    "final",
+    "cup",
+    "champions",
+    "league",
+    "cricket",
+    "football",
+    "murdered",
+    "discovered",
+    "escaped",
+    "record",
     "world",
 }
+VERIFICATION_WORD_RE = re.compile(
+    r"\b[0-9]{4}\b|\b[^\W\d_](?:[^\W_]|['’\-]){2,}\b",
+    re.UNICODE,
+)
 DIRECT_EVIDENCE_STOPWORDS = VERIFICATION_SEARCH_STOPWORDS | {
     "about",
     "against",
@@ -691,7 +711,7 @@ def wikipedia_verification_evidence(
         ),
     ).strip()
     keywords: list[str] = []
-    for token in re.findall(r"\b[0-9]{4}\b|\b[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'-]{3,}\b", hook_text):
+    for token in VERIFICATION_WORD_RE.findall(hook_text):
         normalized = token.casefold()
         if normalized in VERIFICATION_SEARCH_STOPWORDS or normalized in {
             item.casefold() for item in canonical_name.split()
@@ -699,22 +719,44 @@ def wikipedia_verification_evidence(
             continue
         if normalized not in {item.casefold() for item in keywords}:
             keywords.append(token)
-        if len(keywords) >= 10:
-            break
+    keywords = [
+        item
+        for _index, item in sorted(
+            enumerate(keywords),
+            key=lambda pair: (
+                0
+                if pair[1].isdigit()
+                else 1
+                if pair[1][0].isupper()
+                or pair[1].casefold() in VERIFICATION_EVENT_QUERY_TERMS
+                else 2,
+                pair[0],
+            ),
+        )
+    ][:12]
+    event_keywords = [
+        item
+        for item in keywords
+        if item.isdigit()
+        or item[0].isupper()
+        or item.casefold() in VERIFICATION_EVENT_QUERY_TERMS
+    ][:9]
     quoted_target = f'"{canonical_name}"' if canonical_name else ""
     search_queries = [
+        " ".join(event_keywords).strip(),
+        " ".join((quoted_target, *event_keywords[:7])).strip(),
         canonical_name,
-        " ".join((quoted_target, *keywords[:7])).strip(),
-        " ".join(keywords[:10]).strip(),
     ]
     page_ids: list[int] = []
     search_snippets: dict[int, list[str]] = {}
     max_pages = max(1, min(8, limit))
-    for query in dict.fromkeys(
+    unique_queries = list(dict.fromkeys(
         re.sub(r"\s+", " ", item).strip()
         for item in search_queries
         if item.strip()
-    ):
+    ))
+    pages_per_query = max(1, (max_pages + len(unique_queries) - 1) // len(unique_queries))
+    for query in unique_queries:
         search_url = f"{WIKIPEDIA_API_URL}?{urlencode({
             'action': 'query',
             'list': 'search',
@@ -737,6 +779,7 @@ def wikipedia_verification_evidence(
             if isinstance(search_payload, dict)
             else []
         )
+        added_for_query = 0
         for item in raw_results:
             if not isinstance(item, dict) or not str(item.get("pageid") or "").isdigit():
                 continue
@@ -750,7 +793,8 @@ def wikipedia_verification_evidence(
                 search_snippets[page_id].append(snippet)
             if page_id not in page_ids:
                 page_ids.append(page_id)
-            if len(page_ids) >= max_pages:
+                added_for_query += 1
+            if added_for_query >= pages_per_query or len(page_ids) >= max_pages:
                 break
         if len(page_ids) >= max_pages:
             break
@@ -835,44 +879,55 @@ def exact_target_page_support(
     place: dict[str, Any],
 ) -> dict[str, Any] | None:
     canonical_name = verification_token(str(place.get("canonical_name") or ""))
-    target_page = next(
+    canonical_phrase = re.sub(r"[^a-z0-9]+", " ", canonical_name).strip()
+    candidate_pages = sorted(
         (
             item
             for item in evidence
             if verification_token(str(item.get("title") or "")) == canonical_name
+            or canonical_phrase
+            in re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                verification_token(str(item.get("extract") or "")),
+            ).strip()
         ),
-        None,
+        key=lambda item: (
+            verification_token(str(item.get("title") or "")) != canonical_name
+        ),
     )
-    if target_page is None:
+    if not candidate_pages:
         return None
     hook_text = str(selected_hook.get("verified_hard_hook") or "")
     claim_tokens = {
         verification_token(token)
-        for token in re.findall(r"\b[0-9]{4}\b|\b[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'-]{3,}\b", hook_text)
+        for token in VERIFICATION_WORD_RE.findall(hook_text)
         if token.casefold() not in DIRECT_EVIDENCE_STOPWORDS
     }
     claim_tokens.discard("")
-    evidence_tokens = {
-        verification_token(token)
-        for token in re.findall(
-            r"\b[0-9]{4}\b|\b[A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'-]{3,}\b",
-            str(target_page.get("extract") or ""),
-        )
-    }
     years = set(re.findall(r"\b[0-9]{4}\b", hook_text))
-    matched = claim_tokens & evidence_tokens
-    coverage = len(matched) / max(1, len(claim_tokens))
-    if (
-        len(claim_tokens) < 4
-        or coverage < 0.8
-        or not years.issubset(evidence_tokens)
-    ):
-        return None
-    return {
-        "url": str(target_page.get("url") or ""),
-        "coverage": coverage,
-        "matched_tokens": sorted(matched),
-    }
+    for target_page in candidate_pages:
+        evidence_tokens = {
+            verification_token(token)
+            for token in VERIFICATION_WORD_RE.findall(str(target_page.get("extract") or ""))
+        }
+        matched = claim_tokens & evidence_tokens
+        coverage = len(matched) / max(1, len(claim_tokens))
+        exact_title = (
+            verification_token(str(target_page.get("title") or "")) == canonical_name
+        )
+        minimum_coverage = 0.8 if exact_title else 0.75
+        if (
+            len(claim_tokens) >= 4
+            and coverage >= minimum_coverage
+            and years.issubset(evidence_tokens)
+        ):
+            return {
+                "url": str(target_page.get("url") or ""),
+                "coverage": coverage,
+                "matched_tokens": sorted(matched),
+            }
+    return None
 
 
 def verify_event_place_connection(
@@ -1134,7 +1189,7 @@ def build_verified_map_search_anchors(
         )
     _distance_m, anchor_lat, anchor_lng, importance = min(verified)
     display_zoom = 4 if importance >= 0.55 else 5 if importance >= 0.35 else 6
-    return [
+    anchors = [
         {
             "name": anchor_name,
             "lat": anchor_lat,
@@ -1144,6 +1199,19 @@ def build_verified_map_search_anchors(
             "max_zoom": display_zoom,
         }
     ]
+    canonical_name = str(place.get("canonical_name") or "").strip()
+    if canonical_name:
+        anchors.append(
+            {
+                "name": canonical_name,
+                "lat": float(place["lat"]),
+                "lng": float(place["lng"]),
+                "min_hint_count": 2,
+                "min_zoom": 12,
+                "max_zoom": 13,
+            }
+        )
+    return anchors
 
 
 def save_map_search_anchors(
@@ -1475,6 +1543,7 @@ def discover_uncurated_candidates(
     puzzle_date: str,
     count: int,
     max_attempts: int,
+    excluded_names: set[str] | None = None,
 ) -> dict[str, Any]:
     from tools import generate_map_place_candidates_with_ai as candidate_generator
 
@@ -1492,8 +1561,14 @@ def discover_uncurated_candidates(
         ]
     finally:
         conn.close()
+    excluded = {
+        str(name).strip()
+        for name in (excluded_names or set())
+        if str(name).strip()
+    }
+    blocked_examples = [*recent_names, *sorted(excluded)]
     blocked_names: set[str] = set()
-    for name in recent_names:
+    for name in blocked_examples:
         blocked_names.update(candidate_generator.normalized_name_variants(name))
 
     discovery = candidate_generator.generate_review_batch(
@@ -1510,7 +1585,7 @@ def discover_uncurated_candidates(
         feedback_dir=DEFAULT_REPORT_DIR,
         allow_known_retries=True,
         blocked_names=blocked_names,
-        blocked_name_examples=recent_names,
+        blocked_name_examples=blocked_examples,
     )
     accepted = discovery.get("accepted") or []
     if not accepted:
@@ -1600,6 +1675,7 @@ def main() -> int:
             puzzle_date=args.date,
             count=max(1, args.discover_count),
             max_attempts=max(1, args.discovery_attempts),
+            excluded_names=excluded_names,
         )
         eligible_names = set(discovery["candidate_names"])
     conn = sqlite3.connect(args.db)

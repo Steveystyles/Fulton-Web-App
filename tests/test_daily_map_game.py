@@ -1500,6 +1500,28 @@ class DailyMapGameTests(unittest.TestCase):
             daily_map_game.hard_hook_missing_requirements(clue),
         )
 
+    def test_team_event_accepts_title_wording_with_both_countries(self) -> None:
+        clue = (
+            "On this pitch, Australia secured their first Cricket World Cup title "
+            "in 1987 by defeating England by seven runs in the final."
+        )
+
+        self.assertNotIn(
+            "both competing sides",
+            daily_map_game.hard_hook_missing_requirements(clue),
+        )
+
+    def test_team_event_accepts_unicode_team_names(self) -> None:
+        clue = (
+            "On this pitch, Real Madrid defeated Atlético Madrid 5-3 on penalties "
+            "after a 1-1 draw in the 2016 Champions League final."
+        )
+
+        self.assertNotIn(
+            "both competing sides",
+            daily_map_game.hard_hook_missing_requirements(clue),
+        )
+
     def test_hard_target_identity_rejects_generic_site_for_an_island_prison(self) -> None:
         place = {
             "canonical_name": "Alcatraz Island",

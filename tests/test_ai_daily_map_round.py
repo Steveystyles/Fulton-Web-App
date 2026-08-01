@@ -95,6 +95,38 @@ class FallbackEventPlaceVerificationProvider(EventPlaceVerificationProvider):
 
 
 class AiDailyMapRoundTests(unittest.TestCase):
+    def test_discovery_blocks_explicitly_excluded_places(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            db_path = Path(temporary_directory) / "map.db"
+            conn = sqlite3.connect(db_path)
+            generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+            conn.close()
+            discovery = {
+                "accepted": [{"canonical_name": "Fresh Place"}],
+                "attempts": [],
+                "rejected": [],
+            }
+            with patch(
+                "tools.generate_map_place_candidates_with_ai.generate_review_batch",
+                return_value=discovery,
+            ) as generate_batch, patch(
+                "tools.generate_map_place_candidates_with_ai.insert_draft_rows",
+                return_value=1,
+            ):
+                result = generate_ai_daily_map_round.discover_uncurated_candidates(
+                    db_path=db_path,
+                    provider=FakeProvider("fresh"),
+                    puzzle_date="2026-08-01",
+                    count=4,
+                    max_attempts=2,
+                    excluded_names={"Rejected Stadium"},
+                )
+
+        call = generate_batch.call_args.kwargs
+        self.assertIn("Rejected Stadium", call["blocked_name_examples"])
+        self.assertIn("rejectedstadium", call["blocked_names"])
+        self.assertEqual(result["candidate_names"], ["fresh place"])
+
     def test_event_brief_rejects_a_generic_site_that_drops_target_identity(self) -> None:
         selected_hook = {
             "verified_hard_hook": (
@@ -128,6 +160,89 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 selected_hook,
                 place=place,
             )
+
+    def test_wikipedia_verification_searches_event_before_venue(self) -> None:
+        requests = []
+
+        class FakeResponse:
+            def __init__(self, payload) -> None:
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def read(self) -> bytes:
+                import json
+
+                return json.dumps(self.payload).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            from urllib.parse import parse_qs, urlparse
+
+            del timeout
+            query = parse_qs(urlparse(request.full_url).query)
+            requests.append(query)
+            if query.get("list") == ["search"]:
+                search_text = query["srsearch"][0]
+                if search_text == "Eden Gardens":
+                    page_id = 30
+                    title = "Eden Gardens"
+                elif search_text.startswith('"Eden Gardens"'):
+                    page_id = 20
+                    title = "Eden Gardens events"
+                else:
+                    page_id = 10
+                    title = "1987 Cricket World Cup final"
+                return FakeResponse(
+                    {"query": {"search": [{"pageid": page_id, "title": title, "snippet": title}]}}
+                )
+            return FakeResponse(
+                {
+                    "query": {
+                        "pages": [
+                            {
+                                "pageid": 10,
+                                "title": "1987 Cricket World Cup final",
+                                "extract": "Australia defeated England at Eden Gardens.",
+                            },
+                            {
+                                "pageid": 20,
+                                "title": "Eden Gardens events",
+                                "extract": "The venue hosted major cricket finals.",
+                            },
+                            {
+                                "pageid": 30,
+                                "title": "Eden Gardens",
+                                "extract": "Eden Gardens is a cricket ground.",
+                            },
+                        ]
+                    }
+                }
+            )
+
+        with patch.object(generate_ai_daily_map_round, "urlopen", side_effect=fake_urlopen):
+            evidence = generate_ai_daily_map_round.wikipedia_verification_evidence(
+                {
+                    "verified_hard_hook": (
+                        "Australia secured the 1987 Cricket World Cup by defeating "
+                        "England at this ground."
+                    )
+                },
+                {
+                    "enriched_hard_hook": (
+                        "Australia defeated England by seven runs here in the 1987 final."
+                    )
+                },
+                place={"canonical_name": "Eden Gardens"},
+            )
+
+        search_requests = [item["srsearch"][0] for item in requests if "srsearch" in item]
+        self.assertIn("Australia", search_requests[0])
+        self.assertEqual(search_requests[-1], "Eden Gardens")
+        self.assertEqual(evidence[0]["title"], "1987 Cricket World Cup final")
 
     def test_reverse_geocoded_locality_uses_a_low_zoom_city_anchor(self) -> None:
         with patch.object(
@@ -558,6 +673,17 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(anchors[0]["name"], "Barcelona")
         self.assertEqual(anchors[0]["min_hint_count"], 2)
         self.assertAlmostEqual(anchors[0]["lat"], 41.3829)
+        self.assertEqual(
+            anchors[1],
+            {
+                "name": "Camp Nou",
+                "lat": 41.3809,
+                "lng": 2.1228,
+                "min_hint_count": 2,
+                "min_zoom": 12,
+                "max_zoom": 13,
+            },
+        )
         geocode.assert_called_once_with(
             "Barcelona, Catalonia, Spain",
             country_code="ES",
@@ -754,6 +880,31 @@ class AiDailyMapRoundTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["coverage"], 1.0)
+
+    def test_direct_support_accepts_an_event_page_that_names_the_target(self) -> None:
+        result = generate_ai_daily_map_round.exact_target_page_support(
+            [
+                {
+                    "title": "1987 Cricket World Cup",
+                    "url": "https://en.wikipedia.org/?curid=184346",
+                    "extract": (
+                        "The 1987 Cricket World Cup was won for the first time by "
+                        "Australia, who defeated England by seven runs in the final "
+                        "at Eden Gardens stadium."
+                    ),
+                }
+            ],
+            {
+                "verified_hard_hook": (
+                    "Australia secured their first Cricket World Cup title in 1987 "
+                    "by defeating England by seven runs in the final."
+                )
+            },
+            place={"canonical_name": "Eden Gardens"},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(result["coverage"], 0.75)
 
     def test_exact_target_page_support_rejects_an_event_from_another_venue(self) -> None:
         result = generate_ai_daily_map_round.exact_target_page_support(
