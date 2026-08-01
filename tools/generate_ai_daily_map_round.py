@@ -1228,12 +1228,12 @@ def build_verified_map_search_anchors(
             "lng": anchor_lng,
             "min_hint_count": min_hint_count,
             "min_zoom": display_zoom,
-            "max_zoom": display_zoom,
+            "max_zoom": 9,
         }
     ]
     if boundary is not None:
         anchors[0]["boundary"] = boundary
-        anchors[0]["boundary_min_zoom"] = max(6, display_zoom)
+        anchors[0]["boundary_min_zoom"] = max(5, display_zoom)
     canonical_name = str(place.get("canonical_name") or "").strip()
     if canonical_name:
         anchors.append(

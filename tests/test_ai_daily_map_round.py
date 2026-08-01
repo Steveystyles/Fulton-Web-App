@@ -648,6 +648,7 @@ class AiDailyMapRoundTests(unittest.TestCase):
             "lat": "41.3829",
             "lon": "2.1774",
             "display_name": "Barcelona, Catalonia, Spain",
+            "importance": 0.8,
             "address": {
                 "city": "Barcelona",
                 "state": "Catalonia",
@@ -707,8 +708,9 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(anchors[0]["name"], "Barcelona")
         self.assertEqual(anchors[0]["min_hint_count"], 2)
         self.assertAlmostEqual(anchors[0]["lat"], 41.3829)
+        self.assertEqual(anchors[0]["max_zoom"], 9)
         self.assertEqual(anchors[0]["boundary"]["type"], "Polygon")
-        self.assertEqual(anchors[0]["boundary_min_zoom"], 6)
+        self.assertEqual(anchors[0]["boundary_min_zoom"], 5)
         self.assertEqual(
             anchors[1],
             {

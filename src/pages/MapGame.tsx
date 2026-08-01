@@ -37,11 +37,7 @@ const detailTileUrl =
 
 const clearBaseTileUrl =
   (import.meta.env.VITE_FULTONS_MAP_TILE_URL_CLEAR_BASE as string | undefined) ||
-  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}";
-
-const clearReferenceTileUrl =
-  (import.meta.env.VITE_FULTONS_MAP_TILE_URL_CLEAR_REFERENCE as string | undefined) ||
-  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
 
 const noLabelTileUrl =
   (import.meta.env.VITE_FULTONS_MAP_TILE_URL_NO_LABELS as string | undefined) ||
@@ -59,26 +55,22 @@ function tileUrls(mapStyle: MapStyle, mapLabels: boolean) {
   if (!mapLabels) {
     return [noLabelTileUrl];
   }
-  return mapStyle === "clear"
-    ? [clearBaseTileUrl, clearReferenceTileUrl]
-    : [detailTileUrl];
+  return mapStyle === "clear" ? [clearBaseTileUrl] : [detailTileUrl];
 }
 
 function readableTileOptions(tileUrl: string, mapLabels: boolean): L.TileLayerOptions {
   const usesRetinaTiles = tileUrl.includes("@2x");
-  const usesEnlargedLabels = mapLabels && !usesRetinaTiles;
+  const usesNativeStreetDetail = tileUrl.includes("World_Street_Map");
+  const usesEnlargedLabels = mapLabels && !usesRetinaTiles && !usesNativeStreetDetail;
   const usesEsriTopographicTiles = tileUrl.includes("World_Topo_Map");
-  const usesEsriLightGrayTiles = tileUrl.includes("World_Light_Gray");
   return {
     attribution: mapLabels ? tileAttribution : noLabelTileAttribution,
     maxZoom: 19,
     maxNativeZoom: usesEsriTopographicTiles
       ? 14
-      : usesEsriLightGrayTiles
-        ? 16
-        : usesEnlargedLabels
-          ? 18
-          : 19,
+      : usesEnlargedLabels
+        ? 18
+        : 19,
     tileSize: usesRetinaTiles || usesEnlargedLabels ? 512 : 256,
     zoomOffset: usesRetinaTiles || usesEnlargedLabels ? -1 : 0,
   };
@@ -255,9 +247,9 @@ function MapCanvas({
               color: "#087f73",
               dashArray: "9 7",
               fillColor: "#10b981",
-              fillOpacity: 0.035,
-              opacity: 0.95,
-              weight: 3,
+              fillOpacity: 0.06,
+              opacity: 1,
+              weight: 4,
             },
           }).addTo(currentLayer);
       });
@@ -907,7 +899,7 @@ export function MapGame() {
                   ].join(" ")}
                 >
                   <Layers aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
-                  <span>{style === "clear" ? "Clear" : "Detail"}</span>
+                  <span>{style === "clear" ? "Street" : "Terrain"}</span>
                 </button>
               ))}
             </div>
