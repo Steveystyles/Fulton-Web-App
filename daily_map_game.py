@@ -488,6 +488,11 @@ MAP_HARD_HOOK_WEAK_COMMISSION_RE = re.compile(
     r"\b(?:construction|built|building|bridge|church|palace|monument)\b",
     re.IGNORECASE,
 )
+MAP_HARD_HOOK_ARCHITECT_LED_RE = re.compile(
+    r"\b(?:commissioned|hired|appointed)\b.{0,55}\barchitect\b|"
+    r"\barchitect\b.{0,55}\b(?:designed?|rebuilt|reconstructed?|built|constructed?)\b",
+    re.IGNORECASE,
+)
 MAP_HARD_EVENT_PARTICIPANT_RE = re.compile(
     r"\b(?:beat|defeated|against|between|by (?:four|three|two|\d+)|"
     r"by [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:\s+(?:troops|forces|knights|players))?|"
@@ -2382,6 +2387,8 @@ def hard_hook_specificity_score(text: object) -> int:
     if MAP_HARD_HOOK_WEAK_ORIGIN_RE.search(value):
         return 0
     if MAP_HARD_HOOK_WEAK_COMMISSION_RE.search(value):
+        return 0
+    if MAP_HARD_HOOK_ARCHITECT_LED_RE.search(value):
         return 0
     if MAP_HARD_HOOK_GENERIC_INCIDENT_RE.search(value):
         return 0

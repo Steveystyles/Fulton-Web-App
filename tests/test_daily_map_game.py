@@ -1310,6 +1310,15 @@ class DailyMapGameTests(unittest.TestCase):
             "Designed by architect Sinan, this structure was destroyed during "
             "the 1990s conflict."
         )
+        architect_led_rebuild = (
+            "Inside this building, the Wadiyar dynasty commissioned architect "
+            "Henry Irwin to rebuild the royal residence following a devastating "
+            "1897 fire that destroyed the previous wooden structure."
+        )
+        incident_led_rebuild = (
+            "During a royal wedding in 1897, a fire destroyed the wooden palace "
+            "that stood here, forcing the dynasty to replace its residence."
+        )
         competition_opening = "The venue first opened for the 2002 Commonwealth Games."
         broad_wartime_claim = (
             "Defensive walls helped the settlement resist attacks during the "
@@ -1336,6 +1345,12 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertTrue(daily_map_game.hard_hook_is_qualifying_event(qualifying))
         self.assertFalse(daily_map_game.hard_hook_is_qualifying_event(architect_fact))
         self.assertFalse(daily_map_game.hard_hook_is_qualifying_event(generic_conflict))
+        self.assertFalse(
+            daily_map_game.hard_hook_is_qualifying_event(architect_led_rebuild)
+        )
+        self.assertTrue(
+            daily_map_game.hard_hook_is_qualifying_event(incident_led_rebuild)
+        )
         self.assertFalse(daily_map_game.hard_hook_is_qualifying_event(competition_opening))
         self.assertFalse(daily_map_game.hard_hook_is_qualifying_event(broad_wartime_claim))
         self.assertFalse(daily_map_game.hard_hook_is_qualifying_event(dated_destruction))
