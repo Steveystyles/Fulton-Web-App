@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "created_at": "2026-08-02T17:49:45+00:00",
-  "row_count": 648,
+  "created_at": "2026-08-02T20:53:06+00:00",
+  "row_count": 649,
   "source_files": [
     "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_review_rows_20260727_152734.jsonl",
     "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_all.jsonl"
   ],
   "source_counts": {
     "labelled_1000": 607,
-    "human_feedback": 41
+    "human_feedback": 42
   },
   "level_counts": {
     "hard": {
@@ -20,7 +20,7 @@
       "fail": 53
     },
     "easy": {
-      "fail": 24,
+      "fail": 25,
       "pass": 163
     }
   },
@@ -28,7 +28,7 @@
     "row_count": 139,
     "accuracy": 0.8849,
     "balanced_accuracy": 0.8378,
-    "log_loss": 1.0153,
+    "log_loss": 1.0152,
     "label_counts": {
       "fail": 35,
       "pass": 104
@@ -59,7 +59,7 @@
       "row_count": 44,
       "accuracy": 0.9545,
       "balanced_accuracy": 0.75,
-      "log_loss": 0.8387,
+      "log_loss": 0.8385,
       "label_counts": {
         "fail": 4,
         "pass": 40
@@ -5626,13 +5626,13 @@
       "total_document_weight": 314.5
     },
     "easy": {
-      "row_count": 187,
+      "row_count": 188,
       "document_weights": {
-        "fail": 30.0,
+        "fail": 33.0,
         "pass": 254.0
       },
       "token_totals": {
-        "fail": 918.0,
+        "fail": 1032.0,
         "pass": 5469.5
       },
       "token_counts": {
@@ -5648,14 +5648,14 @@
           "bigram:is_in": 15.0,
           "bigram:it_is": 15.0,
           "bigram:known_part": 15.0,
-          "bigram:of_the": 21.0,
+          "bigram:of_the": 24.0,
           "bigram:on_a": 15.0,
           "bigram:part_of": 15.0,
           "bigram:the_city": 15.0,
           "bigram:to_find": 15.0,
           "bigram:well_known": 15.0,
           "type:bridge": 6.0,
-          "word:a": 18.0,
+          "word:a": 21.0,
           "word:and": 21.0,
           "word:city": 15.0,
           "word:easy": 15.0,
@@ -5665,17 +5665,17 @@
           "word:it": 15.0,
           "word:known": 15.0,
           "word:map": 15.0,
-          "word:of": 30.0,
+          "word:of": 33.0,
           "word:on": 18.0,
           "word:part": 15.0,
-          "word:the": 30.0,
+          "word:the": 33.0,
           "word:to": 15.0,
           "word:well": 15.0,
           "type:notable_building": 5.0,
           "type:park": 1.0,
           "type:historic_site": 3.5,
           "type:mountain": 1.0,
-          "type:stadium": 8.0,
+          "type:stadium": 11.0,
           "type:tower": 2.0,
           "type:museum": 2.5,
           "type:castle": 1.0,
@@ -5711,10 +5711,10 @@
           "bigram:s_centre": 1.5,
           "bigram:the_rail": 1.5,
           "bigram:yards_and": 1.5,
-          "word:beside": 4.5,
+          "word:beside": 7.5,
           "word:centre": 3.0,
           "word:east": 1.5,
-          "word:just": 4.5,
+          "word:just": 7.5,
           "word:melbourne": 1.5,
           "word:parklands": 1.5,
           "word:rail": 4.5,
@@ -5726,14 +5726,14 @@
           "bigram:mediterranean_coast": 1.5,
           "bigram:millau_in": 1.5,
           "bigram:near_millau": 1.5,
-          "bigram:north_of": 4.5,
+          "bigram:north_of": 7.5,
           "bigram:southern_france": 1.5,
           "bigram:the_mediterranean": 1.5,
           "word:coast": 1.5,
           "word:france": 1.5,
           "word:mediterranean": 1.5,
           "word:millau": 1.5,
-          "word:north": 7.5,
+          "word:north": 10.5,
           "word:southern": 1.5,
           "bigram:across_the": 1.5,
           "bigram:akashi_strait": 1.5,
@@ -5764,7 +5764,7 @@
           "bigram:north_bank": 1.5,
           "bigram:on_the": 3.0,
           "bigram:thames_beside": 1.5,
-          "bigram:the_north": 4.5,
+          "bigram:the_north": 7.5,
           "bigram:the_thames": 1.5,
           "bigram:westminster_bridge": 1.5,
           "word:bank": 1.5,
@@ -5798,14 +5798,14 @@
           "bigram:and_served": 3.0,
           "bigram:arch_situated": 3.0,
           "bigram:by_its": 3.0,
-          "bigram:circular_road": 3.0,
+          "bigram:circular_road": 6.0,
           "bigram:dedicated_rail": 3.0,
           "bigram:for_a": 3.0,
           "bigram:its_own": 3.0,
-          "bigram:just_north": 3.0,
+          "bigram:just_north": 6.0,
           "bigram:london_for": 3.0,
           "bigram:massive_white": 3.0,
-          "bigram:north_circular": 3.0,
+          "bigram:north_circular": 6.0,
           "bigram:northwest_of": 3.0,
           "bigram:of_london": 3.0,
           "bigram:own_dedicated": 3.0,
@@ -5818,20 +5818,39 @@
           "bigram:white_arch": 3.0,
           "word:arch": 3.0,
           "word:by": 3.0,
-          "word:circular": 3.0,
+          "word:circular": 6.0,
           "word:dedicated": 3.0,
-          "word:for": 3.0,
+          "word:for": 6.0,
           "word:its": 3.0,
-          "word:london": 3.0,
+          "word:london": 6.0,
           "word:massive": 3.0,
-          "word:northwest": 3.0,
+          "word:northwest": 6.0,
           "word:own": 3.0,
-          "word:road": 3.0,
+          "word:road": 6.0,
           "word:scan": 3.0,
           "word:served": 3.0,
           "word:situated": 3.0,
-          "word:station": 3.0,
-          "word:white": 3.0
+          "word:station": 6.0,
+          "word:white": 3.0,
+          "bigram:a_mainline": 3.0,
+          "bigram:beside_a": 3.0,
+          "bigram:complex_beside": 3.0,
+          "bigram:for_the": 3.0,
+          "bigram:large_stadium": 3.0,
+          "bigram:london_just": 3.0,
+          "bigram:mainline_railway": 3.0,
+          "bigram:northwest_london": 3.0,
+          "bigram:railway_station": 3.0,
+          "bigram:road_for": 3.0,
+          "bigram:search_northwest": 3.0,
+          "bigram:stadium_complex": 3.0,
+          "bigram:the_large": 3.0,
+          "word:complex": 3.0,
+          "word:large": 3.0,
+          "word:mainline": 3.0,
+          "word:railway": 3.0,
+          "word:search": 3.0,
+          "word:stadium": 3.0
         },
         "pass": {
           "bigram:in_the": 44.0,
@@ -7289,10 +7308,10 @@
           "word:reconstructed": 3.0
         }
       },
-      "vocabulary_size": 1551,
+      "vocabulary_size": 1562,
       "alpha": 0.75,
       "prior_alpha": 1.0,
-      "total_document_weight": 284.0
+      "total_document_weight": 287.0
     }
   }
 }

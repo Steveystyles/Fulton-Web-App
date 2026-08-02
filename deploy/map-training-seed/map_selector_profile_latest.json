@@ -1,12 +1,12 @@
 {
-  "created_at": "2026-08-02T17:49:05.874807+00:00",
+  "created_at": "2026-08-02T20:53:06.220567+00:00",
   "source_files": [
     "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_all.jsonl"
   ],
-  "row_count": 185,
-  "unique_row_count": 185,
+  "row_count": 186,
+  "unique_row_count": 186,
   "duplicate_row_count": 0,
-  "accepted_row_count": 185,
+  "accepted_row_count": 186,
   "ignored_rows": [],
   "place_scores": {
     "Yankee Stadium": 0,
@@ -218,9 +218,9 @@
   },
   "clue_level_scores": {
     "easy": {
-      "count": 14,
-      "mean_score": 9.29,
-      "low_score_count": 1
+      "count": 15,
+      "mean_score": 8.67,
+      "low_score_count": 2
     },
     "hard": {
       "count": 14,
@@ -390,9 +390,9 @@
   "clue_level_guidance": [
     {
       "level": "easy",
-      "count": 14,
-      "mean_score": 9.29,
-      "low_score_count": 1,
+      "count": 15,
+      "mean_score": 8.67,
+      "low_score_count": 2,
       "guidance": "Narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom."
     },
     {

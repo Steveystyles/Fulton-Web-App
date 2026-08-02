@@ -324,6 +324,14 @@ MAP_EASY_UNMAPPED_APPEARANCE_RE = re.compile(
     r"\b(?:aerial imagery|satellite imagery|from above)\b",
     re.IGNORECASE,
 )
+MAP_ROUTE_CODE_RE = re.compile(
+    r"\b(?:[A-Z]{1,3}[- ]?\d{1,4}[A-Z]?|(?:Route|Highway)\s+\d{1,4})\b",
+    re.IGNORECASE,
+)
+MAP_EASY_ROAD_REFERENCE_RE = re.compile(
+    r"\b(?:road|route|motorway|highway|ring road)\b",
+    re.IGNORECASE,
+)
 MAP_WORKOUTABILITY_ACTION_RE = re.compile(
     r"\b(?:map|pin|target|tap|label|labelled|labeled|search|visible|shape|outline|"
     r"follow|trace|zoom|look for|work from|narrow)\b",
@@ -2244,6 +2252,7 @@ Rules:
 - A later neighbourhood or district label may only supplement a lower-zoom route. Base the route on a larger visible anchor such as the city, municipality, major river or coast, major park, transport feature, or similarly useful map feature, then give a practical direction or relationship within it.
 - Verify that a claimed borough, district, quarter, or neighbourhood is the target's technical location. Do not use a place's popular association with a nearby district as though the target were inside it.
 - Easy must work on the quiz's street map at normal playable zoom; do not rely on roof colours, seat colours, interior details, or aerial imagery.
+- If verified context supplies a route number for a road used by Easy, include that route number exactly as it appears on the map; do not rely on the road's informal name alone.
 - A city or country name alone is not an easy clue. It must tell the player where to work within that area.
 - Use different information at each level; do not write three rewordings of the same feature.
 - Never include the canonical_name or aliases before the final reveal.
@@ -2317,6 +2326,7 @@ Fail the ladder if:
 - Easy depends on a motorway or road number that is absent, localised differently, or only visible at deep zoom on the quiz map.
 - Easy claims that the target is inside a borough, district, quarter, or neighbourhood based only on popular association rather than its verified technical location.
 - Easy relies on colour, interior detail, or another feature that is not visible on the quiz's street map.
+- Easy mentions a road by name but omits an available route number that the quiz map actually displays.
 - A clue gives generic geography without helping the player narrow or pin the answer.
 - A clue is bland, generic, unverifiable, or could fit many places.
 - A clue introduces a landmark, industry, product, institution, event, or historical claim not supported by the target data.
@@ -2895,6 +2905,21 @@ def easy_has_local_map_route(text: str, place: dict[str, Any]) -> bool:
     )
 
 
+def normalized_route_codes(text: object) -> set[str]:
+    return {
+        re.sub(r"[-\s]+", "", match.group(0)).casefold()
+        for match in MAP_ROUTE_CODE_RE.finditer(str(text or ""))
+    }
+
+
+def easy_omits_available_route_code(text: str, place: dict[str, Any]) -> bool:
+    value = str(text or "")
+    if not MAP_EASY_ROAD_REFERENCE_RE.search(value):
+        return False
+    available_codes = normalized_route_codes(place.get("nearby_context"))
+    return bool(available_codes and not (available_codes & normalized_route_codes(value)))
+
+
 def clue_ladder_reaches_required_locality(
     ladder: dict[str, str],
     place: dict[str, Any],
@@ -3079,6 +3104,15 @@ def local_map_clue_critique(
         )
         feedback.append(
             "Replace colours and building appearance with labelled places, roads, railways, boundaries, waterways, or other features visible on the quiz map."
+        )
+    if easy_omits_available_route_code(ladder["easy"], place):
+        available_codes = sorted(normalized_route_codes(place.get("nearby_context")))
+        reasons.append(
+            "Easy clue mentions a road but omits its available map route number: "
+            f"{', '.join(code.upper() for code in available_codes)}."
+        )
+        feedback.append(
+            "Include the verified route number printed on the map alongside the road name so the player can locate it."
         )
 
     playable_fields = ("hard", "medium", "easy")

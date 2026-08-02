@@ -546,6 +546,34 @@ class DailyMapGameTests(unittest.TestCase):
             any("not visible on the street map" in reason for reason in critic["failure_reasons"])
         )
 
+    def test_local_map_clue_critic_requires_an_available_route_number(self) -> None:
+        place = {
+            "canonical_name": "Example Stadium",
+            "acceptable_aliases": [],
+            "locality_name": "London",
+            "nearby_context": "northwest London, A406 North Circular Road, railway station",
+        }
+        ladder = {
+            "hard": "A famous final was won on this pitch in 1966.",
+            "medium": "This national football venue is in London.",
+            "easy": "Search northwest London just north of the North Circular Road beside a station.",
+            "reveal": "This was Example Stadium.",
+        }
+
+        missing_code = daily_map_game.local_map_clue_critique(place, ladder)
+        ladder["easy"] = (
+            "Search northwest London just north of the A406 (North Circular Road) "
+            "beside a station."
+        )
+        with_code = daily_map_game.local_map_clue_critique(place, ladder)
+
+        self.assertTrue(
+            any("omits its available map route number" in reason for reason in missing_code["failure_reasons"])
+        )
+        self.assertFalse(
+            any("omits its available map route number" in reason for reason in with_code["failure_reasons"])
+        )
+
     def test_local_map_clue_critic_rejects_awkward_placeholders(self) -> None:
         place = {
             "canonical_name": "London",
