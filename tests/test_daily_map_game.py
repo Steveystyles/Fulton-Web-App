@@ -513,6 +513,39 @@ class DailyMapGameTests(unittest.TestCase):
         )
         self.assertTrue(any("medium geographic narrowing" in reason for reason in critic["failure_reasons"]))
 
+    def test_local_map_clue_critic_rejects_an_unmapped_colour_landmark(self) -> None:
+        hard = (
+            "On this pitch, England defeated West Germany 4-2 after extra time "
+            "during the 1966 World Cup final."
+        )
+        place = {
+            "canonical_name": "Wembley Stadium",
+            "acceptable_aliases": [],
+            "place_type": "stadium",
+            "locality_name": "London",
+            "nearby_context": "northwest London, North Circular Road, railway station",
+            "required_hard_hook": hard,
+            "verified_facts": [hard],
+        }
+
+        critic = daily_map_game.local_map_clue_critique(
+            place,
+            {
+                "hard": hard,
+                "medium": "This national football venue is in the United Kingdom's capital, London.",
+                "easy": (
+                    "Scan northwest London for a massive white arch, just north "
+                    "of the North Circular Road beside a railway station."
+                ),
+                "reveal": "This was Wembley Stadium in London.",
+            },
+        )
+
+        self.assertFalse(critic["passed"])
+        self.assertTrue(
+            any("not visible on the street map" in reason for reason in critic["failure_reasons"])
+        )
+
     def test_local_map_clue_critic_rejects_awkward_placeholders(self) -> None:
         place = {
             "canonical_name": "London",

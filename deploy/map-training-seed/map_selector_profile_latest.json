@@ -1,12 +1,12 @@
 {
-  "created_at": "2026-08-02T15:15:02.787101+00:00",
+  "created_at": "2026-08-02T17:49:05.874807+00:00",
   "source_files": [
     "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_all.jsonl"
   ],
-  "row_count": 184,
-  "unique_row_count": 184,
+  "row_count": 185,
+  "unique_row_count": 185,
   "duplicate_row_count": 0,
-  "accepted_row_count": 184,
+  "accepted_row_count": 185,
   "ignored_rows": [],
   "place_scores": {
     "Yankee Stadium": 0,
@@ -218,18 +218,18 @@
   },
   "clue_level_scores": {
     "easy": {
-      "count": 13,
-      "mean_score": 10,
-      "low_score_count": 0
+      "count": 14,
+      "mean_score": 9.29,
+      "low_score_count": 1
     },
     "hard": {
-      "count": 13,
-      "mean_score": 4.62,
+      "count": 14,
+      "mean_score": 5,
       "low_score_count": 7
     },
     "medium": {
-      "count": 12,
-      "mean_score": 5.83,
+      "count": 13,
+      "mean_score": 6.15,
       "low_score_count": 5
     }
   },
@@ -389,16 +389,23 @@
   },
   "clue_level_guidance": [
     {
+      "level": "easy",
+      "count": 14,
+      "mean_score": 9.29,
+      "low_score_count": 1,
+      "guidance": "Narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom."
+    },
+    {
       "level": "hard",
-      "count": 13,
-      "mean_score": 4.62,
+      "count": 14,
+      "mean_score": 5,
       "low_score_count": 7,
       "guidance": "Select one source-backed recognition hook first. Prefer a unique incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment."
     },
     {
       "level": "medium",
-      "count": 12,
-      "mean_score": 5.83,
+      "count": 13,
+      "mean_score": 6.15,
       "low_score_count": 5,
       "guidance": "Materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope; an additional place-owned fact may add character."
     }

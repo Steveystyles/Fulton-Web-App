@@ -316,6 +316,14 @@ MAP_CLUE_EASY_ANCHOR_RE = re.compile(
     r"cathedral|fort|castle|citadel|square)\b",
     re.IGNORECASE,
 )
+MAP_EASY_UNMAPPED_APPEARANCE_RE = re.compile(
+    r"\b(?:white|red|orange|yellow|green|blue|purple|pink|black|gold(?:en)?|"
+    r"silver|grey|gray)\b(?:\s+\w+){0,2}\s+"
+    r"(?:arch(?:es)?|roofs?|seats?|facades?|domes?|pylons?|towers?|stands?|pitch)\b|"
+    r"\b(?:roof|seat|interior)\s+colou?rs?\b|"
+    r"\b(?:aerial imagery|satellite imagery|from above)\b",
+    re.IGNORECASE,
+)
 MAP_WORKOUTABILITY_ACTION_RE = re.compile(
     r"\b(?:map|pin|target|tap|label|labelled|labeled|search|visible|shape|outline|"
     r"follow|trace|zoom|look for|work from|narrow)\b",
@@ -3064,6 +3072,13 @@ def local_map_clue_critique(
         reasons.append("Medium clue presents fictional characters as though they were historical people.")
         feedback.append(
             "Explicitly label fictional or imaginary characters and events as fiction while retaining their concrete connection to this place."
+        )
+    if MAP_EASY_UNMAPPED_APPEARANCE_RE.search(ladder["easy"]):
+        reasons.append(
+            "Easy clue relies on colour, aerial appearance, or architectural detail that is not visible on the street map."
+        )
+        feedback.append(
+            "Replace colours and building appearance with labelled places, roads, railways, boundaries, waterways, or other features visible on the quiz map."
         )
 
     playable_fields = ("hard", "medium", "easy")

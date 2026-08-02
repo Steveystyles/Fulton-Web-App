@@ -1,7 +1,7 @@
 {
-  "created_at": "2026-08-02T15:15:04.039388+00:00",
+  "created_at": "2026-08-02T17:49:06.555964+00:00",
   "source_negative_file": "combined_map_clue_negative_and_failure_records",
-  "negative_count": 256,
+  "negative_count": 257,
   "feedback_by_slot": {
     "global": [
       "Write clear, natural clues for an adult player; keep them comfortable to read on a phone without imposing a word count.",
@@ -387,9 +387,9 @@
     ]
   },
   "pattern_counts": {
-    "weak_easy_map_anchor": 20,
+    "weak_easy_map_anchor": 21,
     "too_broad": 15,
-    "location_based": 62,
+    "location_based": 63,
     "too_generic": 71,
     "weak_medium_narrowing": 46,
     "generic_clue": 137,
@@ -468,7 +468,7 @@
   ],
   "negative_record_count": 152,
   "failure_log_record_count": 73,
-  "human_failure_record_count": 31,
+  "human_failure_record_count": 32,
   "review_record_count": 1000,
   "approved_examples_by_level": {
     "hard": [
