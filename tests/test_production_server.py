@@ -4155,8 +4155,28 @@ class ProductionServerHardeningTests(unittest.TestCase):
             puzzle_date="2026-07-29",
             count=4,
             max_attempts=2,
+            required_place_type=None,
         )
         self.assertEqual(generate.call_args.kwargs["eligible_names"], {"fresh stadium"})
+        self.assertIsNone(generate.call_args.kwargs["required_place_type"])
+
+    def test_daily_map_launch_prefers_stadiums_for_first_three_rounds(self) -> None:
+        import server
+
+        with (
+            patch.object(server, "DAILY_MAP_STADIUM_LAUNCH_DATE", "2026-08-10"),
+            patch.object(server, "DAILY_MAP_STADIUM_LAUNCH_ROUNDS", 3),
+        ):
+            self.assertIsNone(server.daily_map_launch_preferred_place_type("2026-08-09"))
+            self.assertEqual(
+                server.daily_map_launch_preferred_place_type("2026-08-10"),
+                "stadium",
+            )
+            self.assertEqual(
+                server.daily_map_launch_preferred_place_type("2026-08-12"),
+                "stadium",
+            )
+            self.assertIsNone(server.daily_map_launch_preferred_place_type("2026-08-13"))
 
 
 if __name__ == "__main__":

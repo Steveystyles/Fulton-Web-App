@@ -127,6 +127,44 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertIn("rejectedstadium", call["blocked_names"])
         self.assertEqual(result["candidate_names"], ["fresh place"])
 
+    def test_discovery_keeps_only_the_required_place_type(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            db_path = Path(temporary_directory) / "map.db"
+            conn = sqlite3.connect(db_path)
+            generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+            conn.close()
+            discovery = {
+                "accepted": [
+                    {"canonical_name": "Final Stadium", "place_type": "stadium"},
+                    {"canonical_name": "Famous Palace", "place_type": "palace"},
+                ],
+                "attempts": [],
+                "rejected": [],
+            }
+            with patch(
+                "tools.generate_map_place_candidates_with_ai.generate_review_batch",
+                return_value=discovery,
+            ) as generate_batch, patch(
+                "tools.generate_map_place_candidates_with_ai.insert_draft_rows",
+                return_value=1,
+            ) as insert_rows:
+                result = generate_ai_daily_map_round.discover_uncurated_candidates(
+                    db_path=db_path,
+                    provider=FakeProvider("stadium"),
+                    puzzle_date="2026-08-01",
+                    count=4,
+                    max_attempts=2,
+                    required_place_type="stadium",
+                )
+
+        self.assertIn("Return only stadium places", generate_batch.call_args.kwargs["focus"])
+        self.assertEqual(
+            insert_rows.call_args.args[1],
+            [{"canonical_name": "Final Stadium", "place_type": "stadium"}],
+        )
+        self.assertEqual(result["candidate_names"], ["final stadium"])
+        self.assertEqual(result["wrong_type_count"], 1)
+
     def test_event_brief_rejects_a_generic_site_that_drops_target_identity(self) -> None:
         selected_hook = {
             "verified_hard_hook": (

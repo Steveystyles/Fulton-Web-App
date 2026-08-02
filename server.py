@@ -126,6 +126,13 @@ DAILY_MAP_AI_DISCOVERY_ATTEMPTS = max(
     1,
     int(os.environ.get("FULTONS_DAILY_MAP_AI_DISCOVERY_ATTEMPTS", "2")),
 )
+DAILY_MAP_STADIUM_LAUNCH_DATE = os.environ.get(
+    "FULTONS_DAILY_MAP_STADIUM_LAUNCH_DATE", ""
+).strip()
+DAILY_MAP_STADIUM_LAUNCH_ROUNDS = max(
+    0,
+    int(os.environ.get("FULTONS_DAILY_MAP_STADIUM_LAUNCH_ROUNDS", "3")),
+)
 NEWS_USER_AGENT = os.environ.get(
     "FULTONS_NEWS_USER_AGENT",
     "FultonsQuiz/0.1 (+https://fultons-quiz.co.uk)",
@@ -3400,6 +3407,23 @@ def active_daily_map_game_dates(now: datetime | None = None) -> list[str]:
     return [today.isoformat(), tomorrow.isoformat()]
 
 
+def daily_map_launch_preferred_place_type(puzzle_date: str) -> str | None:
+    if not DAILY_MAP_STADIUM_LAUNCH_DATE or DAILY_MAP_STADIUM_LAUNCH_ROUNDS <= 0:
+        return None
+    launch_date = datetime.strptime(
+        daily_map_game.valid_game_date(DAILY_MAP_STADIUM_LAUNCH_DATE),
+        "%Y-%m-%d",
+    ).date()
+    target_date = datetime.strptime(
+        daily_map_game.valid_game_date(puzzle_date),
+        "%Y-%m-%d",
+    ).date()
+    launch_index = (target_date - launch_date).days
+    if 0 <= launch_index < DAILY_MAP_STADIUM_LAUNCH_ROUNDS:
+        return "stadium"
+    return None
+
+
 def generate_daily_map_game_for_date(
     conn: sqlite3.Connection,
     *,
@@ -3408,6 +3432,7 @@ def generate_daily_map_game_for_date(
     preferred_place_id: int | None = None,
 ) -> dict[str, Any]:
     normalized_date = daily_map_game.valid_game_date(puzzle_date)
+    required_place_type = daily_map_launch_preferred_place_type(normalized_date)
     existing = daily_map_game.puzzle_status(conn, normalized_date)
     if existing["status"] == "published" and not force:
         return existing
@@ -3429,6 +3454,7 @@ def generate_daily_map_game_for_date(
                 puzzle_date=normalized_date,
                 count=DAILY_MAP_AI_DISCOVER_COUNT,
                 max_attempts=DAILY_MAP_AI_DISCOVERY_ATTEMPTS,
+                required_place_type=required_place_type,
             )
             eligible_names = set(discovery["candidate_names"])
             safe_log(
@@ -3456,6 +3482,7 @@ def generate_daily_map_game_for_date(
             shortlist_limit=DAILY_MAP_AI_SHORTLIST_LIMIT,
             max_clue_attempts=DAILY_MAP_AI_MAX_CLUE_ATTEMPTS,
             eligible_names=eligible_names,
+            required_place_type=required_place_type,
         )
         conn.execute("RELEASE SAVEPOINT ai_daily_map_round")
         safe_log(

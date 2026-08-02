@@ -346,6 +346,7 @@ def candidate_shortlist(
     limit: int = 24,
     eligible_names: set[str] | None = None,
     excluded_names: set[str] | None = None,
+    required_place_type: str | None = None,
 ) -> list[dict[str, Any]]:
     excluded = recent_place_ids(conn, puzzle_date)
     explicitly_excluded_names = {
@@ -367,6 +368,7 @@ def candidate_shortlist(
         """
     ).fetchall()
     candidates: list[dict[str, Any]] = []
+    required_type = str(required_place_type or "").strip().casefold()
     for row in rows:
         canonical_name = str(row["canonical_name"]).strip().casefold()
         if (
@@ -377,6 +379,8 @@ def candidate_shortlist(
         if canonical_name in explicitly_excluded_names:
             continue
         if int(row["id"]) in excluded or daily_map_game.place_is_explicitly_excluded(row):
+            continue
+        if required_type and str(row["place_type"]).strip().casefold() != required_type:
             continue
         summary = candidate_summary(
             row,
@@ -412,6 +416,7 @@ def hard_hook_shortlist(
     limit: int = 48,
     eligible_names: set[str] | None = None,
     excluded_names: set[str] | None = None,
+    required_place_type: str | None = None,
 ) -> list[dict[str, Any]]:
     places = candidate_shortlist(
         conn,
@@ -419,6 +424,7 @@ def hard_hook_shortlist(
         limit=max(limit * 2, 80),
         eligible_names=eligible_names,
         excluded_names=excluded_names,
+        required_place_type=required_place_type,
     )
     hooks: list[dict[str, Any]] = []
     seen_hooks: set[tuple[str, str]] = set()
@@ -1364,6 +1370,7 @@ def generate_round(
     max_place_attempts: int = 4,
     eligible_names: set[str] | None = None,
     excluded_names: set[str] | None = None,
+    required_place_type: str | None = None,
 ) -> dict[str, Any]:
     daily_map_game.initialize_database(conn)
     hooks = hard_hook_shortlist(
@@ -1372,6 +1379,7 @@ def generate_round(
         limit=shortlist_limit,
         eligible_names=eligible_names,
         excluded_names=excluded_names,
+        required_place_type=required_place_type,
     )
     available = list(hooks)
     rejected_places: list[dict[str, Any]] = []
@@ -1599,6 +1607,7 @@ def discover_uncurated_candidates(
     count: int,
     max_attempts: int,
     excluded_names: set[str] | None = None,
+    required_place_type: str | None = None,
 ) -> dict[str, Any]:
     from tools import generate_map_place_candidates_with_ai as candidate_generator
 
@@ -1626,6 +1635,16 @@ def discover_uncurated_candidates(
     for name in blocked_examples:
         blocked_names.update(candidate_generator.normalized_name_variants(name))
 
+    required_type = str(required_place_type or "").strip().casefold()
+    focus = (
+        f"Discover the strongest recognition hooks for the {puzzle_date} map round. "
+        "Choose the hook first, then return its real, unambiguous, pinnable place."
+    )
+    if required_type:
+        focus += (
+            f" This launch round requires place_type '{required_type}'. Return only "
+            f"{required_type} places, but do not lower any interest, evidence, or map-playability gate."
+        )
     discovery = candidate_generator.generate_review_batch(
         db_path=db_path,
         provider=provider,
@@ -1633,19 +1652,24 @@ def discover_uncurated_candidates(
         batch_size=max(4, count),
         max_attempts=max(1, max_attempts),
         retry_after_minutes=0,
-        focus=(
-            f"Discover the strongest recognition hooks for the {puzzle_date} map round. "
-            "Choose the hook first, then return its real, unambiguous, pinnable place."
-        ),
+        focus=focus,
         feedback_dir=DEFAULT_REPORT_DIR,
         allow_known_retries=True,
         blocked_names=blocked_names,
         blocked_name_examples=blocked_examples,
     )
-    accepted = discovery.get("accepted") or []
+    generated_accepted = discovery.get("accepted") or []
+    accepted = [
+        row
+        for row in generated_accepted
+        if not required_type
+        or str(row.get("place_type") or "").strip().casefold() == required_type
+    ]
     if not accepted:
+        type_context = f" for required place_type '{required_type}'" if required_type else ""
         raise RuntimeError(
-            "Grounded discovery produced no candidates that passed the objective and learned gates."
+            "Grounded discovery produced no candidates"
+            f"{type_context} that passed the objective and learned gates."
         )
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -1666,6 +1690,8 @@ def discover_uncurated_candidates(
         "candidate_names": sorted(names),
         "attempts": discovery.get("attempts") or [],
         "rejected_count": len(discovery.get("rejected") or []),
+        "wrong_type_count": len(generated_accepted) - len(accepted),
+        "required_place_type": required_type,
     }
 
 
@@ -1699,6 +1725,11 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help="Exclude an exact canonical place name from this QA run; repeat as needed.",
     )
+    parser.add_argument(
+        "--place-type",
+        default="",
+        help="Require one exact place type, such as stadium, without relaxing quality gates.",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--timeout-sec", type=int, default=None)
     parser.add_argument("--request-delay-sec", type=float, default=None)
@@ -1731,6 +1762,7 @@ def main() -> int:
             count=max(1, args.discover_count),
             max_attempts=max(1, args.discovery_attempts),
             excluded_names=excluded_names,
+            required_place_type=args.place_type,
         )
         eligible_names = set(discovery["candidate_names"])
     conn = sqlite3.connect(args.db)
@@ -1745,6 +1777,7 @@ def main() -> int:
             max_place_attempts=max(1, args.max_place_attempts),
             eligible_names=eligible_names,
             excluded_names=excluded_names,
+            required_place_type=args.place_type,
         )
         result["discovery"] = discovery
         result["excluded_places"] = sorted(excluded_names)
