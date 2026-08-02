@@ -1037,6 +1037,32 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertGreaterEqual(result["coverage"], 0.75)
 
+    def test_direct_support_accepts_a_famous_final_with_synonymous_outcome(self) -> None:
+        result = generate_ai_daily_map_round.exact_target_page_support(
+            [
+                {
+                    "title": "1966 FIFA World Cup final",
+                    "url": "https://en.wikipedia.org/?curid=34657",
+                    "extract": (
+                        "The 1966 FIFA World Cup final was played at Wembley "
+                        "Stadium. England defeated West Germany 4-2 after extra "
+                        "time to claim the Jules Rimet Trophy. It remains the "
+                        "only time England won the World Cup."
+                    ),
+                }
+            ],
+            {
+                "verified_hard_hook": (
+                    "This stadium hosted the 1966 World Cup final where England "
+                    "secured their only major international trophy."
+                )
+            },
+            place={"canonical_name": "Wembley Stadium"},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(result["coverage"], 0.65)
+
     def test_exact_target_page_support_rejects_an_event_from_another_venue(self) -> None:
         result = generate_ai_daily_map_round.exact_target_page_support(
             [

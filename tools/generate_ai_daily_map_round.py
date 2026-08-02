@@ -942,7 +942,10 @@ def exact_target_page_support(
         exact_title = (
             verification_token(str(target_page.get("title") or "")) == canonical_name
         )
-        minimum_coverage = 0.8 if exact_title else 0.75
+        # Event pages often use a synonym for the outcome (for example, "won"
+        # rather than "secured"). Naming the exact target, matching the year,
+        # and covering most material hook tokens is sufficient corroboration.
+        minimum_coverage = 0.8 if exact_title else 0.65
         if (
             len(claim_tokens) >= 4
             and coverage >= minimum_coverage
