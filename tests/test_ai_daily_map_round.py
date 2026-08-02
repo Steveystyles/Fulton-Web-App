@@ -439,6 +439,45 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(selected["place_id"], 42)
         self.assertIn("trained place-ranking profile", reason)
 
+    def test_learned_selector_skips_a_low_recognisability_candidate(self) -> None:
+        hooks = [
+            {
+                "hook_id": "42:low",
+                "place_id": 42,
+                "place": "Niche Palace",
+                "learned_score": 2.83,
+                "learned_confidence": 0.934,
+                "selector_score": 32,
+            },
+            {
+                "hook_id": "43:good",
+                "place_id": 43,
+                "place": "Recognisable Landmark",
+                "learned_score": 5.2,
+                "learned_confidence": 0.94,
+                "selector_score": 96,
+            },
+        ]
+
+        selected, _reason = generate_ai_daily_map_round.choose_learned_hard_hook(hooks)
+
+        self.assertEqual(selected["place_id"], 43)
+
+    def test_learned_selector_fails_closed_when_only_niche_hooks_remain(self) -> None:
+        with self.assertRaisesRegex(LookupError, "minimum human-learned recognisability"):
+            generate_ai_daily_map_round.choose_learned_hard_hook(
+                [
+                    {
+                        "hook_id": "42:low",
+                        "place_id": 42,
+                        "place": "Niche Palace",
+                        "learned_score": 2.83,
+                        "learned_confidence": 0.934,
+                        "selector_score": 32,
+                    }
+                ]
+            )
+
     def test_recent_place_ids_excludes_the_existing_round_when_regenerating(self) -> None:
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row

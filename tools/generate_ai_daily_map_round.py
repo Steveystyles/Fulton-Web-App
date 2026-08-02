@@ -27,6 +27,8 @@ DEFAULT_DB_PATH = PROJECT_DIR / "data" / "fultons.db"
 DEFAULT_REPORT_DIR = PROJECT_DIR / "data" / "training"
 DEFAULT_EVENT_BRIEF_CACHE_PATH = DEFAULT_REPORT_DIR / "map_event_brief_cache.json"
 MIN_RESEARCHABLE_HARD_HOOKS = 1
+MIN_RECOGNISABILITY_LEARNED_SCORE = 4.9
+MIN_RECOGNISABILITY_SELECTOR_SCORE = 80
 PLAYER_FACING_LOCALITY_NAMES = {
     "greater london": "London",
     "greater manchester": "Manchester",
@@ -537,7 +539,25 @@ def choose_learned_hard_hook(
 ) -> tuple[dict[str, Any], str]:
     if not hooks:
         raise LookupError("No verified, map-playable recognition hooks are available.")
-    selected = hooks[0]
+    eligible = [
+        hook
+        for hook in hooks
+        if float(hook.get("learned_score") or 0)
+        >= MIN_RECOGNISABILITY_LEARNED_SCORE
+        and int(hook.get("selector_score") or 0)
+        >= MIN_RECOGNISABILITY_SELECTOR_SCORE
+    ]
+    if not eligible:
+        best = hooks[0]
+        raise LookupError(
+            "No verified hook met the minimum human-learned recognisability "
+            f"thresholds (learned score >= {MIN_RECOGNISABILITY_LEARNED_SCORE:.1f} "
+            f"and selector score >= {MIN_RECOGNISABILITY_SELECTOR_SCORE}); "
+            f"best remaining candidate was {best.get('place') or 'unknown'} at "
+            f"{float(best.get('learned_score') or 0):.3f}/"
+            f"{int(best.get('selector_score') or 0)}."
+        )
+    selected = eligible[0]
     return selected, (
         "Selected by the trained place-ranking profile using human review, "
         f"with learned score {float(selected.get('learned_score') or 0):.3f}, "

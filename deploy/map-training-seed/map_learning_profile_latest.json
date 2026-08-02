@@ -1,26 +1,26 @@
 {
-  "created_at": "2026-07-28T16:06:53.729623+00:00",
+  "created_at": "2026-08-02T15:15:04.039388+00:00",
   "source_negative_file": "combined_map_clue_negative_and_failure_records",
-  "negative_count": 254,
+  "negative_count": 256,
   "feedback_by_slot": {
     "global": [
       "Write clear, natural clues for an adult player; keep them comfortable to read on a phone without imposing a word count.",
       "Build a solvable ladder: hard is a memorable recognition hook, medium reduces the broad geography, and easy gives a local map route inside that area.",
       "Treat approved examples as demonstrations of successful outcomes, not mandatory wording or fact templates.",
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route.",
       "Avoid generic claims and fulfil the assigned role: recognition for hard, geographic narrowing for medium, and a local route for easy.",
       "Medium must materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope. An extra place-owned fact can add character but is not mandatory."
     ],
     "bridge/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route.",
       "Do not include the answer name, aliases, or obvious name fragments before the final name reveal."
     ],
     "*/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route.",
       "Do not include the answer name, aliases, or obvious name fragments before the final name reveal.",
@@ -66,7 +66,7 @@
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route."
     ],
     "notable building/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route.",
       "Do not include the answer name, aliases, or obvious name fragments before the final name reveal."
@@ -88,23 +88,23 @@
       "Move useful clues to the correct difficulty level instead of using them where they make the ladder too easy or too vague."
     ],
     "park/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route."
     ],
     "historic site/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route.",
       "Do not include the answer name, aliases, or obvious name fragments before the final name reveal."
     ],
     "mountain/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route."
     ],
     "stadium/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route.",
       "Do not include the answer name, aliases, or obvious name fragments before the final name reveal."
@@ -147,18 +147,18 @@
       "Do not include the answer name, aliases, or obvious name fragments before the final name reveal."
     ],
     "tower/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route."
     ],
     "museum/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route.",
       "Do not include the answer name, aliases, or obvious name fragments before the final name reveal."
     ],
     "castle/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom.",
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map.",
       "Avoid clues that could fit many places; narrow toward one identifiable map target.",
       "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route."
     ],
@@ -324,7 +324,7 @@
       "Do not choose a place and manufacture a hook from its architect, construction, appearance, or static attributes. Select a verified recognition hook first; its location becomes the target."
     ],
     "old_town/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom."
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map."
     ],
     "old_town/*": [
       "Select the verified recognition hook first. Its location becomes the target; prefer a specific incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, or phenomenon.",
@@ -337,7 +337,7 @@
       "A hard clue must name or clearly describe one particular incident, with defining participants, outcome, event, or date context. Broad conflict or generic event wording fails."
     ],
     "transport_landmark/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom."
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map."
     ],
     "transport_landmark/*": [
       "Select the verified recognition hook first. Its location becomes the target; prefer a specific incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, or phenomenon.",
@@ -353,7 +353,7 @@
       "Medium must materially reduce the geographic search area to a useful country, region, culture, language, city, or equivalent scope. An extra place-owned fact can add character but is not mandatory."
     ],
     "fortified_historic_district/easy": [
-      "Easy must narrow within medium's area to a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named local landmark visible at city zoom."
+      "Easy must narrow within medium's area using an anchor visible by zoom 11 or earlier on the quiz's Esri World Topographic Map."
     ],
     "fortified_historic_district/*": [
       "Select the verified recognition hook first. Its location becomes the target; prefer a specific incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, or phenomenon.",
@@ -374,17 +374,27 @@
       "Hard must use a verified place-owned recognition hook. Prefer a unique incident or story; a distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment may also qualify.",
       "Do not reduce a good hook to a headline. Retain the useful people, action, outcome, consequence, record, or significance that makes it recognisable.",
       "A hard clue must name or clearly describe one particular incident, with defining participants, outcome, event, or date context. Broad conflict or generic event wording fails."
+    ],
+    "palace/hard": [
+      "Hard must use a verified place-owned recognition hook. Prefer a unique incident or story; a distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment may also qualify.",
+      "Do not reduce a good hook to a headline. Retain the useful people, action, outcome, consequence, record, or significance that makes it recognisable.",
+      "A hard clue must name or clearly describe one particular incident, with defining participants, outcome, event, or date context. Broad conflict or generic event wording fails."
+    ],
+    "palace/*": [
+      "Select the verified recognition hook first. Its location becomes the target; prefer a specific incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, or phenomenon.",
+      "Hard must use a verified place-owned recognition hook. Prefer a unique incident or story; a distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment may also qualify.",
+      "Keep geography out of hard; medium must reduce the broad search area and easy must then provide a useful local-area route."
     ]
   },
   "pattern_counts": {
     "weak_easy_map_anchor": 20,
     "too_broad": 15,
-    "location_based": 61,
+    "location_based": 62,
     "too_generic": 71,
     "weak_medium_narrowing": 46,
     "generic_clue": 137,
     "static_description": 54,
-    "weak_hard_hook": 86,
+    "weak_hard_hook": 88,
     "answer_leak": 56,
     "wrong_difficulty": 9,
     "useful_but_wrong_level": 9,
@@ -393,9 +403,9 @@
     "too_long_for_mobile": 5,
     "placeholder_wording": 1,
     "too_long": 2,
-    "insufficient_event_detail": 8,
-    "non_specific_incident": 6,
-    "place_selected_before_hook": 7,
+    "insufficient_event_detail": 9,
+    "non_specific_incident": 7,
+    "place_selected_before_hook": 8,
     "engineered_hard_hook": 2,
     "missing_place_link": 2,
     "medium_filler": 1,
@@ -445,20 +455,20 @@
     }
   ],
   "source_negative_files": [
-    "data\\training\\map_clue_negative_map_clue_review_20260727_152734.jsonl"
+    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_negative_map_clue_review_20260727_152734.jsonl"
   ],
   "source_failure_log_files": [
-    "data\\training\\map_clue_failure_log.jsonl"
+    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_failure_log.jsonl"
   ],
   "source_review_rows_files": [
-    "data\\training\\map_clue_review_rows_20260727_152734.jsonl"
+    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_review_rows_20260727_152734.jsonl"
   ],
   "source_place_review_feedback_files": [
-    "data\\training\\map_place_review_feedback_all.jsonl"
+    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_all.jsonl"
   ],
   "negative_record_count": 152,
   "failure_log_record_count": 73,
-  "human_failure_record_count": 29,
+  "human_failure_record_count": 31,
   "review_record_count": 1000,
   "approved_examples_by_level": {
     "hard": [
@@ -662,6 +672,29 @@
   },
   "approved_ladders": [
     {
+      "example_id": "gold_maracana_complete_ladder_v1",
+      "status": "human_approved",
+      "approved_on": "2026-07-27",
+      "audience": "adult player; the owner's father",
+      "place": "Maracan\u00e3 Stadium",
+      "place_type": "stadium",
+      "place_selection": {
+        "why_it_passed": "Famous, interesting, globally recognisable, supported by memorable facts, and reasonably findable on the map after using the clue ladder."
+      },
+      "clue_ladder": {
+        "hard": "Uruguay stunned Brazil here in 1950 before the World Cup's record crowd.",
+        "medium": "The venue is officially named after the Brazilian journalist M\u00e1rio Filho.",
+        "easy": "Find this massive oval stadium in northern Rio, situated just north of the Tijuca area."
+      },
+      "clue_reviews": {
+        "hard": "Uses the teams, famous upset, and still-current record. Those associations are more memorable and useful than quoting an arbitrary attendance figure.",
+        "medium": "Succeeds through the combination of a place-owned naming fact, a named person, Brazilian geographic scope, and help toward recognising the formal name.",
+        "easy": "Provides a practical city and district search anchor that is visible at a reasonable zoom, so street-level map knowledge is not needed to begin."
+      },
+      "why_the_ladder_passed": "Each level performs a different job: a memorable hook, a place-specific solving aid, and a practical map route. The clues progressively increase the player's chance of success.",
+      "generalisation_note": "This is one successful pattern, not a mandatory template. Medium must materially reduce the broad geographic search area; an extra place-owned fact may add character. Easy must then narrow within that area to a borough, district, quarter, city sector, or visible local feature."
+    },
+    {
       "example_id": "human-approved-4401",
       "status": "human_approved",
       "source": "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_20260727T231959Z.json",
@@ -699,7 +732,7 @@
     }
   ],
   "human_approved_ladder_count": 2,
-  "source_gold_examples_file": "",
+  "source_gold_examples_file": "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_gold_examples.json",
   "generator_env_var": "MAP_LEARNING_PROFILE_PATH",
   "generator_consumers": [
     "daily_map_game.generate_reviewed_clue_ladder"

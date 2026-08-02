@@ -1,12 +1,12 @@
 {
-  "created_at": "2026-07-28T16:06:52.986689+00:00",
+  "created_at": "2026-08-02T15:15:02.787101+00:00",
   "source_files": [
-    "data\\training\\map_place_review_feedback_all.jsonl"
+    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_all.jsonl"
   ],
-  "row_count": 183,
-  "unique_row_count": 183,
+  "row_count": 184,
+  "unique_row_count": 184,
   "duplicate_row_count": 0,
-  "accepted_row_count": 183,
+  "accepted_row_count": 184,
   "ignored_rows": [],
   "place_scores": {
     "Yankee Stadium": 0,
@@ -76,7 +76,7 @@
     "Aberdeen": 5,
     "Golden Gate Bridge": 3,
     "Persepolis": 5,
-    "Mysore Palace": 3,
+    "Mysore Palace": 0,
     "Mexico City": 3,
     "Machu Picchu": 5,
     "Canterbury Cathedral": 10,
@@ -203,7 +203,7 @@
     "museum": 0,
     "observation_tower": 3,
     "old_town": -30,
-    "palace": -21,
+    "palace": -24,
     "religious_site": -30,
     "skyscraper": -15,
     "stadium": 17
@@ -223,9 +223,9 @@
       "low_score_count": 0
     },
     "hard": {
-      "count": 12,
-      "mean_score": 5,
-      "low_score_count": 6
+      "count": 13,
+      "mean_score": 4.62,
+      "low_score_count": 7
     },
     "medium": {
       "count": 12,
@@ -234,13 +234,13 @@
     }
   },
   "hard_clue_review": {
-    "count": 33,
+    "count": 34,
     "pass_count": 19,
-    "fail_count": 13,
+    "fail_count": 14,
     "strong_pass_count": 12,
     "qualified_pass_count": 7,
     "unmarked_count": 1,
-    "pass_rate": 0.576,
+    "pass_rate": 0.559,
     "pass_examples": [
       {
         "place": "Sydney Harbour Bridge",
@@ -390,9 +390,9 @@
   "clue_level_guidance": [
     {
       "level": "hard",
-      "count": 12,
-      "mean_score": 5,
-      "low_score_count": 6,
+      "count": 13,
+      "mean_score": 4.62,
+      "low_score_count": 7,
       "guidance": "Select one source-backed recognition hook first. Prefer a unique incident or story, while allowing a genuinely distinctive record, achievement, discovery, association, tradition, natural occurrence, or cultural moment."
     },
     {
@@ -413,12 +413,12 @@
     "missing_place_link": 1,
     "needs_significant_event": 2,
     "needs_specific_incident": 8,
-    "niche_fact": 2,
+    "niche_fact": 3,
     "off_target_fact": 2,
     "poor_map_guessability": 3,
     "poor_narrowing_ladder": 3,
     "repeated_fact": 1,
-    "subjective_fact": 5,
+    "subjective_fact": 6,
     "vague_fact": 9,
     "weak_colour_hook": 2,
     "wording_clarity": 2
@@ -426,7 +426,7 @@
   "note_guidance": [
     {
       "category": "subjective_fact",
-      "count": 5,
+      "count": 6,
       "guidance": "Avoid subjective or generic facts; every fact should be concrete, specific, and useful for identifying the place.",
       "examples": [
         {
@@ -575,7 +575,7 @@
     },
     {
       "category": "niche_fact",
-      "count": 2,
+      "count": 3,
       "guidance": "Avoid hard clues that depend on niche knowledge unless the fact is memorable, clearly interesting, and strongly identifies the place.",
       "examples": [
         {
@@ -587,6 +587,11 @@
           "place": "Atomium",
           "score": 3,
           "note": "Just passes. The specific piece if data is quite niche to know. World fare is not a particularly well know thing so knowing what was built for one might be a bit niche"
+        },
+        {
+          "place": "Mysore Palace",
+          "score": 0,
+          "note": "Technically specific, but the wedding fire is too niche and not sufficiently well known to make a fair or enjoyable hard clue for the player."
         }
       ]
     },

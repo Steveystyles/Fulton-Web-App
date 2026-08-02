@@ -1,19 +1,16 @@
 {
   "version": 1,
-  "created_at": "2026-07-28T16:06:53+00:00",
-  "row_count": 644,
-  "source_files": [
-    "data\\training\\map_clue_review_rows_20260727_152734.jsonl",
-    "data\\training\\map_place_review_feedback_all.jsonl"
-  ],
+  "created_at": "2026-08-02T15:15:14+00:00",
+  "row_count": 645,
+  "source_files": [],
   "source_counts": {
     "labelled_1000": 607,
-    "human_feedback": 37
+    "human_feedback": 38
   },
   "level_counts": {
     "hard": {
       "pass": 115,
-      "fail": 87
+      "fail": 88
     },
     "medium": {
       "pass": 203,
@@ -26,9 +23,9 @@
   },
   "validation": {
     "row_count": 139,
-    "accuracy": 0.8849,
-    "balanced_accuracy": 0.8378,
-    "log_loss": 1.0076,
+    "accuracy": 0.8921,
+    "balanced_accuracy": 0.8426,
+    "log_loss": 1.0129,
     "label_counts": {
       "fail": 35,
       "pass": 104
@@ -37,9 +34,9 @@
   "validation_by_level": {
     "hard": {
       "row_count": 41,
-      "accuracy": 0.8537,
-      "balanced_accuracy": 0.88,
-      "log_loss": 0.6262,
+      "accuracy": 0.878,
+      "balanced_accuracy": 0.9,
+      "log_loss": 0.6441,
       "label_counts": {
         "fail": 16,
         "pass": 25
@@ -68,13 +65,13 @@
   },
   "levels": {
     "hard": {
-      "row_count": 202,
+      "row_count": 203,
       "document_weights": {
-        "fail": 124.5,
+        "fail": 127.5,
         "pass": 181.5
       },
       "token_totals": {
-        "fail": 2746.5,
+        "fail": 2875.5,
         "pass": 5014.5
       },
       "token_counts": {
@@ -99,7 +96,7 @@
           "word:is": 40.5,
           "word:of": 28.5,
           "word:part": 3.0,
-          "word:the": 52.5,
+          "word:the": 55.5,
           "word:this": 90.0,
           "word:western": 1.5,
           "bigram:ancient_nabataean": 1.5,
@@ -127,7 +124,7 @@
           "bigram:paris_in": 1.5,
           "bigram:s_national": 4.5,
           "bigram:stadium_lies": 3.0,
-          "word:a": 33.0,
+          "word:a": 36.0,
           "word:central": 3.0,
           "word:france": 1.5,
           "word:national": 7.5,
@@ -279,7 +276,7 @@
           "word:belongs": 3.0,
           "word:institution": 1.5,
           "word:smithsonian": 1.5,
-          "word:to": 7.5,
+          "word:to": 10.5,
           "word:washington": 1.5,
           "bigram:heart_of": 3.0,
           "bigram:its_capital": 1.5,
@@ -287,7 +284,7 @@
           "bigram:the_heart": 1.5,
           "bigram:wales_s": 1.5,
           "word:heart": 3.0,
-          "word:its": 4.5,
+          "word:its": 7.5,
           "word:wales": 1.5,
           "bigram:and_is": 3.0,
           "bigram:bavaria_and": 1.5,
@@ -744,7 +741,7 @@
           "bigram:the_official": 1.5,
           "word:official": 1.5,
           "word:president": 1.5,
-          "word:residence": 1.5,
+          "word:residence": 4.5,
           "bigram:and_lou": 3.0,
           "bigram:babe_ruth": 3.0,
           "bigram:figures_like": 3.0,
@@ -784,8 +781,8 @@
           "word:architect": 3.0,
           "word:conflict": 3.0,
           "word:designed": 3.0,
-          "word:destroyed": 6.0,
-          "word:during": 12.0,
+          "word:destroyed": 9.0,
+          "word:during": 15.0,
           "word:sinan": 3.0,
           "word:structure": 3.0,
           "word:tragically": 3.0,
@@ -868,7 +865,43 @@
           "word:percent": 3.0,
           "word:postwar": 3.0,
           "word:prompting": 3.0,
-          "word:reconstruction": 3.0
+          "word:reconstruction": 3.0,
+          "bigram:1897_wedding": 3.0,
+          "bigram:a_fire": 3.0,
+          "bigram:destroyed_the": 3.0,
+          "bigram:during_princess": 3.0,
+          "bigram:dynasty_to": 3.0,
+          "bigram:fire_destroyed": 3.0,
+          "bigram:forcing_the": 3.0,
+          "bigram:here_forcing": 3.0,
+          "bigram:its_residence": 3.0,
+          "bigram:jayalakshammanni's_1897": 3.0,
+          "bigram:palace_that": 3.0,
+          "bigram:princess_jayalakshammanni's": 3.0,
+          "bigram:replace_its": 3.0,
+          "bigram:stood_here": 3.0,
+          "bigram:that_stood": 3.0,
+          "bigram:the_wadiyar": 3.0,
+          "bigram:the_wooden": 3.0,
+          "bigram:to_replace": 3.0,
+          "bigram:wadiyar_dynasty": 3.0,
+          "bigram:wedding_a": 3.0,
+          "bigram:wooden_palace": 3.0,
+          "type:palace": 3.0,
+          "word:1897": 3.0,
+          "word:dynasty": 3.0,
+          "word:fire": 3.0,
+          "word:forcing": 3.0,
+          "word:here": 3.0,
+          "word:jayalakshammanni's": 3.0,
+          "word:palace": 3.0,
+          "word:princess": 3.0,
+          "word:replace": 3.0,
+          "word:stood": 3.0,
+          "word:that": 3.0,
+          "word:wadiyar": 3.0,
+          "word:wedding": 3.0,
+          "word:wooden": 3.0
         },
         "pass": {
           "bigram:a_rival": 1.5,
@@ -2947,10 +2980,10 @@
           "word:sparking": 6.0
         }
       },
-      "vocabulary_size": 2702,
+      "vocabulary_size": 2734,
       "alpha": 0.75,
       "prior_alpha": 1.0,
-      "total_document_weight": 306.0
+      "total_document_weight": 309.0
     },
     "medium": {
       "row_count": 256,
