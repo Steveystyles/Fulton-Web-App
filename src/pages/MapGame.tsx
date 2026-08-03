@@ -20,6 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
+import { useAuth } from "../context/AuthContext";
 import { MapGamePromo } from "./MapGamePromo";
 import {
   ApiError,
@@ -612,10 +613,14 @@ function MapCanvas({
 }
 
 export function MapGame() {
+  const { availableAnnouncements } = useAuth();
   const [searchParams] = useSearchParams();
   const requestedDate = searchParams.get("date")?.trim() || undefined;
   const [game, setGame] = useState<DailyMapGameResponse | null>(null);
   const [showPromoReplay, setShowPromoReplay] = useState(false);
+  const mapPromoAvailable = availableAnnouncements.some(
+    (announcement) => announcement.kind === "daily-map-promo",
+  );
   const [selectedLevelId, setSelectedLevelId] = useState<number | null>(null);
   const [pendingSelections, setPendingSelections] = useState<Record<number, DailyMapSnapSelection>>({});
   const [draftSelection, setDraftSelection] = useState<DailyMapSnapSelection | null>(null);
@@ -873,7 +878,7 @@ export function MapGame() {
 
   return (
     <>
-      {showPromoReplay ? (
+      {showPromoReplay && mapPromoAvailable ? (
         <MapGamePromo
           primaryLabel="Back to map"
           onDismiss={() => setShowPromoReplay(false)}
@@ -892,16 +897,18 @@ export function MapGame() {
               <h1 className="mt-1 text-2xl font-black leading-tight">Pin the place</h1>
             </div>
             <div className="flex shrink-0 items-stretch gap-2">
-              <button
-                type="button"
-                onClick={() => setShowPromoReplay(true)}
-                className="saints-focus flex h-12 w-14 flex-col items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/15"
-                aria-label="Replay map introduction"
-                title="Replay map introduction"
-              >
-                <PlayCircle aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
-                <span className="mt-0.5 text-[0.58rem] font-black uppercase">Intro</span>
-              </button>
+              {mapPromoAvailable ? (
+                <button
+                  type="button"
+                  onClick={() => setShowPromoReplay(true)}
+                  className="saints-focus flex h-12 w-14 flex-col items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/15"
+                  aria-label="Replay map introduction"
+                  title="Replay map introduction"
+                >
+                  <PlayCircle aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
+                  <span className="mt-0.5 text-[0.58rem] font-black uppercase">Intro</span>
+                </button>
+              ) : null}
               <div className="rounded-lg bg-white/10 px-3 py-2 text-right">
                 <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
                   {shortDate(game.date)}

@@ -11,6 +11,7 @@ import { api, ApiError, type Announcement, type User } from "../lib/api";
 
 type AuthContextValue = {
   user: User | null;
+  availableAnnouncements: Announcement[];
   pendingAnnouncements: Announcement[];
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
@@ -31,6 +32,7 @@ type AuthProviderProps = {
 
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
+  const [availableAnnouncements, setAvailableAnnouncements] = useState<Announcement[]>([]);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -38,10 +40,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       const response = await api.me();
       setUser(response.user);
+      setAvailableAnnouncements(response.availableAnnouncements ?? []);
       setPendingAnnouncements(response.pendingAnnouncements);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setUser(null);
+        setAvailableAnnouncements([]);
         setPendingAnnouncements([]);
         return;
       }
@@ -57,6 +61,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const response = await api.me();
         if (active) {
           setUser(response.user);
+          setAvailableAnnouncements(response.availableAnnouncements ?? []);
           setPendingAnnouncements(response.pendingAnnouncements);
         }
       } catch (error) {
@@ -65,6 +70,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         }
         if (active) {
           setUser(null);
+          setAvailableAnnouncements([]);
           setPendingAnnouncements([]);
         }
       } finally {
@@ -84,6 +90,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const login = useCallback(async (username: string, password: string) => {
     const response = await api.login(username, password);
     setUser(response.user);
+    setAvailableAnnouncements(response.availableAnnouncements ?? []);
     setPendingAnnouncements(response.pendingAnnouncements);
   }, []);
 
@@ -92,6 +99,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       await api.logout();
     } finally {
       setUser(null);
+      setAvailableAnnouncements([]);
       setPendingAnnouncements([]);
     }
   }, []);
@@ -109,6 +117,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const value = useMemo(
     () => ({
       user,
+      availableAnnouncements,
       pendingAnnouncements,
       loading,
       login,
@@ -117,7 +126,16 @@ export function AuthProvider({ children }: AuthProviderProps) {
       updateUser: setUser,
       acknowledgeAnnouncement,
     }),
-    [acknowledgeAnnouncement, loading, login, logout, pendingAnnouncements, refreshUser, user],
+    [
+      acknowledgeAnnouncement,
+      availableAnnouncements,
+      loading,
+      login,
+      logout,
+      pendingAnnouncements,
+      refreshUser,
+      user,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -332,6 +332,7 @@ export type Announcement = {
 
 export type AuthResponse = {
   user: User;
+  availableAnnouncements: Announcement[];
   pendingAnnouncements: Announcement[];
 };
 

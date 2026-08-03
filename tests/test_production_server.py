@@ -68,6 +68,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             patch.object(server, "DATA_DIR", db_path.parent),
             patch.object(server, "DB_PATH", db_path),
             patch.object(server, "SEED_DEMO_USERS", False),
+            patch.object(server, "today_game_date", return_value="2026-08-04"),
         ):
             server.initialize_database()
             with closing(server.connect_db()) as conn, conn:
@@ -84,6 +85,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 first = server.auth_payload(conn, users[0])
                 second = server.auth_payload(conn, users[1])
                 self.assertEqual(first["pendingAnnouncements"], second["pendingAnnouncements"])
+                self.assertEqual(first["availableAnnouncements"], second["availableAnnouncements"])
                 campaign_id = first["pendingAnnouncements"][0]["id"]
                 conn.execute(
                     """
@@ -98,6 +100,26 @@ class ProductionServerHardeningTests(unittest.TestCase):
                     server.pending_announcements(conn, users[1]["id"])[0]["id"],
                     campaign_id,
                 )
+
+    def test_map_promo_is_hidden_until_launch_date(self) -> None:
+        import server
+
+        with (
+            patch.object(server, "MAP_PROMO_AVAILABLE_DATE", "2026-08-04"),
+            patch.object(server, "today_game_date", return_value="2026-08-03"),
+        ):
+            self.assertFalse(server.map_promo_is_available())
+            self.assertEqual(server.available_announcements(), [])
+
+        with (
+            patch.object(server, "MAP_PROMO_AVAILABLE_DATE", "2026-08-04"),
+            patch.object(server, "today_game_date", return_value="2026-08-04"),
+        ):
+            self.assertTrue(server.map_promo_is_available())
+            self.assertEqual(
+                server.available_announcements(),
+                [{"id": server.MAP_PROMO_CAMPAIGN_ID, "kind": "daily-map-promo"}],
+            )
 
     def test_ops_monitor_returns_disabled_payload_when_feature_is_off(self) -> None:
         import ops_monitor

@@ -61,6 +61,10 @@ MAP_PROMO_CAMPAIGN_ID = os.environ.get(
     "FULTONS_MAP_PROMO_CAMPAIGN_ID",
     "daily-map-launch-2026-08-04",
 ).strip()
+MAP_PROMO_AVAILABLE_DATE = os.environ.get(
+    "FULTONS_MAP_PROMO_AVAILABLE_DATE",
+    "2026-08-04",
+).strip()
 CACHE_VERSION = (
     re.sub(r"[^A-Za-z0-9_.-]", "-", os.environ.get("FULTONS_BUILD_COMMIT", "local"))[:64]
     or "local"
@@ -1446,8 +1450,26 @@ def user_payload(row: sqlite3.Row) -> dict[str, Any]:
     return {"id": row["id"], "username": row["username"], "role": effective_user_role(row)}
 
 
-def pending_announcements(conn: sqlite3.Connection, user_id: int) -> list[dict[str, str]]:
+def map_promo_is_available() -> bool:
     if not MAP_PROMO_CAMPAIGN_ID:
+        return False
+    try:
+        available_date = date.fromisoformat(MAP_PROMO_AVAILABLE_DATE)
+        current_date = date.fromisoformat(today_game_date())
+    except ValueError:
+        return False
+    return current_date >= available_date
+
+
+def available_announcements() -> list[dict[str, str]]:
+    if not map_promo_is_available():
+        return []
+    return [{"id": MAP_PROMO_CAMPAIGN_ID, "kind": "daily-map-promo"}]
+
+
+def pending_announcements(conn: sqlite3.Connection, user_id: int) -> list[dict[str, str]]:
+    announcements = available_announcements()
+    if not announcements:
         return []
     acknowledged = conn.execute(
         """
@@ -1459,12 +1481,13 @@ def pending_announcements(conn: sqlite3.Connection, user_id: int) -> list[dict[s
     ).fetchone()
     if acknowledged is not None:
         return []
-    return [{"id": MAP_PROMO_CAMPAIGN_ID, "kind": "daily-map-promo"}]
+    return announcements
 
 
 def auth_payload(conn: sqlite3.Connection, user: sqlite3.Row) -> dict[str, Any]:
     return {
         "user": user_payload(user),
+        "availableAnnouncements": available_announcements(),
         "pendingAnnouncements": pending_announcements(conn, int(user["id"])),
     }
 
@@ -7990,7 +8013,11 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             )
             if announcement_match and method == "POST":
                 campaign_id = announcement_match.group(1)
-                if campaign_id != MAP_PROMO_CAMPAIGN_ID or not campaign_id:
+                if (
+                    campaign_id != MAP_PROMO_CAMPAIGN_ID
+                    or not campaign_id
+                    or not map_promo_is_available()
+                ):
                     self.send_error_json(HTTPStatus.NOT_FOUND, "Announcement not found.")
                     return
                 payload = self.read_json()
