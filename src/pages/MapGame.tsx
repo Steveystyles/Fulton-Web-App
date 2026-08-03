@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
 import {
   ApiError,
@@ -605,6 +606,8 @@ function MapCanvas({
 }
 
 export function MapGame() {
+  const [searchParams] = useSearchParams();
+  const requestedDate = searchParams.get("date")?.trim() || undefined;
   const [game, setGame] = useState<DailyMapGameResponse | null>(null);
   const [selectedLevelId, setSelectedLevelId] = useState<number | null>(null);
   const [pendingSelections, setPendingSelections] = useState<Record<number, DailyMapSnapSelection>>({});
@@ -634,8 +637,9 @@ export function MapGame() {
   });
 
   const loadGame = useCallback(async () => {
+    setLoading(true);
     try {
-      const response = await api.dailyMapGame();
+      const response = await api.dailyMapGame(requestedDate);
       setGame(response);
       setError("");
       setSelectedLevelId((current) => {
@@ -649,7 +653,7 @@ export function MapGame() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [requestedDate]);
 
   useEffect(() => {
     void loadGame();

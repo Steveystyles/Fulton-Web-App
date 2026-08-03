@@ -4230,6 +4230,47 @@ class ProductionServerHardeningTests(unittest.TestCase):
         ):
             self.assertTrue(server.daily_map_date_is_requestable("2026-08-04"))
 
+    def test_future_map_review_uses_the_selected_levels_date_for_play(self) -> None:
+        import daily_map_game
+        import server
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+        puzzle_id = conn.execute(
+            "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES (?, 'published')",
+            ("2026-08-04",),
+        ).lastrowid
+        place_id = conn.execute("SELECT id FROM map_place_pool LIMIT 1").fetchone()["id"]
+        level_id = conn.execute(
+            """
+            INSERT INTO daily_map_levels (
+                puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+            ) VALUES (?, 'easy', ?, 10, 100, ?)
+            """,
+            (puzzle_id, place_id, "2026-08-03T12:00:00+00:00"),
+        ).lastrowid
+
+        with (
+            patch.object(server, "today_game_date", return_value="2026-08-03"),
+            patch.object(server, "DAILY_MAP_FUTURE_REVIEW_ENABLED", True),
+        ):
+            self.assertEqual(
+                server.daily_map_submission_date(conn, level_id),
+                "2026-08-04",
+            )
+
+        with (
+            patch.object(server, "today_game_date", return_value="2026-08-03"),
+            patch.object(server, "DAILY_MAP_FUTURE_REVIEW_ENABLED", False),
+        ):
+            self.assertEqual(
+                server.daily_map_submission_date(conn, level_id),
+                "2026-08-03",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

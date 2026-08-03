@@ -3414,6 +3414,22 @@ def daily_map_date_is_requestable(puzzle_date: str) -> bool:
     return DAILY_MAP_FUTURE_REVIEW_ENABLED or puzzle_date <= today_game_date()
 
 
+def daily_map_submission_date(conn: sqlite3.Connection, level_id: int) -> str:
+    if not DAILY_MAP_FUTURE_REVIEW_ENABLED:
+        return today_game_date()
+    row = conn.execute(
+        """
+        SELECT daily_map_puzzles.puzzle_date
+        FROM daily_map_levels
+        INNER JOIN daily_map_puzzles
+            ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+        WHERE daily_map_levels.id = ?
+        """,
+        (level_id,),
+    ).fetchone()
+    return str(row["puzzle_date"]) if row is not None else today_game_date()
+
+
 def daily_map_launch_preferred_place_type(puzzle_date: str) -> str | None:
     if not DAILY_MAP_STADIUM_LAUNCH_DATE or DAILY_MAP_STADIUM_LAUNCH_ROUNDS <= 0:
         return None
@@ -8072,13 +8088,14 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             map_snap_match = re.fullmatch(r"/api/daily-map-game/(\d+)/snap", path)
             if map_snap_match is not None and method == "POST":
                 payload = self.read_json()
+                level_id = int(map_snap_match.group(1))
                 selection_payload, status = daily_map_game.snap_guess(
                     conn,
-                    level_id=int(map_snap_match.group(1)),
+                    level_id=level_id,
                     lat=payload.get("lat"),
                     lng=payload.get("lng"),
                     zoom=payload.get("zoom"),
-                    today=today_game_date(),
+                    today=daily_map_submission_date(conn, level_id),
                 )
                 self.send_json(status, selection_payload)
                 return
@@ -8086,15 +8103,16 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             map_guess_match = re.fullmatch(r"/api/daily-map-game/(\d+)/guess", path)
             if map_guess_match is not None and method == "POST":
                 payload = self.read_json()
+                level_id = int(map_guess_match.group(1))
                 result_payload, status = daily_map_game.submit_guess(
                     conn,
                     user_id=user["id"],
-                    level_id=int(map_guess_match.group(1)),
+                    level_id=level_id,
                     lat=payload.get("lat"),
                     lng=payload.get("lng"),
                     selected_name=payload.get("selectedName"),
                     revealed_hint_count=payload.get("revealedHintCount"),
-                    today=today_game_date(),
+                    today=daily_map_submission_date(conn, level_id),
                 )
                 self.send_json(status, result_payload)
                 return
