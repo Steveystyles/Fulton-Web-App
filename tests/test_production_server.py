@@ -4214,6 +4214,22 @@ class ProductionServerHardeningTests(unittest.TestCase):
             )
             self.assertIsNone(server.daily_map_launch_preferred_place_type("2026-08-13"))
 
+    def test_future_map_dates_are_only_requestable_in_review_mode(self) -> None:
+        import server
+
+        with (
+            patch.object(server, "today_game_date", return_value="2026-08-03"),
+            patch.object(server, "DAILY_MAP_FUTURE_REVIEW_ENABLED", False),
+        ):
+            self.assertTrue(server.daily_map_date_is_requestable("2026-08-03"))
+            self.assertFalse(server.daily_map_date_is_requestable("2026-08-04"))
+
+        with (
+            patch.object(server, "today_game_date", return_value="2026-08-03"),
+            patch.object(server, "DAILY_MAP_FUTURE_REVIEW_ENABLED", True),
+        ):
+            self.assertTrue(server.daily_map_date_is_requestable("2026-08-04"))
+
 
 if __name__ == "__main__":
     unittest.main()

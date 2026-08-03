@@ -93,6 +93,9 @@ DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC = max(
 DAILY_MAP_GAME_SCHEDULER_ENABLED = (
     os.environ.get("FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED", "1") != "0"
 )
+DAILY_MAP_FUTURE_REVIEW_ENABLED = (
+    os.environ.get("FULTONS_DAILY_MAP_FUTURE_REVIEW_ENABLED", "0") == "1"
+)
 DAILY_MAP_GAME_SCHEDULER_HOUR = int(
     os.environ.get("FULTONS_DAILY_MAP_GAME_SCHEDULER_HOUR", "0")
 )
@@ -3405,6 +3408,10 @@ def active_daily_map_game_dates(now: datetime | None = None) -> list[str]:
     today = local_now.date()
     tomorrow = today + timedelta(days=1)
     return [today.isoformat(), tomorrow.isoformat()]
+
+
+def daily_map_date_is_requestable(puzzle_date: str) -> bool:
+    return DAILY_MAP_FUTURE_REVIEW_ENABLED or puzzle_date <= today_game_date()
 
 
 def daily_map_launch_preferred_place_type(puzzle_date: str) -> str | None:
@@ -7981,7 +7988,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 puzzle_date = str(params.get("date", [today_game_date()])[0]).strip()
                 try:
                     normalized_date = daily_map_game.valid_game_date(puzzle_date)
-                    if normalized_date > today_game_date():
+                    if not daily_map_date_is_requestable(normalized_date):
                         self.send_error_json(
                             HTTPStatus.NOT_FOUND,
                             "No published map game exists for that date.",
