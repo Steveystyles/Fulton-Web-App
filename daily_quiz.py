@@ -846,6 +846,11 @@ Hard:
 Recent accepted questions:
 {json.dumps(public_recent_questions(recent_questions), indent=2)}
 
+Blocked correct answers from the full repetition window:
+{json.dumps(recent_answer_blocklist(recent_questions), indent=2)}
+
+Do not use any blocked answer above as the correct answer, including an obvious spelling variant.
+
 Previous failed attempts and feedback:
 {json.dumps(feedback[-5:], indent=2)}
 
@@ -1206,6 +1211,25 @@ def public_recent_questions(questions: list[dict[str, Any]]) -> list[dict[str, A
     ]
 
 
+def recent_answer_blocklist(
+    questions: list[dict[str, Any]],
+    *,
+    limit: int = 200,
+) -> list[str]:
+    answers: list[str] = []
+    seen: set[str] = set()
+    for question in questions:
+        answer = str(question.get("correct_answer") or "").strip()
+        normalized = normalize_text(answer)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        answers.append(answer)
+        if len(answers) >= limit:
+            break
+    return answers
+
+
 def quiz_set_questions(conn: sqlite3.Connection, quiz_set_id: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
@@ -1368,7 +1392,7 @@ def prior_attempt_feedback(
 ) -> list[str]:
     rows = conn.execute(
         """
-        SELECT failure_reason, critic_json
+        SELECT failure_reason, critic_json, generated_json
         FROM daily_quiz_attempts
         WHERE quiz_date = ? AND subject = ? AND difficulty = ? AND passed = 0
         ORDER BY id DESC
@@ -1380,6 +1404,18 @@ def prior_attempt_feedback(
     seen: set[str] = set()
     for row in reversed(rows):
         entries: list[str] = []
+        generated_json = row["generated_json"]
+        if generated_json:
+            try:
+                generated = json.loads(generated_json)
+            except json.JSONDecodeError:
+                generated = None
+            if isinstance(generated, dict):
+                failed_answer = str(generated.get("correct_answer") or "").strip()
+                if failed_answer:
+                    entries.append(
+                        f"Do not reuse the previously rejected correct answer: {failed_answer}."
+                    )
         critic_json = row["critic_json"]
         if critic_json:
             try:
@@ -1582,6 +1618,10 @@ def generate_slot(
                 critic=None,
                 passed=False,
                 failure_reason=repetition.reason,
+            )
+            feedback.append(
+                "Do not reuse this rejected correct answer: "
+                f"{validation.question['correct_answer']}."
             )
             feedback.append(repetition.reason)
             log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {repetition.reason}")

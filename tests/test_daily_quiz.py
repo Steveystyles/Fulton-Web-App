@@ -547,6 +547,47 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(feedback, ["Missing required fields: question."])
 
+    def test_prior_attempt_feedback_names_rejected_answer(self) -> None:
+        daily_quiz.save_attempt(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="football",
+            difficulty="easy",
+            attempt_number=1,
+            provider="gemini",
+            generated={"correct_answer": "Wembley Stadium"},
+            critic=None,
+            passed=False,
+            failure_reason="Correct answer already appeared recently in this quiz slot.",
+        )
+
+        feedback = daily_quiz.prior_attempt_feedback(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="football",
+            difficulty="easy",
+        )
+
+        self.assertIn(
+            "Do not reuse the previously rejected correct answer: Wembley Stadium.",
+            feedback,
+        )
+
+    def test_generator_prompt_blocks_answers_beyond_question_excerpt(self) -> None:
+        recent = [
+            {
+                "question": f"Question {index}?",
+                "correct_answer": f"Answer {index}",
+                "tags": ["history"],
+            }
+            for index in range(40)
+        ]
+
+        prompt = daily_quiz.generator_prompt("football", "easy", recent, [])
+
+        self.assertIn('"Answer 39"', prompt)
+        self.assertNotIn('"question": "Question 39?"', prompt)
+
     def test_regenerate_question_uses_fallback_provider_chain(self) -> None:
         quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-06-04")
         daily_quiz.save_question(
