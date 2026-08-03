@@ -3935,11 +3935,15 @@ def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
         }
         boundary = serialize_map_boundary(item.get("boundary"))
         if boundary is not None:
+            boundary_kind = str(item.get("boundary_kind") or "administrative").strip()
+            if boundary_kind not in {"administrative", "guidance"}:
+                boundary_kind = "administrative"
             try:
                 boundary_min_zoom = int(item.get("boundary_min_zoom", 6))
             except (TypeError, ValueError):
                 boundary_min_zoom = 6
             anchor["boundary"] = boundary
+            anchor["boundaryKind"] = boundary_kind
             anchor["boundaryMinZoom"] = min(19, max(1, boundary_min_zoom))
         anchors.append(anchor)
     return anchors[:3]

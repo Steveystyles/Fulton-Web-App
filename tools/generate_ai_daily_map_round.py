@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import sys
@@ -1229,6 +1230,36 @@ def map_boundary_contains_point(
     return False
 
 
+def map_guidance_circle(
+    *,
+    lat: float,
+    lng: float,
+    radius_m: float,
+    steps: int = 64,
+) -> dict[str, Any]:
+    earth_radius_m = 6_371_008.8
+    angular_distance = radius_m / earth_radius_m
+    center_lat = math.radians(lat)
+    center_lng = math.radians(lng)
+    ring: list[list[float]] = []
+    for step in range(max(16, steps)):
+        bearing = 2 * math.pi * step / max(16, steps)
+        point_lat = math.asin(
+            math.sin(center_lat) * math.cos(angular_distance)
+            + math.cos(center_lat)
+            * math.sin(angular_distance)
+            * math.cos(bearing)
+        )
+        point_lng = center_lng + math.atan2(
+            math.sin(bearing) * math.sin(angular_distance) * math.cos(center_lat),
+            math.cos(angular_distance)
+            - math.sin(center_lat) * math.sin(point_lat),
+        )
+        ring.append([math.degrees(point_lng), math.degrees(point_lat)])
+    ring.append(ring[0])
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
 def verified_map_search_anchor(
     place: dict[str, Any],
     *,
@@ -1283,12 +1314,22 @@ def verified_map_search_anchor(
         key=lambda item: (item[0], item[5] is None, item[1], -item[4]),
     )
     display_zoom = 4 if importance >= 0.55 else 5 if importance >= 0.35 else 6
-    if boundary is not None and not map_boundary_contains_point(
+    boundary_kind = "administrative"
+    boundary_contains_answer = boundary is not None and map_boundary_contains_point(
         boundary,
         lat=float(place["lat"]),
         lng=float(place["lng"]),
-    ):
+    )
+    if not boundary_contains_answer:
         boundary = None
+        if min_hint_count == 1 and _distance_m <= 40_000:
+            guidance_radius_m = min(45_000, max(15_000, _distance_m * 1.35 + 5_000))
+            boundary = map_guidance_circle(
+                lat=anchor_lat,
+                lng=anchor_lng,
+                radius_m=guidance_radius_m,
+            )
+            boundary_kind = "guidance"
     anchor = {
         "name": anchor_name,
         "lat": anchor_lat,
@@ -1299,7 +1340,10 @@ def verified_map_search_anchor(
     }
     if boundary is not None:
         anchor["boundary"] = boundary
-        anchor["boundary_min_zoom"] = max(5, display_zoom)
+        anchor["boundary_kind"] = boundary_kind
+        anchor["boundary_min_zoom"] = (
+            display_zoom if boundary_kind == "guidance" else max(5, display_zoom)
+        )
     return anchor
 
 

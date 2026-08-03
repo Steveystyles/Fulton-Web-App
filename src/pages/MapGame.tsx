@@ -170,7 +170,10 @@ function MapCanvas({
   const displayedLevelIdRef = useRef<number | null>(null);
   const [measuring, setMeasuring] = useState(false);
   const [measurementPoints, setMeasurementPoints] = useState<MapPoint[]>([]);
-  const [visibleBoundaryName, setVisibleBoundaryName] = useState("");
+  const [visibleBoundary, setVisibleBoundary] = useState<{
+    name: string;
+    kind: "administrative" | "guidance";
+  } | null>(null);
 
   useEffect(() => {
     if (containerRef.current === null || mapRef.current !== null) {
@@ -239,19 +242,28 @@ function MapCanvas({
       const visibleBoundaries = mapAnchors.filter(
         (anchor) => anchor.boundary && zoom >= (anchor.boundaryMinZoom ?? 6),
       );
-      setVisibleBoundaryName(visibleBoundaries[0]?.name ?? "");
+      const primaryBoundary = visibleBoundaries[0];
+      setVisibleBoundary(
+        primaryBoundary
+          ? {
+              name: primaryBoundary.name,
+              kind: primaryBoundary.boundaryKind ?? "administrative",
+            }
+          : null,
+      );
       visibleBoundaries.forEach((anchor) => {
-          L.geoJSON(anchor.boundary as Parameters<typeof L.geoJSON>[0], {
-            interactive: false,
-            style: {
-              color: "#087f73",
-              dashArray: "9 7",
-              fillColor: "#10b981",
-              fillOpacity: 0.06,
-              opacity: 1,
-              weight: 4,
-            },
-          }).addTo(currentLayer);
+        const isGuidanceArea = anchor.boundaryKind === "guidance";
+        L.geoJSON(anchor.boundary as Parameters<typeof L.geoJSON>[0], {
+          interactive: false,
+          style: {
+            color: isGuidanceArea ? "#2563eb" : "#087f73",
+            dashArray: isGuidanceArea ? "6 8" : "9 7",
+            fillColor: isGuidanceArea ? "#60a5fa" : "#10b981",
+            fillOpacity: isGuidanceArea ? 0.08 : 0.06,
+            opacity: isGuidanceArea ? 0.9 : 1,
+            weight: isGuidanceArea ? 3 : 4,
+          },
+        }).addTo(currentLayer);
       });
     }
 
@@ -535,10 +547,25 @@ function MapCanvas({
           </div>
         </div>
       ) : null}
-      {visibleBoundaryName ? (
-        <div className="pointer-events-none absolute bottom-24 left-3 z-[700] inline-flex min-h-9 max-w-[calc(100%-5rem)] items-center gap-2 rounded-lg border border-emerald-200 bg-white/95 px-3 text-xs font-black text-emerald-800 shadow-lg">
-          <span aria-hidden="true" className="w-7 border-t-[3px] border-dashed border-emerald-700" />
-          <span className="truncate">{visibleBoundaryName} boundary</span>
+      {visibleBoundary ? (
+        <div
+          className={[
+            "pointer-events-none absolute bottom-24 left-3 z-[700] inline-flex min-h-9 max-w-[calc(100%-5rem)] items-center gap-2 rounded-lg bg-white/95 px-3 text-xs font-black shadow-lg",
+            visibleBoundary.kind === "guidance"
+              ? "border border-blue-200 text-blue-800"
+              : "border border-emerald-200 text-emerald-800",
+          ].join(" ")}
+        >
+          <span
+            aria-hidden="true"
+            className={[
+              "w-7 border-t-[3px] border-dashed",
+              visibleBoundary.kind === "guidance" ? "border-blue-700" : "border-emerald-700",
+            ].join(" ")}
+          />
+          <span className="truncate">
+            {visibleBoundary.name} {visibleBoundary.kind === "guidance" ? "search area" : "boundary"}
+          </span>
         </div>
       ) : null}
       <div className="pointer-events-none absolute bottom-10 left-3 z-[700] flex max-w-[calc(100%-5rem)] items-stretch gap-2">

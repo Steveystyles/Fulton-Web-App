@@ -318,6 +318,7 @@ class DailyMapGameTests(unittest.TestCase):
                                     ]
                                 ],
                             },
+                            "boundary_kind": "guidance",
                             "boundary_min_zoom": 7,
                         },
                         {"name": "Broken", "lat": "north", "lng": 0},
@@ -354,6 +355,7 @@ class DailyMapGameTests(unittest.TestCase):
                             ]
                         ],
                     },
+                    "boundaryKind": "guidance",
                     "boundaryMinZoom": 7,
                 }
             ],

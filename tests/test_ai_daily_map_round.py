@@ -869,6 +869,15 @@ class AiDailyMapRoundTests(unittest.TestCase):
             ],
             [("Paris", 1), ("Saint-Denis", 2), ("Example Stadium", 2)],
         )
+        self.assertEqual(anchors[0]["boundary_kind"], "guidance")
+        self.assertEqual(anchors[0]["boundary_min_zoom"], 4)
+        self.assertTrue(
+            generate_ai_daily_map_round.map_boundary_contains_point(
+                anchors[0]["boundary"],
+                lat=place["lat"],
+                lng=place["lng"],
+            )
+        )
 
     def test_map_boundary_must_contain_the_answer_point(self) -> None:
         paris_city_boundary = {

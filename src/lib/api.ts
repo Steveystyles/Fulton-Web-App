@@ -375,6 +375,7 @@ export type DailyMapAnchor = {
     type: "Polygon" | "MultiPolygon";
     coordinates: unknown;
   };
+  boundaryKind?: "administrative" | "guidance";
   boundaryMinZoom?: number;
 };
 
