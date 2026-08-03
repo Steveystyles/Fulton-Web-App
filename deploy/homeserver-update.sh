@@ -296,6 +296,7 @@ upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_SRC_DIR" "${SRC_DIR}"
 upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_ENV_FILE" "${ENV_FILE}"
 upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_HOST_DATA_DIR" "${DATA_DIR}"
 upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_IMAGE" "local/fulton-web-app:${APP_COMMIT}"
+export FULTONS_IMAGE="local/fulton-web-app:${APP_COMMIT}"
 chmod 600 "${COMPOSE_ENV_FILE}"
 
 log "Normalizing data ownership"
@@ -375,6 +376,7 @@ docker logs --tail 80 fultons-quiz || true
 if [ -n "${rollback_tag}" ]; then
   log "Rolling back to ${rollback_tag}"
   upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_IMAGE" "${rollback_tag}"
+  export FULTONS_IMAGE="${rollback_tag}"
   docker rm -f fultons-quiz >/dev/null 2>&1 || true
   docker compose -f "${COMPOSE_FILE}" up -d --no-build
 fi
