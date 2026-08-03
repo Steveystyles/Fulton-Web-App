@@ -68,12 +68,16 @@ MAP_CLUE_GENERATOR_MODEL=gemini-3.1-flash-lite
 MAP_CLUE_CRITIC_MODEL=gemini-3.1-flash-lite
 MAP_CLUE_MAX_ATTEMPTS=6
 MAP_CLUE_REQUIRE_AI_CRITIC=1
-AI_FALLBACK_PROVIDER=gemini
-AI_FALLBACK_GENERATOR_MODEL=gemini-2.5-flash
-AI_FALLBACK_CRITIC_MODEL=gemini-2.5-flash-lite
-AI_FALLBACK2_PROVIDER=gemini
-AI_FALLBACK2_GENERATOR_MODEL=gemini-3.1-flash-lite
-AI_FALLBACK2_CRITIC_MODEL=gemini-3.1-flash-lite
+AI_FALLBACK_PROVIDER=openrouter
+AI_FALLBACK_GENERATOR_MODEL=google/gemma-4-26b-a4b-it:free
+AI_FALLBACK_CRITIC_MODEL=openrouter/free
+AI_FALLBACK_API_KEY=<private-openrouter-api-key>
+AI_FALLBACK_BASE_URL=https://openrouter.ai/api/v1
+AI_FALLBACK2_PROVIDER=openrouter
+AI_FALLBACK2_GENERATOR_MODEL=openrouter/free
+AI_FALLBACK2_CRITIC_MODEL=openrouter/free
+AI_FALLBACK2_API_KEY=<private-openrouter-api-key>
+AI_FALLBACK2_BASE_URL=https://openrouter.ai/api/v1
 AI_TIMEOUT_SEC=90
 AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
@@ -204,12 +208,16 @@ AI_PROVIDER=gemini
 AI_GENERATOR_MODEL=gemini-3.5-flash
 AI_CRITIC_MODEL=gemini-3.1-flash-lite
 GEMINI_API_KEY=<private-gemini-api-key>
-AI_FALLBACK_PROVIDER=gemini
-AI_FALLBACK_GENERATOR_MODEL=gemini-2.5-flash
-AI_FALLBACK_CRITIC_MODEL=gemini-2.5-flash-lite
-AI_FALLBACK2_PROVIDER=gemini
-AI_FALLBACK2_GENERATOR_MODEL=gemini-3.1-flash-lite
-AI_FALLBACK2_CRITIC_MODEL=gemini-3.1-flash-lite
+AI_FALLBACK_PROVIDER=openrouter
+AI_FALLBACK_GENERATOR_MODEL=google/gemma-4-26b-a4b-it:free
+AI_FALLBACK_CRITIC_MODEL=openrouter/free
+AI_FALLBACK_API_KEY=<private-openrouter-api-key>
+AI_FALLBACK_BASE_URL=https://openrouter.ai/api/v1
+AI_FALLBACK2_PROVIDER=openrouter
+AI_FALLBACK2_GENERATOR_MODEL=openrouter/free
+AI_FALLBACK2_CRITIC_MODEL=openrouter/free
+AI_FALLBACK2_API_KEY=<private-openrouter-api-key>
+AI_FALLBACK2_BASE_URL=https://openrouter.ai/api/v1
 AI_TIMEOUT_SEC=90
 AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
@@ -227,7 +235,7 @@ From a Windows workstation, the setup helper prompts for the Gemini key securely
 
 The system generates one question at a time for six slots: easy, medium, and hard general knowledge plus easy, medium, and hard football. Each candidate passes local validation, recent-question repetition checks, and a separate AI critic before it is stored. A quiz is published only after all six slots are approved. Failed attempts and critic feedback are retained in SQLite for review.
 
-Generation and critique use separate Gemini models so their free-tier request quotas are independent. Keep `gemini-3.5-flash` for writing questions and the stable `gemini-3.1-flash-lite` model for the narrower critic task. When the primary Gemini model hits per-model quota or times out, the default fallback chain uses other Gemini text models under the same key. Avoid `:free` OpenRouter models for quiz generation unless a separate paid/BYOK limit is configured; they can be upstream rate-limited independently of this app.
+Generation and critique use separate primary Gemini models. When Gemini reaches its free-tier quota or times out, the fallback chain uses the separately configured OpenRouter key: a structured-output Gemma generator first, then OpenRouter's free router. Free models can be upstream rate-limited, so failed requests remain unpublished and are retried later. A candidate is never published without a valid critic payload and passing critic scores.
 
 Map generation can use a separate Gemini project and quota. Set
 `MAP_CLUE_GEMINI_API_KEY` to the map-specific key; when it is blank, the map
