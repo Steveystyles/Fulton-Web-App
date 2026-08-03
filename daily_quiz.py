@@ -1687,51 +1687,47 @@ def generate_slot(
             )
             critic_provider_name = current_provider_name(provider)
         except Exception as error:
-            save_question(conn, quiz_set_id=quiz_set_id, question=validation.question)
+            reason = f"Critic request failed: {error}"
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=attempt_provider_label(generator_provider_name, "local-validation"),
+                provider=generator_provider_name,
                 generated=validation.question,
-                critic=local_validation_critic(
-                    difficulty=difficulty,
-                    note=(
-                        "Accepted after local validation because the AI critic was unavailable: "
-                        f"{error}"
-                    ),
-                ),
-                passed=True,
-                failure_reason=None,
+                critic=None,
+                passed=False,
+                failure_reason=reason,
             )
-            log(f"Accepted {subject} / {difficulty} attempt {attempt_number} without AI critic")
-            return True
+            if is_transient_provider_failure(reason):
+                saw_transient_provider_failure = True
+                log(f"Deferred {subject} / {difficulty} attempt {attempt_number}: {reason}")
+                return None
+            saw_non_transient_failure = True
+            feedback.append(reason)
+            log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {reason}")
+            continue
 
         critic_validation = validate_critic(critic)
         if not critic_validation.passed:
-            save_question(conn, quiz_set_id=quiz_set_id, question=validation.question)
+            reason = f"Critic payload invalid: {critic_validation.reason}"
             save_attempt(
                 conn,
                 quiz_date=quiz_date,
                 subject=subject,
                 difficulty=difficulty,
                 attempt_number=attempt_number,
-                provider=attempt_provider_label(generator_provider_name, "local-validation"),
+                provider=attempt_provider_label(generator_provider_name, critic_provider_name),
                 generated=validation.question,
-                critic=local_validation_critic(
-                    difficulty=difficulty,
-                    note=(
-                        "Accepted after local validation because the AI critic payload was invalid: "
-                        f"{critic_validation.reason}"
-                    ),
-                ),
-                passed=True,
-                failure_reason=None,
+                critic=critic if isinstance(critic, dict) else None,
+                passed=False,
+                failure_reason=reason,
             )
-            log(f"Accepted {subject} / {difficulty} attempt {attempt_number} with local validation")
-            return True
+            saw_non_transient_failure = True
+            feedback.append(reason)
+            log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {reason}")
+            continue
 
         if not critic_passed(critic):
             reason = critic_failure_reason(critic)

@@ -188,6 +188,15 @@ class CriticUnavailableProvider(PassingProvider):
         raise RuntimeError("Gemini request failed with HTTP 429.")
 
 
+class InvalidCriticProvider(PassingProvider):
+    def critique_question(
+        self,
+        *args: object,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        return {"passed": True}
+
+
 class FeedbackReuseProvider(PassingProvider):
     def __init__(self) -> None:
         super().__init__("feedback-reuse")
@@ -722,7 +731,7 @@ class DailyQuizTests(unittest.TestCase):
         }
         self.assertEqual(providers, {"openrouter"})
 
-    def test_generation_accepts_locally_valid_question_when_critic_is_unavailable(self) -> None:
+    def test_generation_defers_when_critic_is_unavailable(self) -> None:
         payload = daily_quiz.generate_daily_quiz(
             self.conn,
             quiz_date="2026-06-06",
@@ -731,15 +740,29 @@ class DailyQuizTests(unittest.TestCase):
             log=lambda _: None,
         )
 
-        self.assertEqual(payload["status"], "published")
-        passed_rows = self.conn.execute(
-            "SELECT provider, critic_json FROM daily_quiz_attempts WHERE quiz_date = ? AND passed = 1",
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertTrue(payload["last_failure_transient"])
+        failed_rows = self.conn.execute(
+            "SELECT failure_reason FROM daily_quiz_attempts WHERE quiz_date = ? AND passed = 0",
             ("2026-06-06",),
         ).fetchall()
-        self.assertTrue(passed_rows)
-        self.assertTrue(
-            all("local-validation" in row["provider"] for row in passed_rows)
+        self.assertEqual(len(failed_rows), 1)
+        self.assertIn("Critic request failed", failed_rows[0]["failure_reason"])
+
+    def test_generation_rejects_invalid_critic_payload(self) -> None:
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-07",
+            config=config(max_attempts=1),
+            provider=InvalidCriticProvider("invalid-critic"),
+            log=lambda _: None,
         )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertFalse(payload["last_failure_transient"])
+        self.assertIn("Critic payload invalid", payload["last_failure_reason"])
 
     def test_provider_chain_from_config_includes_openrouter_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
