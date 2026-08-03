@@ -1320,16 +1320,16 @@ def verified_map_search_anchor(
         lat=float(place["lat"]),
         lng=float(place["lng"]),
     )
-    if not boundary_contains_answer:
+    if min_hint_count == 1:
+        guidance_radius_m = min(300_000, max(25_000, _distance_m * 1.35 + 15_000))
+        boundary = map_guidance_circle(
+            lat=anchor_lat,
+            lng=anchor_lng,
+            radius_m=guidance_radius_m,
+        )
+        boundary_kind = "guidance"
+    elif not boundary_contains_answer:
         boundary = None
-        if min_hint_count == 1 and _distance_m <= 40_000:
-            guidance_radius_m = min(45_000, max(15_000, _distance_m * 1.35 + 5_000))
-            boundary = map_guidance_circle(
-                lat=anchor_lat,
-                lng=anchor_lng,
-                radius_m=guidance_radius_m,
-            )
-            boundary_kind = "guidance"
     anchor = {
         "name": anchor_name,
         "lat": anchor_lat,

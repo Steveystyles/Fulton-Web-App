@@ -801,6 +801,14 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(anchors[0]["min_hint_count"], 1)
         self.assertEqual(anchors[0]["max_zoom"], 9)
         self.assertEqual(anchors[0]["boundary"]["type"], "Polygon")
+        self.assertEqual(anchors[0]["boundary_kind"], "guidance")
+        self.assertTrue(
+            generate_ai_daily_map_round.map_boundary_contains_point(
+                anchors[0]["boundary"],
+                lat=place["lat"],
+                lng=place["lng"],
+            )
+        )
         self.assertEqual(
             anchors[2],
             {
@@ -815,6 +823,7 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(anchors[1]["name"], "Barcelona")
         self.assertEqual(anchors[1]["min_hint_count"], 2)
         self.assertAlmostEqual(anchors[1]["lat"], 41.3829)
+        self.assertEqual(anchors[1]["boundary_kind"], "administrative")
         self.assertEqual(anchors[1]["boundary_min_zoom"], 5)
         self.assertEqual(geocode.call_count, 2)
 
