@@ -132,6 +132,17 @@ GENERIC_TOPIC_TAGS = {
     "sports",
     "television",
 }
+ANSWER_QUALIFIER_TOKENS = {
+    "the",
+    "fc",
+    "afc",
+    "cf",
+    "sc",
+    "football",
+    "club",
+    "stadium",
+}
+
 
 DEFAULT_COMPATIBLE_BASE_URLS = {
     "groq": "https://api.groq.com/openai/v1",
@@ -931,6 +942,14 @@ def normalize_text(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
+def normalize_answer(value: str) -> str:
+    normalized = normalize_text(value)
+    distinctive_tokens = [
+        token for token in normalized.split() if token not in ANSWER_QUALIFIER_TOKENS
+    ]
+    return " ".join(distinctive_tokens) or normalized
+
+
 def question_uses_volatile_fact(question: str) -> bool:
     question_lower = question.casefold()
     if any(term in question_lower for term in VOLATILE_FACT_TERMS):
@@ -1225,7 +1244,7 @@ def recent_answer_blocklist(
     seen: set[str] = set()
     for question in questions:
         answer = str(question.get("correct_answer") or "").strip()
-        normalized = normalize_text(answer)
+        normalized = normalize_answer(answer)
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
@@ -1276,7 +1295,7 @@ def check_repetition(
     reject_any_repeated_answer: bool = False,
 ) -> RepetitionResult:
     normalized = normalize_text(question["question"])
-    correct_answer = normalize_text(question["correct_answer"])
+    correct_answer = normalize_answer(question["correct_answer"])
     answer_count = 0
     topic_counts: dict[str, int] = {}
     for previous in previous_questions:
@@ -1285,7 +1304,7 @@ def check_repetition(
             return RepetitionResult(False, "Question duplicates a recent accepted question.")
         if SequenceMatcher(None, normalized, previous_normalized).ratio() >= 0.84:
             return RepetitionResult(False, "Question is too similar to a recent accepted question.")
-        if correct_answer == normalize_text(previous["correct_answer"]):
+        if correct_answer == normalize_answer(previous["correct_answer"]):
             answer_count += 1
             if (
                 normalize_text(question.get("subject", ""))

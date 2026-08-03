@@ -328,6 +328,25 @@ class DailyQuizTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("quiz slot", result.reason)
 
+    def test_repetition_rejects_answer_with_generic_qualifier_removed(self) -> None:
+        question = {
+            **valid_question(subject="football", difficulty="easy"),
+            "question": "Which national venue is marked by a sweeping roof arch?",
+            "correct_answer": "Wembley",
+        }
+        previous = [
+            {
+                **valid_question(subject="football", difficulty="easy"),
+                "question": "At which stadium did England win the 1966 World Cup final?",
+                "correct_answer": "Wembley Stadium",
+            }
+        ]
+
+        result = daily_quiz.check_repetition(question, previous)
+
+        self.assertFalse(result.passed)
+        self.assertIn("quiz slot", result.reason)
+
     def test_repetition_rejects_answer_already_used_in_same_quiz(self) -> None:
         question = valid_question(difficulty="medium")
         previous = [
