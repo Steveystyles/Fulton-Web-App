@@ -708,6 +708,7 @@ MAP_HARD_GENERIC_TARGET_TOKENS = frozenset(
     {
         "ancient",
         "archaeological",
+        "arena",
         "area",
         "bridge",
         "castle",
@@ -715,8 +716,11 @@ MAP_HARD_GENERIC_TARGET_TOKENS = frozenset(
         "centre",
         "center",
         "city",
+        "cricket",
         "district",
         "estadio",
+        "football",
+        "ground",
         "historic",
         "island",
         "monument",
@@ -726,9 +730,12 @@ MAP_HARD_GENERIC_TARGET_TOKENS = frozenset(
         "old",
         "palace",
         "park",
+        "rugby",
         "site",
+        "sports",
         "stadium",
         "town",
+        "venue",
     }
 )
 

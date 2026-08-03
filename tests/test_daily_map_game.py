@@ -1945,6 +1945,25 @@ class DailyMapGameTests(unittest.TestCase):
             daily_map_game.hard_clue_reveals_target_token(location_clue, place)
         )
 
+    def test_hard_clue_allows_generic_sport_and_venue_identity_words(self) -> None:
+        place = {
+            "canonical_name": "Melbourne Cricket Ground",
+            "acceptable_aliases": ["MCG"],
+        }
+
+        self.assertFalse(
+            daily_map_game.hard_clue_reveals_target_token(
+                "Inside this cricket ground, the 1956 Olympic Games held their ceremonies.",
+                place,
+            )
+        )
+        self.assertTrue(
+            daily_map_game.hard_clue_reveals_target_token(
+                "Inside this Melbourne stadium, the 1956 Olympic Games held their ceremonies.",
+                place,
+            )
+        )
+
     def test_learning_profile_can_supply_a_complete_gold_ladder_without_making_it_a_template(
         self,
     ) -> None:

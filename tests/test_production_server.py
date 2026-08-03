@@ -4160,6 +4160,42 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(generate.call_args.kwargs["eligible_names"], {"fresh stadium"})
         self.assertIsNone(generate.call_args.kwargs["required_place_type"])
 
+    def test_daily_map_generation_reports_original_failure_after_schema_initialization(self) -> None:
+        import daily_map_game
+        import server
+
+        db_path = Path(self.temp_dir.name) / "map-generation-failure.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+
+        def initialize_then_fail(*_args, **_kwargs):
+            daily_map_game.initialize_database(conn)
+            raise LookupError("No learned hook passed.")
+
+        with (
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ENABLED", True),
+            patch.object(server, "DAILY_MAP_AI_DISCOVER_COUNT", 0),
+            patch(
+                "server.map_clue_rewriter.ConfiguredMapClueProvider.from_env",
+                return_value=object(),
+            ),
+            patch(
+                "server.generate_ai_daily_map_round.generate_round",
+                side_effect=initialize_then_fail,
+            ),
+        ):
+            result = server.generate_daily_map_game_for_date(
+                conn,
+                puzzle_date="2026-08-04",
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("No learned hook passed", result["failureReason"])
+
     def test_daily_map_launch_prefers_stadiums_for_first_three_rounds(self) -> None:
         import server
 

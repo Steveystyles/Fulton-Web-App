@@ -3472,7 +3472,6 @@ def generate_daily_map_game_for_date(
             safe_log(f"Daily map AI discovery failed for {normalized_date}: {error}")
             return daily_map_game.puzzle_status(conn, normalized_date)
 
-    conn.execute("SAVEPOINT ai_daily_map_round")
     try:
         provider = map_clue_rewriter.ConfiguredMapClueProvider.from_env()
         generated = generate_ai_daily_map_round.generate_round(
@@ -3484,7 +3483,6 @@ def generate_daily_map_game_for_date(
             eligible_names=eligible_names,
             required_place_type=required_place_type,
         )
-        conn.execute("RELEASE SAVEPOINT ai_daily_map_round")
         safe_log(
             "Daily map AI: selected "
             f"{generated['place']} with profile {generated['learning_profile_hash']} "
@@ -3492,8 +3490,7 @@ def generate_daily_map_game_for_date(
         )
         return dict(generated["publish_result"])
     except Exception as error:
-        conn.execute("ROLLBACK TO SAVEPOINT ai_daily_map_round")
-        conn.execute("RELEASE SAVEPOINT ai_daily_map_round")
+        conn.rollback()
         daily_map_game.get_or_create_puzzle(conn, normalized_date)
         daily_map_game.set_puzzle_status(
             conn,
