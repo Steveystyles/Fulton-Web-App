@@ -851,8 +851,13 @@ Blocked correct answers from the full repetition window:
 
 Do not use any blocked answer above as the correct answer, including an obvious spelling variant.
 
+Blocked topic tags already at the repetition cap:
+{json.dumps(recent_tag_blocklist(recent_questions), indent=2)}
+
+Do not tag or center the question on any blocked topic above.
+
 Previous failed attempts and feedback:
-{json.dumps(feedback[-5:], indent=2)}
+{json.dumps(feedback[-40:], indent=2)}
 
 Return JSON only using this structure:
 {json.dumps(question_schema(), indent=2)}
@@ -1214,7 +1219,7 @@ def public_recent_questions(questions: list[dict[str, Any]]) -> list[dict[str, A
 def recent_answer_blocklist(
     questions: list[dict[str, Any]],
     *,
-    limit: int = 200,
+    limit: int | None = None,
 ) -> list[str]:
     answers: list[str] = []
     seen: set[str] = set()
@@ -1225,9 +1230,30 @@ def recent_answer_blocklist(
             continue
         seen.add(normalized)
         answers.append(answer)
-        if len(answers) >= limit:
+        if limit is not None and len(answers) >= limit:
             break
     return answers
+
+
+def recent_tag_blocklist(
+    questions: list[dict[str, Any]],
+    *,
+    threshold: int = 5,
+    limit: int = 100,
+) -> list[str]:
+    counts: dict[str, int] = {}
+    labels: dict[str, str] = {}
+    for question in questions:
+        for raw_tag in question.get("tags", []):
+            label = str(raw_tag or "").strip()
+            normalized = normalize_text(label)
+            if not normalized or is_generic_topic_tag(normalized):
+                continue
+            labels.setdefault(normalized, label)
+            counts[normalized] = counts.get(normalized, 0) + 1
+    blocked = [tag for tag, count in counts.items() if count >= threshold]
+    blocked.sort(key=lambda tag: (-counts[tag], labels[tag].casefold()))
+    return [labels[tag] for tag in blocked[:limit]]
 
 
 def quiz_set_questions(conn: sqlite3.Connection, quiz_set_id: int) -> list[dict[str, Any]]:
@@ -1388,7 +1414,7 @@ def prior_attempt_feedback(
     quiz_date: str,
     subject: str,
     difficulty: str,
-    limit: int = 6,
+    limit: int = 12,
 ) -> list[str]:
     rows = conn.execute(
         """
@@ -1410,12 +1436,9 @@ def prior_attempt_feedback(
                 generated = json.loads(generated_json)
             except json.JSONDecodeError:
                 generated = None
-            if isinstance(generated, dict):
-                failed_answer = str(generated.get("correct_answer") or "").strip()
-                if failed_answer:
-                    entries.append(
-                        f"Do not reuse the previously rejected correct answer: {failed_answer}."
-                    )
+            instruction = rejected_answer_instruction(generated)
+            if instruction:
+                entries.append(instruction)
         critic_json = row["critic_json"]
         if critic_json:
             try:
@@ -1435,12 +1458,19 @@ def prior_attempt_feedback(
                 continue
             seen.add(normalized)
             feedback.append(entry)
-            if len(feedback) >= limit:
-                return feedback
-    return feedback
+    return feedback[-limit:]
 
 
-def merge_feedback_entries(*groups: list[str], limit: int = 8) -> list[str]:
+def rejected_answer_instruction(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    failed_answer = str(value.get("correct_answer") or "").strip()
+    if not failed_answer:
+        return None
+    return f"Do not reuse the previously rejected correct answer: {failed_answer}."
+
+
+def merge_feedback_entries(*groups: list[str], limit: int = 16) -> list[str]:
     feedback: list[str] = []
     seen: set[str] = set()
     for group in groups:
@@ -1591,6 +1621,9 @@ def generate_slot(
                 passed=False,
                 failure_reason=validation.reason,
             )
+            instruction = rejected_answer_instruction(generated)
+            if instruction:
+                feedback.append(instruction)
             feedback.append(validation.reason)
             log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {validation.reason}")
             continue
@@ -1619,10 +1652,9 @@ def generate_slot(
                 passed=False,
                 failure_reason=repetition.reason,
             )
-            feedback.append(
-                "Do not reuse this rejected correct answer: "
-                f"{validation.question['correct_answer']}."
-            )
+            instruction = rejected_answer_instruction(validation.question)
+            if instruction:
+                feedback.append(instruction)
             feedback.append(repetition.reason)
             log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {repetition.reason}")
             continue
@@ -1698,6 +1730,9 @@ def generate_slot(
                 passed=False,
                 failure_reason=reason,
             )
+            instruction = rejected_answer_instruction(validation.question)
+            if instruction:
+                feedback.append(instruction)
             feedback.append(feedback_text)
             log(f"Rejected {subject} / {difficulty} attempt {attempt_number}: {reason}")
             continue

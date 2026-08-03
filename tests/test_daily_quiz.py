@@ -588,6 +588,53 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIn('"Answer 39"', prompt)
         self.assertNotIn('"question": "Question 39?"', prompt)
 
+    def test_generator_prompt_blocks_capped_tags_and_keeps_retry_history(self) -> None:
+        recent = [
+            {
+                "question": f"Question {index}?",
+                "correct_answer": f"Answer {index}",
+                "tags": ["football", "tactics"],
+            }
+            for index in range(5)
+        ]
+        feedback = [f"Failure {index}" for index in range(10)]
+
+        prompt = daily_quiz.generator_prompt("football", "medium", recent, feedback)
+
+        self.assertIn('"tactics"', prompt)
+        self.assertIn('"Failure 0"', prompt)
+
+    def test_prior_attempt_feedback_prefers_newest_failures(self) -> None:
+        for index in range(7):
+            daily_quiz.save_attempt(
+                self.conn,
+                quiz_date="2026-06-03",
+                subject="football",
+                difficulty="medium",
+                attempt_number=index + 1,
+                provider="gemini",
+                generated={"correct_answer": f"Answer {index}"},
+                critic=None,
+                passed=False,
+                failure_reason=f"Failure {index}",
+            )
+
+        feedback = daily_quiz.prior_attempt_feedback(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="football",
+            difficulty="medium",
+            limit=2,
+        )
+
+        self.assertEqual(
+            feedback,
+            [
+                "Do not reuse the previously rejected correct answer: Answer 6.",
+                "Failure 6",
+            ],
+        )
+
     def test_regenerate_question_uses_fallback_provider_chain(self) -> None:
         quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-06-04")
         daily_quiz.save_question(
