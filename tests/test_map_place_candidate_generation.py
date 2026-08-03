@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import daily_map_game
 from tools import build_map_selector_profile
@@ -46,6 +47,39 @@ def valid_candidate() -> dict[str, object]:
 
 
 class MapPlaceCandidateGenerationTests(unittest.TestCase):
+    def test_ai_generation_does_not_hold_database_write_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "map.db"
+
+            def generate_while_checking_lock(**_kwargs: object) -> list[dict[str, object]]:
+                second = sqlite3.connect(db_path, timeout=0.1)
+                try:
+                    second.execute("BEGIN IMMEDIATE")
+                    second.rollback()
+                finally:
+                    second.close()
+                return [valid_candidate()]
+
+            with (
+                patch.object(generator, "generate_raw_candidates", side_effect=generate_while_checking_lock),
+                patch.object(
+                    generator,
+                    "validated_review_rows",
+                    return_value=([valid_candidate()], []),
+                ),
+            ):
+                result = generator.generate_review_batch(
+                    db_path=db_path,
+                    provider=object(),
+                    limit=1,
+                    batch_size=1,
+                    max_attempts=1,
+                    retry_after_minutes=0,
+                    feedback_dir=Path(temp_dir),
+                )
+
+            self.assertEqual(len(result["accepted"]), 1)
+
     def test_selector_profile_classifies_review_notes_into_guidance(self) -> None:
         profile = build_map_selector_profile.build_profile(
             [

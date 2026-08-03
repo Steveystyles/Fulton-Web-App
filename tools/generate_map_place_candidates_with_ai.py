@@ -1232,6 +1232,7 @@ def generate_review_batch(
     conn.row_factory = sqlite3.Row
     try:
         daily_map_game.initialize_database(conn)
+        conn.commit()
         selector_profile = daily_map_game.load_map_selector_profile()
         selector_model = map_selector_model.load_model()
         clue_quality_model_payload = map_clue_quality_model.load_model()
