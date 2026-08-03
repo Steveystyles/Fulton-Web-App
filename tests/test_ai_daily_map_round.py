@@ -820,6 +820,28 @@ class AiDailyMapRoundTests(unittest.TestCase):
             include_boundary_geometry=True,
         )
 
+    def test_unnamed_capital_locality_anchor_appears_with_medium_clue(self) -> None:
+        ladder = {
+            "medium": (
+                "This major sports venue is located in the northern suburbs of "
+                "the French capital, just beyond its ring road."
+            ),
+            "easy": "Look in Saint-Denis, just north of Paris, near the A1 motorway.",
+        }
+
+        self.assertEqual(
+            generate_ai_daily_map_round.map_anchor_reveal_index(
+                "Paris",
+                ladder,
+                allow_medium_locality_inference=True,
+            ),
+            1,
+        )
+        self.assertEqual(
+            generate_ai_daily_map_round.map_anchor_reveal_index("Paris", ladder),
+            2,
+        )
+
     def test_map_search_anchor_rejects_unmapped_clue_route(self) -> None:
         with self.assertRaisesRegex(ValueError, "No answer-safe locality or region"):
             generate_ai_daily_map_round.build_verified_map_search_anchors(

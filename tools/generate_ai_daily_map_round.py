@@ -1115,14 +1115,32 @@ def reverse_geocoded_locality(place: dict[str, Any]) -> str:
     )
 
 
-def map_anchor_reveal_index(name: str, clue_ladder: dict[str, Any]) -> int | None:
+MAP_MEDIUM_IMPLIED_LOCALITY_RE = re.compile(
+    r"\b(?:in|inside|within|near|outside|beyond)\b.{0,90}\b"
+    r"(?:capital|capital city)\b|"
+    r"\b(?:suburbs?|borough|district|quarter)\s+of\b.{0,60}\bcapital\b",
+    re.IGNORECASE,
+)
+
+
+def map_anchor_reveal_index(
+    name: str,
+    clue_ladder: dict[str, Any],
+    *,
+    allow_medium_locality_inference: bool = False,
+) -> int | None:
     name_key = daily_map_game.normalized_place_name(name)
     if not name_key:
         return None
-    for reveal_index, field in ((1, "medium"), (2, "easy")):
-        clue_key = daily_map_game.normalized_place_name(clue_ladder.get(field))
-        if name_key in clue_key:
-            return reveal_index
+    medium_clue = str(clue_ladder.get("medium") or "")
+    if name_key in daily_map_game.normalized_place_name(medium_clue):
+        return 1
+    if allow_medium_locality_inference and MAP_MEDIUM_IMPLIED_LOCALITY_RE.search(
+        medium_clue
+    ):
+        return 1
+    if name_key in daily_map_game.normalized_place_name(clue_ladder.get("easy")):
+        return 2
     return None
 
 
@@ -1190,9 +1208,13 @@ def build_verified_map_search_anchors(
     ]
     anchor_name = ""
     min_hint_count: int | None = None
-    for candidate in candidates:
+    for candidate_index, candidate in enumerate(candidates):
         candidate_key = daily_map_game.normalized_place_name(candidate)
-        reveal_index = map_anchor_reveal_index(candidate, clue_ladder)
+        reveal_index = map_anchor_reveal_index(
+            candidate,
+            clue_ladder,
+            allow_medium_locality_inference=candidate_index == 0,
+        )
         if candidate_key and candidate_key not in answer_names and reveal_index is not None:
             anchor_name = candidate
             min_hint_count = reveal_index
