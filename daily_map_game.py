@@ -535,6 +535,13 @@ MAP_HARD_TEAM_SIDES_RE = re.compile(
     rf"(?:beat|defeated)\s+(?:the\s+|host nation\s+)?"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+"
+    rf"(?:scored|struck)\b.{{0,100}}?\b(?:to\s+)?"
+    rf"(?:beat|defeat(?:ed|ing)?)\s+(?:the\s+|host nation\s+)?"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+lost\s+"
+    rf"\d+\s*[-\u2013\u2014]\s*\d+\s+to\s+"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+"
     rf"(?:secured|claimed|won|lifted)\b.{{0,100}}?\b"
     rf"(?:by\s+)?defeating\s+(?:the\s+|host nation\s+)?"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
@@ -673,7 +680,8 @@ MAP_EASY_CITY_SECTOR_RE = re.compile(
 )
 MAP_HARD_EVENT_ACTION_FAMILIES = {
     "sport": re.compile(
-        r"\b(?:beat|defeated|won|lost|scored|clinched|secured|final|match)\b",
+        r"\b(?:beat|defeat\w*|won|lost|scored|clinched|secured|"
+        r"shock\w*|stun\w*|upset|final|match)\b",
         re.IGNORECASE,
     ),
     "killing": re.compile(
@@ -2641,7 +2649,8 @@ def map_critic_has_only_length_failures(critic: dict[str, Any]) -> bool:
 
 
 def hard_clue_reveals_target_token(text: str, place: dict[str, Any]) -> bool:
-    clue_tokens = set(re.findall(r"[a-z0-9]+", str(text or "").casefold()))
+    value = str(text or "")
+    clue_tokens = set(re.findall(r"[a-z0-9]+", value.casefold()))
     names = [
         str(place.get("canonical_name") or ""),
         *[
@@ -2660,6 +2669,29 @@ def hard_clue_reveals_target_token(text: str, place: dict[str, Any]) -> bool:
             for token in re.findall(r"[a-z0-9]+", name.casefold())
             if len(token) >= 5 and token not in MAP_HARD_GENERIC_TARGET_TOKENS
         )
+    if MAP_HARD_TEAM_EVENT_RE.search(value):
+        participant_action = (
+            r"(?:beat|defeat\w*|won|lost|scored|secured|claimed|lifted|"
+            r"clinched|shock\w*|stun\w*)"
+        )
+        for geographic_name in (str(place.get("country_name") or "").strip(),):
+            if not geographic_name:
+                continue
+            escaped_name = re.escape(geographic_name)
+            acts_as_participant = bool(
+                re.search(
+                    rf"\b{escaped_name}\b.{{0,45}}\b{participant_action}\b|"
+                    rf"\b{participant_action}\b.{{0,45}}\b{escaped_name}\b",
+                    value,
+                    re.IGNORECASE,
+                )
+            )
+            if acts_as_participant:
+                protected.difference_update(
+                    token
+                    for token in re.findall(r"[a-z0-9]+", geographic_name.casefold())
+                    if len(token) >= 5
+                )
     return bool(clue_tokens & protected)
 
 

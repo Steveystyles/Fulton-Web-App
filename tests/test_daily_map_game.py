@@ -1546,6 +1546,18 @@ class DailyMapGameTests(unittest.TestCase):
             )
         )
 
+    def test_locked_event_accepts_shocked_as_a_defeat_outcome(self) -> None:
+        self.assertTrue(
+            daily_map_game.clue_preserves_required_hard_hook(
+                (
+                    "Uruguay defeated Brazil 2-1 on this pitch during the decisive "
+                    "final match of the 1950 World Cup, an upset victory that denied "
+                    "the hosts the championship title."
+                ),
+                "Uruguay shocked the host nation here during the 1950 World Cup.",
+            )
+        )
+
     def test_team_final_requires_both_sides_not_only_a_scorer(self) -> None:
         scorer_only = (
             "During the 1978 World Cup final, Mario Kempes scored twice "
@@ -1562,6 +1574,21 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertTrue(
             daily_map_game.hard_event_has_enough_information(complete_event)
         )
+
+    def test_team_final_accepts_scored_to_defeat_and_lost_to_phrasings(self) -> None:
+        comeback = (
+            "In the 1999 Champions League final, Manchester United scored two goals "
+            "in stoppage time to defeat Bayern Munich 2-1 on this pitch, completing "
+            "a historic comeback."
+        )
+        group_match = (
+            "During the 1966 World Cup, Brazil lost 3-1 to Portugal on this pitch in "
+            "a group stage match that saw Pele suffer a tournament-ending injury "
+            "following a tackle by Joao Morais."
+        )
+
+        self.assertTrue(daily_map_game.hard_event_has_enough_information(comeback))
+        self.assertTrue(daily_map_game.hard_event_has_enough_information(group_match))
 
     def test_hard_event_capsule_rejects_a_bare_outcome_statistic(self) -> None:
         clue = "During a 1944 uprising, Nazi troops destroyed over 85% of this district."
@@ -1871,6 +1898,25 @@ class DailyMapGameTests(unittest.TestCase):
                 "After the 1944 uprising, Nazi troops razed most of this district in retaliation.",
                 place,
             )
+        )
+
+    def test_hard_clue_allows_country_name_when_it_is_a_competing_team(self) -> None:
+        place = {
+            "canonical_name": "Stade de France",
+            "acceptable_aliases": [],
+            "country_name": "France",
+        }
+        participant_clue = (
+            "On this pitch, France secured their first FIFA World Cup title in 1998 "
+            "by defeating Brazil 3-0 in the final."
+        )
+        location_clue = "This stadium is located in France and hosted a World Cup final."
+
+        self.assertFalse(
+            daily_map_game.hard_clue_reveals_target_token(participant_clue, place)
+        )
+        self.assertTrue(
+            daily_map_game.hard_clue_reveals_target_token(location_clue, place)
         )
 
     def test_learning_profile_can_supply_a_complete_gold_ladder_without_making_it_a_template(
