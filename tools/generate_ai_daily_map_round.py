@@ -1364,6 +1364,15 @@ def build_verified_map_search_anchors(
     candidates: list[tuple[str, int]] = []
     medium_map_anchor = str(clue_ladder.get("medium_map_anchor") or "").strip()
     if medium_map_anchor:
+        named_region = str(place.get("admin1") or "").strip()
+        if (
+            map_anchor_reveal_index(medium_map_anchor, clue_ladder) != 1
+            and map_anchor_reveal_index(named_region, clue_ladder) == 1
+        ):
+            raise ValueError(
+                "The medium map anchor must not replace the region explicitly named "
+                "in the medium clue."
+            )
         candidates.append((medium_map_anchor, 1))
     for candidate in (
         str(locality_name or "").strip(),

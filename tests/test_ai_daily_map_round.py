@@ -879,6 +879,31 @@ class AiDailyMapRoundTests(unittest.TestCase):
             )
         )
 
+    def test_medium_map_anchor_cannot_replace_region_named_in_medium_clue(self) -> None:
+        place = {
+            "canonical_name": "Example Stadium",
+            "acceptable_aliases": [],
+            "country_code": "ES",
+            "country_name": "Spain",
+            "admin1": "Catalonia",
+            "lat": 41.3809,
+            "lng": 2.1228,
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "medium map anchor must not replace the region explicitly named",
+        ):
+            generate_ai_daily_map_round.build_verified_map_search_anchors(
+                place,
+                {
+                    "medium": "This historic club represents Catalonia, Spain.",
+                    "medium_map_anchor": "Barcelona",
+                    "easy": "Look west of Barcelona city centre.",
+                },
+                locality_name="Barcelona",
+            )
+
     def test_map_boundary_must_contain_the_answer_point(self) -> None:
         paris_city_boundary = {
             "type": "Polygon",

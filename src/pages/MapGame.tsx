@@ -243,7 +243,11 @@ function MapCanvas({
       const visibleBoundaries = mapAnchors.filter(
         (anchor) => anchor.boundary && zoom >= (anchor.boundaryMinZoom ?? 6),
       );
-      const primaryBoundary = visibleBoundaries[0];
+      const primaryBoundary = visibleBoundaries.reduce<DailyMapAnchor | undefined>(
+        (current, anchor) =>
+          current === undefined || anchor.minHintCount >= current.minHintCount ? anchor : current,
+        undefined,
+      );
       setVisibleBoundary(
         primaryBoundary
           ? {
@@ -252,9 +256,9 @@ function MapCanvas({
             }
           : null,
       );
-      visibleBoundaries.forEach((anchor) => {
-        const isGuidanceArea = anchor.boundaryKind === "guidance";
-        L.geoJSON(anchor.boundary as Parameters<typeof L.geoJSON>[0], {
+      if (primaryBoundary?.boundary) {
+        const isGuidanceArea = primaryBoundary.boundaryKind === "guidance";
+        L.geoJSON(primaryBoundary.boundary as Parameters<typeof L.geoJSON>[0], {
           interactive: false,
           style: {
             color: isGuidanceArea ? "#2563eb" : "#087f73",
@@ -265,7 +269,7 @@ function MapCanvas({
             weight: isGuidanceArea ? 3 : 4,
           },
         }).addTo(currentLayer);
-      });
+      }
     }
 
     renderMapBoundaries();
