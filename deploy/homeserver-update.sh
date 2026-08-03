@@ -83,6 +83,11 @@ COMPOSE_ENV_FILE="${COMPOSE_DIR}/.env"
 mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}" "$(dirname "${ENV_FILE}")"
 
 if [ ! -f "${ENV_FILE}" ]; then
+  if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
+    log "Refusing to replace an existing deployment with a missing environment file: ${ENV_FILE}"
+    log "Recover the private environment and correct ${COMPOSE_ENV_FILE} before retrying."
+    exit 1
+  fi
   log "Creating private app env file at ${ENV_FILE}"
   cat > "${ENV_FILE}" <<'EOF'
 # Private container environment for Fulton Web App.
@@ -185,8 +190,9 @@ ensure_env_var "FULTONS_DAILY_MAP_AI_SHORTLIST_LIMIT" "24"
 ensure_env_var "FULTONS_DAILY_MAP_AI_MAX_CLUE_ATTEMPTS" "7"
 ensure_env_var "FULTONS_DAILY_MAP_AI_DISCOVER_COUNT" "4"
 ensure_env_var "FULTONS_DAILY_MAP_AI_DISCOVERY_ATTEMPTS" "2"
-ensure_env_var "FULTONS_DAILY_MAP_STADIUM_LAUNCH_DATE" "$(TZ=Europe/London date +%F)"
+ensure_env_var "FULTONS_DAILY_MAP_STADIUM_LAUNCH_DATE" "2026-08-04"
 ensure_env_var "FULTONS_DAILY_MAP_STADIUM_LAUNCH_ROUNDS" "3"
+ensure_env_var "FULTONS_MAP_PROMO_CAMPAIGN_ID" "daily-map-launch-2026-08-04"
 ensure_env_var "VITE_FULTONS_MAP_TILE_URL" ""
 ensure_env_var "VITE_FULTONS_MAP_TILE_URL_CLEAR_BASE" ""
 ensure_env_var "VITE_FULTONS_MAP_TILE_URL_NO_LABELS" ""
@@ -288,24 +294,55 @@ cp "${SRC_DIR}/deploy/compose.yaml" "${COMPOSE_FILE}"
 upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_SRC_DIR" "${SRC_DIR}"
 upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_ENV_FILE" "${ENV_FILE}"
 upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_HOST_DATA_DIR" "${DATA_DIR}"
+upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_IMAGE" "local/fulton-web-app:${APP_COMMIT}"
 chmod 600 "${COMPOSE_ENV_FILE}"
 
 log "Normalizing data ownership"
 docker run --rm -v "${DATA_DIR}:/data" alpine:3.22 sh -c \
   'find /data -mindepth 1 -maxdepth 1 ! -name localai -exec chown -R 1000:1000 {} +'
 
+rollback_tag=""
 if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
-  log "Removing existing fultons-quiz container"
-  docker rm -f fultons-quiz
+  previous_image_id="$(docker inspect fultons-quiz --format '{{.Image}}')"
+  rollback_tag="local/fulton-web-app:rollback-$(date -u +%Y%m%d%H%M%S)"
+  docker tag "${previous_image_id}" "${rollback_tag}"
+  log "Preserved current image as ${rollback_tag}"
 fi
 
-log "Building local/fulton-web-app:latest from ${SRC_DIR}"
+log "Building local/fulton-web-app:${APP_COMMIT} while production remains online"
 docker build \
   --pull \
   --build-arg "FULTONS_BUILD_COMMIT=${APP_COMMIT}" \
   --build-arg "FULTONS_BUILD_SOURCE=${SRC_DIR}" \
-  -t local/fulton-web-app:latest \
+  -t "local/fulton-web-app:${APP_COMMIT}" \
   "${SRC_DIR}"
+docker tag "local/fulton-web-app:${APP_COMMIT}" local/fulton-web-app:latest
+
+if [ "${IMPORT_MAP_LAUNCH_ROUND:-0}" = "1" ]; then
+  log "Validating the packaged launch round against the production database"
+  docker run --rm \
+    -v "${DATA_DIR}:/app/data" \
+    --entrypoint python \
+    "local/fulton-web-app:${APP_COMMIT}" \
+    -m tools.map_launch_round import \
+    --db /app/data/fultons.db \
+    --input /app/map-launch-round/map-launch-round-2026-08-04.json \
+    --dry-run
+
+  log "Publishing the validated launch round before application startup"
+  docker run --rm \
+    -v "${DATA_DIR}:/app/data" \
+    --entrypoint python \
+    "local/fulton-web-app:${APP_COMMIT}" \
+    -m tools.map_launch_round import \
+    --db /app/data/fultons.db \
+    --input /app/map-launch-round/map-launch-round-2026-08-04.json
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
+  log "Replacing existing fultons-quiz container after successful build"
+  docker rm -f fultons-quiz
+fi
 
 log "Starting fultons-quiz"
 export FULTONS_SRC_DIR="${SRC_DIR}"
@@ -334,4 +371,10 @@ done
 
 log "Health check failed"
 docker logs --tail 80 fultons-quiz || true
+if [ -n "${rollback_tag}" ]; then
+  log "Rolling back to ${rollback_tag}"
+  upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_IMAGE" "${rollback_tag}"
+  docker rm -f fultons-quiz >/dev/null 2>&1 || true
+  docker compose -f "${COMPOSE_FILE}" up -d --no-build
+fi
 exit 1

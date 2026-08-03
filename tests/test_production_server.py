@@ -60,6 +60,45 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(len(conn.statements), 1)
         self.assertIn("SELECT users.*", conn.statements[0])
 
+    def test_map_promo_announcement_is_scoped_per_user(self) -> None:
+        import server
+
+        db_path = Path(self.temp_dir.name) / "announcements.db"
+        with (
+            patch.object(server, "DATA_DIR", db_path.parent),
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "SEED_DEMO_USERS", False),
+        ):
+            server.initialize_database()
+            with closing(server.connect_db()) as conn, conn:
+                now = server.utc_now()
+                conn.execute(
+                    """
+                    INSERT INTO users (
+                        username, password_hash, role, created_at, updated_at
+                    ) VALUES ('one', 'hash', 'user', ?, ?), ('two', 'hash', 'user', ?, ?)
+                    """,
+                    (now, now, now, now),
+                )
+                users = conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+                first = server.auth_payload(conn, users[0])
+                second = server.auth_payload(conn, users[1])
+                self.assertEqual(first["pendingAnnouncements"], second["pendingAnnouncements"])
+                campaign_id = first["pendingAnnouncements"][0]["id"]
+                conn.execute(
+                    """
+                    INSERT INTO user_announcement_acknowledgements (
+                        user_id, campaign_id, action, acknowledged_at
+                    ) VALUES (?, ?, 'played', ?)
+                    """,
+                    (users[0]["id"], campaign_id, now),
+                )
+                self.assertEqual(server.pending_announcements(conn, users[0]["id"]), [])
+                self.assertEqual(
+                    server.pending_announcements(conn, users[1]["id"])[0]["id"],
+                    campaign_id,
+                )
+
     def test_ops_monitor_returns_disabled_payload_when_feature_is_off(self) -> None:
         import ops_monitor
 

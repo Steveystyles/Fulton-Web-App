@@ -26,7 +26,9 @@ LABEL org.opencontainers.image.revision="${FULTONS_BUILD_COMMIT}" \
 COPY --chown=appuser:appuser server.py production_server.py daily_quiz.py daily_map_game.py local_ops_settings.py ops_monitor.py wordle_game.py ./
 COPY --chown=appuser:appuser games ./games
 COPY --chown=appuser:appuser tools/__init__.py tools/build_map_learning_profile.py tools/build_map_selector_profile.py tools/export_map_place_review_batch.py tools/generate_ai_daily_map_round.py tools/generate_map_place_candidates_with_ai.py tools/install_map_training_seed.py tools/map_clue_failure_log.py tools/map_clue_quality_model.py tools/map_selector_model.py tools/refresh_map_learning_profile.py tools/rewrite_map_clues_with_ai.py tools/training_data_store.py ./tools/
+COPY --chown=appuser:appuser tools/map_launch_round.py ./tools/
 COPY --chown=appuser:appuser deploy/map-training-seed ./map-training-seed
+COPY --chown=appuser:appuser deploy/map-launch-round-2026-08-04.json ./map-launch-round/
 COPY --chown=appuser:appuser --from=frontend /app/dist ./dist
 
 ENV FULTONS_HOST=0.0.0.0

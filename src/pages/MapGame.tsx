@@ -10,6 +10,7 @@ import {
   Lock,
   Layers,
   MapPinned,
+  PlayCircle,
   RotateCcw,
   Ruler,
   Trophy,
@@ -19,6 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
+import { MapGamePromo } from "./MapGamePromo";
 import {
   ApiError,
   api,
@@ -613,6 +615,7 @@ export function MapGame() {
   const [searchParams] = useSearchParams();
   const requestedDate = searchParams.get("date")?.trim() || undefined;
   const [game, setGame] = useState<DailyMapGameResponse | null>(null);
+  const [showPromoReplay, setShowPromoReplay] = useState(false);
   const [selectedLevelId, setSelectedLevelId] = useState<number | null>(null);
   const [pendingSelections, setPendingSelections] = useState<Record<number, DailyMapSnapSelection>>({});
   const [draftSelection, setDraftSelection] = useState<DailyMapSnapSelection | null>(null);
@@ -869,7 +872,15 @@ export function MapGame() {
   }
 
   return (
-    <section className="page-fade space-y-3 pb-2" aria-label="Daily map game">
+    <>
+      {showPromoReplay ? (
+        <MapGamePromo
+          primaryLabel="Back to map"
+          onDismiss={() => setShowPromoReplay(false)}
+          onPlay={() => setShowPromoReplay(false)}
+        />
+      ) : null}
+      <section className="page-fade space-y-3 pb-2" aria-label="Daily map game">
       <Card className="overflow-hidden p-0">
         <div className="bg-saints-black px-4 py-3 text-white">
           <div className="flex items-start justify-between gap-3">
@@ -880,14 +891,26 @@ export function MapGame() {
               </p>
               <h1 className="mt-1 text-2xl font-black leading-tight">Pin the place</h1>
             </div>
-            <div className="shrink-0 rounded-lg bg-white/10 px-3 py-2 text-right">
-              <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
-                {shortDate(game.date)}
-              </p>
-              <p className="mt-0.5 text-xl font-black leading-none">
-                {totalScore}
-                <span className="text-sm text-white/55">/{game.maxScore}</span>
-              </p>
+            <div className="flex shrink-0 items-stretch gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPromoReplay(true)}
+                className="saints-focus flex h-12 w-14 flex-col items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/15"
+                aria-label="Replay map introduction"
+                title="Replay map introduction"
+              >
+                <PlayCircle aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
+                <span className="mt-0.5 text-[0.58rem] font-black uppercase">Intro</span>
+              </button>
+              <div className="rounded-lg bg-white/10 px-3 py-2 text-right">
+                <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
+                  {shortDate(game.date)}
+                </p>
+                <p className="mt-0.5 text-xl font-black leading-none">
+                  {totalScore}
+                  <span className="text-sm text-white/55">/{game.maxScore}</span>
+                </p>
+              </div>
             </div>
           </div>
           <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15">
@@ -1043,7 +1066,8 @@ export function MapGame() {
           ) : null}
         </div>
       </Card>
-    </section>
+      </section>
+    </>
   );
 }
 

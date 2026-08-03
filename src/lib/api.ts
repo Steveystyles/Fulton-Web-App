@@ -325,6 +325,16 @@ export type DailyQuizResult = {
   completedAt: string;
 };
 
+export type Announcement = {
+  id: string;
+  kind: "daily-map-promo";
+};
+
+export type AuthResponse = {
+  user: User;
+  pendingAnnouncements: Announcement[];
+};
+
 export type MapPoint = {
   lat: number;
   lng: number;
@@ -718,11 +728,11 @@ function todayIsoDate() {
 
 export const api = {
   me() {
-    return request<{ user: User }>("/api/auth/me");
+    return request<AuthResponse>("/api/auth/me");
   },
 
   login(username: string, password: string) {
-    return request<{ user: User }>("/api/auth/login", {
+    return request<AuthResponse>("/api/auth/login", {
       method: "POST",
       body: jsonBody({ username, password }),
     });
@@ -779,6 +789,16 @@ export const api = {
       method: "POST",
       body: jsonBody(payload),
     });
+  },
+
+  acknowledgeAnnouncement(campaignId: string, action: "played" | "dismissed") {
+    return request<{ ok: boolean }>(
+      `/api/announcements/${encodeURIComponent(campaignId)}/acknowledge`,
+      {
+        method: "POST",
+        body: jsonBody({ action }),
+      },
+    );
   },
 
   dailyMapGame(date?: string) {

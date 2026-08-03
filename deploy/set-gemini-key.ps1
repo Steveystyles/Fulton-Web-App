@@ -1,7 +1,10 @@
 param(
   [string]$Target = "ste@192.168.0.15",
   [string]$KeyPath = "$env:USERPROFILE\.ssh\codex_fultons_ed25519",
-  [int]$Port = 22
+  [int]$Port = 22,
+  [ValidateSet("GEMINI_API_KEY", "MAP_CLUE_GEMINI_API_KEY", "FULTONS_FACTS_GEMINI_API_KEY")]
+  [string]$VariableName = "GEMINI_API_KEY",
+  [switch]$NoRestart
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,7 +13,7 @@ if (!(Test-Path -LiteralPath $KeyPath)) {
   throw "SSH key not found: $KeyPath"
 }
 
-$secureKey = Read-Host "Gemini API key" -AsSecureString
+$secureKey = Read-Host "$VariableName value" -AsSecureString
 $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
 try {
   $plainKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
@@ -43,6 +46,10 @@ import sys
 
 env_path = sys.argv[1]
 api_key = base64.b64decode(os.environ["GEMINI_B64"]).decode("utf-8").strip()
+key_name = os.environ["KEY_NAME"]
+allowed = {"GEMINI_API_KEY", "MAP_CLUE_GEMINI_API_KEY", "FULTONS_FACTS_GEMINI_API_KEY"}
+if key_name not in allowed:
+    raise SystemExit("Unsupported Gemini environment variable")
 if not api_key:
     raise SystemExit("Gemini API key cannot be empty")
 
@@ -51,19 +58,23 @@ with open(env_path, encoding="utf-8") as handle:
 
 updated = False
 for index, line in enumerate(lines):
-    if line.startswith("GEMINI_API_KEY="):
-        lines[index] = "GEMINI_API_KEY=" + api_key
+    if line.startswith(key_name + "="):
+        lines[index] = key_name + "=" + api_key
         updated = True
         break
 if not updated:
-    lines.append("GEMINI_API_KEY=" + api_key)
+    lines.append(key_name + "=" + api_key)
 
 with open(env_path, "w", encoding="utf-8") as handle:
     handle.write("\n".join(lines) + "\n")
 PY
 
-unset GEMINI_B64
+unset GEMINI_B64 KEY_NAME
 chmod 600 "$ENV_FILE"
+if [ "${RESTART_APP}" != "1" ]; then
+  echo "PASS: Gemini key stored. Restart deferred."
+  exit 0
+fi
 cd "$(dirname "$COMPOSE_FILE")"
 FULTONS_ENV_FILE="$ENV_FILE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate --no-build quiz-app
 
@@ -80,7 +91,8 @@ docker logs --tail 80 fultons-quiz || true
 exit 1
 '@
 
-$payload = "$encodedKey`n$remoteScript" -replace "`r", ""
-$payload | & ssh -i $KeyPath -p $Port -o BatchMode=yes $Target "read -r GEMINI_B64; export GEMINI_B64; sed 's/\r$//' | bash -s"
+$restartApp = if ($NoRestart) { "0" } else { "1" }
+$payload = "$VariableName`n$encodedKey`n$restartApp`n$remoteScript" -replace "`r", ""
+$payload | & ssh -i $KeyPath -p $Port -o BatchMode=yes $Target "read -r KEY_NAME; read -r GEMINI_B64; read -r RESTART_APP; export KEY_NAME GEMINI_B64 RESTART_APP; sed 's/\r$//' | bash -s"
 $encodedKey = $null
 exit $LASTEXITCODE

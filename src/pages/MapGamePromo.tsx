@@ -3,9 +3,10 @@ import { MapPinned, RotateCcw, Volume2, VolumeX, X } from "lucide-react";
 import { MapGamePromoVideo } from "../components/MapGamePromoVideo";
 
 type MapGamePromoProps = {
-  onDismiss?: () => void;
-  onPlay?: () => void;
-  playHref: string;
+  onDismiss?: () => void | Promise<void>;
+  onPlay?: () => void | Promise<void>;
+  playHref?: string;
+  primaryLabel?: string;
   reviewMode?: boolean;
 };
 
@@ -16,11 +17,14 @@ export function MapGamePromo({
   onDismiss,
   onPlay,
   playHref,
+  primaryLabel,
   reviewMode = false,
 }: MapGamePromoProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [muted, setMuted] = useState(true);
   const [ended, setEnded] = useState(false);
+  const [actionPending, setActionPending] = useState(false);
+  const [actionError, setActionError] = useState("");
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -65,6 +69,23 @@ export function MapGamePromo({
     }
   }
 
+  async function runAction(action: (() => void | Promise<void>) | undefined) {
+    if (!action || actionPending) {
+      return;
+    }
+    setActionPending(true);
+    setActionError("");
+    try {
+      await action();
+    } catch {
+      setActionError("That choice could not be saved. Please try again.");
+    } finally {
+      setActionPending(false);
+    }
+  }
+
+  const actionLabel = primaryLabel ?? (reviewMode ? "Open live map" : "Play the map");
+
   return (
     <div
       className="fixed inset-0 z-[100] overflow-hidden bg-saints-black text-white"
@@ -103,7 +124,8 @@ export function MapGamePromo({
             {onDismiss ? (
               <button
                 type="button"
-                onClick={onDismiss}
+                onClick={() => void runAction(onDismiss)}
+                disabled={actionPending}
                 className="saints-focus grid h-12 w-12 place-items-center rounded-full border border-white/25 bg-black/70 text-white shadow-lg backdrop-blur-sm"
                 aria-label="Close announcement"
                 title="Close announcement"
@@ -118,6 +140,12 @@ export function MapGamePromo({
           ) : null}
         </div>
 
+        {actionError ? (
+          <p className="shrink-0 bg-saints-black px-4 pt-3 text-center text-sm font-bold text-red-200" role="alert">
+            {actionError}
+          </p>
+        ) : null}
+
         <div className="flex shrink-0 items-center gap-2 border-t border-white/15 bg-saints-black px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3">
           <button
             type="button"
@@ -128,14 +156,25 @@ export function MapGamePromo({
           >
             <RotateCcw aria-hidden="true" className="h-6 w-6" strokeWidth={2.5} />
           </button>
-          <a
-            href={playHref}
-            onClick={onPlay}
-            className="saints-focus flex h-14 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-saints-red px-3 text-center text-base font-black uppercase text-white shadow-lg no-underline transition-colors hover:bg-saints-redDark"
-          >
-            <MapPinned aria-hidden="true" className="h-6 w-6 shrink-0" strokeWidth={2.5} />
-            <span>{reviewMode ? "Open live map" : "Play the map"}</span>
-          </a>
+          {onPlay ? (
+            <button
+              type="button"
+              onClick={() => void runAction(onPlay)}
+              disabled={actionPending}
+              className="saints-focus flex h-14 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-saints-red px-3 text-center text-base font-black uppercase text-white shadow-lg transition-colors hover:bg-saints-redDark disabled:opacity-70"
+            >
+              <MapPinned aria-hidden="true" className="h-6 w-6 shrink-0" strokeWidth={2.5} />
+              <span>{actionLabel}</span>
+            </button>
+          ) : (
+            <a
+              href={playHref ?? "/map"}
+              className="saints-focus flex h-14 min-w-0 flex-1 items-center justify-center gap-2 rounded-md bg-saints-red px-3 text-center text-base font-black uppercase text-white shadow-lg no-underline transition-colors hover:bg-saints-redDark"
+            >
+              <MapPinned aria-hidden="true" className="h-6 w-6 shrink-0" strokeWidth={2.5} />
+              <span>{actionLabel}</span>
+            </a>
+          )}
         </div>
       </div>
     </div>

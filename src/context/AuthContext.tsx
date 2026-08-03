@@ -7,15 +7,20 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, ApiError, type User } from "../lib/api";
+import { api, ApiError, type Announcement, type User } from "../lib/api";
 
 type AuthContextValue = {
   user: User | null;
+  pendingAnnouncements: Announcement[];
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   updateUser: (user: User) => void;
+  acknowledgeAnnouncement: (
+    campaignId: string,
+    action: "played" | "dismissed",
+  ) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -26,15 +31,18 @@ type AuthProviderProps = {
 
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
+  const [pendingAnnouncements, setPendingAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
 
   const refreshUser = useCallback(async () => {
     try {
       const response = await api.me();
       setUser(response.user);
+      setPendingAnnouncements(response.pendingAnnouncements);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setUser(null);
+        setPendingAnnouncements([]);
         return;
       }
       throw error;
@@ -49,6 +57,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         const response = await api.me();
         if (active) {
           setUser(response.user);
+          setPendingAnnouncements(response.pendingAnnouncements);
         }
       } catch (error) {
         if (!(error instanceof ApiError && error.status === 401)) {
@@ -56,6 +65,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         }
         if (active) {
           setUser(null);
+          setPendingAnnouncements([]);
         }
       } finally {
         if (active) {
@@ -74,6 +84,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const login = useCallback(async (username: string, password: string) => {
     const response = await api.login(username, password);
     setUser(response.user);
+    setPendingAnnouncements(response.pendingAnnouncements);
   }, []);
 
   const logout = useCallback(async () => {
@@ -81,19 +92,32 @@ export function AuthProvider({ children }: AuthProviderProps) {
       await api.logout();
     } finally {
       setUser(null);
+      setPendingAnnouncements([]);
     }
   }, []);
+
+  const acknowledgeAnnouncement = useCallback(
+    async (campaignId: string, action: "played" | "dismissed") => {
+      await api.acknowledgeAnnouncement(campaignId, action);
+      setPendingAnnouncements((current) =>
+        current.filter((announcement) => announcement.id !== campaignId),
+      );
+    },
+    [],
+  );
 
   const value = useMemo(
     () => ({
       user,
+      pendingAnnouncements,
       loading,
       login,
       logout,
       refreshUser,
       updateUser: setUser,
+      acknowledgeAnnouncement,
     }),
-    [loading, login, logout, refreshUser, user],
+    [acknowledgeAnnouncement, loading, login, logout, pendingAnnouncements, refreshUser, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

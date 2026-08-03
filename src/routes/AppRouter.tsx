@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
 import { useAuth } from "../context/AuthContext";
@@ -15,7 +15,6 @@ import { News } from "../pages/News";
 import { Quiz } from "../pages/Quiz";
 import { Wordle } from "../pages/Wordle";
 
-const mapPromoStorageKey = "fultons:promo:daily-map:v1";
 const mapTestHostnames = new Set([
   "test.fultons-quiz.com",
   "test.fultons-quiz.co.uk",
@@ -24,29 +23,6 @@ const mapTestHostnames = new Set([
 
 function isMapTestHostname(hostname: string) {
   return mapTestHostnames.has(hostname);
-}
-
-function shouldShowFirstVisitPromo() {
-  if (typeof window === "undefined") {
-    return false;
-  }
-  const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
-  if (pathname === "/ops" || pathname === "/promo") {
-    return false;
-  }
-  try {
-    return window.localStorage.getItem(mapPromoStorageKey) !== "seen";
-  } catch {
-    return true;
-  }
-}
-
-function markMapPromoSeen() {
-  try {
-    window.localStorage.setItem(mapPromoStorageKey, "seen");
-  } catch {
-    // Storage can be unavailable in private browsing; the current visit still works.
-  }
 }
 
 function AppFrame({
@@ -82,10 +58,7 @@ function AppFrame({
 }
 
 export function AppRouter() {
-  const { loading, user } = useAuth();
-  const [showFirstVisitPromo, setShowFirstVisitPromo] = useState(
-    shouldShowFirstVisitPromo,
-  );
+  const { acknowledgeAnnouncement, loading, pendingAnnouncements, user } = useAuth();
   const pathname =
     typeof window === "undefined" ? "/" : window.location.pathname.replace(/\/+$/, "") || "/";
   const hostname =
@@ -93,18 +66,15 @@ export function AppRouter() {
   const localOpsMode = pathname === "/ops";
   const promoReviewMode = pathname === "/promo";
   const mapTestMode = isMapTestHostname(hostname);
+  const mapPromo = pendingAnnouncements.find(
+    (announcement) => announcement.kind === "daily-map-promo",
+  );
 
   useEffect(() => {
     if (user !== null) {
       api.warmNews();
     }
   }, [user]);
-
-  useEffect(() => {
-    if (showFirstVisitPromo && !promoReviewMode) {
-      markMapPromoSeen();
-    }
-  }, [promoReviewMode, showFirstVisitPromo]);
 
   if (localOpsMode) {
     return <LocalOps />;
@@ -115,21 +85,6 @@ export function AppRouter() {
       <MapGamePromo
         reviewMode
         playHref={mapTestMode ? "/map" : "https://fultons-quiz.co.uk/map"}
-        onPlay={mapTestMode ? markMapPromoSeen : undefined}
-      />
-    );
-  }
-
-  if (showFirstVisitPromo) {
-    const dismissPromo = () => {
-      markMapPromoSeen();
-      setShowFirstVisitPromo(false);
-    };
-    return (
-      <MapGamePromo
-        playHref="/map"
-        onDismiss={dismissPromo}
-        onPlay={dismissPromo}
       />
     );
   }
@@ -169,6 +124,18 @@ export function AppRouter() {
 
   if (user === null) {
     return <Login />;
+  }
+
+  if (mapPromo) {
+    return (
+      <MapGamePromo
+        onDismiss={() => acknowledgeAnnouncement(mapPromo.id, "dismissed")}
+        onPlay={async () => {
+          await acknowledgeAnnouncement(mapPromo.id, "played");
+          window.location.assign("/map");
+        }}
+      />
+    );
   }
 
   return (

@@ -57,6 +57,10 @@ DB_PATH = DATA_DIR / "fultons.db"
 DIST_DIR = APP_DIR / "dist"
 SESSION_COOKIE = "fultons_session"
 CACHE_VERSION_COOKIE = "fultons_cache_version"
+MAP_PROMO_CAMPAIGN_ID = os.environ.get(
+    "FULTONS_MAP_PROMO_CAMPAIGN_ID",
+    "daily-map-launch-2026-08-04",
+).strip()
 CACHE_VERSION = (
     re.sub(r"[^A-Za-z0-9_.-]", "-", os.environ.get("FULTONS_BUILD_COMMIT", "local"))[:64]
     or "local"
@@ -1192,6 +1196,15 @@ def initialize_database() -> None:
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS user_announcement_acknowledgements (
+                user_id INTEGER NOT NULL,
+                campaign_id TEXT NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('played', 'dismissed')),
+                acknowledged_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, campaign_id),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS daily_wordle_games (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_date TEXT NOT NULL UNIQUE,
@@ -1431,6 +1444,29 @@ def user_can_manage_players(row: sqlite3.Row) -> bool:
 
 def user_payload(row: sqlite3.Row) -> dict[str, Any]:
     return {"id": row["id"], "username": row["username"], "role": effective_user_role(row)}
+
+
+def pending_announcements(conn: sqlite3.Connection, user_id: int) -> list[dict[str, str]]:
+    if not MAP_PROMO_CAMPAIGN_ID:
+        return []
+    acknowledged = conn.execute(
+        """
+        SELECT 1
+        FROM user_announcement_acknowledgements
+        WHERE user_id = ? AND campaign_id = ?
+        """,
+        (user_id, MAP_PROMO_CAMPAIGN_ID),
+    ).fetchone()
+    if acknowledged is not None:
+        return []
+    return [{"id": MAP_PROMO_CAMPAIGN_ID, "kind": "daily-map-promo"}]
+
+
+def auth_payload(conn: sqlite3.Connection, user: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "user": user_payload(user),
+        "pendingAnnouncements": pending_announcements(conn, int(user["id"])),
+    }
 
 
 def admin_user_payload(row: sqlite3.Row) -> dict[str, Any]:
@@ -7937,7 +7973,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 if user is None:
                     self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
                     return
-                self.send_json(HTTPStatus.OK, {"user": user_payload(user)})
+                self.send_json(HTTPStatus.OK, auth_payload(conn, user))
                 return
 
             if path == "/api/news/add" and method == "POST":
@@ -7946,6 +7982,38 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
             if user is None:
                 self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
+                return
+
+            announcement_match = re.fullmatch(
+                r"/api/announcements/([^/]+)/acknowledge",
+                path,
+            )
+            if announcement_match and method == "POST":
+                campaign_id = announcement_match.group(1)
+                if campaign_id != MAP_PROMO_CAMPAIGN_ID or not campaign_id:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "Announcement not found.")
+                    return
+                payload = self.read_json()
+                action = str(payload.get("action") or "").strip().lower()
+                if action not in {"played", "dismissed"}:
+                    self.send_error_json(
+                        HTTPStatus.BAD_REQUEST,
+                        "Announcement action must be played or dismissed.",
+                    )
+                    return
+                conn.execute(
+                    """
+                    INSERT INTO user_announcement_acknowledgements (
+                        user_id, campaign_id, action, acknowledged_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id, campaign_id) DO UPDATE SET
+                        action = excluded.action,
+                        acknowledged_at = excluded.acknowledged_at
+                    """,
+                    (user["id"], campaign_id, action, utc_now()),
+                )
+                self.send_json(HTTPStatus.OK, {"ok": True})
                 return
 
             if path == "/api/me" and method == "PATCH":
@@ -8269,7 +8337,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
         token = create_session(conn, user["id"])
         self.send_json(
             HTTPStatus.OK,
-            {"user": user_payload(user)},
+            auth_payload(conn, user),
             {"Set-Cookie": session_header(token)},
         )
 
