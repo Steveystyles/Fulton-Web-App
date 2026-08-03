@@ -797,14 +797,12 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 locality_name="Barcelona",
             )
 
-        self.assertEqual(anchors[0]["name"], "Barcelona")
-        self.assertEqual(anchors[0]["min_hint_count"], 2)
-        self.assertAlmostEqual(anchors[0]["lat"], 41.3829)
+        self.assertEqual(anchors[0]["name"], "Catalonia")
+        self.assertEqual(anchors[0]["min_hint_count"], 1)
         self.assertEqual(anchors[0]["max_zoom"], 9)
         self.assertEqual(anchors[0]["boundary"]["type"], "Polygon")
-        self.assertEqual(anchors[0]["boundary_min_zoom"], 5)
         self.assertEqual(
-            anchors[1],
+            anchors[2],
             {
                 "name": "Camp Nou",
                 "lat": 41.3809,
@@ -814,32 +812,62 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 "max_zoom": 19,
             },
         )
-        geocode.assert_called_once_with(
-            "Barcelona, Catalonia, Spain",
-            country_code="ES",
-            include_boundary_geometry=True,
-        )
+        self.assertEqual(anchors[1]["name"], "Barcelona")
+        self.assertEqual(anchors[1]["min_hint_count"], 2)
+        self.assertAlmostEqual(anchors[1]["lat"], 41.3829)
+        self.assertEqual(anchors[1]["boundary_min_zoom"], 5)
+        self.assertEqual(geocode.call_count, 2)
 
-    def test_unnamed_capital_locality_anchor_appears_with_medium_clue(self) -> None:
+    def test_medium_map_anchor_can_precede_easy_locality_anchor(self) -> None:
+        place = {
+            "canonical_name": "Example Stadium",
+            "acceptable_aliases": [],
+            "country_code": "FR",
+            "country_name": "France",
+            "admin1": "Ile-de-France",
+            "lat": 48.9245,
+            "lng": 2.3601,
+        }
         ladder = {
             "medium": (
                 "This major sports venue is located in the northern suburbs of "
                 "the French capital, just beyond its ring road."
             ),
+            "medium_map_anchor": "Paris",
             "easy": "Look in Saint-Denis, just north of Paris, near the A1 motorway.",
         }
+        paris = {
+            "lat": "48.8566",
+            "lon": "2.3522",
+            "display_name": "Paris, Ile-de-France, France",
+            "importance": 0.9,
+            "address": {"city": "Paris", "country_code": "fr"},
+        }
+        saint_denis = {
+            "lat": "48.9358",
+            "lon": "2.3580",
+            "display_name": "Saint-Denis, Ile-de-France, France",
+            "importance": 0.6,
+            "address": {"city": "Saint-Denis", "country_code": "fr"},
+        }
+
+        with patch.object(
+            generate_ai_daily_map_round.daily_map_game,
+            "fetch_forward_geocode",
+            side_effect=[[paris], [saint_denis]],
+        ):
+            anchors = generate_ai_daily_map_round.build_verified_map_search_anchors(
+                place,
+                ladder,
+                locality_name="Saint-Denis",
+            )
 
         self.assertEqual(
-            generate_ai_daily_map_round.map_anchor_reveal_index(
-                "Paris",
-                ladder,
-                allow_medium_locality_inference=True,
-            ),
-            1,
-        )
-        self.assertEqual(
-            generate_ai_daily_map_round.map_anchor_reveal_index("Paris", ladder),
-            2,
+            [
+                (anchor["name"], anchor["min_hint_count"])
+                for anchor in anchors
+            ],
+            [("Paris", 1), ("Saint-Denis", 2), ("Example Stadium", 2)],
         )
 
     def test_map_search_anchor_rejects_unmapped_clue_route(self) -> None:

@@ -75,6 +75,7 @@ def map_clue_json_schema() -> dict[str, Any]:
         "properties": {
             "hard": {"type": "string"},
             "medium": {"type": "string"},
+            "medium_map_anchor": {"type": "string"},
             "easy": {"type": "string"},
             "reveal": {"type": "string"},
         },

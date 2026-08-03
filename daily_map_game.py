@@ -89,6 +89,7 @@ REVERSE_GEOCODE_NEXT_REQUEST_AT = 0.0
 RECENT_USE_DAYS = 30
 
 MAP_CLUE_REQUIRED_FIELDS = ("hard", "medium", "easy", "reveal")
+MAP_CLUE_OPTIONAL_FIELDS = ("medium_map_anchor",)
 MAP_CLUE_CRITIC_THRESHOLDS = {
     "correctness": 9,
     "distinctiveness": 8,
@@ -2027,6 +2028,7 @@ def map_clue_schema() -> dict[str, Any]:
     return {
         "hard": "A clear answer-safe rendering of the locked recognition hook; no answer name or geography.",
         "medium": "A different clue that materially narrows the broad geographic scope; no answer name.",
+        "medium_map_anchor": "The exact answer-safe city or region label that medium identifies or implies; metadata only and never shown as clue text.",
         "easy": "A practical local-area map route using anchors visible by map zoom 11; no answer name.",
         "reveal": "One or two player-facing sentences that name the place, say what it is, and explain a memorable fact.",
     }
@@ -2241,6 +2243,7 @@ Rules:
 - Hard must contain only the recognition hook. Do not add country, nationality, capital, region, river, direction, or nearby-place hints; those belong later.
 - A date, founder, commissioner, ruler, architect, construction fact, or former record is not enough by itself.
 - Medium must materially reduce the geographic search area from the world to a useful country, region, culture, language, city, or equivalent scope.
+- medium_map_anchor is hidden map-guidance metadata, not clue prose. Set it to the exact answer-safe city or region label that medium names or deliberately describes. For example, if medium says "the French capital", use "Paris". Do not use the target name, an alias, or an area introduced only by easy.
 - Medium may use a place-owned story, person, naming link, institution, record, or other fact to give that narrowing character, but the extra fact is optional and geographic progress is mandatory.
 - State medium's useful relationship directly. Remove generic padding about crowds, popularity, prestige, fame, or being a historic venue.
 - Never write "a famous collection", "a well-known writer", or a similar vague cultural label. Naming a creator beside that vague label does not fix it. State the concrete answer-safe relationship instead: what the creator, characters, or work did with this place. If a title leaks the target, omit the title but keep that specific relationship.
@@ -2363,6 +2366,10 @@ def normalize_generated_clue_ladder(payload: dict[str, Any]) -> dict[str, str]:
         if not value:
             raise ValueError(f"Generated map clue ladder is missing {field!r}.")
         ladder[field] = value
+    for field in MAP_CLUE_OPTIONAL_FIELDS:
+        value = str(payload.get(field) or "").strip()
+        if value:
+            ladder[field] = value
     return ladder
 
 

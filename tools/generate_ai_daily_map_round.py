@@ -1115,32 +1115,14 @@ def reverse_geocoded_locality(place: dict[str, Any]) -> str:
     )
 
 
-MAP_MEDIUM_IMPLIED_LOCALITY_RE = re.compile(
-    r"\b(?:in|inside|within|near|outside|beyond)\b.{0,90}\b"
-    r"(?:capital|capital city)\b|"
-    r"\b(?:suburbs?|borough|district|quarter)\s+of\b.{0,60}\bcapital\b",
-    re.IGNORECASE,
-)
-
-
-def map_anchor_reveal_index(
-    name: str,
-    clue_ladder: dict[str, Any],
-    *,
-    allow_medium_locality_inference: bool = False,
-) -> int | None:
+def map_anchor_reveal_index(name: str, clue_ladder: dict[str, Any]) -> int | None:
     name_key = daily_map_game.normalized_place_name(name)
     if not name_key:
         return None
-    medium_clue = str(clue_ladder.get("medium") or "")
-    if name_key in daily_map_game.normalized_place_name(medium_clue):
-        return 1
-    if allow_medium_locality_inference and MAP_MEDIUM_IMPLIED_LOCALITY_RE.search(
-        medium_clue
-    ):
-        return 1
-    if name_key in daily_map_game.normalized_place_name(clue_ladder.get("easy")):
-        return 2
+    for reveal_index, field in ((1, "medium"), (2, "easy")):
+        clue_key = daily_map_game.normalized_place_name(clue_ladder.get(field))
+        if name_key in clue_key:
+            return reveal_index
     return None
 
 
@@ -1188,42 +1170,12 @@ def geocode_anchor_scope_rank(result: dict[str, Any], anchor_name: str) -> int:
     return 3
 
 
-def build_verified_map_search_anchors(
+def verified_map_search_anchor(
     place: dict[str, Any],
-    clue_ladder: dict[str, Any],
     *,
-    locality_name: str,
-) -> list[dict[str, Any]]:
-    answer_names = {
-        daily_map_game.normalized_place_name(name)
-        for name in (
-            str(place.get("canonical_name") or ""),
-            *[str(item) for item in place.get("acceptable_aliases") or []],
-        )
-        if str(name or "").strip()
-    }
-    candidates = [
-        str(locality_name or "").strip(),
-        str(place.get("admin1") or "").strip(),
-    ]
-    anchor_name = ""
-    min_hint_count: int | None = None
-    for candidate_index, candidate in enumerate(candidates):
-        candidate_key = daily_map_game.normalized_place_name(candidate)
-        reveal_index = map_anchor_reveal_index(
-            candidate,
-            clue_ladder,
-            allow_medium_locality_inference=candidate_index == 0,
-        )
-        if candidate_key and candidate_key not in answer_names and reveal_index is not None:
-            anchor_name = candidate
-            min_hint_count = reveal_index
-            break
-    if not anchor_name or min_hint_count is None:
-        raise ValueError(
-            "No answer-safe locality or region named by the medium/easy clues could be used as a map search anchor."
-        )
-
+    anchor_name: str,
+    min_hint_count: int,
+) -> dict[str, Any]:
     query_parts = [
         anchor_name,
         str(place.get("admin1") or "").strip(),
@@ -1272,19 +1224,70 @@ def build_verified_map_search_anchors(
         key=lambda item: (item[0], item[5] is None, item[1], -item[4]),
     )
     display_zoom = 4 if importance >= 0.55 else 5 if importance >= 0.35 else 6
-    anchors = [
-        {
-            "name": anchor_name,
-            "lat": anchor_lat,
-            "lng": anchor_lng,
-            "min_hint_count": min_hint_count,
-            "min_zoom": display_zoom,
-            "max_zoom": 9,
-        }
-    ]
+    anchor = {
+        "name": anchor_name,
+        "lat": anchor_lat,
+        "lng": anchor_lng,
+        "min_hint_count": min_hint_count,
+        "min_zoom": display_zoom,
+        "max_zoom": 9,
+    }
     if boundary is not None:
-        anchors[0]["boundary"] = boundary
-        anchors[0]["boundary_min_zoom"] = max(5, display_zoom)
+        anchor["boundary"] = boundary
+        anchor["boundary_min_zoom"] = max(5, display_zoom)
+    return anchor
+
+
+def build_verified_map_search_anchors(
+    place: dict[str, Any],
+    clue_ladder: dict[str, Any],
+    *,
+    locality_name: str,
+) -> list[dict[str, Any]]:
+    answer_names = {
+        daily_map_game.normalized_place_name(name)
+        for name in (
+            str(place.get("canonical_name") or ""),
+            *[str(item) for item in place.get("acceptable_aliases") or []],
+        )
+        if str(name or "").strip()
+    }
+    candidates: list[tuple[str, int]] = []
+    medium_map_anchor = str(clue_ladder.get("medium_map_anchor") or "").strip()
+    if medium_map_anchor:
+        candidates.append((medium_map_anchor, 1))
+    for candidate in (
+        str(locality_name or "").strip(),
+        str(place.get("admin1") or "").strip(),
+    ):
+        reveal_index = map_anchor_reveal_index(candidate, clue_ladder)
+        if reveal_index is not None:
+            candidates.append((candidate, reveal_index))
+    candidates.sort(key=lambda item: item[1])
+
+    anchors: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for anchor_name, min_hint_count in candidates:
+        anchor_key = daily_map_game.normalized_place_name(anchor_name)
+        if not anchor_key or anchor_key in seen_names:
+            continue
+        if anchor_key in answer_names:
+            if anchor_name == medium_map_anchor:
+                raise ValueError("The medium map anchor reveals the target name or an alias.")
+            continue
+        anchors.append(
+            verified_map_search_anchor(
+                place,
+                anchor_name=anchor_name,
+                min_hint_count=min_hint_count,
+            )
+        )
+        seen_names.add(anchor_key)
+    if not anchors:
+        raise ValueError(
+            "No answer-safe locality or region named by the medium/easy clues could be used as a map search anchor."
+        )
+
     canonical_name = str(place.get("canonical_name") or "").strip()
     if canonical_name:
         anchors.append(
