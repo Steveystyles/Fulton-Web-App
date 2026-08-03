@@ -574,6 +574,30 @@ class DailyMapGameTests(unittest.TestCase):
             any("omits its available map route number" in reason for reason in with_code["failure_reasons"])
         )
 
+    def test_local_map_clue_critic_reserves_road_navigation_for_easy(self) -> None:
+        critic = daily_map_game.local_map_clue_critique(
+            {
+                "canonical_name": "Example Stadium",
+                "acceptable_aliases": [],
+                "place_type": "stadium",
+                "locality_name": "Saint-Denis",
+                "nearby_context": "Saint-Denis, Paris, A1 motorway",
+            },
+            {
+                "hard": "A national team won its first world title on this pitch.",
+                "medium": "This venue is north of the capital beyond its ring road.",
+                "easy": "Search Saint-Denis north of Paris, near the A1 motorway.",
+                "reveal": "This was Example Stadium.",
+            },
+        )
+
+        self.assertTrue(
+            any(
+                "road-level navigation" in reason
+                for reason in critic["failure_reasons"]
+            )
+        )
+
     def test_local_map_clue_critic_rejects_awkward_placeholders(self) -> None:
         place = {
             "canonical_name": "London",

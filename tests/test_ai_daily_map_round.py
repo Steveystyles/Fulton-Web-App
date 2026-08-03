@@ -870,6 +870,35 @@ class AiDailyMapRoundTests(unittest.TestCase):
             [("Paris", 1), ("Saint-Denis", 2), ("Example Stadium", 2)],
         )
 
+    def test_map_boundary_must_contain_the_answer_point(self) -> None:
+        paris_city_boundary = {
+            "type": "Polygon",
+            "coordinates": [
+                [[2.20, 48.80], [2.45, 48.80], [2.45, 48.90], [2.20, 48.90], [2.20, 48.80]]
+            ],
+        }
+        saint_denis_boundary = {
+            "type": "Polygon",
+            "coordinates": [
+                [[2.33, 48.90], [2.40, 48.90], [2.40, 48.96], [2.33, 48.96], [2.33, 48.90]]
+            ],
+        }
+
+        self.assertFalse(
+            generate_ai_daily_map_round.map_boundary_contains_point(
+                paris_city_boundary,
+                lat=48.9245,
+                lng=2.3601,
+            )
+        )
+        self.assertTrue(
+            generate_ai_daily_map_round.map_boundary_contains_point(
+                saint_denis_boundary,
+                lat=48.9245,
+                lng=2.3601,
+            )
+        )
+
     def test_map_search_anchor_rejects_unmapped_clue_route(self) -> None:
         with self.assertRaisesRegex(ValueError, "No answer-safe locality or region"):
             generate_ai_daily_map_round.build_verified_map_search_anchors(

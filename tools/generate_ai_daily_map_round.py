@@ -1170,6 +1170,65 @@ def geocode_anchor_scope_rank(result: dict[str, Any], anchor_name: str) -> int:
     return 3
 
 
+def map_ring_contains_point(
+    ring: list[Any],
+    *,
+    lat: float,
+    lng: float,
+) -> bool:
+    points = [
+        (float(point[0]), float(point[1]))
+        for point in ring
+        if isinstance(point, list) and len(point) >= 2
+    ]
+    if len(points) < 3:
+        return False
+    inside = False
+    previous_lng, previous_lat = points[-1]
+    for current_lng, current_lat in points:
+        crosses_latitude = (current_lat > lat) != (previous_lat > lat)
+        if crosses_latitude:
+            crossing_lng = (
+                (previous_lng - current_lng)
+                * (lat - current_lat)
+                / (previous_lat - current_lat)
+                + current_lng
+            )
+            if lng < crossing_lng:
+                inside = not inside
+        previous_lng, previous_lat = current_lng, current_lat
+    return inside
+
+
+def map_boundary_contains_point(
+    boundary: dict[str, Any],
+    *,
+    lat: float,
+    lng: float,
+) -> bool:
+    boundary_type = str(boundary.get("type") or "")
+    coordinates = boundary.get("coordinates")
+    if not isinstance(coordinates, list):
+        return False
+    polygons = [coordinates] if boundary_type == "Polygon" else coordinates
+    if boundary_type not in {"Polygon", "MultiPolygon"}:
+        return False
+    for polygon in polygons:
+        if not isinstance(polygon, list) or not polygon:
+            continue
+        outer_ring = polygon[0]
+        if not isinstance(outer_ring, list) or not map_ring_contains_point(
+            outer_ring,
+            lat=lat,
+            lng=lng,
+        ):
+            continue
+        holes = [ring for ring in polygon[1:] if isinstance(ring, list)]
+        if not any(map_ring_contains_point(ring, lat=lat, lng=lng) for ring in holes):
+            return True
+    return False
+
+
 def verified_map_search_anchor(
     place: dict[str, Any],
     *,
@@ -1224,6 +1283,12 @@ def verified_map_search_anchor(
         key=lambda item: (item[0], item[5] is None, item[1], -item[4]),
     )
     display_zoom = 4 if importance >= 0.55 else 5 if importance >= 0.35 else 6
+    if boundary is not None and not map_boundary_contains_point(
+        boundary,
+        lat=float(place["lat"]),
+        lng=float(place["lng"]),
+    ):
+        boundary = None
     anchor = {
         "name": anchor_name,
         "lat": anchor_lat,

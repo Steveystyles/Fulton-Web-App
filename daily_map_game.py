@@ -2244,6 +2244,7 @@ Rules:
 - A date, founder, commissioner, ruler, architect, construction fact, or former record is not enough by itself.
 - Medium must materially reduce the geographic search area from the world to a useful country, region, culture, language, city, or equivalent scope.
 - medium_map_anchor is hidden map-guidance metadata, not clue prose. Set it to the exact answer-safe city or region label that medium names or deliberately describes. For example, if medium says "the French capital", use "Paris". Do not use the target name, an alias, or an area introduced only by easy.
+- Keep road, motorway, ring-road, station, and similarly local navigation details in easy. Medium should use plain geographic scope and a place-owned identity or fact instead of an unfamiliar local road name.
 - Medium may use a place-owned story, person, naming link, institution, record, or other fact to give that narrowing character, but the extra fact is optional and geographic progress is mandatory.
 - State medium's useful relationship directly. Remove generic padding about crowds, popularity, prestige, fame, or being a historic venue.
 - Never write "a famous collection", "a well-known writer", or a similar vague cultural label. Naming a creator beside that vague label does not fix it. State the concrete answer-safe relationship instead: what the creator, characters, or work did with this place. If a title leaks the target, omit the title but keep that specific relationship.
@@ -2329,6 +2330,7 @@ Fail the ladder if:
 - Medium uses "a famous collection", "a well-known writer", or another vague cultural label, even if a creator is named beside it, instead of stating the concrete answer-safe relationship.
 - Medium presents fictional characters or events as though they were historical facts.
 - Medium replaces its distinctive detail with an unnamed generic role such as "a famous journalist" or "a prominent architect".
+- Medium uses an unfamiliar road, motorway, highway, route, ring road, or station as navigation instead of reserving that local guidance for easy.
 - Easy does not continue from medium into a local area such as a borough, district, quarter, neighbourhood, city sector, river crossing, park, station, or named nearby landmark.
 - A locality_name is supplied, but neither medium nor easy explicitly names it before referring to "the city", a district, a road, or another smaller feature.
 - Easy names the locality but gives no broad city-sector route before relying on a district, road, station, or other potentially deep-zoom detail.
@@ -3136,6 +3138,11 @@ def local_map_clue_critique(
         reasons.append("Medium clue presents fictional characters as though they were historical people.")
         feedback.append(
             "Explicitly label fictional or imaginary characters and events as fiction while retaining their concrete connection to this place."
+        )
+    if MAP_EASY_ROAD_REFERENCE_RE.search(ladder["medium"]):
+        reasons.append("Medium clue uses road-level navigation that belongs in easy.")
+        feedback.append(
+            "Move road, motorway, highway, route, and ring-road navigation to easy; use medium for broader geographic scope and a place-owned identity or fact."
         )
     if MAP_EASY_UNMAPPED_APPEARANCE_RE.search(ladder["easy"]):
         reasons.append(
