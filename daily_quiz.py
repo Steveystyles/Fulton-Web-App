@@ -1991,6 +1991,7 @@ def is_transient_provider_failure(reason: str) -> bool:
             "connection refused",
             "name resolution",
             "evidence search unavailable",
+            "evidence verifier request failed",
             "invalid json",
         )
     )

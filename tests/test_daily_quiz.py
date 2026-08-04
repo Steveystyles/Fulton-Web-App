@@ -704,6 +704,32 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(feedback, [])
 
+    def test_verifier_format_failure_does_not_blacklist_generated_answer(self) -> None:
+        question = valid_question(subject="general_knowledge", difficulty="easy")
+        daily_quiz.save_attempt(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+            attempt_number=1,
+            provider="openrouter",
+            generated=question,
+            critic=passing_critic(),
+            passed=False,
+            failure_reason=(
+                "Evidence verifier request failed: AI response does not contain a JSON object."
+            ),
+        )
+
+        feedback = daily_quiz.prior_attempt_feedback(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+        )
+
+        self.assertEqual(feedback, [])
+
     def test_prior_attempt_feedback_names_rejected_answer(self) -> None:
         daily_quiz.save_attempt(
             self.conn,
