@@ -84,6 +84,48 @@ class QuizEvidenceTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertFalse(result["risk_profile"]["high_risk"])
 
+    def test_descriptive_answer_can_match_explicit_source_paraphrases(self) -> None:
+        question = {
+            "question": "In the early days of cinema, what was the primary purpose of intertitles?",
+            "correct_answer": "To provide dialogue and narrative context",
+            "explanation": (
+                "Before synchronized sound was introduced in the late 1920s, silent films "
+                "relied on intertitles to convey dialogue and explain plot points."
+            ),
+            "interesting_reason": "Intertitles made complex silent-film storytelling possible.",
+            "tags": ["cinema", "silent film"],
+        }
+        source_text = (
+            "Before synchronized sound was introduced in the late 1920s, intertitles "
+            "conveyed dialogue and supplied narrative information in silent films."
+        )
+        evidence = [
+            evidence_item(
+                source_text,
+                host="en.wikipedia.org",
+                tier="reference",
+                path="wiki/Intertitle",
+            ),
+            evidence_item(
+                source_text,
+                host="silentcinemasociety.org",
+                tier="other",
+                path="titles",
+            ),
+            evidence_item(
+                "An academic history examines the changing functions of intertitles in early cinema.",
+                host="muse.jhu.edu",
+                tier="primary",
+                path="article/intertitles",
+            ),
+        ]
+
+        self.assertTrue(
+            quiz_evidence.evidence_mentions_answer(evidence[0], question["correct_answer"])
+        )
+        result = quiz_evidence.precheck_question_evidence(question, evidence)
+        self.assertTrue(result["passed"], result["failure_reasons"])
+
     def test_mauveine_early_nineteenth_century_claim_is_rejected(self) -> None:
         question = {
             "question": "Which synthetic dye did William Henry Perkin discover in the early 19th century?",

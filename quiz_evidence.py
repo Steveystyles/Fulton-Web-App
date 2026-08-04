@@ -109,6 +109,30 @@ GENERIC_CLAIM_TERMS = {
     "world",
 }
 
+ANSWER_NOISE_WORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "display",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "provide",
+    "show",
+    "that",
+    "the",
+    "to",
+    "use",
+    "used",
+    "with",
+}
+
 RISK_PATTERNS = {
     "first_or_earliest": re.compile(r"\b(?:first(?:-ever)?|earliest|pioneer(?:ed|ing)?)\b", re.I),
     "only_or_unique": re.compile(
@@ -511,7 +535,17 @@ def question_risk_profile(question: dict[str, Any]) -> dict[str, Any]:
         for field in ("question", "explanation")
     )
     signals = [name for name, pattern in RISK_PATTERNS.items() if pattern.search(claim_text)]
-    high_risk = bool(signals)
+    high_risk = any(
+        signal
+        in {
+            "first_or_earliest",
+            "only_or_unique",
+            "record_or_superlative",
+            "specific_year",
+            "century_qualifier",
+        }
+        for signal in signals
+    )
     return {
         "high_risk": high_risk,
         "signals": signals,
@@ -539,12 +573,18 @@ def claim_anchor_terms(question: dict[str, Any], signals: list[str]) -> list[str
     nearby: list[str] = []
     for position in risk_positions:
         for token in tokens[max(0, position - 3) : position + 7]:
+            is_risk_token = any(
+                token.startswith(alias)
+                for aliases in RISK_SIGNAL_ALIASES.values()
+                for alias in aliases
+            )
             if (
                 len(token) >= 6
                 and token not in STOP_WORDS
                 and token not in GENERIC_CLAIM_TERMS
                 and token not in answer_tokens
                 and not token.isdigit()
+                and not is_risk_token
             ):
                 nearby.append(token)
     for token in sorted(set(nearby), key=lambda value: (-len(value), nearby.index(value)))[:2]:
@@ -571,11 +611,21 @@ def evidence_item_text(item: dict[str, Any]) -> str:
 
 
 def evidence_mentions_answer(item: dict[str, Any], answer: Any) -> bool:
-    answer_tokens = [token for token in normalized_tokens(answer) if token not in {"the", "a", "an"}]
+    answer_text = normalize_text(answer)
+    item_text = evidence_item_text(item)
+    if answer_text and answer_text in item_text:
+        return True
+    answer_tokens = [
+        token_stem(token)
+        for token in normalized_tokens(answer)
+        if token not in ANSWER_NOISE_WORDS
+    ]
     if not answer_tokens:
         return False
-    item_tokens = set(evidence_item_text(item).split())
-    return all(token in item_tokens for token in answer_tokens)
+    item_tokens = {token_stem(token) for token in item_text.split()}
+    matches = sum(token in item_tokens for token in answer_tokens)
+    required = len(answer_tokens) if len(answer_tokens) <= 2 else max(2, (len(answer_tokens) * 3 + 4) // 5)
+    return matches >= required
 
 
 def evidence_has_risk_signal(text: str, signals: list[str]) -> bool:
@@ -650,11 +700,11 @@ def precheck_question_evidence(
             f"The claim needs {required_sources} independent sources, but only {len(answer_hosts)} supported the answer."
         )
 
-    if risk["requires_primary_or_reputable"] and answer_indices:
+    if risk["requires_primary_or_reputable"] and evidence:
         trusted = any(
-            str(evidence[index].get("tier") or source_tier(str(evidence[index].get("source_url") or "")))
+            str(item.get("tier") or source_tier(str(item.get("source_url") or "")))
             in {"primary", "reputable"}
-            for index in answer_indices
+            for item in evidence
         )
         if not trusted:
             failures.append("A risky claim needs at least one primary or reputable source.")
