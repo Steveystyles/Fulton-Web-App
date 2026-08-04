@@ -28,6 +28,77 @@ def evidence_item(
 
 
 class QuizEvidenceTests(unittest.TestCase):
+    def test_wikipedia_queries_keep_the_subject_terms_near_the_answer(self) -> None:
+        question = {
+            "question": (
+                "In the early 20th century, before modern plastics, what material was "
+                "commonly used to manufacture high-quality billiard balls?"
+            ),
+            "correct_answer": "Ivory",
+            "explanation": (
+                "Billiard balls were traditionally carved from elephant ivory before "
+                "synthetic materials replaced it."
+            ),
+        }
+
+        queries = quiz_evidence.wikipedia_search_queries(question)
+
+        self.assertIn('"Ivory"', queries[0])
+        self.assertIn("billiard balls", queries[0])
+        self.assertLessEqual(len(queries[0].split()), 10)
+
+    def test_wikipedia_fallback_follows_the_selected_passage_citation(self) -> None:
+        question = {
+            "question": (
+                "In the early 20th century, before modern plastics, what material was "
+                "commonly used to manufacture high-quality billiard balls?"
+            ),
+            "correct_answer": "Ivory",
+            "explanation": (
+                "Billiard balls were traditionally carved from elephant ivory before "
+                "synthetic materials replaced it."
+            ),
+        }
+        article_html = """
+            <p>
+              Elephant ivory was the material favoured for high-quality billiard balls
+              until the early 20th century.
+              <sup class="reference"><a href="#cite_note-history">1</a></sup>
+            </p>
+            <ol class="references">
+              <li id="cite_note-history">
+                <cite><a href="https://www.britannica.com/sports/billiards-history">
+                  Billiards history
+                </a></cite>
+              </li>
+            </ol>
+        """
+
+        def api_payload(params: dict[str, object], **_: object) -> dict[str, object]:
+            if params["action"] == "query":
+                return {"query": {"search": [{"title": "Billiard ball"}]}}
+            return {
+                "parse": {
+                    "displaytitle": "Billiard ball",
+                    "text": article_html,
+                }
+            }
+
+        source_excerpt = (
+            "Ivory was the traditional material for high-quality billiard balls until "
+            "the early 20th century, when plastics replaced it."
+        )
+        with (
+            patch("quiz_evidence.wikipedia_api_payload", side_effect=api_payload),
+            patch("quiz_evidence.fetch_relevant_page_excerpt", return_value=source_excerpt),
+        ):
+            evidence = quiz_evidence.collect_wikipedia_question_evidence(question)
+
+        self.assertEqual(len(evidence), 2)
+        self.assertEqual(evidence[0]["tier"], "reference")
+        self.assertEqual(evidence[1]["tier"], "reputable")
+        self.assertTrue(quiz_evidence.precheck_question_evidence(question, evidence)["passed"])
+
     def test_openrouter_search_retries_transient_http_failure(self) -> None:
         class FakeResponse:
             def __enter__(self) -> "FakeResponse":
@@ -85,6 +156,36 @@ class QuizEvidenceTests(unittest.TestCase):
         self.assertEqual(len(evidence), 1)
         self.assertEqual(request.call_count, 2)
         sleep.assert_called_once_with(5)
+
+    def test_openrouter_daily_cap_falls_back_without_retry_delay(self) -> None:
+        quota_error = HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            hdrs=None,
+            fp=BytesIO(
+                b'{"error":{"message":"free-models-per-day exceeded; add 10 credits"}}'
+            ),
+        )
+        with (
+            patch("quiz_evidence.urlopen", side_effect=quota_error) as request,
+            patch("quiz_evidence.time.sleep") as sleep,
+            self.assertRaisesRegex(quiz_evidence.EvidenceSearchUnavailable, "HTTP 429"),
+        ):
+            quiz_evidence.collect_openrouter_question_evidence(
+                {
+                    "question": "Which answer is documented?",
+                    "correct_answer": "Documented answer",
+                    "explanation": "The documented answer is supported.",
+                },
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="openrouter/free",
+                transient_retries=3,
+            )
+
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
 
     def test_openrouter_annotations_are_normalized_as_evidence(self) -> None:
         payload = {

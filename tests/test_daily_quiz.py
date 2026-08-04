@@ -939,6 +939,44 @@ class DailyQuizTests(unittest.TestCase):
         self.assertTrue(payload["last_failure_transient"])
         self.assertIn("Evidence search unavailable", payload["last_failure_reason"])
 
+    def test_generation_uses_wikipedia_when_openrouter_search_is_capped(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        with (
+            patch(
+                "daily_quiz.collect_openrouter_question_evidence",
+                side_effect=daily_quiz.EvidenceSearchUnavailable(
+                    "OpenRouter evidence search failed with HTTP 429"
+                ),
+            ) as openrouter_search,
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                side_effect=supporting_evidence,
+            ) as wikipedia_search,
+        ):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-09",
+                config=evidence_config,
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "published")
+        self.assertEqual(len(payload["questions"]), 6)
+        self.assertEqual(
+            daily_quiz.quiz_status(self.conn, "2026-06-09")["verified_questions"],
+            6,
+        )
+        self.assertEqual(openrouter_search.call_count, 6)
+        self.assertEqual(wikipedia_search.call_count, 6)
+
     def test_generation_rejects_question_with_no_supporting_evidence(self) -> None:
         with patch("daily_quiz.collect_question_evidence", return_value=[]):
             payload = daily_quiz.generate_daily_quiz(

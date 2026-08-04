@@ -6,7 +6,7 @@ import re
 import time
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote, quote_plus, urlencode, urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 from xml.etree import ElementTree
@@ -43,8 +43,19 @@ REPUTABLE_SOURCE_HOSTS = (
     "britannica.com",
     "history.com",
     "nationalgeographic.com",
+    "phys.org",
     "reuters.com",
 )
+
+REFERENCE_SOURCE_HOSTS = (
+    "archive.org",
+    "wikimedia.org",
+    "wikipedia.org",
+    "wikisource.org",
+)
+
+WIKIPEDIA_API_URL = "https://en.wikipedia.org/w/api.php"
+WIKIPEDIA_ARTICLE_URL = "https://en.wikipedia.org/wiki/"
 
 STOP_WORDS = {
     "about",
@@ -298,7 +309,20 @@ Do not assume the claim is true. Return a concise evidence summary with citation
                 detail = clean_text(error.read().decode("utf-8", errors="replace"), 500)
             except OSError:
                 detail = ""
-            if error.code in {408, 429, 500, 502, 503, 504} and attempt < transient_retries:
+            daily_quota_exhausted = error.code == 429 and any(
+                marker in detail.casefold()
+                for marker in (
+                    "free-models-per-day",
+                    "daily quota",
+                    "per day",
+                    "add 10 credits",
+                )
+            )
+            if (
+                error.code in {408, 429, 500, 502, 503, 504}
+                and not daily_quota_exhausted
+                and attempt < transient_retries
+            ):
                 time.sleep(min(30, 5 * (2**attempt)))
                 continue
             suffix = f": {detail}" if detail else ""
@@ -367,7 +391,7 @@ def source_tier(url: str) -> str:
         return "primary"
     if any(host == item or host.endswith(f".{item}") for item in REPUTABLE_SOURCE_HOSTS):
         return "reputable"
-    if host.endswith("wikipedia.org"):
+    if any(host == item or host.endswith(f".{item}") for item in REFERENCE_SOURCE_HOSTS):
         return "reference"
     return "other"
 
@@ -411,6 +435,106 @@ class EvidenceHTMLParser(HTMLParser):
         self._parts = []
 
 
+class WikipediaEvidenceParser(HTMLParser):
+    VOID_TAGS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[dict[str, Any]] = []
+        self.references: dict[str, dict[str, Any]] = {}
+        self._mode: str | None = None
+        self._depth = 0
+        self._reference_id = ""
+        self._parts: list[str] = []
+        self._urls: list[str] = []
+        self._reference_ids: list[str] = []
+
+    @staticmethod
+    def _external_url(value: str) -> str:
+        href = html.unescape(value.strip())
+        if href.startswith("//"):
+            return f"https:{href}"
+        if href.startswith(("http://", "https://")):
+            return href
+        return ""
+
+    def _begin(self, mode: str, *, reference_id: str = "") -> None:
+        self._mode = mode
+        self._depth = 1
+        self._reference_id = reference_id
+        self._parts = []
+        self._urls = []
+        self._reference_ids = []
+
+    def _capture_link(self, attrs: dict[str, str]) -> None:
+        href = attrs.get("href", "")
+        external = self._external_url(href)
+        if external and external not in self._urls:
+            self._urls.append(external)
+        if href.startswith("#cite_note-"):
+            reference_id = href[1:]
+            if reference_id not in self._reference_ids:
+                self._reference_ids.append(reference_id)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = {str(key).casefold(): str(value or "") for key, value in attrs}
+        if self._mode is not None:
+            if tag not in self.VOID_TAGS:
+                self._depth += 1
+            if tag == "a":
+                self._capture_link(attr_map)
+            return
+
+        reference_id = attr_map.get("id", "")
+        if tag == "li" and reference_id.startswith("cite_note-"):
+            self._begin("reference", reference_id=reference_id)
+        elif tag == "p":
+            self._begin("block")
+
+    def handle_data(self, data: str) -> None:
+        if self._mode is not None:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._mode is None or tag in self.VOID_TAGS:
+            return
+        self._depth -= 1
+        if self._depth > 0:
+            return
+
+        text = clean_text(" ".join(self._parts), 1800)
+        record = {
+            "text": text,
+            "urls": list(self._urls),
+            "reference_ids": list(self._reference_ids),
+        }
+        if self._mode == "block" and len(text) >= 40:
+            self.blocks.append(record)
+        elif self._mode == "reference" and self._reference_id:
+            self.references[self._reference_id] = record
+        self._mode = None
+        self._depth = 0
+        self._reference_id = ""
+        self._parts = []
+        self._urls = []
+        self._reference_ids = []
+
+
 def fetch_text(url: str, *, timeout_sec: int) -> str:
     request = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(request, timeout=timeout_sec) as response:
@@ -441,6 +565,71 @@ def fetch_page_excerpt(url: str, *, timeout_sec: int) -> str:
     return clean_text(" ".join(excerpt_parts), 1000)
 
 
+def relevant_text_score(value: Any, question: dict[str, Any]) -> int:
+    text = normalize_text(value)
+    if not text:
+        return 0
+    terms = {
+        token_stem(token)
+        for token in substantive_words(
+            " ".join(
+                str(question.get(field) or "")
+                for field in ("question", "explanation", "interesting_reason")
+            ),
+            answer=str(question.get("correct_answer") or ""),
+            limit=24,
+        )
+    }
+    text_tokens = {token_stem(token) for token in text.split()}
+    score = sum(1 for term in terms if term in text_tokens)
+    probe = {
+        "title": value,
+        "snippet": value,
+        "excerpt": value,
+    }
+    if evidence_mentions_answer(probe, question.get("correct_answer")):
+        score += 12
+    for signal, pattern in RISK_PATTERNS.items():
+        if pattern.search(str(question.get("question") or "")) and pattern.search(str(value)):
+            score += 3 if signal in {"specific_year", "century_qualifier"} else 2
+    return score
+
+
+def fetch_relevant_page_excerpt(
+    url: str,
+    *,
+    question: dict[str, Any],
+    timeout_sec: int,
+) -> str:
+    if blocked_source(url):
+        return ""
+    try:
+        parser = EvidenceHTMLParser()
+        parser.feed(fetch_text(url, timeout_sec=timeout_sec))
+    except Exception:
+        return ""
+    candidates = [*parser.meta[:2], *parser.blocks]
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (relevant_text_score(item[1], question), -item[0]),
+        reverse=True,
+    )
+    selected: list[str] = []
+    seen: set[str] = set()
+    for _, candidate in ranked:
+        cleaned = clean_text(candidate, 700)
+        key = normalize_text(cleaned)
+        if len(cleaned) < 40 or not key or key in seen:
+            continue
+        if selected and relevant_text_score(candidate, question) <= 0:
+            continue
+        seen.add(key)
+        selected.append(cleaned)
+        if len(" ".join(selected)) >= 900 or len(selected) >= 3:
+            break
+    return clean_text(" ".join(selected), 1200)
+
+
 def substantive_words(value: Any, *, answer: str = "", limit: int = 9) -> list[str]:
     answer_tokens = set(normalized_tokens(answer))
     words: list[str] = []
@@ -469,6 +658,269 @@ def question_search_queries(question: dict[str, Any]) -> list[str]:
     if answer and not queries:
         queries.append(f'"{answer}" fact history')
     return queries[:3]
+
+
+def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
+    answer = clean_text(question.get("correct_answer"), 140).replace('"', "")
+    question_words = substantive_words(
+        question.get("question"),
+        answer=answer,
+        limit=40,
+    )
+    explanation_words = substantive_words(
+        question.get("explanation"),
+        answer=answer,
+        limit=40,
+    )
+    explanation_stems = {token_stem(word) for word in explanation_words}
+    repeated_words = [
+        word
+        for word in question_words
+        if token_stem(word) in explanation_stems
+    ]
+    answer_part = f'"{answer}"' if answer else ""
+    groups = [
+        repeated_words[-8:],
+        question_words[-7:],
+        explanation_words[:7],
+    ]
+    queries: list[str] = []
+    for words in groups:
+        query = clean_text(f"{answer_part} {' '.join(words)}", 300)
+        if words and query not in queries:
+            queries.append(query)
+    if answer and not queries:
+        queries.append(answer_part)
+    return queries[:3]
+
+
+def wikipedia_search_query(question: dict[str, Any]) -> str:
+    queries = wikipedia_search_queries(question)
+    return queries[0] if queries else ""
+
+
+def wikipedia_api_payload(params: dict[str, Any], *, timeout_sec: int) -> dict[str, Any]:
+    url = f"{WIKIPEDIA_API_URL}?{urlencode(params)}"
+    try:
+        payload = json.loads(fetch_text(url, timeout_sec=timeout_sec))
+    except (TimeoutError, URLError, OSError, json.JSONDecodeError) as error:
+        raise EvidenceSearchUnavailable(f"Wikimedia evidence search failed: {error}") from error
+    if not isinstance(payload, dict):
+        raise EvidenceSearchUnavailable("Wikimedia evidence search returned an invalid response.")
+    api_error = payload.get("error")
+    if isinstance(api_error, dict):
+        detail = clean_text(api_error.get("info") or api_error.get("code"), 300)
+        raise EvidenceSearchUnavailable(
+            f"Wikimedia evidence search failed: {detail or 'unknown API error'}"
+        )
+    return payload
+
+
+def wikipedia_article_url(title: str) -> str:
+    return f"{WIKIPEDIA_ARTICLE_URL}{quote(title.replace(' ', '_'), safe='(),_-')}"
+
+
+def wikipedia_page_records(
+    title: str,
+    *,
+    question: dict[str, Any],
+    query: str,
+    timeout_sec: int,
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    payload = wikipedia_api_payload(
+        {
+            "action": "parse",
+            "page": title,
+            "prop": "text|displaytitle",
+            "redirects": 1,
+            "disableeditsection": 1,
+            "format": "json",
+            "formatversion": 2,
+        },
+        timeout_sec=timeout_sec,
+    )
+    parsed = payload.get("parse")
+    if not isinstance(parsed, dict):
+        return [], []
+    page_html = str(parsed.get("text") or "")
+    parser = WikipediaEvidenceParser()
+    parser.feed(page_html)
+    article_url = wikipedia_article_url(title)
+
+    ranked_blocks = sorted(
+        enumerate(parser.blocks),
+        key=lambda item: (
+            relevant_text_score(item[1].get("text"), question),
+            -item[0],
+        ),
+        reverse=True,
+    )
+    page_title_supports_answer = evidence_mentions_answer(
+        {"title": title, "snippet": "", "excerpt": ""},
+        question.get("correct_answer"),
+    )
+    selected_blocks: list[dict[str, Any]] = []
+    for _, block in ranked_blocks:
+        score = relevant_text_score(block.get("text"), question)
+        if score < (2 if page_title_supports_answer else 12):
+            continue
+        selected_blocks.append(block)
+        if len(selected_blocks) >= 2:
+            break
+
+    evidence: list[dict[str, str]] = []
+    for block in selected_blocks:
+        excerpt = clean_text(block.get("text"), 1200)
+        if len(excerpt) < 40:
+            continue
+        evidence.append(
+            {
+                "title": clean_text(parsed.get("displaytitle") or title, 220),
+                "source_name": "Wikipedia",
+                "source_url": article_url,
+                "tier": "reference",
+                "snippet": excerpt[:900],
+                "excerpt": excerpt,
+                "query": query,
+            }
+        )
+
+    reference_ids: list[str] = []
+    direct_urls: list[str] = []
+    for block in selected_blocks:
+        for reference_id in block.get("reference_ids", []):
+            if reference_id not in reference_ids:
+                reference_ids.append(reference_id)
+        for url in block.get("urls", []):
+            if url not in direct_urls:
+                direct_urls.append(url)
+
+    references: list[dict[str, Any]] = []
+    for reference_id in reference_ids:
+        reference = parser.references.get(reference_id)
+        if not reference:
+            continue
+        references.append(reference)
+    if direct_urls:
+        references.append({"text": title, "urls": direct_urls, "reference_ids": []})
+    return evidence, references
+
+
+def collect_wikipedia_question_evidence(
+    question: dict[str, Any],
+    *,
+    timeout_sec: int = 10,
+    max_results: int = 8,
+    max_pages: int = 3,
+) -> list[dict[str, str]]:
+    queries = wikipedia_search_queries(question)
+    if not queries:
+        return []
+    search_results: list[tuple[str, str]] = []
+    seen_titles: set[str] = set()
+    for query in queries:
+        payload = wikipedia_api_payload(
+            {
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "srnamespace": 0,
+                "srlimit": max(1, max_pages),
+                "format": "json",
+                "formatversion": 2,
+            },
+            timeout_sec=timeout_sec,
+        )
+        search_payload = payload.get("query")
+        results = search_payload.get("search") if isinstance(search_payload, dict) else None
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            title = clean_text(result.get("title"), 220)
+            key = title.casefold()
+            if not title or key in seen_titles:
+                continue
+            seen_titles.add(key)
+            search_results.append((title, query))
+            if len(search_results) >= max(1, max_pages):
+                break
+        if len(search_results) >= max(1, max_pages):
+            break
+
+    evidence: list[dict[str, str]] = []
+    references: list[dict[str, Any]] = []
+    seen_article_urls: set[str] = set()
+    for title, query in search_results[: max(1, max_pages)]:
+        try:
+            page_evidence, page_references = wikipedia_page_records(
+                title,
+                question=question,
+                query=query,
+                timeout_sec=timeout_sec,
+            )
+        except EvidenceSearchUnavailable:
+            continue
+        for item in page_evidence:
+            normalized_url = item["source_url"].casefold().rstrip("/")
+            if normalized_url in seen_article_urls:
+                continue
+            seen_article_urls.add(normalized_url)
+            evidence.append(item)
+        references.extend(page_references)
+        if len(evidence) >= max_results:
+            return evidence[:max_results]
+
+    external_candidates: list[tuple[int, int, str, str]] = []
+    seen_external_urls: set[str] = set()
+    for reference in references:
+        reference_text = clean_text(reference.get("text"), 700)
+        reference_score = relevant_text_score(reference_text, question)
+        for url in reference.get("urls", []):
+            normalized_url = str(url).split("#", 1)[0].strip()
+            key = normalized_url.casefold().rstrip("/")
+            if (
+                not normalized_url.startswith(("http://", "https://"))
+                or blocked_source(normalized_url)
+                or source_host(normalized_url).endswith("wikipedia.org")
+                or key in seen_external_urls
+            ):
+                continue
+            seen_external_urls.add(key)
+            external_candidates.append(
+                (source_rank(normalized_url), reference_score, normalized_url, reference_text)
+            )
+    external_candidates.sort(reverse=True)
+
+    host_counts: dict[str, int] = {}
+    fetch_limit = max(4, min(14, max_results * 2))
+    for _, _, url, reference_text in external_candidates[:fetch_limit]:
+        host = source_host(url)
+        if host_counts.get(host, 0) >= 2:
+            continue
+        excerpt = fetch_relevant_page_excerpt(
+            url,
+            question=question,
+            timeout_sec=timeout_sec,
+        )
+        if len(excerpt) < 40:
+            continue
+        host_counts[host] = host_counts.get(host, 0) + 1
+        evidence.append(
+            {
+                "title": reference_text[:220] or host,
+                "source_name": host,
+                "source_url": url,
+                "tier": source_tier(url),
+                "snippet": excerpt[:900],
+                "excerpt": excerpt,
+                "query": query,
+            }
+        )
+        if len(evidence) >= max_results:
+            break
+    return evidence[:max_results]
 
 
 def bing_rss_url(query: str) -> str:
@@ -737,10 +1189,21 @@ def precheck_question_evidence(
         for index in answer_indices:
             text = evidence_item_text(evidence[index])
             stems = {token_stem(token) for token in text.split()}
-            anchors_present = all(
-                term in text if " " in term or term.isdigit() else token_stem(term) in stems
+            exact_anchors = [
+                term
                 for term in anchor_terms
+                if term.isdigit() or " " in term
+            ]
+            semantic_anchors = [
+                term
+                for term in anchor_terms
+                if term not in exact_anchors
+            ]
+            exact_present = all(term in text for term in exact_anchors)
+            semantic_present = not semantic_anchors or any(
+                token_stem(term) in stems for term in semantic_anchors
             )
+            anchors_present = exact_present and semantic_present
             if anchors_present and evidence_has_risk_signal(text, list(risk["signals"])):
                 qualified_indices.append(index)
         if not qualified_indices and not century_failure:

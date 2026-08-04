@@ -17,6 +17,7 @@ from quiz_evidence import (
     EvidenceSearchUnavailable,
     collect_openrouter_question_evidence,
     collect_question_evidence,
+    collect_wikipedia_question_evidence,
     evidence_mentions_answer,
     precheck_question_evidence,
     question_risk_profile,
@@ -443,6 +444,59 @@ def attempt_provider_label(
 
 def current_provider_name(provider: QuizAIProvider) -> str:
     return str(getattr(provider, "last_provider_name", getattr(provider, "name", "unknown")))
+
+
+def configured_question_evidence(
+    question: dict[str, Any],
+    *,
+    config: QuizConfig,
+) -> list[dict[str, Any]]:
+    if not config.evidence_openrouter_api_key:
+        return collect_question_evidence(
+            question,
+            timeout_sec=min(config.evidence_search_timeout_sec, 10),
+            max_results=config.evidence_max_results,
+        )
+
+    try:
+        return collect_openrouter_question_evidence(
+            question,
+            api_key=config.evidence_openrouter_api_key,
+            base_url=config.evidence_openrouter_base_url,
+            model=config.evidence_openrouter_model,
+            timeout_sec=config.evidence_search_timeout_sec,
+            max_results=config.evidence_max_results,
+            transient_retries=config.transient_retries,
+        )
+    except EvidenceSearchUnavailable as openrouter_error:
+        fallback_errors: list[str] = []
+        fallback_timeout = min(config.evidence_search_timeout_sec, 12)
+        try:
+            evidence = collect_wikipedia_question_evidence(
+                question,
+                timeout_sec=fallback_timeout,
+                max_results=config.evidence_max_results,
+            )
+            if evidence:
+                return evidence
+        except EvidenceSearchUnavailable as error:
+            fallback_errors.append(str(error))
+
+        try:
+            evidence = collect_question_evidence(
+                question,
+                timeout_sec=min(fallback_timeout, 10),
+                max_results=config.evidence_max_results,
+            )
+            if evidence:
+                return evidence
+            return []
+        except EvidenceSearchUnavailable as error:
+            fallback_errors.append(str(error))
+
+        detail = " | ".join(fallback_errors)
+        suffix = f" Fallbacks: {detail}" if detail else ""
+        raise EvidenceSearchUnavailable(f"{openrouter_error}{suffix}") from openrouter_error
 
 
 class GeminiProvider:
@@ -2210,22 +2264,10 @@ def generate_slot(
             verifier_provider_name = critic_provider_name
         else:
             try:
-                if config.evidence_openrouter_api_key:
-                    evidence = collect_openrouter_question_evidence(
-                        validation.question,
-                        api_key=config.evidence_openrouter_api_key,
-                        base_url=config.evidence_openrouter_base_url,
-                        model=config.evidence_openrouter_model,
-                        timeout_sec=config.evidence_search_timeout_sec,
-                        max_results=config.evidence_max_results,
-                        transient_retries=config.transient_retries,
-                    )
-                else:
-                    evidence = collect_question_evidence(
-                        validation.question,
-                        timeout_sec=min(config.evidence_search_timeout_sec, 10),
-                        max_results=config.evidence_max_results,
-                    )
+                evidence = configured_question_evidence(
+                    validation.question,
+                    config=config,
+                )
             except EvidenceSearchUnavailable as error:
                 reason = str(error)
                 save_attempt(
