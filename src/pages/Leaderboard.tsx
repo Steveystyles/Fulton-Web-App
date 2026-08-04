@@ -624,27 +624,37 @@ function ScoreGuide() {
 
         <section className="space-y-4">
           <GuideSectionTitle icon={MapPinned} title="Map" />
-          <div className="grid grid-cols-3 gap-2">
+          <p className="pl-10 text-[0.76rem] font-bold leading-snug text-slate-600 min-[390px]:text-sm">
+            One place each day. Lock the correct place; each reveal reduces the maximum score.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
             <JourneyInfoCard
-              body="3 pins"
+              body="10 pts"
               cardClassName="border-slate-200 bg-gradient-to-br from-white via-white to-slate-50"
-              icon={MapPinned}
-              iconClassName="bg-slate-100 text-slate-950 ring-1 ring-slate-200"
-              title="Daily"
-            />
-            <JourneyInfoCard
-              body="1000 max"
-              cardClassName="border-red-200 bg-gradient-to-br from-white via-white to-red-50/70"
               icon={Trophy}
-              iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
-              title="Level"
+              iconClassName="bg-slate-100 text-slate-950 ring-1 ring-slate-200"
+              title="Hard clue"
             />
             <JourneyInfoCard
-              body="Closer wins"
+              body="7 pts"
+              cardClassName="border-red-200 bg-gradient-to-br from-white via-white to-red-50/70"
+              icon={CircleHelp}
+              iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
+              title="Medium clue"
+            />
+            <JourneyInfoCard
+              body="5 pts"
               cardClassName="border-emerald-200 bg-gradient-to-br from-white via-white to-emerald-50/70"
-              icon={Gauge}
+              icon={MapPinned}
               iconClassName="bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100"
-              title="Score"
+              title="Easy clue"
+            />
+            <JourneyInfoCard
+              body="2 pts"
+              cardClassName="border-amber-200 bg-gradient-to-br from-white via-white to-amber-50/70"
+              icon={Info}
+              iconClassName="bg-amber-50 text-amber-700 ring-1 ring-amber-100"
+              title="Place name"
             />
           </div>
         </section>
