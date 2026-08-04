@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
+from io import BytesIO
+from unittest.mock import patch
+from urllib.error import HTTPError
 
 import quiz_evidence
 
@@ -24,6 +28,64 @@ def evidence_item(
 
 
 class QuizEvidenceTests(unittest.TestCase):
+    def test_openrouter_search_retries_transient_http_failure(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "annotations": [
+                                        {
+                                            "type": "url_citation",
+                                            "url_citation": {
+                                                "url": "https://www.bbc.co.uk/archive/example",
+                                                "title": "Supported answer",
+                                                "content": "The documented answer is supported by this source.",
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+        transient_error = HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            500,
+            "Internal Server Error",
+            hdrs=None,
+            fp=BytesIO(b'{"error":{"message":"temporary"}}'),
+        )
+        question = {
+            "question": "Which documented answer is supported by the source?",
+            "correct_answer": "Supported answer",
+            "explanation": "The supported answer is documented by the source.",
+        }
+        with (
+            patch("quiz_evidence.urlopen", side_effect=[transient_error, FakeResponse()]) as request,
+            patch("quiz_evidence.time.sleep") as sleep,
+        ):
+            evidence = quiz_evidence.collect_openrouter_question_evidence(
+                question,
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="openrouter/free",
+                transient_retries=1,
+            )
+
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(5)
+
     def test_openrouter_annotations_are_normalized_as_evidence(self) -> None:
         payload = {
             "choices": [

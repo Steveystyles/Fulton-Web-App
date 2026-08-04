@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import quote_plus, urlparse
@@ -238,6 +239,7 @@ def collect_openrouter_question_evidence(
     model: str,
     timeout_sec: int = 90,
     max_results: int = 8,
+    transient_retries: int = 1,
 ) -> list[dict[str, str]]:
     if not api_key.strip():
         raise EvidenceSearchUnavailable("OpenRouter web search has no API key.")
@@ -285,20 +287,32 @@ Do not assume the claim is true. Return a concise evidence summary with citation
         },
         method="POST",
     )
-    try:
-        with urlopen(request, timeout=max(10, timeout_sec)) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
+    response_payload: dict[str, Any] | None = None
+    for attempt in range(max(0, transient_retries) + 1):
         try:
-            detail = clean_text(error.read().decode("utf-8", errors="replace"), 500)
-        except OSError:
-            detail = ""
-        suffix = f": {detail}" if detail else ""
-        raise EvidenceSearchUnavailable(
-            f"OpenRouter evidence search failed with HTTP {error.code}{suffix}"
-        ) from error
-    except (TimeoutError, URLError, OSError, json.JSONDecodeError) as error:
-        raise EvidenceSearchUnavailable(f"OpenRouter evidence search failed: {error}") from error
+            with urlopen(request, timeout=max(10, timeout_sec)) as response:
+                response_payload = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as error:
+            try:
+                detail = clean_text(error.read().decode("utf-8", errors="replace"), 500)
+            except OSError:
+                detail = ""
+            if error.code in {408, 429, 500, 502, 503, 504} and attempt < transient_retries:
+                time.sleep(min(30, 5 * (2**attempt)))
+                continue
+            suffix = f": {detail}" if detail else ""
+            raise EvidenceSearchUnavailable(
+                f"OpenRouter evidence search failed with HTTP {error.code}{suffix}"
+            ) from error
+        except (TimeoutError, URLError, OSError, json.JSONDecodeError) as error:
+            if attempt < transient_retries:
+                time.sleep(min(30, 5 * (2**attempt)))
+                continue
+            raise EvidenceSearchUnavailable(f"OpenRouter evidence search failed: {error}") from error
+
+    if response_payload is None:  # pragma: no cover - every loop path breaks or raises
+        raise EvidenceSearchUnavailable("OpenRouter evidence search returned no response.")
 
     evidence = openrouter_response_evidence(
         response_payload,

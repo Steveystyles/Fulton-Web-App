@@ -1865,6 +1865,9 @@ def prior_attempt_feedback(
     feedback: list[str] = []
     seen: set[str] = set()
     for row in reversed(rows):
+        reason = str(row["failure_reason"] or "").strip()
+        if reason and is_transient_provider_failure(reason):
+            continue
         entries: list[str] = []
         generated_json = row["generated_json"]
         if generated_json:
@@ -1895,8 +1898,7 @@ def prior_attempt_feedback(
                 feedback_text = str(verification.get("feedback_to_generator") or "").strip()
                 if feedback_text:
                     entries.append(feedback_text)
-        reason = str(row["failure_reason"] or "").strip()
-        if reason and not is_transient_provider_failure(reason):
+        if reason:
             entries.append(reason)
         for entry in entries:
             normalized = normalize_text(entry)
@@ -2204,6 +2206,7 @@ def generate_slot(
                         model=config.evidence_openrouter_model,
                         timeout_sec=config.evidence_search_timeout_sec,
                         max_results=config.evidence_max_results,
+                        transient_retries=config.transient_retries,
                     )
                 else:
                     evidence = collect_question_evidence(
