@@ -1024,6 +1024,52 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIn("insufficient_quota", detail)
         self.assertIn("current quota", detail)
 
+    def test_openrouter_retries_invalid_json_with_response_healing_enabled(self) -> None:
+        class FakeResponse:
+            def __init__(self, content: str) -> None:
+                self.content = content
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {"choices": [{"message": {"content": self.content}}]}
+                ).encode("utf-8")
+
+        provider = daily_quiz.OpenAICompatibleProvider(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "provider": "openrouter",
+                    "generator_model": "openrouter/free",
+                    "critic_model": "openrouter/free",
+                    "compatible_api_key": "test-key",
+                    "compatible_base_url": "https://openrouter.ai/api/v1",
+                    "transient_retries": 1,
+                    "request_delay_sec": 0,
+                }
+            )
+        )
+        with (
+            patch(
+                "daily_quiz.urlopen",
+                side_effect=[FakeResponse('{"passed": true'), FakeResponse('{"passed": true}')],
+            ) as request,
+            patch.object(provider, "_defer_retry") as retry,
+        ):
+            payload = provider._request("openrouter/free", "Return a decision.")
+
+        self.assertEqual(payload, {"passed": True})
+        self.assertEqual(request.call_count, 2)
+        retry.assert_called_once_with(0)
+        request_payload = json.loads(request.call_args_list[0].args[0].data.decode("utf-8"))
+        self.assertEqual(request_payload["plugins"], [{"id": "response-healing"}])
+        self.assertTrue(daily_quiz.is_transient_provider_failure("Provider returned invalid JSON."))
+
     def test_gemini_provider_keeps_http_error_details(self) -> None:
         provider = daily_quiz.GeminiProvider(config())
         error = HTTPError(

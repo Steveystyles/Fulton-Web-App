@@ -664,24 +664,25 @@ class OpenAICompatibleProvider:
         if self.name == "openrouter":
             headers["HTTP-Referer"] = "https://fultons-quiz.co.uk"
             headers["X-Title"] = "Fultons Quiz"
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Return one valid JSON object only. Do not use markdown.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": 1000,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+        }
+        if self.name == "openrouter":
+            payload["plugins"] = [{"id": "response-healing"}]
         request = Request(
             f"{self.config.compatible_base_url}/chat/completions",
-            data=json.dumps(
-                {
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "Return one valid JSON object only. Do not use markdown.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": temperature,
-                    "max_tokens": 1000,
-                    "stream": False,
-                    "response_format": {"type": "json_object"},
-                }
-            ).encode("utf-8"),
+            data=json.dumps(payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
@@ -690,7 +691,21 @@ class OpenAICompatibleProvider:
             try:
                 with urlopen(request, timeout=self.config.timeout_sec) as response:
                     response_payload = json.loads(response.read().decode("utf-8"))
-                break
+                try:
+                    text = response_payload["choices"][0]["message"]["content"]
+                except (IndexError, KeyError, TypeError) as error:
+                    parse_error: ValueError = ValueError(
+                        f"AI provider returned no chat completion content: {error}"
+                    )
+                else:
+                    try:
+                        return parse_json_object(text)
+                    except (json.JSONDecodeError, ValueError) as error:
+                        parse_error = ValueError(f"{self.name} returned invalid JSON: {error}")
+                if attempt < self.config.transient_retries:
+                    self._defer_retry(attempt)
+                    continue
+                raise parse_error
             except HTTPError as error:
                 if error.code in {408, 429, 500, 502, 503, 504} and attempt < self.config.transient_retries:
                     self._defer_retry(attempt, error)
@@ -703,13 +718,8 @@ class OpenAICompatibleProvider:
                     self._defer_retry(attempt)
                     continue
                 raise RuntimeError(f"{self.name} request timed out or failed: {error}") from error
-        else:  # pragma: no cover - loop always exits through break or raise
+        else:  # pragma: no cover - loop always exits through return or raise
             raise RuntimeError(f"{self.name} request failed.")
-        try:
-            text = response_payload["choices"][0]["message"]["content"]
-        except (IndexError, KeyError, TypeError) as error:
-            raise ValueError("AI provider returned no chat completion content.") from error
-        return parse_json_object(text)
 
     def generate_question(
         self,
@@ -1981,6 +1991,7 @@ def is_transient_provider_failure(reason: str) -> bool:
             "connection refused",
             "name resolution",
             "evidence search unavailable",
+            "invalid json",
         )
     )
 
