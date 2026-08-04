@@ -83,6 +83,10 @@ AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
 MAX_ATTEMPTS_PER_SLOT=15
 QUESTION_HISTORY_DAYS=90
+QUIZ_EVIDENCE_REQUIRED=1
+QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC=90
+QUIZ_EVIDENCE_MAX_RESULTS=8
+QUIZ_EVIDENCE_OPENROUTER_MODEL=openrouter/free
 QUIZ_LEARNING_PROFILE_PATH=/app/data/training/quiz_learning_profile_20260714T170201Z.json
 INTERNAL_QUIZ_TOKEN=<generate-a-long-random-value>
 FULTONS_FACT_ROTATION_TTL_SEC=86400
@@ -223,6 +227,10 @@ AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
 MAX_ATTEMPTS_PER_SLOT=15
 QUESTION_HISTORY_DAYS=90
+QUIZ_EVIDENCE_REQUIRED=1
+QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC=90
+QUIZ_EVIDENCE_MAX_RESULTS=8
+QUIZ_EVIDENCE_OPENROUTER_MODEL=openrouter/free
 QUIZ_LEARNING_PROFILE_PATH=/app/data/training/quiz_learning_profile_20260714T170201Z.json
 INTERNAL_QUIZ_TOKEN=<generate-with-openssl-rand-base64-32>
 ```
@@ -297,6 +305,8 @@ The public read endpoint only returns published content and omits prompts, criti
 ```http
 GET /api/daily-quiz?date=2026-06-02
 ```
+
+Before publication, each generated question is checked against persisted web evidence and a separate evidence-only verifier. When an OpenRouter fallback key is configured, the evidence search automatically reuses it; `QUIZ_EVIDENCE_OPENROUTER_API_KEY` is only needed to override that key. OpenRouter web search is billed separately from model tokens, so keep the evidence scheduler paused if the key cannot perform grounded searches. `QUIZ_EVIDENCE_REQUIRED=1` is the production fail-closed setting.
 
 To switch fully to an OpenAI-compatible provider such as Groq or OpenRouter later, set `AI_PROVIDER=groq`, `AI_PROVIDER=openrouter`, or `AI_PROVIDER=openai-compatible`, then provide `AI_BASE_URL` and `AI_API_KEY`. Gemini remains the default because its API supports structured JSON output directly, while `AI_FALLBACK_*` lets you keep Gemini primary and use alternate Gemini models or a paid compatible provider as backup.
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -86,6 +87,53 @@ def passing_critic() -> dict[str, object]:
     }
 
 
+def supporting_evidence(question: dict[str, object], **_: object) -> list[dict[str, str]]:
+    answer = str(question.get("correct_answer") or "")
+    claim = " ".join(
+        str(question.get(field) or "")
+        for field in ("question", "explanation", "interesting_reason")
+    )
+    return [
+        {
+            "title": f"Official record for {answer}",
+            "source_name": "example.edu",
+            "source_url": "https://example.edu/reference/one",
+            "tier": "primary",
+            "snippet": f"{answer}. {claim}",
+            "excerpt": f"The documented answer is {answer}. {claim}",
+            "query": answer,
+        },
+        {
+            "title": f"Independent account of {answer}",
+            "source_name": "bbc.co.uk",
+            "source_url": "https://www.bbc.co.uk/archive/two",
+            "tier": "reputable",
+            "snippet": f"{answer}. {claim}",
+            "excerpt": f"Independent evidence identifies {answer}. {claim}",
+            "query": answer,
+        },
+    ]
+
+
+def passing_verification(evidence: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "passed": True,
+        "premise_supported": True,
+        "answer_supported": True,
+        "unique_answer": True,
+        "claims": [
+            {
+                "claim": "The question premise and proposed answer are supported.",
+                "status": "supported",
+                "evidence_indices": list(range(min(2, len(evidence)))),
+            }
+        ],
+        "failure_reasons": [],
+        "feedback_to_generator": "",
+        "notes": "The supplied evidence supports publication.",
+    }
+
+
 class FakeProvider:
     name = "fake"
 
@@ -127,6 +175,9 @@ class FakeProvider:
             critic["feedback_to_generator"] = "Use a more memorable historical connection."
         return critic
 
+    def verify_question(self, *, evidence: list[dict[str, object]], **_: object) -> dict[str, object]:
+        return passing_verification(evidence)
+
 
 class AlwaysInvalidProvider:
     name = "always-invalid"
@@ -136,6 +187,9 @@ class AlwaysInvalidProvider:
 
     def critique_question(self, **_: object) -> dict[str, object]:
         raise AssertionError("Invalid questions must not reach the critic.")
+
+    def verify_question(self, **_: object) -> dict[str, object]:
+        raise AssertionError("Invalid questions must not reach the verifier.")
 
 
 class AlwaysFailingProvider:
@@ -147,6 +201,9 @@ class AlwaysFailingProvider:
         raise RuntimeError(self.reason)
 
     def critique_question(self, **_: object) -> dict[str, object]:
+        raise RuntimeError(self.reason)
+
+    def verify_question(self, **_: object) -> dict[str, object]:
         raise RuntimeError(self.reason)
 
 
@@ -176,6 +233,9 @@ class PassingProvider:
         critic["corrected_difficulty"] = difficulty
         return critic
 
+    def verify_question(self, *, evidence: list[dict[str, object]], **_: object) -> dict[str, object]:
+        return passing_verification(evidence)
+
 class CriticUnavailableProvider(PassingProvider):
     def critique_question(
         self,
@@ -194,6 +254,16 @@ class InvalidCriticProvider(PassingProvider):
         *args: object,
         **kwargs: object,
     ) -> dict[str, object]:
+        return {"passed": True}
+
+
+class VerifierUnavailableProvider(PassingProvider):
+    def verify_question(self, **_: object) -> dict[str, object]:
+        raise RuntimeError("Gemini request failed with HTTP 429.")
+
+
+class InvalidVerifierProvider(PassingProvider):
+    def verify_question(self, **_: object) -> dict[str, object]:
         return {"passed": True}
 
 
@@ -224,12 +294,41 @@ class DailyQuizTests(unittest.TestCase):
         self.conn.execute("PRAGMA foreign_keys = ON")
         daily_quiz.initialize_database(self.conn)
         self.addCleanup(self.conn.close)
+        evidence_patcher = patch(
+            "daily_quiz.collect_question_evidence",
+            side_effect=supporting_evidence,
+        )
+        evidence_patcher.start()
+        self.addCleanup(evidence_patcher.stop)
 
     def test_validator_accepts_well_formed_question(self) -> None:
         result = daily_quiz.validate_question(valid_question())
 
         self.assertTrue(result.passed)
         self.assertIsNotNone(result.question)
+
+    def test_config_reuses_openrouter_fallback_for_evidence_search(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AI_PROVIDER": "gemini",
+                "GEMINI_API_KEY": "gemini-key",
+                "AI_FALLBACK_PROVIDER": "openrouter",
+                "AI_FALLBACK_GENERATOR_MODEL": "openrouter/free",
+                "AI_FALLBACK_CRITIC_MODEL": "openrouter/free",
+                "AI_FALLBACK_API_KEY": "openrouter-key",
+                "AI_FALLBACK_BASE_URL": "https://openrouter.ai/api/v1",
+            },
+            clear=True,
+        ):
+            loaded = daily_quiz.QuizConfig.from_env()
+
+        self.assertEqual(loaded.evidence_openrouter_api_key, "openrouter-key")
+        self.assertEqual(loaded.evidence_openrouter_model, "openrouter/free")
+        self.assertEqual(
+            loaded.evidence_openrouter_base_url,
+            "https://openrouter.ai/api/v1",
+        )
 
     def test_validator_rejects_invalid_question_shapes(self) -> None:
         cases: list[tuple[str, dict[str, object]]] = []
@@ -439,6 +538,7 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(len(payload["questions"]), 6)
         status = daily_quiz.quiz_status(self.conn, "2026-06-02")
         self.assertEqual(status["accepted_questions"], 6)
+        self.assertEqual(status["verified_questions"], 6)
         self.assertEqual(status["failed_attempts"], 2)
         self.assertTrue(
             any(
@@ -451,6 +551,11 @@ class DailyQuizTests(unittest.TestCase):
         self.assertNotIn("interesting_reason", public_question)
         self.assertNotIn("tags", public_question)
         self.assertNotIn("critic", public_question)
+        stored = self.conn.execute(
+            "SELECT evidence_json, verification_json FROM daily_quiz_questions LIMIT 1"
+        ).fetchone()
+        self.assertEqual(len(json.loads(stored["evidence_json"])), 2)
+        self.assertTrue(json.loads(stored["verification_json"])["passed"])
 
     def test_generation_keeps_quiz_generating_after_retry_limit(self) -> None:
         result = daily_quiz.generate_daily_quiz(
@@ -763,6 +868,85 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(payload["accepted_questions"], 0)
         self.assertFalse(payload["last_failure_transient"])
         self.assertIn("Critic payload invalid", payload["last_failure_reason"])
+
+    def test_generation_defers_when_evidence_search_is_unavailable(self) -> None:
+        with patch(
+            "daily_quiz.collect_question_evidence",
+            side_effect=daily_quiz.EvidenceSearchUnavailable(
+                "Evidence search unavailable: DNS lookup failed"
+            ),
+        ):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-09",
+                config=config(),
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertTrue(payload["last_failure_transient"])
+        self.assertIn("Evidence search unavailable", payload["last_failure_reason"])
+
+    def test_generation_rejects_question_with_no_supporting_evidence(self) -> None:
+        with patch("daily_quiz.collect_question_evidence", return_value=[]):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-10",
+                config=config(max_attempts=1),
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertFalse(payload["last_failure_transient"])
+        self.assertIn("no usable sources", payload["last_failure_reason"])
+        attempt = daily_quiz.question_attempts(self.conn, "2026-06-10")["attempts"][0]
+        self.assertEqual(attempt["evidence"], [])
+        self.assertFalse(attempt["verification"]["passed"])
+
+    def test_generation_defers_when_evidence_verifier_is_unavailable(self) -> None:
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-11",
+            config=config(),
+            provider=VerifierUnavailableProvider("gemini"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertTrue(payload["last_failure_transient"])
+        self.assertIn("Evidence verifier request failed", payload["last_failure_reason"])
+
+    def test_generation_rejects_invalid_evidence_verifier_payload(self) -> None:
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-12",
+            config=config(max_attempts=1),
+            provider=InvalidVerifierProvider("invalid-verifier"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertFalse(payload["last_failure_transient"])
+        self.assertIn("Evidence verifier payload invalid", payload["last_failure_reason"])
+
+    def test_manual_publish_rejects_unverified_questions(self) -> None:
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-06-13")
+        for subject in daily_quiz.SUBJECTS:
+            for difficulty in daily_quiz.DIFFICULTIES:
+                daily_quiz.save_question(
+                    self.conn,
+                    quiz_set_id=quiz_set["id"],
+                    question=valid_question(subject, difficulty),
+                )
+
+        with self.assertRaisesRegex(ValueError, "evidence verification"):
+            daily_quiz.publish_quiz(self.conn, "2026-06-13")
 
     def test_provider_chain_from_config_includes_openrouter_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
