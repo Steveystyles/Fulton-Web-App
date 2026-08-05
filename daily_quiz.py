@@ -449,6 +449,35 @@ def current_provider_name(provider: QuizAIProvider) -> str:
     return str(getattr(provider, "last_provider_name", getattr(provider, "name", "unknown")))
 
 
+def merge_question_evidence(
+    *evidence_groups: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    evidence_by_url: dict[str, dict[str, Any]] = {}
+    tier_rank = {"primary": 4, "reputable": 3, "reference": 2, "other": 1}
+    for item in (item for group in evidence_groups for item in group):
+        url = str(item.get("source_url") or "").casefold().rstrip("/")
+        if not url:
+            continue
+        existing = evidence_by_url.get(url)
+        if existing is None:
+            copied = dict(item)
+            evidence_by_url[url] = copied
+            merged.append(copied)
+            continue
+        for field, text_limit in (("snippet", 1800), ("excerpt", 4000)):
+            old_text = str(existing.get(field) or "").strip()
+            new_text = str(item.get(field) or "").strip()
+            if new_text and new_text.casefold() not in old_text.casefold():
+                existing[field] = f"{old_text} {new_text}".strip()[:text_limit]
+        old_tier = str(existing.get("tier") or "other")
+        new_tier = str(item.get("tier") or "other")
+        if tier_rank.get(new_tier, 0) > tier_rank.get(old_tier, 0):
+            existing["tier"] = new_tier
+    return merged[:limit]
+
+
 def configured_question_evidence(
     question: dict[str, Any],
     *,
@@ -481,54 +510,44 @@ def configured_question_evidence(
             )
         except EvidenceSearchUnavailable:
             return openrouter_evidence
-        merged_evidence: list[dict[str, Any]] = []
-        evidence_by_url: dict[str, dict[str, Any]] = {}
-        tier_rank = {"primary": 4, "reputable": 3, "reference": 2, "other": 1}
-        for item in [*openrouter_evidence, *wikipedia_evidence]:
-            url = str(item.get("source_url") or "").casefold().rstrip("/")
-            if not url:
-                continue
-            existing = evidence_by_url.get(url)
-            if existing is None:
-                copied = dict(item)
-                evidence_by_url[url] = copied
-                merged_evidence.append(copied)
-                continue
-            for field, limit in (("snippet", 1800), ("excerpt", 4000)):
-                old_text = str(existing.get(field) or "").strip()
-                new_text = str(item.get(field) or "").strip()
-                if new_text and new_text.casefold() not in old_text.casefold():
-                    existing[field] = f"{old_text} {new_text}".strip()[:limit]
-            old_tier = str(existing.get("tier") or "other")
-            new_tier = str(item.get("tier") or "other")
-            if tier_rank.get(new_tier, 0) > tier_rank.get(old_tier, 0):
-                existing["tier"] = new_tier
-        return merged_evidence[: max(12, config.evidence_max_results * 2)]
+        return merge_question_evidence(
+            openrouter_evidence,
+            wikipedia_evidence,
+            limit=max(12, config.evidence_max_results * 2),
+        )
     except EvidenceSearchUnavailable as openrouter_error:
         fallback_errors: list[str] = []
         fallback_timeout = min(config.evidence_search_timeout_sec, 12)
+        wikipedia_evidence: list[dict[str, Any]] = []
         try:
-            evidence = collect_wikipedia_question_evidence(
+            wikipedia_evidence = collect_wikipedia_question_evidence(
                 question,
                 timeout_sec=fallback_timeout,
                 max_results=config.evidence_max_results,
             )
-            if evidence:
-                return evidence
+            if wikipedia_evidence and precheck_question_evidence(
+                question,
+                wikipedia_evidence,
+            ).get("passed"):
+                return wikipedia_evidence
         except EvidenceSearchUnavailable as error:
             fallback_errors.append(str(error))
 
         try:
-            evidence = collect_question_evidence(
+            bing_evidence = collect_question_evidence(
                 question,
                 timeout_sec=min(fallback_timeout, 10),
                 max_results=config.evidence_max_results,
             )
-            if evidence:
-                return evidence
-            return []
+            return merge_question_evidence(
+                wikipedia_evidence,
+                bing_evidence,
+                limit=max(12, config.evidence_max_results * 2),
+            )
         except EvidenceSearchUnavailable as error:
             fallback_errors.append(str(error))
+            if wikipedia_evidence:
+                return wikipedia_evidence
 
         detail = " | ".join(fallback_errors)
         suffix = f" Fallbacks: {detail}" if detail else ""

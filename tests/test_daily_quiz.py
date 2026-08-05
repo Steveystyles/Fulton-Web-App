@@ -1027,6 +1027,50 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(len(payload["questions"]), 6)
         self.assertEqual(wikipedia_search.call_count, 6)
 
+    def test_capped_openrouter_supplements_incomplete_wikipedia_with_bing(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        question = valid_question()
+        wikipedia_evidence = supporting_evidence(question)[:1]
+        bing_evidence = [
+            {
+                **wikipedia_evidence[0],
+                "source_name": "Independent source",
+                "source_url": "https://example.org/independent-source",
+                "tier": "reputable",
+            }
+        ]
+        with (
+            patch(
+                "daily_quiz.collect_openrouter_question_evidence",
+                side_effect=daily_quiz.EvidenceSearchUnavailable(
+                    "OpenRouter evidence search failed with HTTP 429"
+                ),
+            ),
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                return_value=wikipedia_evidence,
+            ),
+            patch("daily_quiz.precheck_question_evidence", return_value={"passed": False}),
+            patch(
+                "daily_quiz.collect_question_evidence",
+                return_value=bing_evidence,
+            ) as bing_search,
+        ):
+            evidence = daily_quiz.configured_question_evidence(
+                question,
+                config=evidence_config,
+            )
+
+        self.assertEqual(len(evidence), 2)
+        self.assertEqual(bing_search.call_count, 1)
+
     def test_evidence_supplement_merges_longer_excerpt_for_duplicate_url(self) -> None:
         evidence_config = daily_quiz.QuizConfig(
             **{
