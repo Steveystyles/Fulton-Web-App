@@ -1274,6 +1274,42 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIn("RESOURCE_EXHAUSTED", detail)
         self.assertIn("Quota exceeded", detail)
 
+    def test_gemini_provider_retries_network_timeout(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "candidates": [
+                            {"content": {"parts": [{"text": '{"passed": true}'}]}}
+                        ]
+                    }
+                ).encode("utf-8")
+
+        provider = daily_quiz.GeminiProvider(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "transient_retries": 1,
+                    "request_delay_sec": 0,
+                }
+            )
+        )
+        with (
+            patch("daily_quiz.urlopen", side_effect=[TimeoutError("read timed out"), FakeResponse()]) as request,
+            patch.object(provider, "_defer_transient_retry") as retry,
+        ):
+            payload = provider._request("test-model", "Return a decision.", {})
+
+        self.assertEqual(payload, {"passed": True})
+        self.assertEqual(request.call_count, 2)
+        retry.assert_called_once_with(0)
+
     def test_provider_chain_reuses_primary_gemini_key_for_gemini_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
             daily_quiz.QuizConfig(

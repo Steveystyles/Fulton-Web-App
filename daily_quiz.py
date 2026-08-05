@@ -572,6 +572,9 @@ class GeminiProvider:
             retry_after_sec = max(retry_after_sec, float(retry_delay or 0))
         except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
             pass
+        self._defer_transient_retry(attempt, retry_after_sec=retry_after_sec)
+
+    def _defer_transient_retry(self, attempt: int, *, retry_after_sec: float = 0.0) -> None:
         delay = max(
             self.config.request_delay_sec,
             retry_after_sec,
@@ -640,6 +643,11 @@ class GeminiProvider:
                 detail = self._http_error_detail(error)
                 suffix = f": {detail}" if detail else "."
                 raise RuntimeError(f"Gemini request failed with HTTP {error.code}{suffix}") from error
+            except (TimeoutError, URLError) as error:
+                if attempt < self.config.transient_retries:
+                    self._defer_transient_retry(attempt)
+                    continue
+                raise RuntimeError(f"Gemini request failed: {error}") from error
         else:  # pragma: no cover - loop always exits through break or raise
             raise RuntimeError("Gemini request failed.")
         try:
