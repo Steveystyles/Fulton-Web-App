@@ -462,7 +462,7 @@ def configured_question_evidence(
         )
 
     try:
-        return collect_openrouter_question_evidence(
+        openrouter_evidence = collect_openrouter_question_evidence(
             question,
             api_key=config.evidence_openrouter_api_key,
             base_url=config.evidence_openrouter_base_url,
@@ -471,6 +471,25 @@ def configured_question_evidence(
             max_results=config.evidence_max_results,
             transient_retries=config.transient_retries,
         )
+        if precheck_question_evidence(question, openrouter_evidence).get("passed"):
+            return openrouter_evidence
+        try:
+            wikipedia_evidence = collect_wikipedia_question_evidence(
+                question,
+                timeout_sec=min(config.evidence_search_timeout_sec, 12),
+                max_results=config.evidence_max_results,
+            )
+        except EvidenceSearchUnavailable:
+            return openrouter_evidence
+        merged_evidence: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for item in [*openrouter_evidence, *wikipedia_evidence]:
+            url = str(item.get("source_url") or "").casefold().rstrip("/")
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            merged_evidence.append(item)
+        return merged_evidence[: max(12, config.evidence_max_results * 2)]
     except EvidenceSearchUnavailable as openrouter_error:
         fallback_errors: list[str] = []
         fallback_timeout = min(config.evidence_search_timeout_sec, 12)
