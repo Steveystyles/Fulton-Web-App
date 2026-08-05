@@ -482,13 +482,27 @@ def configured_question_evidence(
         except EvidenceSearchUnavailable:
             return openrouter_evidence
         merged_evidence: list[dict[str, Any]] = []
-        seen_urls: set[str] = set()
+        evidence_by_url: dict[str, dict[str, Any]] = {}
+        tier_rank = {"primary": 4, "reputable": 3, "reference": 2, "other": 1}
         for item in [*openrouter_evidence, *wikipedia_evidence]:
             url = str(item.get("source_url") or "").casefold().rstrip("/")
-            if not url or url in seen_urls:
+            if not url:
                 continue
-            seen_urls.add(url)
-            merged_evidence.append(item)
+            existing = evidence_by_url.get(url)
+            if existing is None:
+                copied = dict(item)
+                evidence_by_url[url] = copied
+                merged_evidence.append(copied)
+                continue
+            for field, limit in (("snippet", 1800), ("excerpt", 4000)):
+                old_text = str(existing.get(field) or "").strip()
+                new_text = str(item.get(field) or "").strip()
+                if new_text and new_text.casefold() not in old_text.casefold():
+                    existing[field] = f"{old_text} {new_text}".strip()[:limit]
+            old_tier = str(existing.get("tier") or "other")
+            new_tier = str(item.get("tier") or "other")
+            if tier_rank.get(new_tier, 0) > tier_rank.get(old_tier, 0):
+                existing["tier"] = new_tier
         return merged_evidence[: max(12, config.evidence_max_results * 2)]
     except EvidenceSearchUnavailable as openrouter_error:
         fallback_errors: list[str] = []

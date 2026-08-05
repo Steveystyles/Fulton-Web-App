@@ -1027,6 +1027,71 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(len(payload["questions"]), 6)
         self.assertEqual(wikipedia_search.call_count, 6)
 
+    def test_evidence_supplement_merges_longer_excerpt_for_duplicate_url(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        question = {
+            "question": "Which national team changed confederations in 2006?",
+            "correct_answer": "Australia",
+            "explanation": "Australia joined the AFC in 2006.",
+            "interesting_reason": (
+                "Australia won in 2015, becoming the only team to win two "
+                "confederation cups."
+            ),
+        }
+        shared_url = "https://en.wikipedia.org/wiki/Australia_national_team"
+        openrouter_evidence = [
+            {
+                "title": "Australia national team",
+                "source_name": "Wikipedia",
+                "source_url": shared_url,
+                "tier": "reference",
+                "snippet": "Australia joined the AFC in 2006.",
+                "excerpt": "Australia joined the AFC in 2006.",
+                "query": "Australia 2006",
+            }
+        ]
+        wikipedia_evidence = [
+            {
+                **openrouter_evidence[0],
+                "excerpt": (
+                    "Australia joined the AFC in 2006 and won in 2015, becoming the "
+                    "only team to win two confederation cups."
+                ),
+            },
+            {
+                **openrouter_evidence[0],
+                "source_name": "The Guardian",
+                "source_url": "https://www.theguardian.com/football/australia-2015",
+                "tier": "reputable",
+                "snippet": "Australia won the Asian Cup in 2015.",
+                "excerpt": "Australia won the Asian Cup in 2015.",
+            },
+        ]
+        with (
+            patch(
+                "daily_quiz.collect_openrouter_question_evidence",
+                return_value=openrouter_evidence,
+            ),
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                return_value=wikipedia_evidence,
+            ),
+        ):
+            evidence = daily_quiz.configured_question_evidence(
+                question,
+                config=evidence_config,
+            )
+
+        self.assertEqual(len(evidence), 2)
+        self.assertIn("won in 2015", evidence[0]["excerpt"])
+
     def test_generation_rejects_question_with_no_supporting_evidence(self) -> None:
         with patch("daily_quiz.collect_question_evidence", return_value=[]):
             payload = daily_quiz.generate_daily_quiz(
