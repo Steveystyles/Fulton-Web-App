@@ -1053,6 +1053,7 @@ def subject_prompt_guidance(subject: str, difficulty: str) -> str:
             [
                 "- Medium football questions can expect a regular fan to know the answer or infer it from strong options.",
                 "- Good medium topics include competition origins, famous managerial innovations, notable record-holders, and well-documented club or international milestones.",
+                "- A direct recall question that only gives a well-known nickname, badge, kit, or stadium is easy, not medium; require a less obvious connection or useful inference.",
             ]
         )
     else:
@@ -1141,6 +1142,8 @@ Assess the following question.
 
 Target subject: {subject}
 Target difficulty: {difficulty}
+
+{subject_prompt_guidance(subject, difficulty)}
 
 Question JSON:
 {json.dumps(question, indent=2)}

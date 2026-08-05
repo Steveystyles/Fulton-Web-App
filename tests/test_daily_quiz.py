@@ -798,6 +798,17 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIn('"tactics"', prompt)
         self.assertIn('"Failure 0"', prompt)
 
+    def test_football_critic_receives_medium_difficulty_guidance(self) -> None:
+        prompt = daily_quiz.critic_prompt(
+            "football",
+            "medium",
+            valid_question("football", "medium"),
+            [],
+        )
+
+        self.assertIn("direct recall question", prompt)
+        self.assertIn("easy, not medium", prompt)
+
     def test_prior_attempt_feedback_prefers_newest_failures(self) -> None:
         for index in range(7):
             daily_quiz.save_attempt(
