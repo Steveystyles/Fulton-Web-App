@@ -1121,6 +1121,8 @@ def subject_prompt_guidance(subject: str, difficulty: str) -> str:
             [
                 "- Hard football questions should be specialist but still fair and well documented.",
                 "- Prefer niche-but-verifiable history, tactics, or tournament trivia over microscopic dates or administrative trivia.",
+                "- Start from a documented event, incident, rule, tactical innovation, or explicitly published record; do not manufacture a statistical superlative to make a question hard.",
+                "- Do not use 'only', 'most', 'fewest', or similar uniqueness claims assembled from exclusions, cross-era format changes, or an inferred comparison of tournament records.",
             ]
         )
     return "\n".join(lines)

@@ -1212,6 +1212,14 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
         self.assertEqual([provider.name for provider in chain.providers], ["gemini", "openrouter"])
 
+    def test_hard_football_prompts_reject_inferred_statistical_superlatives(self) -> None:
+        generator = daily_quiz.generator_prompt("football", "hard", [], [])
+        critic = daily_quiz.critic_prompt("football", "hard", valid_question("football", "hard"), [])
+
+        for prompt in (generator, critic):
+            self.assertIn("do not manufacture a statistical superlative", prompt)
+            self.assertIn("cross-era format changes", prompt)
+
     def test_openai_compatible_provider_keeps_http_error_details(self) -> None:
         provider = daily_quiz.OpenAICompatibleProvider(
             daily_quiz.QuizConfig(
