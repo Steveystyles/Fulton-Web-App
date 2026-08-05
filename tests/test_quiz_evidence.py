@@ -117,6 +117,42 @@ class QuizEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence[1]["tier"], "reputable")
         self.assertTrue(quiz_evidence.precheck_question_evidence(question, evidence)["passed"])
 
+    def test_interesting_reason_claims_are_included_in_the_risk_profile(self) -> None:
+        question = {
+            "question": "Which national team moved from Oceania to Asia?",
+            "correct_answer": "Australia",
+            "explanation": "Australia joined the Asian confederation in 2006.",
+            "interesting_reason": (
+                "It became the first and only men's team to win continental titles "
+                "in two confederations."
+            ),
+        }
+
+        risk = quiz_evidence.question_risk_profile(question)
+
+        self.assertTrue(risk["high_risk"])
+        self.assertIn("first_or_earliest", risk["signals"])
+        self.assertIn("only_or_unique", risk["signals"])
+
+    def test_reputable_news_hosts_and_incidental_words_do_not_weaken_risk_checks(self) -> None:
+        question = {
+            "question": "Which national team moved confederations in 2006?",
+            "correct_answer": "Australia",
+            "explanation": "Australia joined the AFC in 2006.",
+            "interesting_reason": (
+                "Australia won the Asian Cup in 2015, making it the only men's national "
+                "team to win continental titles in two confederations."
+            ),
+        }
+
+        risk = quiz_evidence.question_risk_profile(question)
+
+        self.assertEqual(risk["claim_anchor_terms"], ["2006", "2015"])
+        self.assertEqual(
+            quiz_evidence.source_tier("https://www.theguardian.com/football/example"),
+            "reputable",
+        )
+
     def test_openrouter_search_retries_transient_http_failure(self) -> None:
         class FakeResponse:
             def __enter__(self) -> "FakeResponse":
@@ -396,7 +432,7 @@ class QuizEvidenceTests(unittest.TestCase):
             "question": "Which nation became the first to win five men's FIFA World Cups in 2002?",
             "correct_answer": "Brazil",
             "explanation": "Brazil became the first nation to win five men's FIFA World Cups in 2002.",
-            "interesting_reason": "The fifth title extended the competition's most famous record.",
+            "interesting_reason": "The 2002 victory was Brazil's fifth men's World Cup title.",
             "tags": ["football", "world cup"],
         }
         claim = "Brazil became the first nation to win five men's FIFA World Cups in 2002."

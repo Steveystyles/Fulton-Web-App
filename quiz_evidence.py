@@ -37,6 +37,7 @@ PRIMARY_SOURCE_HOSTS = (
 )
 
 REPUTABLE_SOURCE_HOSTS = (
+    "abc.net.au",
     "apnews.com",
     "bbc.co.uk",
     "bbc.com",
@@ -45,6 +46,8 @@ REPUTABLE_SOURCE_HOSTS = (
     "nationalgeographic.com",
     "phys.org",
     "reuters.com",
+    "smh.com.au",
+    "theguardian.com",
 )
 
 REFERENCE_SOURCE_HOSTS = (
@@ -82,6 +85,7 @@ STOP_WORDS = {
     "into",
     "known",
     "linked",
+    "making",
     "matches",
     "most",
     "only",
@@ -112,6 +116,7 @@ GENERIC_CLAIM_TERMS = {
     "event",
     "game",
     "match",
+    "national",
     "nation",
     "place",
     "player",
@@ -256,13 +261,14 @@ def collect_openrouter_question_evidence(
         raise EvidenceSearchUnavailable("OpenRouter web search has no API key.")
     claim = " ".join(
         str(question.get(field) or "").strip()
-        for field in ("question", "correct_answer", "explanation")
+        for field in ("question", "correct_answer", "explanation", "interesting_reason")
     ).strip()
     prompt = f"""Research this proposed quiz question using web search.
 
 Question: {question.get('question')}
 Proposed answer: {question.get('correct_answer')}
 Explanation: {question.get('explanation')}
+Interesting context: {question.get('interesting_reason')}
 
 Find reliable sources that explicitly support or contradict the exact material
 claim. Prioritize official institutions, governing bodies, universities, museums,
@@ -581,7 +587,7 @@ def relevant_text_score(value: Any, question: dict[str, Any]) -> int:
         )
     }
     text_tokens = {token_stem(token) for token in text.split()}
-    score = sum(1 for term in terms if term in text_tokens)
+    score = 2 * sum(1 for term in terms if term in text_tokens)
     probe = {
         "title": value,
         "snippet": value,
@@ -589,6 +595,13 @@ def relevant_text_score(value: Any, question: dict[str, Any]) -> int:
     }
     if evidence_mentions_answer(probe, question.get("correct_answer")):
         score += 12
+    claim_text = " ".join(
+        str(question.get(field) or "")
+        for field in ("question", "explanation", "interesting_reason")
+    )
+    for year in set(re.findall(r"\b(?:1[0-9]{3}|20[0-9]{2})\b", claim_text)):
+        if year in text:
+            score += 6
     for signal, pattern in RISK_PATTERNS.items():
         if pattern.search(str(question.get("question") or "")) and pattern.search(str(value)):
             score += 3 if signal in {"specific_year", "century_qualifier"} else 2
@@ -648,8 +661,9 @@ def question_search_queries(question: dict[str, Any]) -> list[str]:
     answer = clean_text(question.get("correct_answer"), 140).replace('"', "")
     prompt_words = substantive_words(question.get("question"), answer=answer)
     explanation_words = substantive_words(question.get("explanation"), answer=answer)
+    interesting_words = substantive_words(question.get("interesting_reason"), answer=answer)
     tag_words = substantive_words(" ".join(question.get("tags") or []), answer=answer, limit=5)
-    groups = [prompt_words, explanation_words, tag_words]
+    groups = [prompt_words, explanation_words, interesting_words, tag_words]
     queries: list[str] = []
     for words in groups:
         query = f'"{answer}" {" ".join(words)}'.strip()
@@ -657,7 +671,7 @@ def question_search_queries(question: dict[str, Any]) -> list[str]:
             queries.append(query)
     if answer and not queries:
         queries.append(f'"{answer}" fact history')
-    return queries[:3]
+    return queries[:4]
 
 
 def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
@@ -681,6 +695,11 @@ def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
         answer=answer,
         limit=40,
     )
+    interesting_words = substantive_words(
+        question.get("interesting_reason"),
+        answer=answer,
+        limit=40,
+    )
     explanation_stems = {token_stem(word) for word in explanation_words}
     repeated_words = [
         word
@@ -696,6 +715,7 @@ def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
         repeated_words[-8:],
         question_words[-7:],
         explanation_words[:7],
+        interesting_words[-8:],
     ]
     queries: list[str] = [topic_part] if topic_part else []
     for words in groups:
@@ -704,7 +724,7 @@ def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
             queries.append(query)
     if answer_part and answer_part not in queries:
         queries.append(answer_part)
-    return queries[:3]
+    return queries[:4]
 
 
 def wikipedia_search_query(question: dict[str, Any]) -> str:
@@ -781,19 +801,22 @@ def wikipedia_page_records(
         if len(selected_blocks) >= 2:
             break
 
+    selected_excerpts = [
+        clean_text(block.get("text"), 1200)
+        for block in selected_blocks
+        if len(clean_text(block.get("text"), 1200)) >= 40
+    ]
+    combined_excerpt = clean_text(" ".join(selected_excerpts), 2000)
     evidence: list[dict[str, str]] = []
-    for block in selected_blocks:
-        excerpt = clean_text(block.get("text"), 1200)
-        if len(excerpt) < 40:
-            continue
+    if combined_excerpt:
         evidence.append(
             {
                 "title": clean_text(parsed.get("displaytitle") or title, 220),
                 "source_name": "Wikipedia",
                 "source_url": article_url,
                 "tier": "reference",
-                "snippet": excerpt[:900],
-                "excerpt": excerpt,
+                "snippet": combined_excerpt[:900],
+                "excerpt": combined_excerpt,
                 "query": query,
             }
         )
@@ -829,8 +852,9 @@ def collect_wikipedia_question_evidence(
     queries = wikipedia_search_queries(question)
     if not queries:
         return []
-    search_results: list[tuple[str, str]] = []
+    search_results: list[tuple[int, int, str, str]] = []
     seen_titles: set[str] = set()
+    result_order = 0
     for query in queries:
         payload = wikipedia_api_payload(
             {
@@ -856,16 +880,17 @@ def collect_wikipedia_question_evidence(
             if not title or key in seen_titles:
                 continue
             seen_titles.add(key)
-            search_results.append((title, query))
-            if len(search_results) >= max(1, max_pages):
-                break
-        if len(search_results) >= max(1, max_pages):
-            break
+            result_text = f"{title} {clean_text(result.get('snippet'), 700)}"
+            search_results.append(
+                (relevant_text_score(result_text, question), -result_order, title, query)
+            )
+            result_order += 1
+    search_results.sort(reverse=True)
 
     evidence: list[dict[str, str]] = []
     references: list[dict[str, Any]] = []
     seen_article_urls: set[str] = set()
-    for title, query in search_results[: max(1, max_pages)]:
+    for _, _, title, query in search_results[: max(1, max_pages)]:
         try:
             page_evidence, page_references = wikipedia_page_records(
                 title,
@@ -1011,7 +1036,7 @@ def collect_question_evidence(
 def question_risk_profile(question: dict[str, Any]) -> dict[str, Any]:
     claim_text = " ".join(
         str(question.get(field) or "")
-        for field in ("question", "explanation")
+        for field in ("question", "explanation", "interesting_reason")
     )
     signals = [name for name, pattern in RISK_PATTERNS.items() if pattern.search(claim_text)]
     high_risk = any(
@@ -1035,7 +1060,10 @@ def question_risk_profile(question: dict[str, Any]) -> dict[str, Any]:
 
 
 def claim_anchor_terms(question: dict[str, Any], signals: list[str]) -> list[str]:
-    text = " ".join(str(question.get(field) or "") for field in ("question", "explanation"))
+    text = " ".join(
+        str(question.get(field) or "")
+        for field in ("question", "explanation", "interesting_reason")
+    )
     tokens = normalized_tokens(text)
     answer_tokens = set(normalized_tokens(question.get("correct_answer")))
     anchors: list[str] = []
@@ -1120,7 +1148,10 @@ def evidence_has_risk_signal(text: str, signals: list[str]) -> bool:
 
 
 def century_qualifier_failure(question: dict[str, Any], evidence: list[dict[str, Any]]) -> str | None:
-    claim_text = " ".join(str(question.get(field) or "") for field in ("question", "explanation"))
+    claim_text = " ".join(
+        str(question.get(field) or "")
+        for field in ("question", "explanation", "interesting_reason")
+    )
     match = re.search(
         r"\b(early|mid(?:dle)?|late)[ -]+([1-9]|1[0-9]|20)(?:st|nd|rd|th) century\b",
         claim_text,
