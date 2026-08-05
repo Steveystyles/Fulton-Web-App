@@ -379,6 +379,17 @@ class DailyQuizTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("volatile current fact", result.reason)
 
+    def test_validator_rejects_live_ranking_language(self) -> None:
+        question = valid_question(subject="football")
+        question["question"] = (
+            "Which national team consistently ranks among Europe's top-performing teams?"
+        )
+
+        result = daily_quiz.validate_question(question)
+
+        self.assertFalse(result.passed)
+        self.assertIn("volatile current fact", result.reason)
+
     def test_repetition_detects_normalized_duplicates(self) -> None:
         question = valid_question()
         previous = [{**question, "question": question["question"].upper().rstrip("?") + "!!!"}]

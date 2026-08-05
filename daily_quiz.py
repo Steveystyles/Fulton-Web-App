@@ -76,6 +76,9 @@ VOLATILE_FACT_TERMS = (
     "this season",
     "right now",
     "most recent",
+    "top-performing",
+    "ranks among",
+    "ranked among",
 )
 VOLATILE_FACT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
