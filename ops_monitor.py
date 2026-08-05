@@ -423,6 +423,8 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
         "tableCounts": {},
         "todayQuiz": None,
         "tomorrowQuiz": None,
+        "todayMap": None,
+        "tomorrowMap": None,
     }
     if not payload["dbExists"]:
         return payload
@@ -443,6 +445,8 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
             "daily_quiz_sets",
             "daily_quiz_questions",
             "daily_quiz_attempts",
+            "daily_map_puzzles",
+            "daily_map_levels",
             "quiz_results",
             "wordle_results",
         ):
@@ -523,6 +527,32 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
 
         payload["todayQuiz"] = quiz_preview(today_date)
         payload["tomorrowQuiz"] = quiz_preview(tomorrow_date)
+
+        def map_preview(puzzle_date: str) -> dict[str, Any]:
+            puzzle = conn.execute(
+                "SELECT id, status, failure_reason FROM daily_map_puzzles WHERE puzzle_date = ?",
+                (puzzle_date,),
+            ).fetchone()
+            if puzzle is None:
+                return {
+                    "date": puzzle_date,
+                    "status": "missing",
+                    "acceptedLevels": 0,
+                    "failureReason": None,
+                }
+            accepted_levels = conn.execute(
+                "SELECT COUNT(*) AS count FROM daily_map_levels WHERE puzzle_id = ?",
+                (puzzle["id"],),
+            ).fetchone()["count"]
+            return {
+                "date": puzzle_date,
+                "status": puzzle["status"],
+                "acceptedLevels": accepted_levels,
+                "failureReason": puzzle["failure_reason"],
+            }
+
+        payload["todayMap"] = map_preview(today_date)
+        payload["tomorrowMap"] = map_preview(tomorrow_date)
     finally:
         conn.close()
     return payload
@@ -748,6 +778,20 @@ def main() -> None:
         }
     )
 
+    for test_id, label, map_preview in (
+        ("today_map", "Today map", sqlite.get("todayMap") or {}),
+        ("tomorrow_map", "Tomorrow map", sqlite.get("tomorrowMap") or {}),
+    ):
+        map_status = str(map_preview.get("status") or "missing")
+        tests.append(
+            {
+                "id": test_id,
+                "label": label,
+                "status": "pass" if map_status == "published" else "fail",
+                "detail": f"{map_status} / accepted {map_preview.get('acceptedLevels', 0)}",
+            }
+        )
+
     tomorrow_quiz = sqlite.get("tomorrowQuiz") or {}
     tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
     tests.append(
@@ -783,6 +827,10 @@ def main() -> None:
         "quiz": {
             "today": sqlite.get("todayQuiz"),
             "tomorrow": sqlite.get("tomorrowQuiz"),
+        },
+        "map": {
+            "today": sqlite.get("todayMap"),
+            "tomorrow": sqlite.get("tomorrowMap"),
         },
         "tests": tests,
         "errors": errors,
@@ -2228,6 +2276,15 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
     accepted = int(tomorrow_quiz.get("acceptedQuestions") or 0)
     if quiz_status != "published":
         alerts.append(f"Tomorrow quiz is {quiz_status} with {accepted}/6 approved questions.")
+
+    map_payload = remote.get("map") if isinstance(remote.get("map"), dict) else {}
+    for label, key in (("Today", "today"), ("Tomorrow", "tomorrow")):
+        map_preview = map_payload.get(key) if isinstance(map_payload, dict) else {}
+        if not isinstance(map_preview, dict):
+            map_preview = {}
+        map_status = str(map_preview.get("status") or "missing")
+        if map_status != "published":
+            alerts.append(f"{label} map is {map_status}.")
 
     return alerts
 

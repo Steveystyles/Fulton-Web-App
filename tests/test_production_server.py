@@ -4257,6 +4257,67 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertIn("No learned hook passed", result["failureReason"])
 
+    def test_daily_map_generation_publishes_reviewed_fallback_after_ai_failure(self) -> None:
+        import daily_map_game
+        import server
+        from tools import install_map_reviewed_fallbacks
+
+        db_path = Path(self.temp_dir.name) / "map-generation-fallback.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+        install_map_reviewed_fallbacks.install_seed(
+            conn,
+            Path(__file__).resolve().parents[1]
+            / "deploy"
+            / "map-reviewed-fallbacks.json",
+        )
+        conn.commit()
+
+        with (
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ENABLED", True),
+            patch.object(server, "DAILY_MAP_AI_DISCOVER_COUNT", 0),
+            patch.object(server, "DAILY_MAP_STADIUM_LAUNCH_DATE", ""),
+            patch(
+                "server.map_clue_rewriter.ConfiguredMapClueProvider.from_env",
+                return_value=object(),
+            ),
+            patch(
+                "server.generate_ai_daily_map_round.generate_round",
+                side_effect=LookupError("No learned hook passed."),
+            ),
+        ):
+            result = server.generate_daily_map_game_for_date(
+                conn,
+                puzzle_date="2026-08-07",
+            )
+
+        self.assertEqual(result["status"], "published")
+        published = conn.execute(
+            """
+            SELECT map_place_pool.canonical_name
+            FROM daily_map_levels
+            INNER JOIN daily_map_puzzles
+                ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+            INNER JOIN map_place_pool
+                ON map_place_pool.id = daily_map_levels.place_id
+            WHERE daily_map_puzzles.puzzle_date = '2026-08-07'
+            """
+        ).fetchone()
+        self.assertIsNotNone(published)
+
+    def test_daily_map_prepares_two_days_ahead(self) -> None:
+        import server
+
+        now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+        with patch.object(server, "DAILY_MAP_PREPARE_DAYS_AHEAD", 2):
+            dates = server.active_daily_map_game_dates(now)
+
+        self.assertEqual(dates, ["2026-08-05", "2026-08-06", "2026-08-07"])
+
     def test_daily_map_launch_prefers_stadiums_for_first_three_rounds(self) -> None:
         import server
 

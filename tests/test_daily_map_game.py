@@ -8,6 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import daily_map_game
+from tools import install_map_reviewed_fallbacks
+
+
+REVIEWED_FALLBACKS_PATH = (
+    Path(__file__).resolve().parents[1] / "deploy" / "map-reviewed-fallbacks.json"
+)
 
 
 class DailyMapGameTests(unittest.TestCase):
@@ -223,6 +229,36 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "published")
         self.assertEqual(self.first_level()["canonical_name"], "London")
+
+    def test_daily_selection_honours_required_place_type(self) -> None:
+        install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
+        self.publish_named_level("Camp Nou", puzzle_date="2026-08-05")
+        self.publish_named_level("Stade de France", puzzle_date="2026-08-06")
+
+        selected = daily_map_game.select_daily_place(
+            self.conn,
+            "2026-08-07",
+            required_place_type="stadium",
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["canonical_name"], "Wembley Stadium")
+
+    def test_daily_selection_rotates_to_least_recent_reviewed_place(self) -> None:
+        install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
+        for puzzle_date, place_name in (
+            ("2026-08-01", "Terracotta Army"),
+            ("2026-08-02", "Canterbury Cathedral"),
+            ("2026-08-03", "Wembley Stadium"),
+            ("2026-08-04", "Stade de France"),
+            ("2026-08-05", "Camp Nou"),
+        ):
+            self.publish_named_level(place_name, puzzle_date=puzzle_date)
+
+        selected = daily_map_game.select_daily_place(self.conn, "2026-08-06")
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["canonical_name"], "Terracotta Army")
 
     def test_qa_generation_rejects_legacy_place_not_reviewed_under_current_profile(self) -> None:
         with patch.object(

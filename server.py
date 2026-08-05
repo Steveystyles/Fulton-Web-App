@@ -39,6 +39,7 @@ import ops_monitor
 from tools import generate_ai_daily_map_round
 from tools import build_map_selector_profile
 from tools import install_map_training_seed
+from tools import install_map_reviewed_fallbacks
 from tools import map_clue_quality_model
 from tools import map_selector_model
 from tools import refresh_map_learning_profile
@@ -109,6 +110,10 @@ DAILY_MAP_GAME_SCHEDULER_HOUR = int(
 )
 DAILY_MAP_GAME_SCHEDULER_MINUTE = int(
     os.environ.get("FULTONS_DAILY_MAP_GAME_SCHEDULER_MINUTE", "2")
+)
+DAILY_MAP_PREPARE_DAYS_AHEAD = max(
+    1,
+    min(7, int(os.environ.get("FULTONS_DAILY_MAP_PREPARE_DAYS_AHEAD", "2"))),
 )
 DAILY_MAP_GAME_RETRY_INTERVAL_SEC = max(
     60,
@@ -1012,6 +1017,8 @@ def internal_ops_summary_payload() -> dict[str, Any]:
             "daily_quiz_sets",
             "daily_quiz_questions",
             "daily_quiz_attempts",
+            "daily_map_puzzles",
+            "daily_map_levels",
             "quiz_results",
             "wordle_results",
         ):
@@ -1025,6 +1032,8 @@ def internal_ops_summary_payload() -> dict[str, Any]:
                 )
         today_quiz = ops_quiz_preview(conn, today_date)
         tomorrow_quiz = ops_quiz_preview(conn, tomorrow_date)
+        today_map = daily_map_game.puzzle_status(conn, today_date)
+        tomorrow_map = daily_map_game.puzzle_status(conn, tomorrow_date)
         user_count = db_user_count(conn)
 
     application_health = health_payload(storage)
@@ -1066,6 +1075,19 @@ def internal_ops_summary_payload() -> dict[str, Any]:
             "detail": f"{tomorrow_status} / accepted {tomorrow_quiz.get('acceptedQuestions', 0)}",
         }
     )
+    for test_id, label, map_status in (
+        ("today_map", "Today map", today_map),
+        ("tomorrow_map", "Tomorrow map", tomorrow_map),
+    ):
+        status = str(map_status.get("status") or "missing")
+        tests.append(
+            {
+                "id": test_id,
+                "label": label,
+                "status": "pass" if status == "published" else "fail",
+                "detail": f"{status} / accepted {map_status.get('acceptedLevels', 0)}",
+            }
+        )
     return {
         "ok": bool(storage["ok"]),
         "generatedAt": utc_now(),
@@ -1104,12 +1126,18 @@ def internal_ops_summary_payload() -> dict[str, Any]:
                 "tableCounts": table_counts,
                 "todayQuiz": today_quiz,
                 "tomorrowQuiz": tomorrow_quiz,
+                "todayMap": today_map,
+                "tomorrowMap": tomorrow_map,
                 "userCount": user_count,
             },
         },
         "quiz": {
             "today": today_quiz,
             "tomorrow": tomorrow_quiz,
+        },
+        "map": {
+            "today": today_map,
+            "tomorrow": tomorrow_map,
         },
         "tests": tests,
         "errors": [],
@@ -3465,8 +3493,10 @@ def active_daily_map_game_dates(now: datetime | None = None) -> list[str]:
     tz = server_timezone()
     local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
     today = local_now.date()
-    tomorrow = today + timedelta(days=1)
-    return [today.isoformat(), tomorrow.isoformat()]
+    return [
+        (today + timedelta(days=offset)).isoformat()
+        for offset in range(DAILY_MAP_PREPARE_DAYS_AHEAD + 1)
+    ]
 
 
 def daily_map_date_is_requestable(puzzle_date: str) -> bool:
@@ -3504,6 +3534,50 @@ def daily_map_launch_preferred_place_type(puzzle_date: str) -> str | None:
     if 0 <= launch_index < DAILY_MAP_STADIUM_LAUNCH_ROUNDS:
         return "stadium"
     return None
+
+
+def publish_reviewed_daily_map_fallback(
+    conn: sqlite3.Connection,
+    *,
+    puzzle_date: str,
+    required_place_type: str | None,
+    ai_failure_reason: str,
+) -> dict[str, Any]:
+    result = daily_map_game.generate_daily_map_game(
+        conn,
+        puzzle_date=puzzle_date,
+        force=True,
+        required_place_type=required_place_type,
+        log=lambda message: safe_log(f"Daily map fallback: {message}"),
+    )
+    if result.get("status") != "published" and required_place_type:
+        safe_log(
+            f"Daily map fallback has no unused {required_place_type} for {puzzle_date}; "
+            "trying any reviewed place."
+        )
+        result = daily_map_game.generate_daily_map_game(
+            conn,
+            puzzle_date=puzzle_date,
+            force=True,
+            log=lambda message: safe_log(f"Daily map fallback: {message}"),
+        )
+    if result.get("status") == "published":
+        safe_log(
+            f"Daily map fallback published a reviewed round for {puzzle_date} "
+            f"after AI failure: {ai_failure_reason}"
+        )
+        return result
+
+    fallback_reason = str(result.get("failureReason") or "No reviewed fallback was available.")
+    daily_map_game.set_puzzle_status(
+        conn,
+        puzzle_date,
+        "failed",
+        failure_reason=(
+            f"{ai_failure_reason}; reviewed fallback failed: {fallback_reason}"
+        ),
+    )
+    return daily_map_game.puzzle_status(conn, puzzle_date)
 
 
 def generate_daily_map_game_for_date(
@@ -3544,15 +3618,14 @@ def generate_daily_map_game_for_date(
                 f"{discovery['accepted_count']} eligible candidates for {normalized_date}."
             )
         except Exception as error:
-            daily_map_game.get_or_create_puzzle(conn, normalized_date)
-            daily_map_game.set_puzzle_status(
-                conn,
-                normalized_date,
-                "failed",
-                failure_reason=f"AI map discovery failed: {error}",
-            )
+            reason = f"AI map discovery failed: {error}"
             safe_log(f"Daily map AI discovery failed for {normalized_date}: {error}")
-            return daily_map_game.puzzle_status(conn, normalized_date)
+            return publish_reviewed_daily_map_fallback(
+                conn,
+                puzzle_date=normalized_date,
+                required_place_type=required_place_type,
+                ai_failure_reason=reason,
+            )
 
     try:
         provider = map_clue_rewriter.ConfiguredMapClueProvider.from_env()
@@ -3573,15 +3646,14 @@ def generate_daily_map_game_for_date(
         return dict(generated["publish_result"])
     except Exception as error:
         conn.rollback()
-        daily_map_game.get_or_create_puzzle(conn, normalized_date)
-        daily_map_game.set_puzzle_status(
-            conn,
-            normalized_date,
-            "failed",
-            failure_reason=f"AI map generation failed: {error}",
-        )
+        reason = f"AI map generation failed: {error}"
         safe_log(f"Daily map AI generation failed for {normalized_date}: {error}")
-        return daily_map_game.puzzle_status(conn, normalized_date)
+        return publish_reviewed_daily_map_fallback(
+            conn,
+            puzzle_date=normalized_date,
+            required_place_type=required_place_type,
+            ai_failure_reason=reason,
+        )
 
 
 def ensure_daily_map_game_dates(target_dates: list[str]) -> list[dict[str, Any]]:
@@ -8122,9 +8194,15 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                         )
                         return
                     with DAILY_MAP_GAME_OPERATION_LOCK:
-                        result = generate_daily_map_game_for_date(
+                        result = publish_reviewed_daily_map_fallback(
                             conn,
                             puzzle_date=puzzle_date,
+                            required_place_type=daily_map_launch_preferred_place_type(
+                                puzzle_date
+                            ),
+                            ai_failure_reason=(
+                                "No published map round was ready when the player requested it."
+                            ),
                         )
                     if result.get("status") != "published":
                         self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, result)
@@ -8688,6 +8766,22 @@ def run() -> None:
         f"feedback_rows_added={training_seed['feedback_rows_added']}"
     )
     initialize_database()
+    with closing(connect_db()) as conn:
+        with conn:
+            fallback_seed = install_map_reviewed_fallbacks.install_seed(
+                conn,
+                Path(
+                    os.environ.get(
+                        "FULTONS_MAP_REVIEWED_FALLBACKS_PATH",
+                        APP_DIR / "map-reviewed-fallbacks.json",
+                    )
+                ),
+            )
+    safe_log(
+        "Map reviewed fallbacks: "
+        f"added={len(fallback_seed['added'])}, "
+        f"existing={len(fallback_seed['existing'])}"
+    )
     assert_runtime_storage_ready("after database initialization")
     start_news_monitor()
     start_daily_quiz_scheduler()

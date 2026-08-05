@@ -1487,7 +1487,40 @@ def select_place(conn: sqlite3.Connection, puzzle_date: str, difficulty: str) ->
     return best_quality_place(rows, puzzle_date=puzzle_date)
 
 
-def select_daily_place(conn: sqlite3.Connection, puzzle_date: str) -> sqlite3.Row | None:
+def least_recently_used_rows(
+    conn: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    *,
+    puzzle_date: str,
+) -> list[sqlite3.Row]:
+    if len(rows) <= 1:
+        return rows
+    last_used: dict[int, str] = {}
+    for row in rows:
+        used = conn.execute(
+            """
+            SELECT MAX(daily_map_puzzles.puzzle_date)
+            FROM daily_map_levels
+            INNER JOIN daily_map_puzzles
+                ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+            WHERE daily_map_levels.place_id = ?
+              AND daily_map_puzzles.status = 'published'
+              AND daily_map_puzzles.puzzle_date < ?
+            """,
+            (row["id"], puzzle_date),
+        ).fetchone()[0]
+        last_used[int(row["id"])] = str(used or "")
+    oldest = min(last_used.values())
+    return [row for row in rows if last_used[int(row["id"])] == oldest]
+
+
+def select_daily_place(
+    conn: sqlite3.Connection,
+    puzzle_date: str,
+    *,
+    required_place_type: str | None = None,
+) -> sqlite3.Row | None:
+    normalized_place_type = str(required_place_type or "").strip().casefold()
     rows = conn.execute(
         """
         SELECT *
@@ -1495,6 +1528,7 @@ def select_daily_place(conn: sqlite3.Connection, puzzle_date: str) -> sqlite3.Ro
         WHERE active = 1
           AND clue_text <> ''
           AND reveal_text <> ''
+          AND (? = '' OR LOWER(place_type) = ?)
           AND (cooldown_until IS NULL OR cooldown_until < ?)
           AND id NOT IN (
               SELECT daily_map_levels.place_id
@@ -1506,7 +1540,13 @@ def select_daily_place(conn: sqlite3.Connection, puzzle_date: str) -> sqlite3.Ro
         )
         ORDER BY COALESCE(validation_grade, 0) DESC, id
         """,
-        (puzzle_date, recent_cutoff(puzzle_date), puzzle_date),
+        (
+            normalized_place_type,
+            normalized_place_type,
+            puzzle_date,
+            recent_cutoff(puzzle_date),
+            puzzle_date,
+        ),
     ).fetchall()
     row = best_quality_place(rows, puzzle_date=puzzle_date)
     if row is not None:
@@ -1518,10 +1558,16 @@ def select_daily_place(conn: sqlite3.Connection, puzzle_date: str) -> sqlite3.Ro
         WHERE active = 1
           AND clue_text <> ''
           AND reveal_text <> ''
+          AND (? = '' OR LOWER(place_type) = ?)
         ORDER BY COALESCE(validation_grade, 0) DESC, id
         """,
+        (normalized_place_type, normalized_place_type),
     ).fetchall()
-    return best_quality_place(rows, puzzle_date=puzzle_date)
+    quality_rows = [row for row in rows if row_passes_map_clue_quality(row)]
+    return best_quality_place(
+        least_recently_used_rows(conn, quality_rows, puzzle_date=puzzle_date),
+        puzzle_date=puzzle_date,
+    )
 
 
 def map_learning_profile_hash(path: str = DEFAULT_MAP_LEARNING_PROFILE_PATH) -> str:
@@ -1564,6 +1610,7 @@ def generate_daily_map_game(
     puzzle_date: str,
     force: bool = False,
     preferred_place_id: int | None = None,
+    required_place_type: str | None = None,
     require_current_profile_for_qa: bool = True,
     log: Any | None = None,
 ) -> dict[str, Any]:
@@ -1611,13 +1658,21 @@ def generate_daily_map_game(
             require_current_profile=require_current_profile_for_qa,
         )
         if preferred_place_id is not None
-        else select_daily_place(conn, puzzle_date)
+        else select_daily_place(
+            conn,
+            puzzle_date,
+            required_place_type=required_place_type,
+        )
     )
     if place is None:
         reason = (
             f"Requested QA map place {preferred_place_id} is unavailable or fails the clue quality gate."
             if preferred_place_id is not None
-            else "No active map-game place is available."
+            else (
+                f"No active {required_place_type} map-game place is available."
+                if required_place_type
+                else "No active map-game place is available."
+            )
         )
         set_puzzle_status(conn, puzzle_date, "failed", failure_reason=reason)
         if log is not None:
