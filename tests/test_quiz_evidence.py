@@ -47,6 +47,24 @@ class QuizEvidenceTests(unittest.TestCase):
         self.assertIn("billiard balls", queries[0])
         self.assertLessEqual(len(queries[0].split()), 10)
 
+    def test_wikipedia_queries_start_with_a_quoted_question_topic(self) -> None:
+        question = {
+            "question": (
+                "What function did researchers determine the 'Antikythera mechanism' "
+                "performed?"
+            ),
+            "correct_answer": "Predicting astronomical positions and eclipses",
+            "explanation": (
+                "The Antikythera mechanism was an astronomical calculator used to "
+                "predict positions and eclipses."
+            ),
+        }
+
+        queries = quiz_evidence.wikipedia_search_queries(question)
+
+        self.assertEqual(queries[0], '"Antikythera mechanism"')
+        self.assertNotIn('"Predicting astronomical positions and eclipses"', queries[1])
+
     def test_wikipedia_fallback_follows_the_selected_passage_citation(self) -> None:
         question = {
             "question": (

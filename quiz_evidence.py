@@ -662,6 +662,15 @@ def question_search_queries(question: dict[str, Any]) -> list[str]:
 
 def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
     answer = clean_text(question.get("correct_answer"), 140).replace('"', "")
+    answer_words = substantive_words(answer, limit=10)
+    quoted_topics = [
+        clean_text(topic, 80)
+        for topic in re.findall(
+            r"['\"]([^'\"]{3,80})['\"]",
+            str(question.get("question") or ""),
+        )
+    ][:2]
+    topic_part = " ".join(f'"{topic}"' for topic in quoted_topics if topic)
     question_words = substantive_words(
         question.get("question"),
         answer=answer,
@@ -678,18 +687,22 @@ def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
         for word in question_words
         if token_stem(word) in explanation_stems
     ]
-    answer_part = f'"{answer}"' if answer else ""
+    answer_part = (
+        f'"{answer}"'
+        if answer and len(answer_words) <= 3 and len(answer) <= 60
+        else " ".join(answer_words)
+    )
     groups = [
         repeated_words[-8:],
         question_words[-7:],
         explanation_words[:7],
     ]
-    queries: list[str] = []
+    queries: list[str] = [topic_part] if topic_part else []
     for words in groups:
-        query = clean_text(f"{answer_part} {' '.join(words)}", 300)
+        query = clean_text(f"{topic_part} {' '.join(words)} {answer_part}", 300)
         if words and query not in queries:
             queries.append(query)
-    if answer and not queries:
+    if answer_part and answer_part not in queries:
         queries.append(answer_part)
     return queries[:3]
 
