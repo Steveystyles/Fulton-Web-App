@@ -445,7 +445,24 @@ class DailyQuizTests(unittest.TestCase):
         result = daily_quiz.check_repetition(question, previous)
 
         self.assertFalse(result.passed)
-        self.assertIn("quiz slot", result.reason)
+        self.assertIn("quiz subject", result.reason)
+
+    def test_repetition_rejects_recent_answer_at_different_difficulty(self) -> None:
+        question = {
+            **valid_question(subject="football", difficulty="easy"),
+            "correct_answer": "Australia",
+        }
+        previous = [
+            {
+                **valid_question(subject="football", difficulty="medium"),
+                "correct_answer": "Australia",
+            }
+        ]
+
+        result = daily_quiz.check_repetition(question, previous)
+
+        self.assertFalse(result.passed)
+        self.assertIn("quiz subject", result.reason)
 
     def test_repetition_rejects_answer_with_generic_qualifier_removed(self) -> None:
         question = {
@@ -464,7 +481,7 @@ class DailyQuizTests(unittest.TestCase):
         result = daily_quiz.check_repetition(question, previous)
 
         self.assertFalse(result.passed)
-        self.assertIn("quiz slot", result.reason)
+        self.assertIn("quiz subject", result.reason)
 
     def test_repetition_rejects_answer_already_used_in_same_quiz(self) -> None:
         question = valid_question(difficulty="medium")

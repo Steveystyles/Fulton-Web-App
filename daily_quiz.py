@@ -1848,23 +1848,21 @@ def check_repetition(
             return RepetitionResult(False, "Question is too similar to a recent accepted question.")
         if correct_answer == normalize_answer(previous["correct_answer"]):
             answer_count += 1
+            if reject_any_repeated_answer:
+                return RepetitionResult(False, "Correct answer already appears in this quiz set.")
             if (
                 normalize_text(question.get("subject", ""))
                 == normalize_text(previous.get("subject", ""))
-                and normalize_text(question.get("difficulty", ""))
-                == normalize_text(previous.get("difficulty", ""))
             ):
                 return RepetitionResult(
                     False,
-                    "Correct answer already appeared recently in this quiz slot.",
+                    "Correct answer already appeared recently in this quiz subject.",
                 )
         for tag in previous.get("tags", []):
             clean_tag = normalize_text(str(tag))
             if clean_tag and not is_generic_topic_tag(clean_tag):
                 topic_counts[clean_tag] = topic_counts.get(clean_tag, 0) + 1
 
-    if reject_any_repeated_answer and answer_count >= 1:
-        return RepetitionResult(False, "Correct answer already appears in this quiz set.")
     if answer_count >= 2:
         return RepetitionResult(False, "Correct answer has already appeared too often recently.")
     for tag in question["tags"]:
