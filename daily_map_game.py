@@ -1548,6 +1548,7 @@ def select_daily_place(
             puzzle_date,
         ),
     ).fetchall()
+    rows = [row for row in rows if row_has_playable_map_guidance(row)]
     row = best_quality_place(rows, puzzle_date=puzzle_date)
     if row is not None:
         return row
@@ -1563,7 +1564,11 @@ def select_daily_place(
         """,
         (normalized_place_type, normalized_place_type),
     ).fetchall()
-    quality_rows = [row for row in rows if row_passes_map_clue_quality(row)]
+    quality_rows = [
+        row
+        for row in rows
+        if row_passes_map_clue_quality(row) and row_has_playable_map_guidance(row)
+    ]
     return best_quality_place(
         least_recently_used_rows(conn, quality_rows, puzzle_date=puzzle_date),
         puzzle_date=puzzle_date,
@@ -1595,7 +1600,11 @@ def selected_qa_place(
         """,
         (place_id,),
     ).fetchone()
-    if row is None or not row_passes_map_clue_quality(row):
+    if (
+        row is None
+        or not row_passes_map_clue_quality(row)
+        or not row_has_playable_map_guidance(row)
+    ):
         return None
     if require_current_profile:
         current_profile_hash = map_learning_profile_hash()
@@ -3971,6 +3980,37 @@ def serialize_map_boundary(value: object) -> dict[str, Any] | None:
     return boundary if len(encoded) <= 250_000 else None
 
 
+def map_guidance_circle(
+    *,
+    lat: float,
+    lng: float,
+    radius_m: float,
+    steps: int = 64,
+) -> dict[str, Any]:
+    earth_radius_m = 6_371_008.8
+    angular_distance = radius_m / earth_radius_m
+    center_lat = math.radians(lat)
+    center_lng = math.radians(lng)
+    point_count = max(16, min(128, int(steps)))
+    ring: list[list[float]] = []
+    for step in range(point_count):
+        bearing = 2 * math.pi * step / point_count
+        point_lat = math.asin(
+            math.sin(center_lat) * math.cos(angular_distance)
+            + math.cos(center_lat)
+            * math.sin(angular_distance)
+            * math.cos(bearing)
+        )
+        point_lng = center_lng + math.atan2(
+            math.sin(bearing) * math.sin(angular_distance) * math.cos(center_lat),
+            math.cos(angular_distance)
+            - math.sin(center_lat) * math.sin(point_lat),
+        )
+        ring.append([math.degrees(point_lng), math.degrees(point_lat)])
+    ring.append(ring[0])
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
 def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
     anchors: list[dict[str, Any]] = []
     for item in parse_json_list(value):
@@ -3996,6 +4036,18 @@ def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
             "maxZoom": normalized_max_zoom,
         }
         boundary = serialize_map_boundary(item.get("boundary"))
+        if boundary is None:
+            try:
+                guidance_radius_m = float(item.get("guidance_radius_m") or 0)
+            except (TypeError, ValueError):
+                guidance_radius_m = 0
+            if math.isfinite(guidance_radius_m) and 1_000 <= guidance_radius_m <= 500_000:
+                boundary = map_guidance_circle(
+                    lat=lat,
+                    lng=lng,
+                    radius_m=guidance_radius_m,
+                )
+                item = {**item, "boundary_kind": "guidance"}
         if boundary is not None:
             boundary_kind = str(item.get("boundary_kind") or "administrative").strip()
             if boundary_kind not in {"administrative", "guidance"}:
@@ -4009,6 +4061,28 @@ def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
             anchor["boundaryMinZoom"] = min(19, max(1, boundary_min_zoom))
         anchors.append(anchor)
     return anchors[:3]
+
+
+def row_has_playable_map_guidance(row: sqlite3.Row | dict[str, Any]) -> bool:
+    try:
+        canonical_name = str(row["canonical_name"] or "").strip()
+        anchors = serialize_map_search_anchors(row["map_search_anchors_json"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+    if not canonical_name or not anchors:
+        return False
+    has_drawable_area = any(
+        anchor.get("boundary") is not None and int(anchor.get("minHintCount", 3)) <= 2
+        for anchor in anchors
+    )
+    canonical_key = normalized_place_name(canonical_name)
+    has_easy_target = any(
+        int(anchor.get("minHintCount", 0)) == 2
+        and normalized_place_name(anchor.get("name")) == canonical_key
+        and int(anchor.get("minZoom", 19)) >= 10
+        for anchor in anchors
+    )
+    return has_drawable_area and has_easy_target
 
 
 def reverse_geocode_zoom_for_level(level_slug: str, map_zoom: float | None) -> int:

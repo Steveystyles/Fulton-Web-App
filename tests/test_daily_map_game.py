@@ -102,6 +102,7 @@ class DailyMapGameTests(unittest.TestCase):
                 validation_grade = 10,
                 verified_facts_json = ?,
                 nearby_context = ?,
+                map_search_anchors_json = ?,
                 clue_text = ?,
                 medium_clue_text = ?,
                 easy_clue_text = ?,
@@ -112,6 +113,27 @@ class DailyMapGameTests(unittest.TestCase):
             (
                 json.dumps(facts),
                 "Westminster, River Thames, central London",
+                json.dumps(
+                    [
+                        {
+                            "name": "London",
+                            "lat": 51.5074,
+                            "lng": -0.1278,
+                            "min_hint_count": 1,
+                            "min_zoom": 4,
+                            "max_zoom": 9,
+                            "guidance_radius_m": 45_000,
+                        },
+                        {
+                            "name": "London",
+                            "lat": 51.5074,
+                            "lng": -0.1278,
+                            "min_hint_count": 2,
+                            "min_zoom": 12,
+                            "max_zoom": 19,
+                        },
+                    ]
+                ),
                 "Guy Fawkes was arrested beneath Parliament here in 1605 while guarding gunpowder intended to kill King James I.",
                 "This English capital is home to the monarchy and the world's oldest underground railway.",
                 "Look within Westminster, beside the Thames, around Parliament and its famous clock tower.",
@@ -229,6 +251,25 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "published")
         self.assertEqual(self.first_level()["canonical_name"], "London")
+
+    def test_generation_rejects_place_without_playable_map_guidance(self) -> None:
+        self.conn.execute("UPDATE map_place_pool SET active = 0")
+        london_id = self.make_london_quality_ready()
+        self.conn.execute(
+            "UPDATE map_place_pool SET active = 1, map_search_anchors_json = '[]' "
+            "WHERE id = ?",
+            (london_id,),
+        )
+
+        with patch.object(daily_map_game, "initialize_database", return_value=None):
+            status = daily_map_game.generate_daily_map_game(
+                self.conn,
+                puzzle_date="2026-07-13",
+                log=lambda _: None,
+            )
+
+        self.assertEqual(status["status"], "failed")
+        self.assertIn("No active map-game place", status["failureReason"])
 
     def test_daily_selection_honours_required_place_type(self) -> None:
         install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)

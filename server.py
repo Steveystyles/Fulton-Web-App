@@ -8780,6 +8780,7 @@ def run() -> None:
     safe_log(
         "Map reviewed fallbacks: "
         f"added={len(fallback_seed['added'])}, "
+        f"updated={len(fallback_seed['updated'])}, "
         f"existing={len(fallback_seed['existing'])}"
     )
     assert_runtime_storage_ready("after database initialization")

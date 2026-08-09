@@ -43,7 +43,7 @@
         "clue_generation_source": "human_qa",
         "clue_profile_hash": "1a7c5f233c7bb0d8",
         "clue_critic_mode": "human",
-        "map_search_anchors_json": "[{\"name\": \"Xi'an\", \"lat\": 34.261004, \"lng\": 108.9423363, \"min_hint_count\": 1}]"
+        "map_search_anchors_json": "[{\"name\":\"Xi'an\",\"lat\":34.261004,\"lng\":108.9423363,\"min_hint_count\":1,\"min_zoom\":4,\"max_zoom\":9,\"guidance_radius_m\":65000,\"boundary_kind\":\"guidance\",\"boundary_min_zoom\":4},{\"name\":\"Terracotta Army\",\"lat\":34.3853,\"lng\":109.273,\"min_hint_count\":2,\"min_zoom\":12,\"max_zoom\":19}]"
       }
     },
     {
