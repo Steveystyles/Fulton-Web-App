@@ -1246,6 +1246,20 @@ class MapPlaceCandidateGenerationTests(unittest.TestCase):
         self.assertEqual(stored["active"], 1)
         self.assertEqual(len(json.loads(stored["verified_facts_json"])), 3)
 
+    def test_reviewed_only_name_is_inserted_instead_of_treated_as_pool_retry(self) -> None:
+        rows, rejected = generator.validated_review_rows(
+            [valid_candidate()],
+            existing_names={generator.normalized_name("Blackpool Tower")},
+            retry_target_names=set(),
+            selector_profile={},
+            allow_known_retries=True,
+        )
+
+        self.assertFalse(rejected)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "ai_candidate")
+        self.assertFalse(rows[0]["existing_retry"])
+
     def test_insert_draft_rows_refreshes_known_retry_without_moving_target(self) -> None:
         initial_rows, rejected = generator.validated_review_rows(
             [valid_candidate()],

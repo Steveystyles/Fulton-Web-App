@@ -823,6 +823,7 @@ def validated_review_rows(
     *,
     existing_names: set[str],
     selector_profile: dict[str, Any],
+    retry_target_names: set[str] | None = None,
     excluded_place_types: set[str] | None = None,
     allow_known_retries: bool = False,
     blocked_names: set[str] | None = None,
@@ -848,7 +849,8 @@ def validated_review_rows(
             rejected.append({"candidate": raw, "reasons": [str(error)]})
             continue
         normalized_variants = normalized_name_variants(row["canonical_name"])
-        is_known_retry = name_variants_overlap(normalized_variants, existing_names)
+        retry_names = existing_names if retry_target_names is None else retry_target_names
+        is_known_retry = name_variants_overlap(normalized_variants, retry_names)
         if reasons:
             rejected.append({"candidate": raw, "row": row, "reasons": reasons})
             continue
@@ -1237,6 +1239,7 @@ def generate_review_batch(
         selector_model = map_selector_model.load_model()
         clue_quality_model_payload = map_clue_quality_model.load_model()
         existing_names = existing_place_names(conn)
+        retry_target_names = set(existing_names)
         existing_context = existing_place_context(conn)
         existing_name_list = existing_place_name_examples(conn)
         reviewed_names = reviewed_feedback_place_names(feedback_dir)
@@ -1280,6 +1283,7 @@ def generate_review_batch(
                 raw,
                 existing_names=existing_names,
                 selector_profile=selector_profile,
+                retry_target_names=retry_target_names,
                 excluded_place_types=excluded_place_types,
                 allow_known_retries=allow_known_retries,
                 blocked_names=blocked_names,
