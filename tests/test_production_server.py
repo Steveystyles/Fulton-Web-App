@@ -4217,11 +4217,76 @@ class ProductionServerHardeningTests(unittest.TestCase):
             puzzle_date="2026-07-29",
             count=4,
             max_attempts=2,
+            excluded_names=set(),
             required_place_type=None,
         )
         self.assertEqual(generate.call_args.kwargs["eligible_place_ids"], {42})
         self.assertEqual(generate.call_args.kwargs["eligible_names"], {"fresh stadium"})
         self.assertIsNone(generate.call_args.kwargs["required_place_type"])
+
+    def test_daily_map_scheduler_discovers_fresh_batch_after_generation_rejection(self) -> None:
+        import daily_map_game
+        import server
+
+        db_path = Path(self.temp_dir.name) / "fultons.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+        provider = object()
+        generated = {
+            "place": "Second Stadium",
+            "learning_profile_hash": "profile-hash",
+            "critic_mode": "ai",
+            "publish_result": {"date": "2026-07-29", "status": "published"},
+        }
+
+        with (
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ENABLED", True),
+            patch.object(server, "DAILY_MAP_AI_DISCOVER_COUNT", 4),
+            patch.object(server, "DAILY_MAP_AI_DISCOVERY_ATTEMPTS", 2),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ROUNDS", 2),
+            patch(
+                "server.map_clue_rewriter.ConfiguredMapClueProvider.from_env",
+                return_value=provider,
+            ),
+            patch(
+                "server.generate_ai_daily_map_round.discover_uncurated_candidates",
+                side_effect=[
+                    {
+                        "accepted_count": 1,
+                        "candidate_place_ids": [41],
+                        "candidate_names": ["first stadium"],
+                    },
+                    {
+                        "accepted_count": 1,
+                        "candidate_place_ids": [42],
+                        "candidate_names": ["second stadium"],
+                    },
+                ],
+            ) as discover,
+            patch(
+                "server.generate_ai_daily_map_round.generate_round",
+                side_effect=[LookupError("First batch failed quality gates."), generated],
+            ) as generate,
+        ):
+            result = server.generate_daily_map_game_for_date(
+                conn,
+                puzzle_date="2026-07-29",
+            )
+
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(discover.call_count, 2)
+        self.assertEqual(discover.call_args_list[0].kwargs["excluded_names"], set())
+        self.assertEqual(
+            discover.call_args_list[1].kwargs["excluded_names"],
+            {"first stadium"},
+        )
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(generate.call_args_list[0].kwargs["eligible_place_ids"], {41})
+        self.assertEqual(generate.call_args_list[1].kwargs["eligible_place_ids"], {42})
 
     def test_daily_map_generation_reports_original_failure_after_schema_initialization(self) -> None:
         import daily_map_game

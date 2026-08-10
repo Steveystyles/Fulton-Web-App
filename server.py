@@ -142,6 +142,10 @@ DAILY_MAP_AI_DISCOVERY_ATTEMPTS = max(
     1,
     int(os.environ.get("FULTONS_DAILY_MAP_AI_DISCOVERY_ATTEMPTS", "2")),
 )
+DAILY_MAP_AI_GENERATION_ROUNDS = max(
+    1,
+    min(6, int(os.environ.get("FULTONS_DAILY_MAP_AI_GENERATION_ROUNDS", "3"))),
+)
 DAILY_MAP_STADIUM_LAUNCH_DATE = os.environ.get(
     "FULTONS_DAILY_MAP_STADIUM_LAUNCH_DATE", ""
 ).strip()
@@ -3601,63 +3605,97 @@ def generate_daily_map_game_for_date(
             log=lambda message: safe_log(f"Daily map game: {message}"),
         )
 
-    eligible_place_ids: set[int] | None = None
-    eligible_names: set[str] | None = None
-    if DAILY_MAP_AI_DISCOVER_COUNT > 0:
-        try:
-            discovery = generate_ai_daily_map_round.discover_uncurated_candidates(
-                db_path=DB_PATH,
-                provider=map_clue_rewriter.ConfiguredMapClueProvider.from_env(),
-                puzzle_date=normalized_date,
-                count=DAILY_MAP_AI_DISCOVER_COUNT,
-                max_attempts=DAILY_MAP_AI_DISCOVERY_ATTEMPTS,
-                required_place_type=required_place_type,
-            )
-            eligible_place_ids = set(discovery.get("candidate_place_ids") or []) or None
-            eligible_names = set(discovery["candidate_names"])
-            safe_log(
-                "Daily map AI: discovered "
-                f"{discovery['accepted_count']} eligible candidates "
-                f"({len(eligible_place_ids or [])} resolved places) for {normalized_date}."
-            )
-        except Exception as error:
-            reason = f"AI map discovery failed: {error}"
-            safe_log(f"Daily map AI discovery failed for {normalized_date}: {error}")
-            return publish_reviewed_daily_map_fallback(
-                conn,
-                puzzle_date=normalized_date,
-                required_place_type=required_place_type,
-                ai_failure_reason=reason,
-            )
-
     try:
         provider = map_clue_rewriter.ConfiguredMapClueProvider.from_env()
-        generated = generate_ai_daily_map_round.generate_round(
-            conn,
-            provider=provider,
-            puzzle_date=normalized_date,
-            shortlist_limit=DAILY_MAP_AI_SHORTLIST_LIMIT,
-            max_clue_attempts=DAILY_MAP_AI_MAX_CLUE_ATTEMPTS,
-            eligible_place_ids=eligible_place_ids,
-            eligible_names=eligible_names,
-            required_place_type=required_place_type,
-        )
-        safe_log(
-            "Daily map AI: selected "
-            f"{generated['place']} with profile {generated['learning_profile_hash']} "
-            f"and {generated['critic_mode']} criticism."
-        )
-        return dict(generated["publish_result"])
     except Exception as error:
-        conn.rollback()
-        reason = f"AI map generation failed: {error}"
-        safe_log(f"Daily map AI generation failed for {normalized_date}: {error}")
+        reason = f"AI map provider failed: {error}"
+        safe_log(f"Daily map AI provider failed for {normalized_date}: {error}")
         return publish_reviewed_daily_map_fallback(
             conn,
             puzzle_date=normalized_date,
             required_place_type=required_place_type,
             ai_failure_reason=reason,
         )
+
+    generation_rounds = (
+        DAILY_MAP_AI_GENERATION_ROUNDS if DAILY_MAP_AI_DISCOVER_COUNT > 0 else 1
+    )
+    excluded_discovery_names: set[str] = set()
+    generation_failures: list[str] = []
+    for generation_round in range(1, generation_rounds + 1):
+        eligible_place_ids: set[int] | None = None
+        eligible_names: set[str] | None = None
+        if DAILY_MAP_AI_DISCOVER_COUNT > 0:
+            try:
+                discovery = generate_ai_daily_map_round.discover_uncurated_candidates(
+                    db_path=DB_PATH,
+                    provider=provider,
+                    puzzle_date=normalized_date,
+                    count=DAILY_MAP_AI_DISCOVER_COUNT,
+                    max_attempts=DAILY_MAP_AI_DISCOVERY_ATTEMPTS,
+                    excluded_names=set(excluded_discovery_names),
+                    required_place_type=required_place_type,
+                )
+                eligible_place_ids = set(discovery.get("candidate_place_ids") or []) or None
+                eligible_names = set(discovery["candidate_names"])
+                safe_log(
+                    "Daily map AI: discovered "
+                    f"{discovery['accepted_count']} eligible candidates "
+                    f"({len(eligible_place_ids or [])} resolved places) for {normalized_date} "
+                    f"on generation round {generation_round}/{generation_rounds}."
+                )
+            except Exception as error:
+                generation_failures.append(f"discovery round {generation_round}: {error}")
+                safe_log(
+                    f"Daily map AI discovery failed for {normalized_date} on round "
+                    f"{generation_round}/{generation_rounds}: {error}"
+                )
+                break
+
+        try:
+            generated = generate_ai_daily_map_round.generate_round(
+                conn,
+                provider=provider,
+                puzzle_date=normalized_date,
+                shortlist_limit=DAILY_MAP_AI_SHORTLIST_LIMIT,
+                max_clue_attempts=DAILY_MAP_AI_MAX_CLUE_ATTEMPTS,
+                eligible_place_ids=eligible_place_ids,
+                eligible_names=eligible_names,
+                required_place_type=required_place_type,
+            )
+            safe_log(
+                "Daily map AI: selected "
+                f"{generated['place']} with profile {generated['learning_profile_hash']} "
+                f"and {generated['critic_mode']} criticism on generation round "
+                f"{generation_round}/{generation_rounds}."
+            )
+            return dict(generated["publish_result"])
+        except Exception as error:
+            conn.rollback()
+            generation_failures.append(f"generation round {generation_round}: {error}")
+            safe_log(
+                f"Daily map AI generation failed for {normalized_date} on round "
+                f"{generation_round}/{generation_rounds}: {error}"
+            )
+            excluded_discovery_names.update(eligible_names or set())
+            if generation_round < generation_rounds:
+                safe_log(
+                    f"Daily map AI: rejecting that candidate batch and discovering fresh "
+                    f"places for {normalized_date}."
+                )
+
+    failure_count = len(generation_failures)
+    final_failure = generation_failures[-1] if generation_failures else "unknown failure"
+    reason = (
+        f"AI map generation exhausted {failure_count} failed round(s); "
+        f"last failure: {final_failure}"
+    )
+    return publish_reviewed_daily_map_fallback(
+        conn,
+        puzzle_date=normalized_date,
+        required_place_type=required_place_type,
+        ai_failure_reason=reason,
+    )
 
 
 def ensure_daily_map_game_dates(target_dates: list[str]) -> list[dict[str, Any]]:
