@@ -541,6 +541,22 @@ class AiDailyMapRoundTests(unittest.TestCase):
 
         self.assertEqual(selected["place_id"], 43)
 
+    def test_learned_selector_does_not_let_legacy_heuristic_veto_a_strong_model_score(self) -> None:
+        hooks = [
+            {
+                "hook_id": "42:strong",
+                "place_id": 42,
+                "place": "Strong Learned Candidate",
+                "learned_score": 7.924,
+                "learned_confidence": 0.947,
+                "selector_score": 75,
+            }
+        ]
+
+        selected, _reason = generate_ai_daily_map_round.choose_learned_hard_hook(hooks)
+
+        self.assertEqual(selected["place_id"], 42)
+
     def test_learned_selector_fails_closed_when_only_niche_hooks_remain(self) -> None:
         with self.assertRaisesRegex(LookupError, "minimum human-learned recognisability"):
             generate_ai_daily_map_round.choose_learned_hard_hook(

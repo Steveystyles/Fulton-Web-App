@@ -29,7 +29,7 @@ DEFAULT_REPORT_DIR = PROJECT_DIR / "data" / "training"
 DEFAULT_EVENT_BRIEF_CACHE_PATH = DEFAULT_REPORT_DIR / "map_event_brief_cache.json"
 MIN_RESEARCHABLE_HARD_HOOKS = 1
 MIN_RECOGNISABILITY_LEARNED_SCORE = 4.9
-MIN_RECOGNISABILITY_SELECTOR_SCORE = 80
+MIN_RECOGNISABILITY_LEARNED_CONFIDENCE = 0.5
 PLAYER_FACING_LOCALITY_NAMES = {
     "greater london": "London",
     "greater manchester": "Manchester",
@@ -557,18 +557,19 @@ def choose_learned_hard_hook(
         for hook in hooks
         if float(hook.get("learned_score") or 0)
         >= MIN_RECOGNISABILITY_LEARNED_SCORE
-        and int(hook.get("selector_score") or 0)
-        >= MIN_RECOGNISABILITY_SELECTOR_SCORE
+        and float(hook.get("learned_confidence") or 0)
+        >= MIN_RECOGNISABILITY_LEARNED_CONFIDENCE
     ]
     if not eligible:
         best = hooks[0]
         raise LookupError(
             "No verified hook met the minimum human-learned recognisability "
             f"thresholds (learned score >= {MIN_RECOGNISABILITY_LEARNED_SCORE:.1f} "
-            f"and selector score >= {MIN_RECOGNISABILITY_SELECTOR_SCORE}); "
+            f"and confidence >= {MIN_RECOGNISABILITY_LEARNED_CONFIDENCE:.2f}); "
             f"best remaining candidate was {best.get('place') or 'unknown'} at "
             f"{float(best.get('learned_score') or 0):.3f}/"
-            f"{int(best.get('selector_score') or 0)}."
+            f"{float(best.get('learned_confidence') or 0):.3f} "
+            f"(legacy selector {int(best.get('selector_score') or 0)})."
         )
     selected = eligible[0]
     return selected, (
