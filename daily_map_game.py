@@ -416,6 +416,7 @@ MAP_CLUE_GENERIC_UNNAMED_IDENTITY_RE = re.compile(
 )
 MAP_HARD_HOOK_EVENT_ACTION_RE = re.compile(
     r"\b(?:beat|defeated|stunned|shocked|won|lost|scored|set|broke|"
+    r"suffer\w*.{0,50}\bdefeat|captur\w*.{0,70}\b(?:image|photo|photograph)|"
     r"clinched|secured|assassinat\w*|murder\w*|kill\w*|slew|slain|shot|"
     r"attack\w*|bomb\w*|besieged|siege|"
     r"escaped?|fled|vanish\w*|disappear\w*|collaps\w*|destroy\w*|"
@@ -435,7 +436,9 @@ MAP_HARD_HOOK_RECOGNITION_SIGNAL_RE = re.compile(
     r"first(?:-ever)?|only|last surviving|oldest|largest|smallest|longest|"
     r"highest|deepest|fastest|most visited|birthplace|discovery|invention|"
     r"ritual|tradition|pilgrimage|legend|myth|annual race|cultural movement|"
-    r"natural phenomenon|mass migration)\b",
+    r"natural phenomenon|mass migration)\b|"
+    r"\btwo\b.{0,100}\bclubs?\b.{0,100}\bshare\w*\b.{0,80}"
+    r"\b(?:pitch|stadium|ground|arena|venue)\b",
     re.IGNORECASE,
 )
 MAP_HARD_HOOK_DISTINCTIVE_MARKER_RE = re.compile(
@@ -448,7 +451,7 @@ MAP_HARD_HOOK_DISTINCTIVE_MARKER_RE = re.compile(
 )
 MAP_HARD_HOOK_NAMED_EVENT_RE = re.compile(
     r"\b(?:world cup|european cup|champions league|european championship|"
-    r"olympic|commonwealth games|uprising|revolution|maracanazo|"
+    r"olympic|commonwealth games|uprising|revolution|blitz|maracanazo|"
     r"atomic bomb|goal of the century|hand of god|hundred years[’'] war|"
     r"second world war|first world war|civil rights|moon landing)\b",
     re.IGNORECASE,
@@ -541,6 +544,9 @@ MAP_HARD_TEAM_SIDES_RE = re.compile(
     rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+lost\s+"
     rf"\d+\s*[-\u2013\u2014]\s*\d+\s+to\s+"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+suffer\w*\b.{{0,100}}?\b"
+    rf"(?:defeat|loss)\s+(?:to|against)\s+"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+"
     rf"(?:secured|claimed|won|lifted)\b.{{0,100}}?\b"

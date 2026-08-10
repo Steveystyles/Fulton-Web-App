@@ -1769,6 +1769,38 @@ class DailyMapGameTests(unittest.TestCase):
             daily_map_game.hard_hook_missing_requirements(clue),
         )
 
+    def test_team_event_accepts_suffered_defeat_wording_with_both_sides(self) -> None:
+        clue = (
+            "On this pitch, Brazil suffered a shocking 2-1 defeat to Uruguay in "
+            "the decisive final match of the 1950 FIFA World Cup, an upset known "
+            "as the Maracanazo."
+        )
+
+        self.assertEqual(daily_map_game.hard_hook_missing_requirements(clue), [])
+
+    def test_named_historic_photo_is_a_qualifying_recognition_hook(self) -> None:
+        clue = (
+            "During the 1940 Blitz, photographer Herbert Mason captured an iconic "
+            "image of this cathedral's dome through a firestorm, creating a symbol "
+            "of resilience after it appeared on the Daily Mail front page."
+        )
+
+        self.assertEqual(daily_map_game.hard_hook_missing_requirements(clue), [])
+
+    def test_named_clubs_sharing_one_venue_is_specific_but_generic_sharing_is_not(self) -> None:
+        specific = (
+            "Inside this arena, two successful football clubs, AC Milan and Inter "
+            "Milan, share the same pitch as their permanent home ground, an "
+            "arrangement in place since 1947."
+        )
+
+        self.assertEqual(daily_map_game.hard_hook_missing_requirements(specific), [])
+        self.assertFalse(
+            daily_map_game.hard_hook_is_qualifying_recognition_hook(
+                "Two clubs share this stadium."
+            )
+        )
+
     def test_hard_target_identity_rejects_generic_site_for_an_island_prison(self) -> None:
         place = {
             "canonical_name": "Alcatraz Island",
