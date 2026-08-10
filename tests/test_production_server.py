@@ -4196,6 +4196,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 "server.generate_ai_daily_map_round.discover_uncurated_candidates",
                 return_value={
                     "accepted_count": 1,
+                    "candidate_place_ids": [42],
                     "candidate_names": ["fresh stadium"],
                 },
             ) as discover,
@@ -4218,6 +4219,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             max_attempts=2,
             required_place_type=None,
         )
+        self.assertEqual(generate.call_args.kwargs["eligible_place_ids"], {42})
         self.assertEqual(generate.call_args.kwargs["eligible_names"], {"fresh stadium"})
         self.assertIsNone(generate.call_args.kwargs["required_place_type"])
 

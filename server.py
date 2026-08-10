@@ -3601,6 +3601,7 @@ def generate_daily_map_game_for_date(
             log=lambda message: safe_log(f"Daily map game: {message}"),
         )
 
+    eligible_place_ids: set[int] | None = None
     eligible_names: set[str] | None = None
     if DAILY_MAP_AI_DISCOVER_COUNT > 0:
         try:
@@ -3612,10 +3613,12 @@ def generate_daily_map_game_for_date(
                 max_attempts=DAILY_MAP_AI_DISCOVERY_ATTEMPTS,
                 required_place_type=required_place_type,
             )
+            eligible_place_ids = set(discovery.get("candidate_place_ids") or []) or None
             eligible_names = set(discovery["candidate_names"])
             safe_log(
                 "Daily map AI: discovered "
-                f"{discovery['accepted_count']} eligible candidates for {normalized_date}."
+                f"{discovery['accepted_count']} eligible candidates "
+                f"({len(eligible_place_ids or [])} resolved places) for {normalized_date}."
             )
         except Exception as error:
             reason = f"AI map discovery failed: {error}"
@@ -3635,6 +3638,7 @@ def generate_daily_map_game_for_date(
             puzzle_date=normalized_date,
             shortlist_limit=DAILY_MAP_AI_SHORTLIST_LIMIT,
             max_clue_attempts=DAILY_MAP_AI_MAX_CLUE_ATTEMPTS,
+            eligible_place_ids=eligible_place_ids,
             eligible_names=eligible_names,
             required_place_type=required_place_type,
         )

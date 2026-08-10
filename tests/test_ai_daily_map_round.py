@@ -5,7 +5,12 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from tools import generate_ai_daily_map_round, generate_ai_map_review_batch, training_data_store
+from tools import (
+    generate_ai_daily_map_round,
+    generate_ai_map_review_batch,
+    generate_map_place_candidates_with_ai,
+    training_data_store,
+)
 
 
 class FakeProvider:
@@ -95,6 +100,41 @@ class FallbackEventPlaceVerificationProvider(EventPlaceVerificationProvider):
 
 
 class AiDailyMapRoundTests(unittest.TestCase):
+    def test_discovery_resolves_retry_name_variant_to_existing_place_id(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+        row = conn.execute(
+            "SELECT id FROM map_place_pool WHERE canonical_name = 'London'"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        place_id = int(row["id"])
+        conn.execute(
+            "UPDATE map_place_pool SET canonical_name = ?, acceptable_aliases = ? WHERE id = ?",
+            ("Estádio do Maracanã", "Maracana Stadium", place_id),
+        )
+        accepted = [
+            {
+                "canonical_name": "Maracana Stadium",
+                "_pool_row": {
+                    "slug": "generated-retry-name",
+                    "canonical_name": "Maracana Stadium",
+                    "acceptable_aliases": "Maracanã",
+                },
+            }
+        ]
+
+        resolved = generate_ai_daily_map_round.resolve_candidate_place_ids(
+            conn,
+            accepted,
+            normalized_name_variants=(
+                generate_map_place_candidates_with_ai.normalized_name_variants
+            ),
+        )
+
+        self.assertEqual(resolved, [place_id])
+
     def test_discovery_blocks_explicitly_excluded_places(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             db_path = Path(temporary_directory) / "map.db"
@@ -573,6 +613,40 @@ class AiDailyMapRoundTests(unittest.TestCase):
         )
 
         self.assertEqual(candidates, [])
+
+    def test_candidate_shortlist_uses_resolved_ids_over_generated_name_variants(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+        hook = (
+            "Uruguay beat host nation Brazil 2-1 in the decisive 1950 World Cup "
+            "match here, an upset known as the Maracanazo."
+        )
+        row = conn.execute(
+            "SELECT id FROM map_place_pool WHERE canonical_name = 'London'"
+        ).fetchone()
+        self.assertIsNotNone(row)
+        place_id = int(row["id"])
+        conn.execute(
+            """
+            UPDATE map_place_pool
+            SET canonical_name = 'Estádio do Maracanã',
+                verified_facts_json = ?,
+                nearby_context = 'Maracana district, Rio de Janeiro, Brazil'
+            WHERE id = ?
+            """,
+            (json.dumps([hook]), place_id),
+        )
+
+        candidates = generate_ai_daily_map_round.candidate_shortlist(
+            conn,
+            puzzle_date="2026-08-20",
+            eligible_place_ids={place_id},
+            eligible_names={"maracana stadium"},
+        )
+
+        self.assertEqual([candidate["place_id"] for candidate in candidates], [place_id])
 
     def test_round_moves_to_next_place_when_first_ladder_is_rejected(self) -> None:
         conn = sqlite3.connect(":memory:")
