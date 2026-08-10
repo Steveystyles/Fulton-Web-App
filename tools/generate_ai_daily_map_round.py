@@ -92,15 +92,25 @@ DIRECT_EVIDENCE_STOPWORDS = VERIFICATION_SEARCH_STOPWORDS | {
     "between",
     "could",
     "exact",
+    "event",
+    "forever",
     "from",
     "happened",
     "have",
     "having",
     "here",
+    "home",
     "into",
     "itself",
+    "known",
     "local",
+    "nation",
+    "now",
     "occurred",
+    "remembered",
+    "suffered",
+    "team",
+    "the",
     "their",
     "through",
     "upon",
@@ -891,6 +901,8 @@ def verification_token(value: str) -> str:
     normalized = "".join(
         character for character in folded if not unicodedata.combining(character)
     )
+    if normalized in {"deciding", "decisive"}:
+        return "decide"
     if normalized.isdigit():
         return normalized
     if len(normalized) > 6 and normalized.endswith("ing"):

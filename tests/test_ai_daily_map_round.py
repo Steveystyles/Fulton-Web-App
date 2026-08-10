@@ -1275,6 +1275,32 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertGreaterEqual(result["coverage"], 0.65)
 
+    def test_direct_support_accepts_the_maracanazo_target_event_connection(self) -> None:
+        result = generate_ai_daily_map_round.exact_target_page_support(
+            [
+                {
+                    "title": "1950 FIFA World Cup",
+                    "url": "https://en.wikipedia.org/?curid=59893",
+                    "extract": (
+                        "The tournament's deciding match was played at Estadio do "
+                        "Maracana. Uruguay defeated host nation Brazil 2-1 in 1950, "
+                        "a shocking upset known as the Maracanazo."
+                    ),
+                }
+            ],
+            {
+                "verified_hard_hook": (
+                    "In 1950, this stadium hosted the decisive final match where "
+                    "the home nation suffered a shocking defeat, an event now "
+                    "known as the Maracanazo."
+                )
+            },
+            place={"canonical_name": "Estadio do Maracana"},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertGreaterEqual(result["coverage"], 0.65)
+
     def test_exact_target_page_support_rejects_an_event_from_another_venue(self) -> None:
         result = generate_ai_daily_map_round.exact_target_page_support(
             [
