@@ -416,7 +416,8 @@ MAP_CLUE_GENERIC_UNNAMED_IDENTITY_RE = re.compile(
 )
 MAP_HARD_HOOK_EVENT_ACTION_RE = re.compile(
     r"\b(?:beat|defeated|stunned|shocked|won|lost|scored|set|broke|"
-    r"suffer\w*.{0,50}\bdefeat|captur\w*.{0,70}\b(?:image|photo|photograph)|"
+    r"suffer\w*.{0,50}\bdefeat|victory\b.{0,70}\bover\b|"
+    r"captur\w*.{0,70}\b(?:image|photo|photograph)|"
     r"clinched|secured|assassinat\w*|murder\w*|kill\w*|slew|slain|shot|"
     r"attack\w*|bomb\w*|besieged|siege|"
     r"escaped?|fled|vanish\w*|disappear\w*|collaps\w*|destroy\w*|"
@@ -548,6 +549,11 @@ MAP_HARD_TEAM_SIDES_RE = re.compile(
     rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+suffer\w*\b.{{0,100}}?\b"
     rf"(?:defeat|loss)\s+(?:to|against)\s+"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"(?:victory|win)\s+for\s+{MAP_HARD_TEAM_NAME_PATTERN}\s+over\s+"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+(?:recorded|claimed|earned)?\s*"
+    rf"(?:a\s+)?(?:\d+\s*[-\u2013\u2014]\s*\d+\s+)?"
+    rf"(?:victory|win)\s+over\s+{MAP_HARD_TEAM_NAME_PATTERN}|"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+"
     rf"(?:secured|claimed|won|lifted)\b.{{0,100}}?\b"
     rf"(?:by\s+)?defeating\s+(?:the\s+|host nation\s+)?"

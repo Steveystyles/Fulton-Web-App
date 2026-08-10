@@ -1778,6 +1778,15 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertEqual(daily_map_game.hard_hook_missing_requirements(clue), [])
 
+    def test_team_event_accepts_victory_for_wording_with_both_sides(self) -> None:
+        clue = (
+            "On this pitch, the 1950 FIFA World Cup final concluded with a 2-1 "
+            "victory for Uruguay over Brazil, a shocking upset that became known "
+            "as the Maracanazo."
+        )
+
+        self.assertEqual(daily_map_game.hard_hook_missing_requirements(clue), [])
+
     def test_named_historic_photo_is_a_qualifying_recognition_hook(self) -> None:
         clue = (
             "During the 1940 Blitz, photographer Herbert Mason captured an iconic "
