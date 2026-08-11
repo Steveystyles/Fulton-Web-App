@@ -28,6 +28,24 @@ def evidence_item(
 
 
 class QuizEvidenceTests(unittest.TestCase):
+    def test_candidate_evidence_query_is_prioritized_by_search_collectors(self) -> None:
+        question = {
+            "question": "Which answer is identified by this documented fact?",
+            "correct_answer": "The Test Answer",
+            "explanation": "A specific event connects the answer to the documented fact.",
+            "interesting_reason": "The same event is independently documented.",
+            "evidence_query": "The Test Answer specific documented event 1986",
+        }
+
+        self.assertEqual(
+            quiz_evidence.question_search_queries(question)[0],
+            question["evidence_query"],
+        )
+        self.assertEqual(
+            quiz_evidence.wikipedia_search_queries(question)[0],
+            question["evidence_query"],
+        )
+
     def test_wikipedia_queries_keep_the_subject_terms_near_the_answer(self) -> None:
         question = {
             "question": (

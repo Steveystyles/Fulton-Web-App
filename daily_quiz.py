@@ -1377,7 +1377,7 @@ Rules:
 - Each hook must be one specific, stable, memorable factual connection to its answer.
 - Prefer facts a player could enjoy retelling; avoid bland identity, nickname-only, current-form, or administrative trivia.
 - The hook must be sufficiently precise to support exactly one answer.
-- The evidence query must contain the answer plus the central event, record, custom, discovery, or connection.
+- The evidence query must contain the exact answer text plus the central event, record, custom, discovery, or connection; copy the answer into it verbatim.
 - Do not write choices, explanations, or complete questions.
 - Produce genuinely different answers and hooks within the batch.
 - {scope_rule}
@@ -2410,6 +2410,42 @@ def candidate_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def recent_candidate_rejection_feedback(
+    conn: sqlite3.Connection,
+    *,
+    quiz_set_id: int,
+    subject: str,
+    difficulty: str,
+    limit: int = 8,
+) -> list[str]:
+    rows = conn.execute(
+        """
+        SELECT answer, rejection_stage, failure_reason
+        FROM daily_quiz_candidates
+        WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+          AND status = 'rejected' AND failure_reason IS NOT NULL
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (quiz_set_id, subject, difficulty, limit),
+    ).fetchall()
+    feedback: list[str] = []
+    for row in reversed(rows):
+        reason = str(row["failure_reason"] or "").strip()
+        answer = str(row["answer"] or "").strip()
+        stage = str(row["rejection_stage"] or "candidate gate").strip()
+        if not reason:
+            continue
+        if answer:
+            feedback.append(
+                f"Do not propose {answer!r} again in this run; it failed the "
+                f"{stage} gate: {reason}"
+            )
+        else:
+            feedback.append(f"Correct this prior {stage} failure: {reason}")
+    return merge_feedback_entries(feedback, limit=limit)
+
+
 def candidate_local_rejection(
     candidate: dict[str, Any],
     *,
@@ -2464,6 +2500,7 @@ def candidate_evidence_probe(
         "explanation": candidate["hook"],
         "interesting_reason": candidate["hook"],
         "tags": candidate["tags"],
+        "evidence_query": candidate["evidence_query"],
     }
 
 
@@ -3036,8 +3073,19 @@ def generate_slot_two_stage(
                     failure_reason=reason,
                 )
                 continue
-            if not candidate_evidence_supported(candidate, evidence):
-                reason = "Reputable evidence did not support both the candidate answer and hook."
+            candidate_precheck = precheck_question_evidence(probe, evidence)
+            if (
+                not candidate_evidence_supported(candidate, evidence)
+                or not candidate_precheck.get("passed")
+            ):
+                precheck_reasons = [
+                    str(item).strip()
+                    for item in candidate_precheck.get("failure_reasons", [])
+                    if str(item).strip()
+                ]
+                reason = "; ".join(precheck_reasons) or (
+                    "Reputable evidence did not support both the candidate answer and hook."
+                )
                 update_candidate(
                     conn,
                     int(row["id"]),
@@ -3210,13 +3258,23 @@ def generate_slot_two_stage(
             f"Discovering {subject} / {difficulty} candidate batch {batch_number} "
             f"with {candidate_provider_identity(preferred_stage)} in lane {lane!r}"
         )
+        discovery_feedback = merge_feedback_entries(
+            feedback,
+            recent_candidate_rejection_feedback(
+                conn,
+                quiz_set_id=quiz_set_id,
+                subject=subject,
+                difficulty=difficulty,
+            ),
+            limit=24,
+        )
         try:
             payload = discovery_provider.discover_candidates(
                 subject=subject,
                 difficulty=difficulty,
                 topic_lane=lane,
                 batch_size=config.candidate_batch_size,
-                feedback=feedback,
+                feedback=discovery_feedback,
                 recovery_mode=recovery_mode,
             )
         except Exception as error:

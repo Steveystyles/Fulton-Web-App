@@ -300,6 +300,7 @@ class CandidateProvider(PassingProvider):
         self.blocked_answer = blocked_answer
         self.invalid_first_batch = invalid_first_batch
         self.discovery_calls = 0
+        self.discovery_feedback_calls: list[list[str]] = []
         self.composition_calls = 0
         self.critic_calls = 0
 
@@ -310,9 +311,11 @@ class CandidateProvider(PassingProvider):
         difficulty: str,
         topic_lane: str,
         batch_size: int,
+        feedback: list[str],
         **_: object,
     ) -> dict[str, object]:
         self.discovery_calls += 1
+        self.discovery_feedback_calls.append(list(feedback))
         if self.invalid_first_batch and self.discovery_calls == 1:
             return {"candidates": [{"answer": "invalid"} for _ in range(batch_size)]}
         candidates: list[dict[str, object]] = []
@@ -458,6 +461,25 @@ class DailyQuizTests(unittest.TestCase):
         )
         self.assertEqual(provider.composition_calls, 6)
 
+    def test_candidate_evidence_probe_preserves_tailored_search_query(self) -> None:
+        candidate = {
+            "answer": "Example Answer",
+            "hook": "A documented event provides a memorable and uniquely identifying fact.",
+            "topic_lane": "world history incidents",
+            "era": "twentieth century",
+            "region": "Europe",
+            "tags": ["documented event", "public milestone"],
+            "evidence_query": "Example Answer documented public milestone",
+        }
+
+        probe = daily_quiz.candidate_evidence_probe(
+            candidate,
+            subject="general_knowledge",
+            difficulty="medium",
+        )
+
+        self.assertEqual(probe["evidence_query"], candidate["evidence_query"])
+
     def test_candidate_pipeline_filters_embargoed_answer_before_composition(self) -> None:
         old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-18")
         old_question = valid_question("football", "easy")
@@ -497,6 +519,12 @@ class DailyQuizTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(provider.discovery_calls, 2)
         self.assertEqual(provider.composition_calls, 1)
+        self.assertTrue(
+            any(
+                "Blocked Football Answer" in entry
+                for entry in provider.discovery_feedback_calls[1]
+            )
+        )
         local_rejections = self.conn.execute(
             """
             SELECT COUNT(*) FROM daily_quiz_candidates
