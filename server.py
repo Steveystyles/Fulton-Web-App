@@ -8328,6 +8328,15 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     revealed_hint_count=payload.get("revealedHintCount"),
                     today=daily_map_submission_date(conn, level_id),
                 )
+                if status in {HTTPStatus.OK, HTTPStatus.CREATED}:
+                    conn.commit()
+                    result = result_payload.get("result")
+                    if isinstance(result, dict):
+                        safe_log(
+                            "Daily map guess saved "
+                            f"user={user['id']} level={level_id} "
+                            f"score={result.get('score')} band={result.get('band')}"
+                        )
                 self.send_json(status, result_payload)
                 return
 
