@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -287,6 +288,89 @@ class FeedbackReuseProvider(PassingProvider):
         return valid_question(subject, difficulty)
 
 
+class CandidateProvider(PassingProvider):
+    def __init__(
+        self,
+        name: str = "candidate-provider",
+        *,
+        blocked_answer: str | None = None,
+        invalid_first_batch: bool = False,
+    ) -> None:
+        super().__init__(name)
+        self.blocked_answer = blocked_answer
+        self.invalid_first_batch = invalid_first_batch
+        self.discovery_calls = 0
+        self.composition_calls = 0
+        self.critic_calls = 0
+
+    def discover_candidates(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        topic_lane: str,
+        batch_size: int,
+        **_: object,
+    ) -> dict[str, object]:
+        self.discovery_calls += 1
+        if self.invalid_first_batch and self.discovery_calls == 1:
+            return {"candidates": [{"answer": "invalid"} for _ in range(batch_size)]}
+        candidates: list[dict[str, object]] = []
+        for index in range(batch_size):
+            answer = (
+                self.blocked_answer
+                if self.blocked_answer and self.discovery_calls == 1
+                else f"{subject} {difficulty} candidate {self.discovery_calls}-{index}"
+            )
+            hook_templates = (
+                "A documented ceremony connected {answer} with a landmark public milestone recorded by contemporary sources.",
+                "Archival evidence shows that {answer} played the decisive role in an unusual competition incident.",
+                "Researchers identify {answer} through a distinctive discovery that changed later practice in the field.",
+            )
+            hook = hook_templates[(self.discovery_calls - 1) % len(hook_templates)].format(
+                answer=answer
+            )
+            candidates.append(
+                {
+                    "answer": answer,
+                    "hook": hook,
+                    "topic_lane": topic_lane,
+                    "era": "twentieth century",
+                    "region": "Europe",
+                    "tags": [topic_lane, f"test-event-{self.discovery_calls}-{index}"],
+                    "evidence_query": f"{answer} documented historical milestone",
+                }
+            )
+        return {"candidates": candidates}
+
+    def compose_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        candidate: dict[str, object],
+        **_: object,
+    ) -> dict[str, object]:
+        self.composition_calls += 1
+        answer = str(candidate["answer"])
+        hook = str(candidate["hook"])
+        slot_question = str(valid_question(subject, difficulty)["question"])
+        return {
+            "subject": subject,
+            "difficulty": difficulty,
+            "question": slot_question,
+            "choices": [answer, "Alternative Alpha", "Alternative Beta", "Alternative Gamma"],
+            "correct_answer": answer,
+            "explanation": f"{answer} is correct because the supplied evidence documents the milestone clearly.",
+            "interesting_reason": hook,
+            "tags": list(candidate["tags"]),
+        }
+
+    def critique_question(self, **kwargs: object) -> dict[str, object]:
+        self.critic_calls += 1
+        return super().critique_question(**kwargs)
+
+
 class DailyQuizTests(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
@@ -329,6 +413,245 @@ class DailyQuizTests(unittest.TestCase):
             loaded.evidence_openrouter_base_url,
             "https://openrouter.ai/api/v1",
         )
+
+    def test_candidate_pipeline_publishes_verified_questions(self) -> None:
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=8,
+            candidate_batches_per_slot=3,
+        )
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-08-20",
+            config=pipeline_config,
+            provider=provider,
+        )
+
+        self.assertEqual(result["status"], "published")
+        status = daily_quiz.quiz_status(self.conn, "2026-08-20")
+        self.assertEqual(status["pipeline_version"], "candidate-v1")
+        self.assertEqual(status["verified_questions"], 6)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_candidates WHERE status='accepted'"
+            ).fetchone()[0],
+            6,
+        )
+        self.assertEqual(provider.composition_calls, 6)
+
+    def test_candidate_pipeline_filters_embargoed_answer_before_composition(self) -> None:
+        old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-18")
+        old_question = valid_question("football", "easy")
+        old_question["question"] = (
+            "Which football side is represented by this deliberately older embargo example?"
+        )
+        old_question["correct_answer"] = "Blocked Football Answer"
+        old_question["choices"][0] = "Blocked Football Answer"
+        daily_quiz.save_question(
+            self.conn,
+            quiz_set_id=old_set["id"],
+            question=old_question,
+            evidence=supporting_evidence(old_question),
+            verification=passing_verification(supporting_evidence(old_question)),
+        )
+        daily_quiz.set_quiz_status(self.conn, "2026-08-18", "published")
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider(blocked_answer="Blocked Football Answer")
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=8,
+            candidate_batches_per_slot=2,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(provider.discovery_calls, 2)
+        self.assertEqual(provider.composition_calls, 1)
+        local_rejections = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM daily_quiz_candidates
+            WHERE rejection_stage='local' AND failure_reason LIKE '%embargo%'
+            """
+        ).fetchone()[0]
+        self.assertEqual(local_rejections, 8)
+
+    def test_candidate_pipeline_does_not_compose_unsupported_hook(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+        unsupported = [
+            {
+                "title": "Unrelated source",
+                "source_name": "example.edu",
+                "source_url": "https://example.edu/unrelated",
+                "tier": "primary",
+                "snippet": "This source concerns an unrelated subject.",
+                "excerpt": "No proposed answer or hook is discussed.",
+                "query": "unrelated",
+            }
+        ]
+
+        with patch("daily_quiz.configured_question_evidence", return_value=unsupported):
+            result = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="easy",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(provider.composition_calls, 0)
+        self.assertEqual(provider.critic_calls, 0)
+
+    def test_candidate_pipeline_rejects_final_question_from_180_day_history(self) -> None:
+        old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-04-20")
+        old_question = valid_question("football", "easy")
+        daily_quiz.save_question(
+            self.conn,
+            quiz_set_id=old_set["id"],
+            question=old_question,
+            evidence=supporting_evidence(old_question),
+            verification=passing_verification(supporting_evidence(old_question)),
+        )
+        daily_quiz.set_quiz_status(self.conn, "2026-04-20", "published")
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+            question_similarity_days=180,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertIsNone(result)
+        rejected = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM daily_quiz_candidates
+            WHERE rejection_stage='composition'
+              AND failure_reason LIKE '%180-day history%'
+            """
+        ).fetchone()[0]
+        self.assertEqual(rejected, 1)
+
+    def test_candidate_pipeline_rotates_provider_after_bad_batch(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        first = CandidateProvider("first", invalid_first_batch=True)
+        second = CandidateProvider("second")
+        chain = daily_quiz.FallbackQuizProvider([first, second])
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=2,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="general_knowledge",
+            difficulty="easy",
+            provider=chain,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(first.discovery_calls, 1)
+        self.assertEqual(second.discovery_calls, 1)
+        self.assertEqual(second.composition_calls, 1)
+
+    def test_candidate_pipeline_remembers_rejected_candidates_across_retries(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+        unsupported = [
+            {
+                "title": "Unrelated source",
+                "source_name": "example.edu",
+                "source_url": "https://example.edu/unrelated",
+                "tier": "primary",
+                "snippet": "No candidate is discussed here.",
+                "excerpt": "This is intentionally unrelated.",
+                "query": "unrelated",
+            }
+        ]
+        with patch(
+            "daily_quiz.configured_question_evidence", return_value=unsupported
+        ) as evidence_search:
+            first = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="easy",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+            provider.discovery_calls = 0
+            second = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="easy",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(evidence_search.call_count, 1)
+        remembered = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM daily_quiz_candidates
+            WHERE rejection_stage='local'
+              AND failure_reason LIKE '%already failed during this generation run%'
+            """
+        ).fetchone()[0]
+        self.assertEqual(remembered, 2)
 
     def test_validator_rejects_invalid_question_shapes(self) -> None:
         cases: list[tuple[str, dict[str, object]]] = []

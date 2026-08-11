@@ -111,6 +111,9 @@ DAILY_MAP_GAME_SCHEDULER_HOUR = int(
 DAILY_MAP_GAME_SCHEDULER_MINUTE = int(
     os.environ.get("FULTONS_DAILY_MAP_GAME_SCHEDULER_MINUTE", "2")
 )
+DAILY_QUIZ_RECOVERY_HOUR = min(
+    23, max(0, int(os.environ.get("FULTONS_DAILY_QUIZ_RECOVERY_HOUR", "20")))
+)
 DAILY_MAP_PREPARE_DAYS_AHEAD = max(
     1,
     min(7, int(os.environ.get("FULTONS_DAILY_MAP_PREPARE_DAYS_AHEAD", "2"))),
@@ -3400,6 +3403,21 @@ def active_daily_quiz_dates(now: datetime | None = None) -> list[str]:
     return [today.isoformat(), tomorrow.isoformat()]
 
 
+def daily_quiz_generation_mode(
+    quiz_date: str,
+    now: datetime | None = None,
+) -> str:
+    tz = server_timezone()
+    local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    target = date.fromisoformat(daily_quiz.valid_quiz_date(quiz_date))
+    if target <= local_now.date():
+        return "recovery"
+    tomorrow = local_now.date() + timedelta(days=1)
+    if target == tomorrow and local_now.hour >= DAILY_QUIZ_RECOVERY_HOUR:
+        return "recovery"
+    return "normal"
+
+
 def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     seen_dates: set[str] = set()
@@ -3416,11 +3434,19 @@ def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
                         safe_log(f"Daily quiz for {normalized_date} is already published")
                         results.append(status)
                         continue
+                    generation_kwargs: dict[str, Any] = {}
+                    if bool(
+                        getattr(DAILY_QUIZ_CONFIG, "candidate_pipeline_enabled", False)
+                    ):
+                        generation_kwargs["generation_mode"] = daily_quiz_generation_mode(
+                            normalized_date
+                        )
                     result = daily_quiz.generate_daily_quiz(
                         conn,
                         quiz_date=normalized_date,
                         config=DAILY_QUIZ_CONFIG,
                         log=lambda message: safe_log(f"Daily quiz: {message}"),
+                        **generation_kwargs,
                     )
                     results.append(result)
                     if result.get("status") != "published":

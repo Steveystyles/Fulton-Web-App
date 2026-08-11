@@ -4028,6 +4028,38 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(before_window, datetime(2026, 6, 1, 0, 5, tzinfo=timezone.utc))
         self.assertEqual(after_window, datetime(2026, 6, 2, 0, 5, tzinfo=timezone.utc))
 
+    def test_daily_quiz_recovery_mode_starts_at_8pm_uk_time(self) -> None:
+        import server
+
+        target = "2026-08-12"
+        with patch(
+            "server.server_timezone", return_value=timezone(timedelta(hours=1))
+        ):
+            before = server.daily_quiz_generation_mode(
+                target,
+                datetime(2026, 8, 11, 18, 59, tzinfo=timezone.utc),
+            )
+            at_threshold = server.daily_quiz_generation_mode(
+                target,
+                datetime(2026, 8, 11, 19, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(before, "normal")
+        self.assertEqual(at_threshold, "recovery")
+
+    def test_missing_today_quiz_always_uses_recovery_mode(self) -> None:
+        import server
+
+        with patch(
+            "server.server_timezone", return_value=timezone(timedelta(hours=1))
+        ):
+            mode = server.daily_quiz_generation_mode(
+                "2026-08-12",
+                datetime(2026, 8, 12, 0, 30, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(mode, "recovery")
+
     def test_daily_quiz_scheduler_skips_already_published_tomorrow(self) -> None:
         import daily_quiz
         import server

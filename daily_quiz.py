@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import time
+from collections import Counter
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -50,6 +51,37 @@ QUESTION_REQUIRED_FIELDS = (
     "tags",
 )
 CRITIC_SCORE_FIELDS = tuple(CRITIC_THRESHOLDS)
+CANDIDATE_REQUIRED_FIELDS = (
+    "answer",
+    "hook",
+    "topic_lane",
+    "era",
+    "region",
+    "tags",
+    "evidence_query",
+)
+QUIZ_TOPIC_LANES = {
+    "football": (
+        "famous incidents and matches",
+        "competitions and rules",
+        "stadium traditions",
+        "club stories and identities",
+        "managers and tactics",
+        "international tournaments",
+        "women's football",
+        "documented records",
+    ),
+    "general_knowledge": (
+        "scientific discoveries",
+        "inventions and engineering",
+        "arts and literature",
+        "world history incidents",
+        "natural world",
+        "cultural customs",
+        "architecture",
+        "geography with a memorable hook",
+    ),
+}
 QUESTION_CUES = (
     "who",
     "what",
@@ -206,6 +238,12 @@ class QuizConfig:
     evidence_openrouter_api_key: str = ""
     evidence_openrouter_base_url: str = ""
     evidence_openrouter_model: str = ""
+    candidate_pipeline_enabled: bool = False
+    answer_embargo_days: int = 45
+    recovery_answer_embargo_days: int = 30
+    question_similarity_days: int = 180
+    candidate_batch_size: int = 8
+    candidate_batches_per_slot: int = 3
 
     @classmethod
     def from_env(cls) -> "QuizConfig":
@@ -312,6 +350,26 @@ class QuizConfig:
                 evidence_base_url or DEFAULT_COMPATIBLE_BASE_URLS["openrouter"]
             ),
             evidence_openrouter_model=evidence_model or "openrouter/free",
+            candidate_pipeline_enabled=os.environ.get(
+                "QUIZ_CANDIDATE_PIPELINE_ENABLED", "0"
+            ).strip().lower()
+            in {"1", "true", "yes", "on"},
+            answer_embargo_days=max(
+                1, int(os.environ.get("QUIZ_ANSWER_EMBARGO_DAYS", "45"))
+            ),
+            recovery_answer_embargo_days=max(
+                1, int(os.environ.get("QUIZ_RECOVERY_ANSWER_EMBARGO_DAYS", "30"))
+            ),
+            question_similarity_days=max(
+                1, int(os.environ.get("QUIZ_QUESTION_SIMILARITY_DAYS", "180"))
+            ),
+            candidate_batch_size=min(
+                12, max(2, int(os.environ.get("QUIZ_CANDIDATE_BATCH_SIZE", "8")))
+            ),
+            candidate_batches_per_slot=min(
+                6,
+                max(1, int(os.environ.get("QUIZ_CANDIDATE_BATCHES_PER_SLOT", "3"))),
+            ),
         )
 
     def provider_is_configured(self) -> bool:
@@ -353,6 +411,29 @@ class QuizAIProvider(Protocol):
         difficulty: str,
         question: dict[str, Any],
         recent_questions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        ...
+
+    def discover_candidates(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        topic_lane: str,
+        batch_size: int,
+        feedback: list[str],
+        recovery_mode: bool,
+    ) -> dict[str, Any]:
+        ...
+
+    def compose_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        candidate: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        feedback: list[str],
     ) -> dict[str, Any]:
         ...
 
@@ -689,6 +770,48 @@ class GeminiProvider:
             question_schema(),
         )
 
+    def discover_candidates(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        topic_lane: str,
+        batch_size: int,
+        feedback: list[str],
+        recovery_mode: bool,
+    ) -> dict[str, Any]:
+        return self._request(
+            self.config.generator_model,
+            candidate_discovery_prompt(
+                subject,
+                difficulty,
+                topic_lane,
+                batch_size,
+                feedback,
+                recovery_mode=recovery_mode,
+            ),
+            candidate_batch_schema(batch_size),
+            temperature=0.7,
+        )
+
+    def compose_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        candidate: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        feedback: list[str],
+    ) -> dict[str, Any]:
+        return self._request(
+            self.config.generator_model,
+            question_composition_prompt(
+                subject, difficulty, candidate, evidence, feedback
+            ),
+            question_schema(),
+            temperature=0.35,
+        )
+
     def critique_question(
         self,
         *,
@@ -851,6 +974,46 @@ class OpenAICompatibleProvider:
             generator_prompt(subject, difficulty, recent_questions, feedback),
         )
 
+    def discover_candidates(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        topic_lane: str,
+        batch_size: int,
+        feedback: list[str],
+        recovery_mode: bool,
+    ) -> dict[str, Any]:
+        return self._request(
+            self.config.generator_model,
+            candidate_discovery_prompt(
+                subject,
+                difficulty,
+                topic_lane,
+                batch_size,
+                feedback,
+                recovery_mode=recovery_mode,
+            ),
+            temperature=0.7,
+        )
+
+    def compose_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        candidate: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        feedback: list[str],
+    ) -> dict[str, Any]:
+        return self._request(
+            self.config.generator_model,
+            question_composition_prompt(
+                subject, difficulty, candidate, evidence, feedback
+            ),
+            temperature=0.35,
+        )
+
     def critique_question(
         self,
         *,
@@ -932,6 +1095,12 @@ class FallbackQuizProvider:
             recent_questions=recent_questions,
         )
 
+    def discover_candidates(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("discover_candidates", **kwargs)
+
+    def compose_question(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("compose_question", **kwargs)
+
     def verify_question(
         self,
         *,
@@ -984,6 +1153,12 @@ def provider_chain_from_config(config: QuizConfig) -> QuizAIProvider:
     if len(providers) == 1:
         return providers[0]
     return FallbackQuizProvider(providers)
+
+
+def quality_provider_stages(provider: QuizAIProvider) -> list[QuizAIProvider]:
+    if isinstance(provider, FallbackQuizProvider):
+        return list(provider.providers)
+    return [provider]
 
 
 def question_schema() -> dict[str, Any]:
@@ -1041,6 +1216,37 @@ def critic_schema() -> dict[str, Any]:
             "corrected_difficulty",
             "notes",
         ],
+    }
+
+
+def candidate_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string"},
+            "hook": {"type": "string"},
+            "topic_lane": {"type": "string"},
+            "era": {"type": "string"},
+            "region": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "evidence_query": {"type": "string"},
+        },
+        "required": list(CANDIDATE_REQUIRED_FIELDS),
+    }
+
+
+def candidate_batch_schema(batch_size: int) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "candidates": {
+                "type": "array",
+                "minItems": batch_size,
+                "maxItems": batch_size,
+                "items": candidate_schema(),
+            }
+        },
+        "required": ["candidates"],
     }
 
 
@@ -1126,6 +1332,92 @@ def subject_prompt_guidance(subject: str, difficulty: str) -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def candidate_discovery_prompt(
+    subject: str,
+    difficulty: str,
+    topic_lane: str,
+    batch_size: int,
+    feedback: list[str],
+    *,
+    recovery_mode: bool,
+) -> str:
+    scope_rule = (
+        "Region and era may be broad; prioritize strong, sourceable ideas."
+        if recovery_mode
+        else "Vary region and era across the batch while staying within the topic lane."
+    )
+    return f"""You are proposing sourceable ideas for a daily quiz. Do not write quiz questions yet.
+
+Return exactly {batch_size} distinct candidate briefs.
+
+Subject: {subject}
+Difficulty: {difficulty}
+Positive topic lane: {topic_lane}
+
+Rules:
+- Each hook must be one specific, stable, memorable factual connection to its answer.
+- Prefer facts a player could enjoy retelling; avoid bland identity, nickname-only, current-form, or administrative trivia.
+- The hook must be sufficiently precise to support exactly one answer.
+- The evidence query must contain the answer plus the central event, record, custom, discovery, or connection.
+- Do not write choices, explanations, or complete questions.
+- Produce genuinely different answers and hooks within the batch.
+- {scope_rule}
+
+{subject_prompt_guidance(subject, difficulty)}
+
+Learned failure guidance (do not repeat these patterns):
+{json.dumps(feedback[-12:], indent=2)}
+
+Return JSON only using this structure:
+{json.dumps(candidate_batch_schema(batch_size), indent=2)}
+"""
+
+
+def question_composition_prompt(
+    subject: str,
+    difficulty: str,
+    candidate: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    feedback: list[str],
+) -> str:
+    evidence_payload = [
+        {
+            "title": item.get("title"),
+            "source": item.get("source_name"),
+            "tier": item.get("tier"),
+            "snippet": str(item.get("snippet") or item.get("excerpt") or "")[:1800],
+        }
+        for item in evidence[:8]
+    ]
+    return f"""Write exactly one multiple-choice quiz question from an approved candidate and evidence.
+
+Subject: {subject}
+Difficulty: {difficulty}
+
+Approved candidate:
+{json.dumps(candidate, indent=2)}
+
+Evidence:
+{json.dumps(evidence_payload, indent=2)}
+
+Rules:
+- The correct_answer must be exactly {json.dumps(candidate['answer'])}; never replace or broaden it.
+- The question, explanation, and interesting_reason must use the approved hook and introduce no unsupported central claim.
+- Include exactly four plausible, distinct choices and include the exact correct answer once.
+- The question must end with a question mark and have exactly one defensible answer.
+- Match the requested difficulty without obscurity, ambiguity, or a giveaway distractor set.
+- Keep the explanation concise and make interesting_reason a specific supported fact.
+
+{subject_prompt_guidance(subject, difficulty)}
+
+Relevant learned feedback:
+{json.dumps(feedback[-12:], indent=2)}
+
+Return JSON only using this structure:
+{json.dumps(question_schema(), indent=2)}
+"""
 
 
 def generator_prompt(
@@ -1423,6 +1715,10 @@ def validate_question(
         "interesting_reason": interesting_reason.strip(),
         "tags": clean_tags,
     }
+    if isinstance(value.get("_candidate_id"), int):
+        clean_question["_candidate_id"] = value["_candidate_id"]
+    if isinstance(value.get("_pipeline"), dict):
+        clean_question["_pipeline"] = value["_pipeline"]
     return ValidationResult(True, "OK", clean_question)
 
 
@@ -1594,11 +1890,44 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS daily_quiz_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            quiz_set_id INTEGER NOT NULL,
+            quiz_date TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            difficulty TEXT NOT NULL,
+            batch_number INTEGER NOT NULL,
+            candidate_index INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            generation_mode TEXT NOT NULL DEFAULT 'normal',
+            answer TEXT NOT NULL,
+            normalized_answer TEXT NOT NULL,
+            hook TEXT NOT NULL,
+            normalized_hook TEXT NOT NULL,
+            topic_lane TEXT NOT NULL,
+            era TEXT NOT NULL DEFAULT '',
+            region TEXT NOT NULL DEFAULT '',
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            evidence_query TEXT NOT NULL DEFAULT '',
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL,
+            rejection_stage TEXT,
+            failure_reason TEXT,
+            score REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (quiz_set_id) REFERENCES daily_quiz_sets(id) ON DELETE CASCADE,
+            UNIQUE (quiz_set_id, subject, difficulty, batch_number, candidate_index)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_daily_quiz_questions_normalized
         ON daily_quiz_questions (normalized_question);
 
         CREATE INDEX IF NOT EXISTS idx_daily_quiz_attempts_date
         ON daily_quiz_attempts (quiz_date, subject, difficulty);
+
+        CREATE INDEX IF NOT EXISTS idx_daily_quiz_candidates_slot
+        ON daily_quiz_candidates (quiz_date, subject, difficulty, status);
         """
     )
     ensure_column(
@@ -1610,6 +1939,20 @@ def initialize_database(conn: sqlite3.Connection) -> None:
     ensure_column(conn, "daily_quiz_questions", "verification_json", "TEXT")
     ensure_column(conn, "daily_quiz_attempts", "evidence_json", "TEXT")
     ensure_column(conn, "daily_quiz_attempts", "verification_json", "TEXT")
+    ensure_column(conn, "daily_quiz_attempts", "candidate_id", "INTEGER")
+    ensure_column(
+        conn,
+        "daily_quiz_attempts",
+        "pipeline_metadata_json",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )
+    ensure_column(
+        conn, "daily_quiz_sets", "pipeline_version", "TEXT NOT NULL DEFAULT 'legacy'"
+    )
+    ensure_column(
+        conn, "daily_quiz_sets", "generation_mode", "TEXT NOT NULL DEFAULT 'normal'"
+    )
+    ensure_column(conn, "daily_quiz_sets", "generation_started_at", "TEXT")
     commit_if_needed(conn)
 
 
@@ -1872,6 +2215,373 @@ def check_repetition(
     return RepetitionResult(True, "OK")
 
 
+def validate_candidate(
+    value: Any,
+    *,
+    topic_lane: str,
+) -> tuple[dict[str, Any] | None, str]:
+    if not isinstance(value, dict):
+        return None, "Candidate payload is not an object."
+    missing = [field for field in CANDIDATE_REQUIRED_FIELDS if field not in value]
+    if missing:
+        return None, f"Candidate is missing fields: {', '.join(missing)}."
+    answer = str(value.get("answer") or "").strip()
+    hook = str(value.get("hook") or "").strip()
+    lane = str(value.get("topic_lane") or topic_lane).strip()
+    era = str(value.get("era") or "").strip()
+    region = str(value.get("region") or "").strip()
+    evidence_query = str(value.get("evidence_query") or "").strip()
+    tags = value.get("tags")
+    if not 2 <= len(answer) <= 140:
+        return None, "Candidate answer length is invalid."
+    if not 35 <= len(hook) <= 420:
+        return None, "Candidate hook length is invalid."
+    if not lane:
+        return None, "Candidate topic lane is blank."
+    if not isinstance(tags, list) or len(tags) < 2:
+        return None, "Candidate must contain at least two tags."
+    clean_tags = list(
+        dict.fromkeys(str(tag).strip().lower() for tag in tags if str(tag).strip())
+    )
+    if len(clean_tags) < 2:
+        return None, "Candidate tags are not distinct."
+    if len(evidence_query) < 8 or normalize_answer(answer) not in normalize_answer(
+        evidence_query
+    ):
+        return None, "Evidence query must include the candidate answer."
+    return {
+        "answer": answer,
+        "hook": hook,
+        "topic_lane": lane,
+        "era": era,
+        "region": region,
+        "tags": clean_tags,
+        "evidence_query": evidence_query,
+    }, "OK"
+
+
+def candidate_rows_for_slot(
+    conn: sqlite3.Connection,
+    *,
+    quiz_set_id: int,
+    subject: str,
+    difficulty: str,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM daily_quiz_candidates
+        WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+        ORDER BY batch_number, candidate_index
+        """,
+        (quiz_set_id, subject, difficulty),
+    ).fetchall()
+
+
+def next_candidate_batch_number(
+    conn: sqlite3.Connection,
+    *,
+    quiz_set_id: int,
+    subject: str,
+    difficulty: str,
+) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(batch_number), 0) AS value
+        FROM daily_quiz_candidates
+        WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+        """,
+        (quiz_set_id, subject, difficulty),
+    ).fetchone()
+    return int(row["value"] or 0) + 1
+
+
+def insert_candidate(
+    conn: sqlite3.Connection,
+    *,
+    quiz_set_id: int,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
+    batch_number: int,
+    candidate_index: int,
+    provider: str,
+    generation_mode: str,
+    candidate: dict[str, Any],
+    status: str,
+    rejection_stage: str | None = None,
+    failure_reason: str | None = None,
+    score: float = 0.0,
+) -> int:
+    now = utc_now()
+    cursor = conn.execute(
+        """
+        INSERT INTO daily_quiz_candidates (
+            quiz_set_id, quiz_date, subject, difficulty, batch_number,
+            candidate_index, provider, generation_mode, answer,
+            normalized_answer, hook, normalized_hook, topic_lane, era, region,
+            tags_json, evidence_query, evidence_json, status, rejection_stage,
+            failure_reason, score, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            quiz_set_id,
+            quiz_date,
+            subject,
+            difficulty,
+            batch_number,
+            candidate_index,
+            provider,
+            generation_mode,
+            candidate.get("answer", ""),
+            normalize_answer(candidate.get("answer", "")),
+            candidate.get("hook", ""),
+            normalize_text(candidate.get("hook", "")),
+            candidate.get("topic_lane", ""),
+            candidate.get("era", ""),
+            candidate.get("region", ""),
+            json.dumps(candidate.get("tags", []), ensure_ascii=True),
+            candidate.get("evidence_query", ""),
+            status,
+            rejection_stage,
+            failure_reason,
+            float(score),
+            now,
+            now,
+        ),
+    )
+    commit_if_needed(conn)
+    return int(cursor.lastrowid)
+
+
+def update_candidate(
+    conn: sqlite3.Connection,
+    candidate_id: int,
+    *,
+    status: str,
+    rejection_stage: str | None = None,
+    failure_reason: str | None = None,
+    evidence: list[dict[str, Any]] | None = None,
+) -> None:
+    conn.execute(
+        """
+        UPDATE daily_quiz_candidates
+        SET status = ?, rejection_stage = ?, failure_reason = ?,
+            evidence_json = COALESCE(?, evidence_json), updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            status,
+            rejection_stage,
+            failure_reason,
+            json.dumps(evidence, ensure_ascii=True) if evidence is not None else None,
+            utc_now(),
+            candidate_id,
+        ),
+    )
+    commit_if_needed(conn)
+
+
+def candidate_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "answer": row["answer"],
+        "hook": row["hook"],
+        "topic_lane": row["topic_lane"],
+        "era": row["era"],
+        "region": row["region"],
+        "tags": json.loads(row["tags_json"] or "[]"),
+        "evidence_query": row["evidence_query"],
+    }
+
+
+def candidate_local_rejection(
+    candidate: dict[str, Any],
+    *,
+    accepted_answer_keys: set[str],
+    current_answer_keys: set[str],
+    previous_hooks: list[str],
+    failed_answer_keys: set[str],
+    failed_hooks: list[str],
+    recent_questions_for_topics: list[dict[str, Any]],
+) -> str | None:
+    answer_key = normalize_answer(candidate["answer"])
+    hook_key = normalize_text(candidate["hook"])
+    if answer_key in current_answer_keys:
+        return "Correct answer already appears in this quiz set."
+    if answer_key in accepted_answer_keys:
+        return "Correct answer is inside the answer embargo window."
+    if answer_key in failed_answer_keys:
+        return "Correct answer already failed during this generation run."
+    if any(
+        SequenceMatcher(None, hook_key, previous).ratio() >= 0.82
+        for previous in [*previous_hooks, *failed_hooks]
+        if previous
+    ):
+        return "Candidate hook duplicates or closely matches a previous hook."
+    topic_counts: Counter[str] = Counter()
+    for question in recent_questions_for_topics:
+        topic_counts.update(
+            normalize_text(tag)
+            for tag in question.get("tags", [])
+            if not is_generic_topic_tag(normalize_text(tag))
+        )
+    for tag in candidate["tags"]:
+        normalized = normalize_text(tag)
+        if not is_generic_topic_tag(normalized) and topic_counts[normalized] >= 5:
+            return f"Topic tag {tag!r} has appeared too often recently."
+    return None
+
+
+def candidate_evidence_probe(
+    candidate: dict[str, Any],
+    *,
+    subject: str,
+    difficulty: str,
+) -> dict[str, Any]:
+    answer = candidate["answer"]
+    return {
+        "subject": subject,
+        "difficulty": difficulty,
+        "question": f"Which answer is identified by this documented fact: {candidate['hook']}?",
+        "choices": [answer, "Alternative one", "Alternative two", "Alternative three"],
+        "correct_answer": answer,
+        "explanation": candidate["hook"],
+        "interesting_reason": candidate["hook"],
+        "tags": candidate["tags"],
+    }
+
+
+def candidate_evidence_supported(
+    candidate: dict[str, Any],
+    evidence: list[dict[str, Any]],
+) -> bool:
+    reputable = [
+        item for item in evidence if str(item.get("tier") or "") in {"primary", "reputable"}
+    ]
+    if not reputable or not any(
+        evidence_mentions_answer(item, candidate["answer"]) for item in reputable
+    ):
+        return False
+    hook_tokens = {
+        token
+        for token in normalize_text(candidate["hook"]).split()
+        if len(token) >= 5
+    }
+    if not hook_tokens:
+        return False
+    evidence_text = normalize_text(
+        " ".join(
+            str(item.get(field) or "")
+            for item in reputable
+            for field in ("title", "snippet", "excerpt")
+        )
+    )
+    return len(hook_tokens.intersection(evidence_text.split())) >= min(3, len(hook_tokens))
+
+
+def learning_candidate_lane_weights(
+    profile_path: str,
+    *,
+    subject: str,
+    difficulty: str,
+) -> dict[str, float]:
+    if not profile_path:
+        return {}
+    try:
+        profile = json.loads(open(profile_path, encoding="utf-8").read())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    policy = profile.get("candidate_policy_by_slot", {})
+    if not isinstance(policy, dict):
+        return {}
+    values = policy.get(f"{subject}/{difficulty}") or policy.get(f"{subject}/*") or {}
+    lane_weights = values.get("lane_weights", {}) if isinstance(values, dict) else {}
+    return {
+        normalize_text(lane): float(weight)
+        for lane, weight in lane_weights.items()
+        if isinstance(weight, (int, float))
+    }
+
+
+def learning_candidate_provider_weights(
+    profile_path: str,
+    *,
+    subject: str,
+    difficulty: str,
+) -> dict[str, float]:
+    if not profile_path:
+        return {}
+    try:
+        profile = json.loads(open(profile_path, encoding="utf-8").read())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    policy = profile.get("candidate_policy_by_slot", {})
+    if not isinstance(policy, dict):
+        return {}
+    values = policy.get(f"{subject}/{difficulty}") or policy.get(f"{subject}/*") or {}
+    provider_weights = values.get("provider_weights", {}) if isinstance(values, dict) else {}
+    return {
+        str(provider): float(weight)
+        for provider, weight in provider_weights.items()
+        if isinstance(weight, (int, float))
+    }
+
+
+def candidate_provider_identity(provider: QuizAIProvider) -> str:
+    name = str(getattr(provider, "name", "unknown"))
+    config = getattr(provider, "config", None)
+    model = str(getattr(config, "generator_model", "") or "").strip()
+    return f"{name}:{model}" if model else name
+
+
+def choose_topic_lane(
+    conn: sqlite3.Connection,
+    *,
+    subject: str,
+    difficulty: str,
+    batch_number: int,
+    profile_path: str,
+) -> str:
+    lanes = QUIZ_TOPIC_LANES[subject]
+    counts = Counter(
+        normalize_text(row["topic_lane"])
+        for row in conn.execute(
+            """
+            SELECT topic_lane FROM daily_quiz_candidates
+            WHERE subject = ? AND difficulty = ? AND status = 'accepted'
+            ORDER BY id DESC LIMIT 120
+            """,
+            (subject, difficulty),
+        ).fetchall()
+    )
+    weights = learning_candidate_lane_weights(
+        profile_path, subject=subject, difficulty=difficulty
+    )
+    ranked = sorted(
+        lanes,
+        key=lambda lane: (
+            counts[normalize_text(lane)] - weights.get(normalize_text(lane), 0.5),
+            lane,
+        ),
+    )
+    return ranked[(batch_number - 1) % len(ranked)]
+
+
+def candidate_rank_score(
+    candidate: dict[str, Any],
+    *,
+    previous_hooks: list[str],
+    lane_weights: dict[str, float],
+) -> float:
+    hook_key = normalize_text(candidate["hook"])
+    similarity = max(
+        (SequenceMatcher(None, hook_key, previous).ratio() for previous in previous_hooks),
+        default=0.0,
+    )
+    lane_weight = lane_weights.get(normalize_text(candidate["topic_lane"]), 0.5)
+    query_bonus = min(1.0, len(candidate["evidence_query"].split()) / 10)
+    return round((1.0 - similarity) * 3 + lane_weight * 2 + query_bonus, 4)
+
+
 def save_attempt(
     conn: sqlite3.Connection,
     *,
@@ -1887,14 +2597,23 @@ def save_attempt(
     evidence: list[dict[str, Any]] | None = None,
     verification: dict[str, Any] | None = None,
 ) -> None:
+    candidate_id = None
+    pipeline_metadata: dict[str, Any] = {}
+    if isinstance(generated, dict):
+        raw_candidate_id = generated.get("_candidate_id")
+        if isinstance(raw_candidate_id, int):
+            candidate_id = raw_candidate_id
+        raw_pipeline = generated.get("_pipeline")
+        if isinstance(raw_pipeline, dict):
+            pipeline_metadata = raw_pipeline
     conn.execute(
         """
         INSERT INTO daily_quiz_attempts (
             quiz_date, subject, difficulty, attempt_number, provider,
             generated_json, critic_json, evidence_json, verification_json,
-            passed, failure_reason, created_at
+            passed, failure_reason, created_at, candidate_id, pipeline_metadata_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             quiz_date,
@@ -1909,6 +2628,8 @@ def save_attempt(
             int(passed),
             failure_reason,
             utc_now(),
+            candidate_id,
+            json.dumps(pipeline_metadata, ensure_ascii=True),
         ),
     )
     commit_if_needed(conn)
@@ -2119,6 +2840,442 @@ def is_transient_provider_failure(reason: str) -> bool:
     )
 
 
+class ComposedQuestionProvider:
+    def __init__(
+        self,
+        *,
+        question: dict[str, Any],
+        composer: QuizAIProvider,
+        critic: QuizAIProvider,
+        verifier: QuizAIProvider,
+    ) -> None:
+        self.question = question
+        self.composer = composer
+        self.critic = critic
+        self.verifier = verifier
+        self.name = str(getattr(composer, "name", "candidate-composer"))
+        self.last_provider_name = self.name
+
+    def generate_question(self, **_: Any) -> dict[str, Any]:
+        self.last_provider_name = str(getattr(self.composer, "name", self.name))
+        return dict(self.question)
+
+    def critique_question(self, **kwargs: Any) -> dict[str, Any]:
+        self.last_provider_name = str(getattr(self.critic, "name", self.name))
+        return self.critic.critique_question(**kwargs)
+
+    def verify_question(self, **kwargs: Any) -> dict[str, Any]:
+        self.last_provider_name = str(getattr(self.verifier, "name", self.name))
+        return self.verifier.verify_question(**kwargs)
+
+
+def latest_candidate_failure(
+    conn: sqlite3.Connection,
+    candidate_id: int,
+) -> str:
+    row = conn.execute(
+        """
+        SELECT failure_reason FROM daily_quiz_attempts
+        WHERE candidate_id = ? ORDER BY id DESC LIMIT 1
+        """,
+        (candidate_id,),
+    ).fetchone()
+    return str(row["failure_reason"] or "Question failed validation or criticism.") if row else "Question failed validation or criticism."
+
+
+def generate_slot_two_stage(
+    conn: sqlite3.Connection,
+    *,
+    quiz_set_id: int,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
+    provider: QuizAIProvider,
+    config: QuizConfig,
+    generation_mode: str,
+    log: Callable[[str], None],
+) -> bool | None:
+    recovery_mode = generation_mode == "recovery"
+    embargo_days = (
+        config.recovery_answer_embargo_days
+        if recovery_mode
+        else config.answer_embargo_days
+    )
+    accepted_recent = recent_questions(
+        conn,
+        subject=subject,
+        history_days=embargo_days,
+        exclude_quiz_date=quiz_date,
+    )
+    similarity_recent = recent_questions(
+        conn,
+        subject=subject,
+        history_days=config.question_similarity_days,
+        exclude_quiz_date=quiz_date,
+    )
+    topic_recent = recent_questions(
+        conn,
+        subject=subject,
+        history_days=config.question_history_days,
+        exclude_quiz_date=quiz_date,
+    )
+    current_questions = quiz_set_questions(conn, quiz_set_id)
+    accepted_answer_keys = {
+        normalize_answer(question["correct_answer"]) for question in accepted_recent
+    }
+    current_answer_keys = {
+        normalize_answer(question["correct_answer"]) for question in current_questions
+    }
+    previous_hooks = [
+        normalize_text(text)
+        for question in similarity_recent
+        for text in (question["question"], question.get("interesting_reason", ""))
+        if text
+    ]
+    existing_rows = candidate_rows_for_slot(
+        conn,
+        quiz_set_id=quiz_set_id,
+        subject=subject,
+        difficulty=difficulty,
+    )
+    failed_answer_keys = {
+        row["normalized_answer"]
+        for row in existing_rows
+        if row["status"] != "accepted" and row["normalized_answer"]
+    }
+    failed_hooks = [
+        row["normalized_hook"]
+        for row in existing_rows
+        if row["status"] != "accepted" and row["normalized_hook"]
+    ]
+    feedback = merge_feedback_entries(
+        prior_attempt_feedback(
+            conn,
+            quiz_date=quiz_date,
+            subject=subject,
+            difficulty=difficulty,
+        ),
+        learning_profile_feedback(
+            config.learning_profile_path,
+            subject=subject,
+            difficulty=difficulty,
+        ),
+    )
+    stages = quality_provider_stages(provider)
+    provider_weights = learning_candidate_provider_weights(
+        config.learning_profile_path,
+        subject=subject,
+        difficulty=difficulty,
+    )
+    if provider_weights:
+        stages = [
+            item[1]
+            for item in sorted(
+                enumerate(stages),
+                key=lambda item: (
+                    -provider_weights.get(candidate_provider_identity(item[1]), 0.5),
+                    item[0],
+                ),
+            )
+        ]
+    lane_weights = learning_candidate_lane_weights(
+        config.learning_profile_path,
+        subject=subject,
+        difficulty=difficulty,
+    )
+
+    def evaluate_rows(rows: list[sqlite3.Row], stage_index: int) -> bool | None:
+        composer = stages[stage_index % len(stages)]
+        critic = stages[(stage_index + 1) % len(stages)]
+        verifier = stages[(stage_index + 2) % len(stages)]
+        composition_failures = 0
+        for row in sorted(rows, key=lambda item: (-float(item["score"]), int(item["id"])))[:3]:
+            candidate = candidate_from_row(row)
+            probe = candidate_evidence_probe(
+                candidate, subject=subject, difficulty=difficulty
+            )
+            try:
+                evidence = configured_question_evidence(probe, config=config)
+            except Exception as error:
+                reason = f"Candidate evidence search unavailable: {error}"
+                if is_transient_provider_failure(reason):
+                    log(f"Deferred {subject} / {difficulty}: {reason}")
+                    return None
+                update_candidate(
+                    conn,
+                    int(row["id"]),
+                    status="rejected",
+                    rejection_stage="evidence",
+                    failure_reason=reason,
+                )
+                continue
+            if not candidate_evidence_supported(candidate, evidence):
+                reason = "Reputable evidence did not support both the candidate answer and hook."
+                update_candidate(
+                    conn,
+                    int(row["id"]),
+                    status="rejected",
+                    rejection_stage="evidence",
+                    failure_reason=reason,
+                    evidence=evidence,
+                )
+                failed_answer_keys.add(row["normalized_answer"])
+                failed_hooks.append(row["normalized_hook"])
+                continue
+            update_candidate(
+                conn,
+                int(row["id"]),
+                status="verified",
+                evidence=evidence,
+            )
+            try:
+                question = composer.compose_question(
+                    subject=subject,
+                    difficulty=difficulty,
+                    candidate=candidate,
+                    evidence=evidence,
+                    feedback=feedback,
+                )
+            except Exception as error:
+                reason = f"Candidate composition failed: {error}"
+                if is_transient_provider_failure(reason):
+                    log(f"Deferred {subject} / {difficulty}: {reason}")
+                    return None
+                update_candidate(
+                    conn,
+                    int(row["id"]),
+                    status="rejected",
+                    rejection_stage="composition",
+                    failure_reason=reason,
+                    evidence=evidence,
+                )
+                composition_failures += 1
+                if composition_failures >= 2:
+                    break
+                continue
+            if normalize_answer(question.get("correct_answer")) != normalize_answer(
+                candidate["answer"]
+            ):
+                reason = "Composer changed the approved candidate answer."
+                update_candidate(
+                    conn,
+                    int(row["id"]),
+                    status="rejected",
+                    rejection_stage="composition",
+                    failure_reason=reason,
+                    evidence=evidence,
+                )
+                composition_failures += 1
+                if composition_failures >= 2:
+                    break
+                continue
+            composed_key = normalize_text(question.get("question"))
+            if any(
+                SequenceMatcher(None, composed_key, previous).ratio() >= 0.84
+                for previous in previous_hooks
+                if previous
+            ):
+                reason = "Composed question duplicates or closely matches the 180-day history."
+                update_candidate(
+                    conn,
+                    int(row["id"]),
+                    status="rejected",
+                    rejection_stage="composition",
+                    failure_reason=reason,
+                    evidence=evidence,
+                )
+                composition_failures += 1
+                if composition_failures >= 2:
+                    break
+                continue
+            question["_candidate_id"] = int(row["id"])
+            question["_pipeline"] = {
+                "version": "candidate-v1",
+                "mode": generation_mode,
+                "lane": candidate["topic_lane"],
+                "batch": int(row["batch_number"]),
+            }
+            wrapped = ComposedQuestionProvider(
+                question=question,
+                composer=composer,
+                critic=critic,
+                verifier=verifier,
+            )
+            result = generate_slot(
+                conn,
+                quiz_set_id=quiz_set_id,
+                quiz_date=quiz_date,
+                subject=subject,
+                difficulty=difficulty,
+                provider=wrapped,
+                config=replace(
+                    config,
+                    candidate_pipeline_enabled=False,
+                    max_attempts_per_slot=1,
+                    question_history_days=embargo_days,
+                ),
+                generation_mode=generation_mode,
+                prefetched_evidence=evidence,
+                log=log,
+            )
+            if result is True:
+                update_candidate(
+                    conn,
+                    int(row["id"]),
+                    status="accepted",
+                    evidence=evidence,
+                )
+                return True
+            reason = latest_candidate_failure(conn, int(row["id"]))
+            update_candidate(
+                conn,
+                int(row["id"]),
+                status="rejected",
+                rejection_stage="question_gate",
+                failure_reason=reason,
+                evidence=evidence,
+            )
+            failed_answer_keys.add(row["normalized_answer"])
+            failed_hooks.append(row["normalized_hook"])
+            composition_failures += 1
+            if composition_failures >= 2:
+                break
+        return False
+
+    resumable = [row for row in existing_rows if row["status"] in {"eligible", "verified"}]
+    if resumable:
+        result = evaluate_rows(resumable, int(resumable[0]["batch_number"]) - 1)
+        if result is not False:
+            return result
+
+    for _ in range(config.candidate_batches_per_slot):
+        batch_number = next_candidate_batch_number(
+            conn,
+            quiz_set_id=quiz_set_id,
+            subject=subject,
+            difficulty=difficulty,
+        )
+        stage_index = (batch_number - 1) % len(stages)
+        stage = stages[stage_index]
+        lane = choose_topic_lane(
+            conn,
+            subject=subject,
+            difficulty=difficulty,
+            batch_number=batch_number,
+            profile_path=config.learning_profile_path,
+        )
+        log(
+            f"Discovering {subject} / {difficulty} candidate batch {batch_number} "
+            f"with {candidate_provider_identity(stage)} in lane {lane!r}"
+        )
+        try:
+            payload = stage.discover_candidates(
+                subject=subject,
+                difficulty=difficulty,
+                topic_lane=lane,
+                batch_size=config.candidate_batch_size,
+                feedback=feedback,
+                recovery_mode=recovery_mode,
+            )
+        except Exception as error:
+            reason = f"Candidate discovery failed: {error}"
+            if is_transient_provider_failure(reason):
+                log(f"Deferred {subject} / {difficulty}: {reason}")
+                return None
+            feedback.append(reason)
+            continue
+        raw_candidates = payload.get("candidates") if isinstance(payload, dict) else None
+        if not isinstance(raw_candidates, list):
+            feedback.append("Candidate discovery returned no candidates array.")
+            continue
+        if len(raw_candidates) != config.candidate_batch_size:
+            feedback.append(
+                f"Candidate discovery returned {len(raw_candidates)} ideas; "
+                f"exactly {config.candidate_batch_size} are required."
+            )
+            continue
+        inserted: list[sqlite3.Row] = []
+        for candidate_index, raw_candidate in enumerate(raw_candidates[: config.candidate_batch_size], 1):
+            candidate, validation_reason = validate_candidate(raw_candidate, topic_lane=lane)
+            if candidate is None:
+                placeholder = {
+                    "answer": str(raw_candidate.get("answer") or "") if isinstance(raw_candidate, dict) else "",
+                    "hook": str(raw_candidate.get("hook") or "") if isinstance(raw_candidate, dict) else "",
+                    "topic_lane": lane,
+                    "era": "",
+                    "region": "",
+                    "tags": [],
+                    "evidence_query": "",
+                }
+                insert_candidate(
+                    conn,
+                    quiz_set_id=quiz_set_id,
+                    quiz_date=quiz_date,
+                    subject=subject,
+                    difficulty=difficulty,
+                    batch_number=batch_number,
+                    candidate_index=candidate_index,
+                    provider=candidate_provider_identity(stage),
+                    generation_mode=generation_mode,
+                    candidate=placeholder,
+                    status="rejected",
+                    rejection_stage="schema",
+                    failure_reason=validation_reason,
+                )
+                continue
+            rejection = candidate_local_rejection(
+                candidate,
+                accepted_answer_keys=accepted_answer_keys,
+                current_answer_keys=current_answer_keys,
+                previous_hooks=previous_hooks,
+                failed_answer_keys=failed_answer_keys,
+                failed_hooks=failed_hooks,
+                recent_questions_for_topics=topic_recent,
+            )
+            score = candidate_rank_score(
+                candidate,
+                previous_hooks=previous_hooks,
+                lane_weights=lane_weights,
+            )
+            candidate_id = insert_candidate(
+                conn,
+                quiz_set_id=quiz_set_id,
+                quiz_date=quiz_date,
+                subject=subject,
+                difficulty=difficulty,
+                batch_number=batch_number,
+                candidate_index=candidate_index,
+                provider=candidate_provider_identity(stage),
+                generation_mode=generation_mode,
+                candidate=candidate,
+                status="rejected" if rejection else "eligible",
+                rejection_stage="local" if rejection else None,
+                failure_reason=rejection,
+                score=score,
+            )
+            if rejection:
+                failed_answer_keys.add(normalize_answer(candidate["answer"]))
+                failed_hooks.append(normalize_text(candidate["hook"]))
+            else:
+                failed_answer_keys.add(normalize_answer(candidate["answer"]))
+                failed_hooks.append(normalize_text(candidate["hook"]))
+                inserted_row = conn.execute(
+                    "SELECT * FROM daily_quiz_candidates WHERE id = ?", (candidate_id,)
+                ).fetchone()
+                if inserted_row is not None:
+                    inserted.append(inserted_row)
+        if not inserted:
+            feedback.append("The candidate batch contained no locally eligible ideas.")
+            continue
+        result = evaluate_rows(inserted, stage_index)
+        if result is not False:
+            return result
+    log(
+        f"Deferred {subject} / {difficulty}; candidate batches were exhausted without an accepted question."
+    )
+    return None
+
+
 def generate_slot(
     conn: sqlite3.Connection,
     *,
@@ -2129,7 +3286,21 @@ def generate_slot(
     provider: QuizAIProvider,
     config: QuizConfig,
     log: Callable[[str], None],
+    generation_mode: str = "normal",
+    prefetched_evidence: list[dict[str, Any]] | None = None,
 ) -> bool | None:
+    if config.candidate_pipeline_enabled:
+        return generate_slot_two_stage(
+            conn,
+            quiz_set_id=quiz_set_id,
+            quiz_date=quiz_date,
+            subject=subject,
+            difficulty=difficulty,
+            provider=provider,
+            config=config,
+            generation_mode=generation_mode,
+            log=log,
+        )
     attempt_feedback = prior_attempt_feedback(
         conn,
         quiz_date=quiz_date,
@@ -2332,9 +3503,13 @@ def generate_slot(
             verifier_provider_name = critic_provider_name
         else:
             try:
-                evidence = configured_question_evidence(
-                    validation.question,
-                    config=config,
+                evidence = (
+                    list(prefetched_evidence)
+                    if prefetched_evidence is not None
+                    else configured_question_evidence(
+                        validation.question,
+                        config=config,
+                    )
                 )
             except EvidenceSearchUnavailable as error:
                 reason = str(error)
@@ -2553,6 +3728,7 @@ def generate_daily_quiz(
     force: bool = False,
     provider: QuizAIProvider | None = None,
     log: Callable[[str], None] = print,
+    generation_mode: str = "normal",
 ) -> dict[str, Any]:
     quiz_date = valid_quiz_date(quiz_date)
     initialize_database(conn)
@@ -2562,12 +3738,28 @@ def generate_daily_quiz(
 
     if force:
         conn.execute("DELETE FROM daily_quiz_questions WHERE quiz_set_id = ?", (quiz_set["id"],))
+        conn.execute("DELETE FROM daily_quiz_candidates WHERE quiz_set_id = ?", (quiz_set["id"],))
         commit_if_needed(conn)
     elif config.evidence_required:
         removed = remove_unverified_questions(conn, int(quiz_set["id"]))
         if removed:
             log(f"Removed {removed} unverified question(s) before resuming generation.")
     set_quiz_status(conn, quiz_date, "generating")
+    conn.execute(
+        """
+        UPDATE daily_quiz_sets
+        SET pipeline_version = ?, generation_mode = ?,
+            generation_started_at = COALESCE(generation_started_at, ?)
+        WHERE id = ?
+        """,
+        (
+            "candidate-v1" if config.candidate_pipeline_enabled else "legacy",
+            generation_mode,
+            utc_now(),
+            quiz_set["id"],
+        ),
+    )
+    commit_if_needed(conn)
 
     if provider is None:
         try:
@@ -2599,6 +3791,7 @@ def generate_daily_quiz(
             difficulty=difficulty,
             provider=provider,
             config=config,
+            generation_mode=generation_mode,
             log=log,
         )
         if slot_result is None:
@@ -2677,6 +3870,13 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
             "failure_reason": None,
             "last_failure_reason": None,
             "last_failure_transient": False,
+            "pipeline_version": None,
+            "generation_mode": None,
+            "candidate_batches": 0,
+            "candidate_count": 0,
+            "filtered_candidates": 0,
+            "candidate_providers": [],
+            "generation_elapsed_seconds": None,
         }
     accepted = conn.execute(
         "SELECT COUNT(*) FROM daily_quiz_questions WHERE quiz_set_id = ?",
@@ -2698,6 +3898,36 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
         (quiz_date,),
     ).fetchone()
     last_failure_reason = str(last_failure["failure_reason"] or "") if last_failure else ""
+    candidate_metrics = conn.execute(
+        """
+        SELECT COUNT(*) AS candidate_count,
+               COUNT(DISTINCT subject || '/' || difficulty || '/' || batch_number) AS batch_count,
+               SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS filtered_count,
+               MIN(created_at) AS first_candidate_at
+        FROM daily_quiz_candidates WHERE quiz_set_id = ?
+        """,
+        (quiz_set["id"],),
+    ).fetchone()
+    providers = [
+        row["provider"]
+        for row in conn.execute(
+            """
+            SELECT DISTINCT provider FROM daily_quiz_candidates
+            WHERE quiz_set_id = ? ORDER BY provider
+            """,
+            (quiz_set["id"],),
+        ).fetchall()
+    ]
+    started_at = quiz_set["generation_started_at"] or candidate_metrics["first_candidate_at"]
+    elapsed_seconds: int | None = None
+    if started_at:
+        try:
+            started = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+            finished_value = quiz_set["published_at"] or utc_now()
+            finished = datetime.fromisoformat(str(finished_value).replace("Z", "+00:00"))
+            elapsed_seconds = max(0, int((finished - started).total_seconds()))
+        except ValueError:
+            elapsed_seconds = None
     return {
         "date": quiz_date,
         "status": quiz_set["status"],
@@ -2707,6 +3937,13 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
         "failure_reason": quiz_set["failure_reason"],
         "last_failure_reason": last_failure_reason or None,
         "last_failure_transient": is_transient_provider_failure(last_failure_reason),
+        "pipeline_version": quiz_set["pipeline_version"],
+        "generation_mode": quiz_set["generation_mode"],
+        "candidate_batches": int(candidate_metrics["batch_count"] or 0),
+        "candidate_count": int(candidate_metrics["candidate_count"] or 0),
+        "filtered_candidates": int(candidate_metrics["filtered_count"] or 0),
+        "candidate_providers": providers,
+        "generation_elapsed_seconds": elapsed_seconds,
     }
 
 
@@ -2739,6 +3976,8 @@ def question_attempts(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any
                 "passed": bool(row["passed"]),
                 "failure_reason": row["failure_reason"],
                 "created_at": row["created_at"],
+                "candidate_id": row["candidate_id"],
+                "pipeline_metadata": json.loads(row["pipeline_metadata_json"] or "{}"),
             }
             for row in rows
         ],

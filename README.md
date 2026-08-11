@@ -118,6 +118,18 @@ python tools/build_quiz_learning_profile.py --out-dir data/training
 
 Set `QUIZ_LEARNING_PROFILE_PATH` to the generated JSON file to add compact learned feedback to future quiz generation prompts while keeping the existing validators and critic active.
 
+The two-stage candidate pipeline can be shadow-tested without touching the live
+database or published quizzes:
+
+```bash
+python tools/evaluate_quiz_candidate_pipeline.py --start-date 2026-08-14
+```
+
+It copies quiz history into `data/qa/quiz-candidate-shadow/shadow.db`, generates
+seven unpublished comparison dates, writes automated metrics to `report.json`,
+and exports a 12-question human review sample. Production activation remains
+controlled by `QUIZ_CANDIDATE_PIPELINE_ENABLED`, which defaults to `0`.
+
 Run the safe fixture evaluator to confirm the held-out eval file is structurally valid:
 
 ```bash

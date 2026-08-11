@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter, defaultdict
 import json
 import sqlite3
 import sys
@@ -108,6 +109,54 @@ def read_negative_records(paths: list[Path]) -> list[dict[str, Any]]:
     return records
 
 
+def candidate_policy_from_database(conn: sqlite3.Connection) -> dict[str, Any]:
+    try:
+        rows = conn.execute(
+            """
+            SELECT subject, difficulty, topic_lane, provider, status,
+                   rejection_stage, failure_reason
+            FROM daily_quiz_candidates
+            WHERE status IN ('accepted', 'rejected')
+            ORDER BY id DESC LIMIT 5000
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    by_slot: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        by_slot[f"{row['subject']}/{row['difficulty']}"].append(row)
+    policy: dict[str, Any] = {}
+    for slot, slot_rows in by_slot.items():
+        lane_totals: Counter[str] = Counter()
+        lane_passes: Counter[str] = Counter()
+        provider_totals: Counter[str] = Counter()
+        provider_passes: Counter[str] = Counter()
+        failures: Counter[str] = Counter()
+        for row in slot_rows:
+            lane = str(row["topic_lane"] or "unknown")
+            provider = str(row["provider"] or "unknown")
+            passed = row["status"] == "accepted"
+            lane_totals[lane] += 1
+            provider_totals[provider] += 1
+            lane_passes[lane] += int(passed)
+            provider_passes[provider] += int(passed)
+            if not passed:
+                failures[str(row["rejection_stage"] or "unknown")] += 1
+        policy[slot] = {
+            "sample_count": len(slot_rows),
+            "lane_weights": {
+                lane: round((lane_passes[lane] + 1) / (total + 2), 4)
+                for lane, total in sorted(lane_totals.items())
+            },
+            "provider_weights": {
+                provider: round((provider_passes[provider] + 1) / (total + 2), 4)
+                for provider, total in sorted(provider_totals.items())
+            },
+            "failure_categories": dict(failures.most_common()),
+        }
+    return policy
+
+
 def validate_profile(profile: dict[str, Any], *, max_feedback: int = 8, max_length: int = 240) -> list[str]:
     errors: list[str] = []
     by_slot = profile.get("feedback_by_slot")
@@ -133,6 +182,21 @@ def validate_profile(profile: dict[str, Any], *, max_feedback: int = 8, max_leng
             if normalized in seen:
                 errors.append(f"{slot} contains duplicate feedback: {text!r}.")
             seen.add(normalized)
+    candidate_policy = profile.get("candidate_policy_by_slot", {})
+    if not isinstance(candidate_policy, dict):
+        errors.append("candidate_policy_by_slot must be an object when present.")
+    else:
+        for slot, values in candidate_policy.items():
+            if not isinstance(values, dict):
+                errors.append(f"Candidate policy {slot!r} must be an object.")
+                continue
+            for key in ("lane_weights", "provider_weights"):
+                weights = values.get(key, {})
+                if not isinstance(weights, dict) or any(
+                    not isinstance(weight, (int, float)) or not 0 <= weight <= 1
+                    for weight in weights.values()
+                ):
+                    errors.append(f"Candidate policy {slot!r} has invalid {key}.")
     return errors
 
 
@@ -155,6 +219,7 @@ def build_candidate_profile(
     profile["failed_attempt_record_count"] = len(attempt_records)
     profile["refresh_since_date"] = since_date
     profile["refresh_attempt_limit"] = attempt_limit
+    profile["candidate_policy_by_slot"] = candidate_policy_from_database(conn)
     errors = validate_profile(profile)
     profile["validation"] = {"passed": not errors, "errors": errors}
     return profile

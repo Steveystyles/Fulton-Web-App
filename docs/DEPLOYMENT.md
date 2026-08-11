@@ -83,6 +83,12 @@ AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
 MAX_ATTEMPTS_PER_SLOT=15
 QUESTION_HISTORY_DAYS=90
+QUIZ_CANDIDATE_PIPELINE_ENABLED=0
+QUIZ_ANSWER_EMBARGO_DAYS=45
+QUIZ_RECOVERY_ANSWER_EMBARGO_DAYS=30
+QUIZ_QUESTION_SIMILARITY_DAYS=180
+QUIZ_CANDIDATE_BATCH_SIZE=8
+QUIZ_CANDIDATE_BATCHES_PER_SLOT=3
 QUIZ_EVIDENCE_REQUIRED=1
 QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC=90
 QUIZ_EVIDENCE_MAX_RESULTS=8
@@ -227,6 +233,12 @@ AI_REQUEST_DELAY_SEC=12
 AI_TRANSIENT_RETRIES=3
 MAX_ATTEMPTS_PER_SLOT=15
 QUESTION_HISTORY_DAYS=90
+QUIZ_CANDIDATE_PIPELINE_ENABLED=0
+QUIZ_ANSWER_EMBARGO_DAYS=45
+QUIZ_RECOVERY_ANSWER_EMBARGO_DAYS=30
+QUIZ_QUESTION_SIMILARITY_DAYS=180
+QUIZ_CANDIDATE_BATCH_SIZE=8
+QUIZ_CANDIDATE_BATCHES_PER_SLOT=3
 QUIZ_EVIDENCE_REQUIRED=1
 QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC=90
 QUIZ_EVIDENCE_MAX_RESULTS=8
@@ -279,11 +291,26 @@ FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED=1
 FULTONS_DAILY_QUIZ_SCHEDULER_HOUR=0
 FULTONS_DAILY_QUIZ_SCHEDULER_MINUTE=5
 FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC=3600
+FULTONS_DAILY_QUIZ_RECOVERY_HOUR=20
 ```
 
 Provider rate-limit failures use `FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC`
 instead of the normal retry cadence so the app does not keep refreshing a rate
 limit while waiting for the upstream provider to recover.
+
+The candidate pipeline is deliberately disabled by default. When enabled, it
+discovers and filters answer ideas before composing questions. Incomplete
+next-day quizzes enter recovery mode at 20:00 UK time, reducing only the answer
+embargo and optional scope constraints; critic and evidence gates remain active.
+
+Run the seven-day shadow gate against an isolated database copy before enabling it:
+
+```bash
+python tools/evaluate_quiz_candidate_pipeline.py --start-date 2026-08-14
+```
+
+Review `data/qa/quiz-candidate-shadow/report.json` and `review-sample.csv`. Set
+`QUIZ_CANDIDATE_PIPELINE_ENABLED=1` only after both automated and manual gates pass.
 
 Do not expose the internal token in browser code or commit it to Git.
 
