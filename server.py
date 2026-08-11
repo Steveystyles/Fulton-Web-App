@@ -2646,7 +2646,7 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 ON daily_map_levels.id = daily_map_guesses.level_id
             INNER JOIN daily_map_puzzles
                 ON daily_map_puzzles.id = daily_map_levels.puzzle_id
-            WHERE daily_map_puzzles.puzzle_date >= ?
+            WHERE substr(daily_map_guesses.completed_at, 1, 10) >= ?
             GROUP BY daily_map_guesses.user_id
         )
         SELECT

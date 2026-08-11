@@ -12,6 +12,7 @@ import {
   BookOpen,
   ChevronDown,
   ChevronUp,
+  CircleAlert,
   Delete,
   ExternalLink,
   LoaderCircle,
@@ -316,6 +317,7 @@ export function Wordle() {
   const [largePrint, setLargePrint] = useState(readLargePrintPreference);
   const [soundEnabled, setSoundEnabled] = useState(readSoundPreference);
   const [winDialogDismissed, setWinDialogDismissed] = useState(false);
+  const [lossDialogDismissed, setLossDialogDismissed] = useState(false);
   const [revealingRowIndex, setRevealingRowIndex] = useState<number | null>(null);
   const [revealedLetters, setRevealedLetters] = useState(0);
   const [keyboardOverride, setKeyboardOverride] = useState<Map<string, FeedbackColor> | null>(null);
@@ -386,6 +388,12 @@ export function Wordle() {
   useEffect(() => {
     if (gameStatus === "won") {
       setWinDialogDismissed(false);
+    }
+  }, [gameStatus, state?.game.date]);
+
+  useEffect(() => {
+    if (gameStatus === "lost") {
+      setLossDialogDismissed(false);
     }
   }, [gameStatus, state?.game.date]);
 
@@ -776,7 +784,7 @@ export function Wordle() {
     }
 
     if (state.result.status === "lost") {
-      return `Answer: ${state.result.answer?.toUpperCase()}`;
+      return `Answer: ${state.result.answer?.toUpperCase() ?? "Unavailable"}`;
     }
 
     return "";
@@ -910,11 +918,19 @@ export function Wordle() {
   const messageClass = largePrint ? "text-base" : "text-sm";
   const definitionEyebrowClass = largePrint ? "text-xs" : "text-[0.68rem]";
   const nextLevel = Math.min(maxWordleLevel, (state?.game.difficulty ?? 1) + 1);
+  const answerText = state?.result.answer?.toUpperCase() ?? "";
   const showWinDialog = gameStatus === "won" && !winDialogDismissed && !isAnimatingReveal;
+  const showLossDialog =
+    gameStatus === "lost" && answerText.length > 0 && !lossDialogDismissed && !isAnimatingReveal;
   const winGuessLabel = state?.result.attemptsUsed === 1 ? "guess" : "guesses";
   const winSummaryText =
     state?.result.status === "won"
       ? `Solved in ${state.result.attemptsUsed} ${winGuessLabel}`
+      : "";
+  const lossGuessLabel = state?.result.attemptsUsed === 1 ? "guess" : "guesses";
+  const lossSummaryText =
+    state?.result.status === "lost"
+      ? `Out of guesses after ${state.result.attemptsUsed} ${lossGuessLabel}. The correct word was ${answerText}.`
       : "";
 
   return (
@@ -922,7 +938,7 @@ export function Wordle() {
       <section className={["max-w-full rounded-lg saints-card wordle-game-card", cardOverflowClass, cardPaddingClass].join(" ")}>
         <form className={formSpacingClass} onSubmit={handleSubmit}>
           <div className="space-y-2">
-            {statusText && !isAnimatingReveal && !showWinDialog ? (
+            {statusText && !isAnimatingReveal && !showWinDialog && !showLossDialog ? (
               <p className={["text-center font-black text-slate-700", statusTextClass].join(" ")}>
                 {statusText}
               </p>
@@ -1264,6 +1280,88 @@ export function Wordle() {
                     Next level
                   </dt>
                   <dd className="mt-1 text-lg font-black leading-tight text-slate-950">{nextLevel}</dd>
+                </div>
+              </dl>
+
+              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+                    Today's word
+                  </p>
+                  {state ? (
+                    <span
+                      className={[
+                        "inline-flex items-center rounded-full px-2 py-0.5 text-[0.68rem] font-black uppercase tracking-normal",
+                        difficultyBadgeClasses(state.game.difficulty),
+                      ].join(" ")}
+                    >
+                      Level {state.game.difficulty}
+                    </span>
+                  ) : null}
+                </div>
+                <DictionaryDefinitionCard
+                  compact
+                  definition={definition}
+                  error={definitionError}
+                  loading={definitionLoading}
+                  largePrint={largePrint}
+                />
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showLossDialog ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="wordle-loss-title"
+          aria-describedby="wordle-loss-description"
+        >
+          <section className="wordle-win-modal max-h-[calc(100dvh_-_8.5rem_-_env(safe-area-inset-bottom))] w-full max-w-[350px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_7rem_-_env(safe-area-inset-bottom))]">
+            <div className="relative p-3">
+              <button
+                type="button"
+                onClick={() => setLossDialogDismissed(true)}
+                aria-label="Close answer message"
+                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-slate-700 transition hover:bg-slate-200 focus:outline-none focus:ring-4 focus:ring-saints-red/15"
+              >
+                <X aria-hidden="true" className="h-4 w-4" strokeWidth={2.4} />
+              </button>
+
+              <div className="pr-9 text-left">
+                <div className="flex items-center gap-2.5">
+                  <div className="wordle-win-badge flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-saints-red text-white shadow-lg shadow-red-900/20">
+                    <CircleAlert aria-hidden="true" className="h-5 w-5" strokeWidth={2.5} />
+                  </div>
+                  <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+                    Out of guesses
+                  </p>
+                </div>
+                <h2 id="wordle-loss-title" className="mt-2 text-[1.55rem] font-black leading-none text-slate-950">
+                  The word was {answerText}
+                </h2>
+                <p id="wordle-loss-description" className="sr-only">
+                  {lossSummaryText}
+                </p>
+              </div>
+
+              <dl className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200">
+                  <dt className="text-[0.65rem] font-black uppercase tracking-normal text-slate-500">
+                    Guesses
+                  </dt>
+                  <dd className="mt-1 whitespace-nowrap text-base font-black leading-tight text-slate-950">
+                    {state?.result.attemptsUsed} {lossGuessLabel}
+                  </dd>
+                </div>
+                <div className="rounded-lg bg-saints-redSoft px-2.5 py-2 ring-1 ring-red-200">
+                  <dt className="text-[0.65rem] font-black uppercase tracking-normal text-saints-red">
+                    Correct word
+                  </dt>
+                  <dd className="mt-1 text-lg font-black leading-tight text-slate-950">{answerText}</dd>
                 </div>
               </dl>
 

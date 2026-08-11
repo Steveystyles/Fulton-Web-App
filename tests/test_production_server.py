@@ -3156,6 +3156,149 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_daily_map_guess_updates_leaderboard_map_points(self) -> None:
+        import daily_map_game
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-08-11T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    puzzle = daily_map_game.get_or_create_puzzle(conn, "2026-08-11")
+                    place = conn.execute(
+                        "SELECT * FROM map_place_pool WHERE canonical_name = 'Cairo'"
+                    ).fetchone()
+                    self.assertIsNotNone(place)
+                    config = daily_map_game.SCORE_CONFIG[place["difficulty"]]
+                    level_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_levels (
+                            puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            puzzle["id"],
+                            place["difficulty"],
+                            place["id"],
+                            config["max_points"],
+                            config["lambda_km"],
+                            now,
+                        ),
+                    ).lastrowid
+                    daily_map_game.set_puzzle_status(conn, "2026-08-11", "published")
+                    result, status = daily_map_game.submit_guess(
+                        conn,
+                        user_id=user_id,
+                        level_id=level_id,
+                        lat=place["lat"],
+                        lng=place["lng"],
+                        selected_name="Cairo",
+                        revealed_hint_count=0,
+                        today="2026-08-11",
+                    )
+                    self.assertEqual(status, HTTPStatus.CREATED)
+                    self.assertEqual(result["result"]["score"], 10)
+
+                with patch("server.today_game_date", return_value="2026-08-11"):
+                    leaderboard = server.leaderboard_payload(conn)
+
+            player = leaderboard["players"][0]
+            self.assertEqual(player["username"], "dad")
+            self.assertEqual(player["mapPoints"], 10)
+            self.assertEqual(player["weeklyMapPoints"], 10)
+            self.assertEqual(player["mapPlayed"], 1)
+            self.assertEqual(player["totalPoints"], 10)
+            self.assertEqual(player["weeklyPoints"], 10)
+            self.assertEqual(leaderboard["summary"]["mapPlays"], 1)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_daily_map_weekly_points_use_guess_completion_date(self) -> None:
+        import daily_map_game
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-08-11T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    puzzle = daily_map_game.get_or_create_puzzle(conn, "2026-08-04")
+                    place = conn.execute(
+                        "SELECT * FROM map_place_pool WHERE canonical_name = 'Cairo'"
+                    ).fetchone()
+                    self.assertIsNotNone(place)
+                    config = daily_map_game.SCORE_CONFIG[place["difficulty"]]
+                    level_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_levels (
+                            puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            puzzle["id"],
+                            place["difficulty"],
+                            place["id"],
+                            config["max_points"],
+                            config["lambda_km"],
+                            now,
+                        ),
+                    ).lastrowid
+                    daily_map_game.set_puzzle_status(conn, "2026-08-04", "published")
+                    with patch("daily_map_game.utc_now", return_value=now):
+                        result, status = daily_map_game.submit_guess(
+                            conn,
+                            user_id=user_id,
+                            level_id=level_id,
+                            lat=place["lat"],
+                            lng=place["lng"],
+                            selected_name="Cairo",
+                            revealed_hint_count=0,
+                            today="2026-08-04",
+                        )
+                    self.assertEqual(status, HTTPStatus.CREATED)
+                    self.assertEqual(result["result"]["score"], 10)
+
+                with patch("server.today_game_date", return_value="2026-08-11"):
+                    leaderboard = server.leaderboard_payload(conn)
+
+            player = leaderboard["players"][0]
+            self.assertEqual(player["mapPoints"], 10)
+            self.assertEqual(player["weeklyMapPoints"], 10)
+            self.assertEqual(player["weeklyPoints"], 10)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
     def test_leaderboard_excludes_admin_accounts(self) -> None:
         import server
 
