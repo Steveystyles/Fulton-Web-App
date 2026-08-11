@@ -2673,7 +2673,6 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
         LEFT JOIN weekly_quiz_scores ON weekly_quiz_scores.user_id = users.id
         LEFT JOIN map_scores ON map_scores.user_id = users.id
         LEFT JOIN weekly_map_scores ON weekly_map_scores.user_id = users.id
-        WHERE users.role != 'admin'
         ORDER BY
             (
                 COALESCE(weekly_wordle_scores.points, 0)

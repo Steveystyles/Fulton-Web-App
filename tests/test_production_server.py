@@ -3299,7 +3299,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
-    def test_leaderboard_excludes_admin_accounts(self) -> None:
+    def test_leaderboard_includes_admin_accounts(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
@@ -3343,8 +3343,11 @@ class ProductionServerHardeningTests(unittest.TestCase):
                         )
                 payload = server.leaderboard_payload(conn)
 
-            self.assertEqual([player["username"] for player in payload["players"]], ["dad"])
-            self.assertEqual(payload["players"][0]["totalPoints"], 6)
+            self.assertEqual(
+                [player["username"] for player in payload["players"]],
+                ["admin", "dad"],
+            )
+            self.assertEqual([player["totalPoints"] for player in payload["players"]], [9, 6])
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
