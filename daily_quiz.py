@@ -1051,10 +1051,12 @@ class FallbackQuizProvider:
         self.providers = providers
         self.name = " -> ".join(provider.name for provider in providers)
         self.last_provider_name = providers[0].name
+        self.last_provider = providers[0]
 
     def _call(self, method_name: str, **kwargs: Any) -> dict[str, Any]:
         errors: list[str] = []
         for provider in self.providers:
+            self.last_provider = provider
             self.last_provider_name = provider.name
             try:
                 return getattr(provider, method_name)(**kwargs)
@@ -1159,6 +1161,21 @@ def quality_provider_stages(provider: QuizAIProvider) -> list[QuizAIProvider]:
     if isinstance(provider, FallbackQuizProvider):
         return list(provider.providers)
     return [provider]
+
+
+def quality_role_provider(
+    providers: list[QuizAIProvider],
+    start_index: int,
+) -> QuizAIProvider:
+    ordered = [
+        providers[(start_index + offset) % len(providers)]
+        for offset in range(len(providers))
+    ]
+    return ordered[0] if len(ordered) == 1 else FallbackQuizProvider(ordered)
+
+
+def effective_provider(provider: QuizAIProvider) -> QuizAIProvider:
+    return getattr(provider, "last_provider", provider)
 
 
 def question_schema() -> dict[str, Any]:
@@ -2853,20 +2870,30 @@ class ComposedQuestionProvider:
         self.composer = composer
         self.critic = critic
         self.verifier = verifier
-        self.name = str(getattr(composer, "name", "candidate-composer"))
+        self.name = str(
+            getattr(effective_provider(composer), "name", "candidate-composer")
+        )
         self.last_provider_name = self.name
 
     def generate_question(self, **_: Any) -> dict[str, Any]:
-        self.last_provider_name = str(getattr(self.composer, "name", self.name))
+        self.last_provider_name = str(
+            getattr(effective_provider(self.composer), "name", self.name)
+        )
         return dict(self.question)
 
     def critique_question(self, **kwargs: Any) -> dict[str, Any]:
-        self.last_provider_name = str(getattr(self.critic, "name", self.name))
-        return self.critic.critique_question(**kwargs)
+        result = self.critic.critique_question(**kwargs)
+        self.last_provider_name = str(
+            getattr(effective_provider(self.critic), "name", self.name)
+        )
+        return result
 
     def verify_question(self, **kwargs: Any) -> dict[str, Any]:
-        self.last_provider_name = str(getattr(self.verifier, "name", self.name))
-        return self.verifier.verify_question(**kwargs)
+        result = self.verifier.verify_question(**kwargs)
+        self.last_provider_name = str(
+            getattr(effective_provider(self.verifier), "name", self.name)
+        )
+        return result
 
 
 def latest_candidate_failure(
@@ -2985,9 +3012,9 @@ def generate_slot_two_stage(
     )
 
     def evaluate_rows(rows: list[sqlite3.Row], stage_index: int) -> bool | None:
-        composer = stages[stage_index % len(stages)]
-        critic = stages[(stage_index + 1) % len(stages)]
-        verifier = stages[(stage_index + 2) % len(stages)]
+        composer = quality_role_provider(stages, stage_index)
+        critic = quality_role_provider(stages, stage_index + 1)
+        verifier = quality_role_provider(stages, stage_index + 2)
         composition_failures = 0
         for row in sorted(rows, key=lambda item: (-float(item["score"]), int(item["id"])))[:3]:
             candidate = candidate_from_row(row)
@@ -3127,6 +3154,20 @@ def generate_slot_two_stage(
                 )
                 return True
             reason = latest_candidate_failure(conn, int(row["id"]))
+            if is_transient_provider_failure(reason):
+                update_candidate(
+                    conn,
+                    int(row["id"]),
+                    status="verified",
+                    rejection_stage="transient",
+                    failure_reason=reason,
+                    evidence=evidence,
+                )
+                log(
+                    f"Deferred {subject} / {difficulty}; keeping candidate "
+                    f"{candidate['answer']!r} for the next retry: {reason}"
+                )
+                return None
             update_candidate(
                 conn,
                 int(row["id"]),
@@ -3156,7 +3197,8 @@ def generate_slot_two_stage(
             difficulty=difficulty,
         )
         stage_index = (batch_number - 1) % len(stages)
-        stage = stages[stage_index]
+        preferred_stage = stages[stage_index]
+        discovery_provider = quality_role_provider(stages, stage_index)
         lane = choose_topic_lane(
             conn,
             subject=subject,
@@ -3166,10 +3208,10 @@ def generate_slot_two_stage(
         )
         log(
             f"Discovering {subject} / {difficulty} candidate batch {batch_number} "
-            f"with {candidate_provider_identity(stage)} in lane {lane!r}"
+            f"with {candidate_provider_identity(preferred_stage)} in lane {lane!r}"
         )
         try:
-            payload = stage.discover_candidates(
+            payload = discovery_provider.discover_candidates(
                 subject=subject,
                 difficulty=difficulty,
                 topic_lane=lane,
@@ -3184,6 +3226,9 @@ def generate_slot_two_stage(
                 return None
             feedback.append(reason)
             continue
+        discovery_provider_label = candidate_provider_identity(
+            effective_provider(discovery_provider)
+        )
         raw_candidates = payload.get("candidates") if isinstance(payload, dict) else None
         if not isinstance(raw_candidates, list):
             feedback.append("Candidate discovery returned no candidates array.")
@@ -3215,7 +3260,7 @@ def generate_slot_two_stage(
                     difficulty=difficulty,
                     batch_number=batch_number,
                     candidate_index=candidate_index,
-                    provider=candidate_provider_identity(stage),
+                    provider=discovery_provider_label,
                     generation_mode=generation_mode,
                     candidate=placeholder,
                     status="rejected",
@@ -3245,7 +3290,7 @@ def generate_slot_two_stage(
                 difficulty=difficulty,
                 batch_number=batch_number,
                 candidate_index=candidate_index,
-                provider=candidate_provider_identity(stage),
+                provider=discovery_provider_label,
                 generation_mode=generation_mode,
                 candidate=candidate,
                 status="rejected" if rejection else "eligible",

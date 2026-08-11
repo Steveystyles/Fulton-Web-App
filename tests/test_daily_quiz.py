@@ -371,6 +371,22 @@ class CandidateProvider(PassingProvider):
         return super().critique_question(**kwargs)
 
 
+class DiscoveryUnavailableCandidateProvider(CandidateProvider):
+    def discover_candidates(self, **_: object) -> dict[str, object]:
+        self.discovery_calls += 1
+        raise RuntimeError("Gemini request failed with HTTP 429.")
+
+
+class VerifierUnavailableCandidateProvider(CandidateProvider):
+    def __init__(self, name: str = "verifier-unavailable") -> None:
+        super().__init__(name)
+        self.verifier_calls = 0
+
+    def verify_question(self, **_: object) -> dict[str, object]:
+        self.verifier_calls += 1
+        raise RuntimeError("Gemini request failed with HTTP 429.")
+
+
 class DailyQuizTests(unittest.TestCase):
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
@@ -595,6 +611,121 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(first.discovery_calls, 1)
         self.assertEqual(second.discovery_calls, 1)
         self.assertEqual(second.composition_calls, 1)
+
+    def test_candidate_pipeline_falls_back_when_discovery_provider_is_unavailable(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        unavailable = DiscoveryUnavailableCandidateProvider("unavailable")
+        fallback = CandidateProvider("fallback")
+        chain = daily_quiz.FallbackQuizProvider([unavailable, fallback])
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=chain,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(unavailable.discovery_calls, 1)
+        self.assertEqual(fallback.discovery_calls, 1)
+        provider = self.conn.execute(
+            "SELECT provider FROM daily_quiz_candidates ORDER BY id LIMIT 1"
+        ).fetchone()["provider"]
+        self.assertEqual(provider, "fallback")
+
+    def test_candidate_pipeline_falls_back_when_verifier_is_unavailable(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        composer = CandidateProvider("composer")
+        critic = CandidateProvider("critic")
+        unavailable = VerifierUnavailableCandidateProvider()
+        chain = daily_quiz.FallbackQuizProvider([composer, critic, unavailable])
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=chain,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(unavailable.verifier_calls, 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_candidates WHERE status='accepted'"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_candidate_pipeline_resumes_after_all_verifiers_are_unavailable(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        unavailable = VerifierUnavailableCandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+
+        first = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=unavailable,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+        resumable = self.conn.execute(
+            """
+            SELECT status, rejection_stage FROM daily_quiz_candidates
+            WHERE status='verified' ORDER BY id LIMIT 1
+            """
+        ).fetchone()
+
+        fallback = CandidateProvider("recovered")
+        second = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=fallback,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertIsNone(first)
+        self.assertIsNotNone(resumable)
+        self.assertEqual(resumable["rejection_stage"], "transient")
+        self.assertTrue(second)
+        self.assertEqual(fallback.discovery_calls, 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_candidates WHERE status='accepted'"
+            ).fetchone()[0],
+            1,
+        )
 
     def test_candidate_pipeline_remembers_rejected_candidates_across_retries(self) -> None:
         target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
