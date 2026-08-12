@@ -5,6 +5,8 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import daily_quiz
 from tools import evaluate_quiz_candidate_pipeline as shadow
@@ -86,6 +88,83 @@ class QuizCandidateShadowTests(unittest.TestCase):
                 for difficulty in daily_quiz.DIFFICULTIES
             },
         )
+
+    def test_provider_capacity_detection_requires_chain_quota_failure(self) -> None:
+        self.assertTrue(
+            shadow.provider_capacity_exhausted(
+                [
+                    "Candidate discovery failed: All AI providers failed: "
+                    "Gemini RESOURCE_EXHAUSTED free_tier_requests; "
+                    "OpenRouter free-models-per-day"
+                ]
+            )
+        )
+        self.assertFalse(
+            shadow.provider_capacity_exhausted(
+                ["One candidate was rejected because its evidence was incomplete."]
+            )
+        )
+
+    def test_shadow_run_pauses_before_later_dates_when_provider_quota_is_exhausted(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_db = root / "source.db"
+            source_conn = sqlite3.connect(source_db)
+            source_conn.row_factory = sqlite3.Row
+            daily_quiz.initialize_database(source_conn)
+            source_conn.close()
+            calls: list[str] = []
+
+            def quota_failure(
+                conn: sqlite3.Connection,
+                *,
+                quiz_date: str,
+                log: object,
+                **_: object,
+            ) -> dict[str, object]:
+                calls.append(quiz_date)
+                quiz_set = daily_quiz.get_or_create_quiz_set(conn, quiz_date)
+                conn.execute(
+                    "UPDATE daily_quiz_sets SET pipeline_version='candidate-v1' WHERE id=?",
+                    (quiz_set["id"],),
+                )
+                conn.commit()
+                log(
+                    "Candidate discovery failed: All AI providers failed: "
+                    "RESOURCE_EXHAUSTED free_tier_requests; free-models-per-day"
+                )
+                return daily_quiz.quiz_status(conn, quiz_date)
+
+            args = SimpleNamespace(
+                db=source_db,
+                output_dir=root / "output",
+                start_date="2026-08-20",
+                days=2,
+                max_rounds=16,
+                retry_delay_seconds=0,
+                resume=False,
+            )
+            config_stub = SimpleNamespace(
+                answer_embargo_days=45,
+                question_similarity_days=180,
+            )
+            with (
+                patch.object(shadow.daily_quiz.QuizConfig, "from_env", return_value=object()),
+                patch.object(shadow, "replace", return_value=config_stub),
+                patch.object(
+                    shadow.daily_quiz,
+                    "generate_daily_quiz",
+                    side_effect=quota_failure,
+                ),
+            ):
+                report = shadow.evaluate(args)
+
+        self.assertEqual(calls, ["2026-08-20"])
+        self.assertEqual(report["run_status"], "paused_provider_quota")
+        self.assertTrue(report["resumable"])
+        self.assertEqual(report["results"][1]["status"], "pending")
 
 
 if __name__ == "__main__":

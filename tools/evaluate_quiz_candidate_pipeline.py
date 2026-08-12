@@ -21,6 +21,44 @@ import daily_quiz
 
 DEFAULT_DB_PATH = PROJECT_DIR / "data" / "fultons.db"
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "data" / "qa" / "quiz-candidate-shadow"
+STATE_FILENAME = "state.json"
+
+
+def provider_capacity_exhausted(messages: list[str]) -> bool:
+    text = "\n".join(messages[-20:]).casefold()
+    return "all ai providers failed" in text and any(
+        marker in text
+        for marker in (
+            "free-models-per-day",
+            "free_tier_requests",
+            "resource_exhausted",
+            "quota exceeded",
+        )
+    )
+
+
+def load_elapsed_state(path: Path, *, resume: bool) -> dict[str, float]:
+    if not resume or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    values = payload.get("active_elapsed_seconds") if isinstance(payload, dict) else None
+    if not isinstance(values, dict):
+        return {}
+    return {
+        str(key): max(0.0, float(value))
+        for key, value in values.items()
+        if isinstance(value, (int, float))
+    }
+
+
+def save_elapsed_state(path: Path, values: dict[str, float]) -> None:
+    path.write_text(
+        json.dumps({"active_elapsed_seconds": values}, indent=2, ensure_ascii=True),
+        encoding="utf-8",
+    )
 
 
 def copy_database(source: Path, target: Path) -> None:
@@ -168,7 +206,15 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     shadow_db = output_dir / "shadow.db"
-    copy_database(args.db.resolve(), shadow_db)
+    state_path = output_dir / STATE_FILENAME
+    if args.resume:
+        if not shadow_db.exists():
+            raise FileNotFoundError(f"Cannot resume; shadow database is missing: {shadow_db}")
+    else:
+        copy_database(args.db.resolve(), shadow_db)
+        for stale_name in (STATE_FILENAME, "report.json", "review-sample.csv"):
+            (output_dir / stale_name).unlink(missing_ok=True)
+    elapsed_by_date = load_elapsed_state(state_path, resume=args.resume)
     conn = sqlite3.connect(shadow_db)
     conn.row_factory = sqlite3.Row
     config = replace(
@@ -179,49 +225,102 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         question_similarity_days=180,
     )
     daily_quiz.initialize_database(conn)
-    results: list[dict[str, Any]] = []
+    target_dates = shadow_dates(args.start_date, args.days)
+    run_status = "complete"
+    pause_reason: str | None = None
     try:
-        for quiz_date in shadow_dates(args.start_date, args.days):
+        for quiz_date in target_dates:
+            existing_status = daily_quiz.quiz_status(conn, quiz_date)
+            if (
+                existing_status["status"] == "published"
+                and existing_status["pipeline_version"] == "candidate-v1"
+            ):
+                continue
             started = time.monotonic()
             result: dict[str, Any] = {}
+            quota_exhausted = False
             for round_number in range(1, args.max_rounds + 1):
+                round_messages: list[str] = []
+
+                def shadow_log(message: str, day: str = quiz_date) -> None:
+                    round_messages.append(message)
+                    print(f"[{day}] {message}", flush=True)
+
                 result = daily_quiz.generate_daily_quiz(
                     conn,
                     quiz_date=quiz_date,
                     config=config,
-                    force=round_number == 1,
+                    force=round_number == 1 and not args.resume,
                     generation_mode="normal",
-                    log=lambda message, day=quiz_date: print(f"[{day}] {message}", flush=True),
+                    log=shadow_log,
                 )
                 if result.get("status") == "published":
                     break
+                if provider_capacity_exhausted(round_messages):
+                    quota_exhausted = True
+                    break
                 if round_number < args.max_rounds:
                     time.sleep(args.retry_delay_seconds)
+            elapsed_by_date[quiz_date] = round(
+                elapsed_by_date.get(quiz_date, 0.0) + time.monotonic() - started,
+                2,
+            )
+            save_elapsed_state(state_path, elapsed_by_date)
             status = daily_quiz.quiz_status(conn, quiz_date)
+            if status["status"] != "published":
+                if quota_exhausted:
+                    run_status = "paused_provider_quota"
+                    pause_reason = (
+                        "All configured AI providers exhausted their current free-tier capacity."
+                    )
+                elif generation_call_count(conn, quiz_date) >= 30:
+                    run_status = "failed_call_budget"
+                    pause_reason = "The current date reached the 30-call rollout ceiling."
+                else:
+                    run_status = "incomplete_quality_gate"
+                    pause_reason = "The current date did not publish within the configured rounds."
+                break
+        write_review_sample(conn, output_dir / "review-sample.csv")
+
+        results: list[dict[str, Any]] = []
+        for quiz_date in target_dates:
+            status = daily_quiz.quiz_status(conn, quiz_date)
+            is_candidate_run = status["pipeline_version"] == "candidate-v1"
             results.append(
                 {
                     "date": quiz_date,
-                    "status": status["status"],
-                    "verified_questions": status["verified_questions"],
-                    "generation_calls": generation_call_count(conn, quiz_date),
+                    "status": status["status"] if is_candidate_run else "pending",
+                    "verified_questions": status["verified_questions"] if is_candidate_run else 0,
+                    "generation_calls": generation_call_count(conn, quiz_date)
+                    if is_candidate_run
+                    else 0,
                     "answer_collisions": answer_collisions(
                         conn, quiz_date, config.answer_embargo_days
-                    ),
+                    )
+                    if is_candidate_run
+                    else 0,
                     "question_collisions": question_collisions(
                         conn, quiz_date, config.question_similarity_days
-                    ),
-                    "elapsed_seconds": round(time.monotonic() - started, 2),
-                    "candidate_batches": status["candidate_batches"],
-                    "candidate_count": status["candidate_count"],
-                    "providers": status["candidate_providers"],
+                    )
+                    if is_candidate_run
+                    else 0,
+                    "elapsed_seconds": elapsed_by_date.get(quiz_date, 0.0),
+                    "candidate_batches": status["candidate_batches"]
+                    if is_candidate_run
+                    else 0,
+                    "candidate_count": status["candidate_count"] if is_candidate_run else 0,
+                    "providers": status["candidate_providers"] if is_candidate_run else [],
                 }
             )
-        write_review_sample(conn, output_dir / "review-sample.csv")
     finally:
         conn.close()
 
-    elapsed = [float(item["elapsed_seconds"]) for item in results]
-    automated_pass = bool(results) and all(
+    elapsed = [
+        float(item["elapsed_seconds"])
+        for item in results
+        if item["status"] == "published"
+    ]
+    automated_pass = len(results) == args.days and all(
         item["status"] == "published"
         and item["verified_questions"] == 6
         and item["answer_collisions"] == 0
@@ -229,9 +328,12 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         and item["generation_calls"] <= 30
         and item["elapsed_seconds"] <= 7200
         for item in results
-    ) and statistics.median(elapsed) <= 3600
+    ) and bool(elapsed) and statistics.median(elapsed) <= 3600
     report = {
         "automated_pass": automated_pass,
+        "run_status": "passed" if automated_pass else run_status,
+        "pause_reason": pause_reason,
+        "resumable": run_status == "paused_provider_quota",
         "manual_review_required": True,
         "manual_acceptance": {
             "sample_size": 12,
@@ -268,6 +370,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--max-rounds", type=int, default=16)
     parser.add_argument("--retry-delay-seconds", type=float, default=60)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the existing shadow database and active-time state in output-dir.",
+    )
     return parser.parse_args()
 
 
