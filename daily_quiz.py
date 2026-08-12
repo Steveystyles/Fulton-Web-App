@@ -559,6 +559,18 @@ def merge_question_evidence(
     return merged[:limit]
 
 
+def evidence_meets_requested_source_tier(
+    question: dict[str, Any],
+    evidence: list[dict[str, Any]],
+) -> bool:
+    if not question.get("_requires_reputable_evidence"):
+        return True
+    return any(
+        str(item.get("tier") or "") in {"primary", "reputable"}
+        for item in evidence
+    )
+
+
 def configured_question_evidence(
     question: dict[str, Any],
     *,
@@ -581,7 +593,9 @@ def configured_question_evidence(
             max_results=config.evidence_max_results,
             transient_retries=config.transient_retries,
         )
-        if precheck_question_evidence(question, openrouter_evidence).get("passed"):
+        if precheck_question_evidence(question, openrouter_evidence).get(
+            "passed"
+        ) and evidence_meets_requested_source_tier(question, openrouter_evidence):
             return openrouter_evidence
         try:
             wikipedia_evidence = collect_wikipedia_question_evidence(
@@ -606,10 +620,11 @@ def configured_question_evidence(
                 timeout_sec=fallback_timeout,
                 max_results=config.evidence_max_results,
             )
-            if wikipedia_evidence and precheck_question_evidence(
-                question,
-                wikipedia_evidence,
-            ).get("passed"):
+            if (
+                wikipedia_evidence
+                and precheck_question_evidence(question, wikipedia_evidence).get("passed")
+                and evidence_meets_requested_source_tier(question, wikipedia_evidence)
+            ):
                 return wikipedia_evidence
         except EvidenceSearchUnavailable as error:
             fallback_errors.append(str(error))
@@ -2501,6 +2516,7 @@ def candidate_evidence_probe(
         "interesting_reason": candidate["hook"],
         "tags": candidate["tags"],
         "evidence_query": candidate["evidence_query"],
+        "_requires_reputable_evidence": True,
     }
 
 

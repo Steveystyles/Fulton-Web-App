@@ -27,7 +27,9 @@ BLOCKED_SOURCE_HOSTS = (
 
 PRIMARY_SOURCE_HOSTS = (
     "fifa.com",
+    "guinnessworldrecords.com",
     "uefa.com",
+    "unesco.org",
     "olympics.com",
     "premierleague.com",
     "thefa.com",

@@ -28,6 +28,18 @@ def evidence_item(
 
 
 class QuizEvidenceTests(unittest.TestCase):
+    def test_official_institution_hosts_are_primary_sources(self) -> None:
+        self.assertEqual(
+            quiz_evidence.source_tier("https://whc.unesco.org/en/list/320"),
+            "primary",
+        )
+        self.assertEqual(
+            quiz_evidence.source_tier(
+                "https://www.guinnessworldrecords.com/world-records/example"
+            ),
+            "primary",
+        )
+
     def test_candidate_evidence_query_is_prioritized_by_search_collectors(self) -> None:
         question = {
             "question": "Which answer is identified by this documented fact?",
