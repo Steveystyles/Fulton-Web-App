@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -14,6 +16,8 @@ from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from env_config import env_bool, env_float, env_int
+from safe_http import ResponseTooLarge, read_bounded_response
 from quiz_evidence import (
     EvidenceSearchUnavailable,
     collect_openrouter_question_evidence,
@@ -32,6 +36,18 @@ REQUIRED_SLOTS = tuple(
     (subject, difficulty)
     for subject in SUBJECTS
     for difficulty in DIFFICULTIES
+)
+QUIZ_DIAGNOSTIC_RETENTION_DAYS = env_int(
+    "QUIZ_DIAGNOSTIC_RETENTION_DAYS",
+    180,
+    minimum=30,
+    maximum=3650,
+)
+QUIZ_DIAGNOSTIC_MAX_ROWS = env_int(
+    "QUIZ_DIAGNOSTIC_MAX_ROWS",
+    50_000,
+    minimum=1_000,
+    maximum=1_000_000,
 )
 CRITIC_THRESHOLDS = {
     "validity": 8,
@@ -112,6 +128,10 @@ VOLATILE_FACT_TERMS = (
     "ranks among",
     "ranked among",
 )
+
+
+class QuizRegenerationBlocked(RuntimeError):
+    """Raised when replacing published content would invalidate player state."""
 VOLATILE_FACT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -316,59 +336,52 @@ class QuizConfig:
             fallback2_gemini_api_key=os.environ.get("AI_FALLBACK2_GEMINI_API_KEY", "").strip(),
             fallback2_compatible_api_key=fallback2_compatible_api_key,
             fallback2_compatible_base_url=fallback2_compatible_base_url,
-            timeout_sec=max(5, int(os.environ.get("AI_TIMEOUT_SEC", "90"))),
-            request_delay_sec=max(
-                0.0,
-                float(os.environ.get("AI_REQUEST_DELAY_SEC", "12")),
+            timeout_sec=env_int(
+                "AI_TIMEOUT_SEC", 90, minimum=5, maximum=300
             ),
-            transient_retries=max(
-                0,
-                int(os.environ.get("AI_TRANSIENT_RETRIES", "3")),
+            request_delay_sec=env_float(
+                "AI_REQUEST_DELAY_SEC", 12.0, minimum=0.0, maximum=300.0
             ),
-            max_attempts_per_slot=max(
-                1,
-                int(os.environ.get("MAX_ATTEMPTS_PER_SLOT", "15")),
+            transient_retries=env_int(
+                "AI_TRANSIENT_RETRIES", 3, minimum=0, maximum=10
             ),
-            question_history_days=max(
-                1,
-                int(os.environ.get("QUESTION_HISTORY_DAYS", "90")),
+            max_attempts_per_slot=env_int(
+                "MAX_ATTEMPTS_PER_SLOT", 15, minimum=1, maximum=100
+            ),
+            question_history_days=env_int(
+                "QUESTION_HISTORY_DAYS", 90, minimum=1, maximum=3650
             ),
             learning_profile_path=os.environ.get("QUIZ_LEARNING_PROFILE_PATH", "").strip(),
             internal_token=os.environ.get("INTERNAL_QUIZ_TOKEN", "").strip(),
-            evidence_required=os.environ.get("QUIZ_EVIDENCE_REQUIRED", "1").strip().lower()
-            not in {"0", "false", "no", "off"},
-            evidence_search_timeout_sec=max(
-                3,
-                int(os.environ.get("QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC", "90")),
+            evidence_required=env_bool("QUIZ_EVIDENCE_REQUIRED", True),
+            evidence_search_timeout_sec=env_int(
+                "QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC", 90, minimum=3, maximum=300
             ),
-            evidence_max_results=max(
-                2,
-                int(os.environ.get("QUIZ_EVIDENCE_MAX_RESULTS", "8")),
+            evidence_max_results=env_int(
+                "QUIZ_EVIDENCE_MAX_RESULTS", 8, minimum=2, maximum=50
             ),
             evidence_openrouter_api_key=evidence_api_key,
             evidence_openrouter_base_url=(
                 evidence_base_url or DEFAULT_COMPATIBLE_BASE_URLS["openrouter"]
             ),
             evidence_openrouter_model=evidence_model or "openrouter/free",
-            candidate_pipeline_enabled=os.environ.get(
-                "QUIZ_CANDIDATE_PIPELINE_ENABLED", "0"
-            ).strip().lower()
-            in {"1", "true", "yes", "on"},
-            answer_embargo_days=max(
-                1, int(os.environ.get("QUIZ_ANSWER_EMBARGO_DAYS", "45"))
+            candidate_pipeline_enabled=env_bool(
+                "QUIZ_CANDIDATE_PIPELINE_ENABLED", False
             ),
-            recovery_answer_embargo_days=max(
-                1, int(os.environ.get("QUIZ_RECOVERY_ANSWER_EMBARGO_DAYS", "30"))
+            answer_embargo_days=env_int(
+                "QUIZ_ANSWER_EMBARGO_DAYS", 45, minimum=1, maximum=3650
             ),
-            question_similarity_days=max(
-                1, int(os.environ.get("QUIZ_QUESTION_SIMILARITY_DAYS", "180"))
+            recovery_answer_embargo_days=env_int(
+                "QUIZ_RECOVERY_ANSWER_EMBARGO_DAYS", 30, minimum=1, maximum=3650
             ),
-            candidate_batch_size=min(
-                12, max(2, int(os.environ.get("QUIZ_CANDIDATE_BATCH_SIZE", "8")))
+            question_similarity_days=env_int(
+                "QUIZ_QUESTION_SIMILARITY_DAYS", 180, minimum=1, maximum=3650
             ),
-            candidate_batches_per_slot=min(
-                6,
-                max(1, int(os.environ.get("QUIZ_CANDIDATE_BATCHES_PER_SLOT", "3"))),
+            candidate_batch_size=env_int(
+                "QUIZ_CANDIDATE_BATCH_SIZE", 8, minimum=2, maximum=12
+            ),
+            candidate_batches_per_slot=env_int(
+                "QUIZ_CANDIDATE_BATCHES_PER_SLOT", 3, minimum=1, maximum=6
             ),
         )
 
@@ -673,7 +686,12 @@ class GeminiProvider:
         except ValueError:
             retry_after_sec = 0.0
         try:
-            error_payload = json.loads(error.read().decode("utf-8"))
+            body, charset = read_bounded_response(
+                error,
+                max_bytes=64_000,
+                label="Gemini error",
+            )
+            error_payload = json.loads(body.decode(charset))
             details = error_payload.get("error", {}).get("details", [])
             retry_info = next(
                 (
@@ -685,7 +703,14 @@ class GeminiProvider:
             )
             retry_delay = str(retry_info.get("retryDelay", "")).rstrip("s")
             retry_after_sec = max(retry_after_sec, float(retry_delay or 0))
-        except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
+        except (
+            AttributeError,
+            json.JSONDecodeError,
+            ResponseTooLarge,
+            TypeError,
+            UnicodeDecodeError,
+            ValueError,
+        ):
             pass
         self._defer_transient_retry(attempt, retry_after_sec=retry_after_sec)
 
@@ -699,9 +724,16 @@ class GeminiProvider:
 
     def _http_error_detail(self, error: HTTPError) -> str:
         try:
-            payload = json.loads(error.read().decode("utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            body, charset = read_bounded_response(
+                error,
+                max_bytes=64_000,
+                label="Gemini error",
+            )
+            payload = json.loads(body.decode(charset, errors="replace"))
+        except (OSError, json.JSONDecodeError, ResponseTooLarge, UnicodeDecodeError):
             return ""
+        finally:
+            error.close()
         if not isinstance(payload, dict):
             return ""
         error_payload = payload.get("error")
@@ -740,6 +772,7 @@ class GeminiProvider:
             url,
             data=json.dumps(payload).encode("utf-8"),
             headers={
+                "Accept-Encoding": "identity",
                 "Content-Type": "application/json",
                 "x-goog-api-key": self.config.gemini_api_key,
             },
@@ -749,15 +782,27 @@ class GeminiProvider:
             self._wait_for_request_slot()
             try:
                 with urlopen(request, timeout=self.config.timeout_sec) as response:
-                    response_payload = json.loads(response.read().decode("utf-8"))
+                    body, charset = read_bounded_response(
+                        response,
+                        max_bytes=2_000_000,
+                        label="Gemini",
+                    )
+                    response_payload = json.loads(body.decode(charset))
                 break
             except HTTPError as error:
-                if error.code in {429, 500, 502, 503, 504} and attempt < self.config.transient_retries:
-                    self._defer_retry(attempt, error)
-                    continue
-                detail = self._http_error_detail(error)
+                status_code = error.code
+                try:
+                    if (
+                        status_code in {429, 500, 502, 503, 504}
+                        and attempt < self.config.transient_retries
+                    ):
+                        self._defer_retry(attempt, error)
+                        continue
+                    detail = self._http_error_detail(error)
+                finally:
+                    error.close()
                 suffix = f": {detail}" if detail else "."
-                raise RuntimeError(f"Gemini request failed with HTTP {error.code}{suffix}") from error
+                raise RuntimeError(f"Gemini request failed with HTTP {status_code}{suffix}") from error
             except (TimeoutError, URLError) as error:
                 if attempt < self.config.transient_retries:
                     self._defer_transient_retry(attempt)
@@ -892,9 +937,16 @@ class OpenAICompatibleProvider:
 
     def _http_error_detail(self, error: HTTPError) -> str:
         try:
-            payload = json.loads(error.read().decode("utf-8", errors="replace"))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            body, charset = read_bounded_response(
+                error,
+                max_bytes=64_000,
+                label=f"{self.name} error",
+            )
+            payload = json.loads(body.decode(charset, errors="replace"))
+        except (OSError, json.JSONDecodeError, ResponseTooLarge, UnicodeDecodeError):
             return ""
+        finally:
+            error.close()
         if not isinstance(payload, dict):
             return ""
         error_payload = payload.get("error")
@@ -913,6 +965,7 @@ class OpenAICompatibleProvider:
         temperature: float = 0.5,
     ) -> dict[str, Any]:
         headers = {
+            "Accept-Encoding": "identity",
             "Authorization": f"Bearer {self.config.compatible_api_key}",
             "Content-Type": "application/json",
         }
@@ -945,7 +998,12 @@ class OpenAICompatibleProvider:
             self._wait_for_request_slot()
             try:
                 with urlopen(request, timeout=self.config.timeout_sec) as response:
-                    response_payload = json.loads(response.read().decode("utf-8"))
+                    body, charset = read_bounded_response(
+                        response,
+                        max_bytes=2_000_000,
+                        label=self.name,
+                    )
+                    response_payload = json.loads(body.decode(charset))
                 try:
                     text = response_payload["choices"][0]["message"]["content"]
                 except (IndexError, KeyError, TypeError) as error:
@@ -962,12 +1020,19 @@ class OpenAICompatibleProvider:
                     continue
                 raise parse_error
             except HTTPError as error:
-                if error.code in {408, 429, 500, 502, 503, 504} and attempt < self.config.transient_retries:
-                    self._defer_retry(attempt, error)
-                    continue
-                detail = self._http_error_detail(error)
+                status_code = error.code
+                try:
+                    if (
+                        status_code in {408, 429, 500, 502, 503, 504}
+                        and attempt < self.config.transient_retries
+                    ):
+                        self._defer_retry(attempt, error)
+                        continue
+                    detail = self._http_error_detail(error)
+                finally:
+                    error.close()
                 suffix = f": {detail}" if detail else "."
-                raise RuntimeError(f"{self.name} request failed with HTTP {error.code}{suffix}") from error
+                raise RuntimeError(f"{self.name} request failed with HTTP {status_code}{suffix}") from error
             except (TimeoutError, URLError, OSError) as error:
                 if attempt < self.config.transient_retries:
                     self._defer_retry(attempt)
@@ -1958,8 +2023,14 @@ def initialize_database(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_daily_quiz_attempts_date
         ON daily_quiz_attempts (quiz_date, subject, difficulty);
 
+        CREATE INDEX IF NOT EXISTS idx_daily_quiz_attempts_created_at
+        ON daily_quiz_attempts (created_at, id);
+
         CREATE INDEX IF NOT EXISTS idx_daily_quiz_candidates_slot
         ON daily_quiz_candidates (quiz_date, subject, difficulty, status);
+
+        CREATE INDEX IF NOT EXISTS idx_daily_quiz_candidates_created_at
+        ON daily_quiz_candidates (created_at, id);
         """
     )
     ensure_column(
@@ -1985,6 +2056,8 @@ def initialize_database(conn: sqlite3.Connection) -> None:
         conn, "daily_quiz_sets", "generation_mode", "TEXT NOT NULL DEFAULT 'normal'"
     )
     ensure_column(conn, "daily_quiz_sets", "generation_started_at", "TEXT")
+    ensure_column(conn, "daily_quiz_sets", "locked_at", "TEXT")
+    prune_quiz_diagnostics(conn)
     commit_if_needed(conn)
 
 
@@ -1997,6 +2070,134 @@ def ensure_column(
     columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table_name})")}
     if column_name not in columns:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def prune_quiz_diagnostics(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime | None = None,
+    retention_days: int = QUIZ_DIAGNOSTIC_RETENTION_DAYS,
+    max_rows: int = QUIZ_DIAGNOSTIC_MAX_ROWS,
+) -> None:
+    """Bound provider diagnostics without touching published questions or results."""
+    if retention_days < 1 or max_rows < 1:
+        raise ValueError("Quiz diagnostic retention values must be positive.")
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=retention_days)
+    cutoff_iso = cutoff.isoformat()
+    for table_name in ("daily_quiz_attempts", "daily_quiz_candidates"):
+        conn.execute(
+            f"DELETE FROM {table_name} WHERE created_at < ?",
+            (cutoff_iso,),
+        )
+        conn.execute(
+            f"""
+            DELETE FROM {table_name}
+            WHERE id IN (
+                SELECT id
+                FROM {table_name}
+                ORDER BY created_at DESC, id DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (max_rows,),
+        )
+
+
+def lock_published_quiz_for_play(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+) -> None:
+    """Make the published question IDs/content immutable before serving them."""
+    conn.execute(
+        """
+        UPDATE daily_quiz_sets
+        SET locked_at = COALESCE(locked_at, ?)
+        WHERE quiz_date = ? AND status = 'published'
+        """,
+        (utc_now(), valid_quiz_date(quiz_date)),
+    )
+
+
+def quiz_regeneration_block_reason(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+    quiz_set: sqlite3.Row | None = None,
+) -> str | None:
+    quiz_date = valid_quiz_date(quiz_date)
+    current_set = quiz_set or conn.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?",
+        (quiz_date,),
+    ).fetchone()
+    if current_set is None or current_set["status"] != "published":
+        return None
+    keys = set(current_set.keys())
+    if "locked_at" in keys and current_set["locked_at"]:
+        return "Published quiz content is immutable after it has been served to a player."
+    result_table_exists = conn.execute(
+        """
+        SELECT 1 FROM sqlite_master
+        WHERE type = 'table' AND name = 'daily_quiz_results'
+        """
+    ).fetchone()
+    if result_table_exists is not None:
+        played = conn.execute(
+            "SELECT 1 FROM daily_quiz_results WHERE game_date = ? LIMIT 1",
+            (quiz_date,),
+        ).fetchone()
+        if played is not None:
+            return "Published quiz content is immutable after a result has been recorded."
+    return None
+
+
+def assert_quiz_regeneration_allowed(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+    quiz_set: sqlite3.Row | None = None,
+) -> None:
+    reason = quiz_regeneration_block_reason(conn, quiz_date, quiz_set)
+    if reason is not None:
+        raise QuizRegenerationBlocked(reason)
+
+
+@contextmanager
+def locked_quiz_swap(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+    *,
+    savepoint_name: str,
+):
+    """Hold SQLite's write lock while the final play-lock check and swap run."""
+    started_transaction = not conn.in_transaction
+    if started_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    try:
+        # A caller may already have a deferred transaction. This harmless write
+        # upgrades it before the guarded re-read so another connection cannot
+        # commit a playable lock between the check and content replacement.
+        conn.execute(
+            """
+            UPDATE daily_quiz_sets
+            SET locked_at = locked_at
+            WHERE quiz_date = ?
+            """,
+            (valid_quiz_date(quiz_date),),
+        )
+        yield
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        if started_transaction:
+            conn.rollback()
+        raise
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        if started_transaction:
+            try:
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
 
 def valid_quiz_date(value: str) -> str:
@@ -2748,23 +2949,6 @@ def critic_failure_reason(critic: dict[str, Any]) -> str:
         if clean_reasons:
             return "; ".join(clean_reasons)
     return "Critic scores did not meet publication thresholds."
-
-
-def local_validation_critic(*, difficulty: str, note: str) -> dict[str, Any]:
-    return {
-        "passed": True,
-        "scores": {
-            "validity": 10,
-            "correctness": 9,
-            "difficulty_match": 8,
-            "interestingness": 8,
-            "non_repetition": 10,
-        },
-        "failure_reasons": [],
-        "feedback_to_generator": "",
-        "corrected_difficulty": difficulty,
-        "notes": note,
-    }
 
 
 def prior_attempt_feedback(
@@ -3839,7 +4023,7 @@ def generate_slot(
     return False
 
 
-def generate_daily_quiz(
+def _generate_daily_quiz_in_place(
     conn: sqlite3.Connection,
     *,
     quiz_date: str,
@@ -3864,17 +4048,22 @@ def generate_daily_quiz(
         if removed:
             log(f"Removed {removed} unverified question(s) before resuming generation.")
     set_quiz_status(conn, quiz_date, "generating")
+    generation_started_at = utc_now()
     conn.execute(
         """
         UPDATE daily_quiz_sets
         SET pipeline_version = ?, generation_mode = ?,
-            generation_started_at = COALESCE(generation_started_at, ?)
+            generation_started_at = CASE
+                WHEN ? THEN ? ELSE COALESCE(generation_started_at, ?)
+            END
         WHERE id = ?
         """,
         (
             "candidate-v1" if config.candidate_pipeline_enabled else "legacy",
             generation_mode,
-            utc_now(),
+            int(force),
+            generation_started_at,
+            generation_started_at,
             quiz_set["id"],
         ),
     )
@@ -3927,12 +4116,328 @@ def generate_daily_quiz(
     return payload
 
 
+def _copy_table_rows(
+    source: sqlite3.Connection,
+    target: sqlite3.Connection,
+    table_name: str,
+) -> None:
+    source_columns = [str(row[1]) for row in source.execute(f"PRAGMA table_info({table_name})")]
+    target_columns = {
+        str(row[1]) for row in target.execute(f"PRAGMA table_info({table_name})")
+    }
+    columns = [column for column in source_columns if column in target_columns]
+    if not columns:
+        return
+    column_sql = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    rows = source.execute(f"SELECT {column_sql} FROM {table_name}").fetchall()
+    if rows:
+        target.executemany(
+            f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholders})",
+            [tuple(row[column] for column in columns) for row in rows],
+        )
+
+
+def _staging_connection(conn: sqlite3.Connection) -> tuple[sqlite3.Connection, int]:
+    staging = sqlite3.connect(":memory:")
+    staging.row_factory = sqlite3.Row
+    staging.execute("PRAGMA foreign_keys = ON")
+    initialize_database(staging)
+    for table_name in (
+        "daily_quiz_sets",
+        "daily_quiz_candidates",
+        "daily_quiz_questions",
+        "daily_quiz_attempts",
+    ):
+        _copy_table_rows(conn, staging, table_name)
+    staging.commit()
+    attempt_cutoff = int(
+        conn.execute("SELECT COALESCE(MAX(id), 0) FROM daily_quiz_attempts").fetchone()[0]
+    )
+    return staging, attempt_cutoff
+
+
+def _insert_staged_candidates(
+    conn: sqlite3.Connection,
+    staging: sqlite3.Connection,
+    *,
+    live_quiz_set_id: int,
+    staging_quiz_set_id: int,
+    subject: str | None = None,
+    difficulty: str | None = None,
+) -> dict[int, int]:
+    conditions = ["quiz_set_id = ?"]
+    params: list[Any] = [staging_quiz_set_id]
+    if subject is not None:
+        conditions.append("subject = ?")
+        params.append(subject)
+    if difficulty is not None:
+        conditions.append("difficulty = ?")
+        params.append(difficulty)
+    rows = staging.execute(
+        f"SELECT * FROM daily_quiz_candidates WHERE {' AND '.join(conditions)} ORDER BY id",
+        params,
+    ).fetchall()
+    columns = [
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(daily_quiz_candidates)")
+        if str(row[1]) not in {"id", "quiz_set_id"}
+    ]
+    column_sql = ", ".join(["quiz_set_id", *columns])
+    placeholders = ", ".join("?" for _ in range(len(columns) + 1))
+    id_map: dict[int, int] = {}
+    for row in rows:
+        cursor = conn.execute(
+            f"INSERT INTO daily_quiz_candidates ({column_sql}) VALUES ({placeholders})",
+            (live_quiz_set_id, *(row[column] for column in columns)),
+        )
+        id_map[int(row["id"])] = int(cursor.lastrowid)
+    return id_map
+
+
+def _insert_staged_attempts(
+    conn: sqlite3.Connection,
+    staging: sqlite3.Connection,
+    *,
+    quiz_date: str,
+    attempt_cutoff: int,
+    candidate_id_map: dict[int, int],
+    subject: str | None = None,
+    difficulty: str | None = None,
+) -> None:
+    conditions = ["quiz_date = ?", "id > ?"]
+    params: list[Any] = [quiz_date, attempt_cutoff]
+    if subject is not None:
+        conditions.append("subject = ?")
+        params.append(subject)
+    if difficulty is not None:
+        conditions.append("difficulty = ?")
+        params.append(difficulty)
+    rows = staging.execute(
+        f"SELECT * FROM daily_quiz_attempts WHERE {' AND '.join(conditions)} ORDER BY id",
+        params,
+    ).fetchall()
+    columns = [
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(daily_quiz_attempts)")
+        if str(row[1]) != "id"
+    ]
+    column_sql = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    for row in rows:
+        values = []
+        for column in columns:
+            value = row[column]
+            if column == "candidate_id" and value is not None:
+                value = candidate_id_map.get(int(value))
+            values.append(value)
+        conn.execute(
+            f"INSERT INTO daily_quiz_attempts ({column_sql}) VALUES ({placeholders})",
+            values,
+        )
+
+
+def _insert_staged_questions(
+    conn: sqlite3.Connection,
+    staging: sqlite3.Connection,
+    *,
+    live_quiz_set_id: int,
+    staging_quiz_set_id: int,
+    subject: str | None = None,
+    difficulty: str | None = None,
+) -> None:
+    conditions = ["quiz_set_id = ?"]
+    params: list[Any] = [staging_quiz_set_id]
+    if subject is not None:
+        conditions.append("subject = ?")
+        params.append(subject)
+    if difficulty is not None:
+        conditions.append("difficulty = ?")
+        params.append(difficulty)
+    rows = staging.execute(
+        f"SELECT * FROM daily_quiz_questions WHERE {' AND '.join(conditions)} ORDER BY id",
+        params,
+    ).fetchall()
+    columns = [
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(daily_quiz_questions)")
+        if str(row[1]) not in {"id", "quiz_set_id"}
+    ]
+    column_sql = ", ".join(["quiz_set_id", *columns])
+    placeholders = ", ".join("?" for _ in range(len(columns) + 1))
+    for row in rows:
+        conn.execute(
+            f"INSERT INTO daily_quiz_questions ({column_sql}) VALUES ({placeholders})",
+            (live_quiz_set_id, *(row[column] for column in columns)),
+        )
+
+
+def _copy_staged_set_metadata(
+    conn: sqlite3.Connection,
+    staging_set: sqlite3.Row,
+    *,
+    live_quiz_set_id: int,
+) -> None:
+    conn.execute(
+        """
+        UPDATE daily_quiz_sets
+        SET status = ?, generated_at = ?, published_at = ?, failure_reason = ?,
+            pipeline_version = ?, generation_mode = ?, generation_started_at = ?
+        WHERE id = ?
+        """,
+        (
+            staging_set["status"],
+            staging_set["generated_at"],
+            staging_set["published_at"],
+            staging_set["failure_reason"],
+            staging_set["pipeline_version"],
+            staging_set["generation_mode"],
+            staging_set["generation_started_at"],
+            live_quiz_set_id,
+        ),
+    )
+
+
+def _regeneration_failure_payload(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+    staged_result: dict[str, Any] | None,
+    error: Exception | None = None,
+) -> dict[str, Any]:
+    result = quiz_status(conn, quiz_date)
+    reason = "Quiz regeneration failed before the staged replacement was ready."
+    if staged_result is not None:
+        reason = str(
+            staged_result.get("failure_reason")
+            or staged_result.get("last_failure_reason")
+            or reason
+        )
+    if error is not None:
+        reason = str(error) or reason
+    result["regeneration_failed"] = True
+    result["regeneration_failure_reason"] = reason
+    if isinstance(error, QuizRegenerationBlocked):
+        result["regeneration_blocked"] = True
+    return result
+
+
+def _replace_quiz_from_staging(
+    conn: sqlite3.Connection,
+    staging: sqlite3.Connection,
+    *,
+    quiz_date: str,
+    attempt_cutoff: int,
+) -> None:
+    staging_set = staging.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (quiz_date,)
+    ).fetchone()
+    if staging_set is None:
+        raise LookupError("Quiz set disappeared during staged regeneration.")
+    with locked_quiz_swap(
+        conn,
+        quiz_date,
+        savepoint_name="daily_quiz_force_swap",
+    ):
+        live_set = conn.execute(
+            "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (quiz_date,)
+        ).fetchone()
+        if live_set is None:
+            raise LookupError("Quiz set disappeared during staged regeneration.")
+        assert_quiz_regeneration_allowed(conn, quiz_date, live_set)
+        conn.execute(
+            "DELETE FROM daily_quiz_questions WHERE quiz_set_id = ?", (live_set["id"],)
+        )
+        conn.execute(
+            "DELETE FROM daily_quiz_candidates WHERE quiz_set_id = ?", (live_set["id"],)
+        )
+        candidate_id_map = _insert_staged_candidates(
+            conn,
+            staging,
+            live_quiz_set_id=int(live_set["id"]),
+            staging_quiz_set_id=int(staging_set["id"]),
+        )
+        _insert_staged_questions(
+            conn,
+            staging,
+            live_quiz_set_id=int(live_set["id"]),
+            staging_quiz_set_id=int(staging_set["id"]),
+        )
+        _insert_staged_attempts(
+            conn,
+            staging,
+            quiz_date=quiz_date,
+            attempt_cutoff=attempt_cutoff,
+            candidate_id_map=candidate_id_map,
+        )
+        _copy_staged_set_metadata(conn, staging_set, live_quiz_set_id=int(live_set["id"]))
+
+
+def generate_daily_quiz(
+    conn: sqlite3.Connection,
+    *,
+    quiz_date: str,
+    config: QuizConfig,
+    force: bool = False,
+    provider: QuizAIProvider | None = None,
+    log: Callable[[str], None] = print,
+    generation_mode: str = "normal",
+) -> dict[str, Any]:
+    quiz_date = valid_quiz_date(quiz_date)
+    initialize_database(conn)
+    existing = conn.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (quiz_date,)
+    ).fetchone()
+    if force and existing is not None:
+        try:
+            assert_quiz_regeneration_allowed(conn, quiz_date, existing)
+        except QuizRegenerationBlocked as error:
+            return _regeneration_failure_payload(conn, quiz_date, None, error)
+    if not force or existing is None:
+        return _generate_daily_quiz_in_place(
+            conn,
+            quiz_date=quiz_date,
+            config=config,
+            force=force,
+            provider=provider,
+            log=log,
+            generation_mode=generation_mode,
+        )
+
+    staging, attempt_cutoff = _staging_connection(conn)
+    staged_result: dict[str, Any] | None = None
+    try:
+        staged_result = _generate_daily_quiz_in_place(
+            staging,
+            quiz_date=quiz_date,
+            config=config,
+            force=True,
+            provider=provider,
+            log=log,
+            generation_mode=generation_mode,
+        )
+        if staged_result.get("status") != "published":
+            return _regeneration_failure_payload(conn, quiz_date, staged_result)
+        _replace_quiz_from_staging(
+            conn,
+            staging,
+            quiz_date=quiz_date,
+            attempt_cutoff=attempt_cutoff,
+        )
+    except Exception as error:
+        log(f"Staged quiz regeneration failed for {quiz_date}: {error}")
+        return _regeneration_failure_payload(conn, quiz_date, staged_result, error)
+    finally:
+        staging.close()
+    return quiz_payload(conn, quiz_date)
+
+
 def quiz_questions_payload(
     conn: sqlite3.Connection,
     quiz_date: str,
     *,
     allow_unpublished: bool = False,
 ) -> dict[str, Any]:
+    """Return the full answer-bearing payload for trusted internal/admin callers only."""
     quiz_set = conn.execute(
         "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?",
         (valid_quiz_date(quiz_date),),
@@ -3969,8 +4474,41 @@ def quiz_questions_payload(
     }
 
 
+def public_question_id(question_id: int) -> str:
+    digest = hashlib.sha256(f"daily-quiz-question:{question_id}".encode("ascii")).hexdigest()
+    return f"q_{digest[:24]}"
+
+
+def public_choice_id(question_id: int, choice_index: int) -> str:
+    digest = hashlib.sha256(
+        f"daily-quiz-choice:{question_id}:{choice_index}".encode("ascii")
+    ).hexdigest()
+    return f"c_{digest[:24]}"
+
+
 def quiz_payload(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
-    return quiz_questions_payload(conn, quiz_date, allow_unpublished=False)
+    """Return the answer-free playable payload exposed by the public API."""
+    private_payload = quiz_questions_payload(conn, quiz_date, allow_unpublished=False)
+    return {
+        "date": private_payload["date"],
+        "status": private_payload["status"],
+        "questions": [
+            {
+                "id": public_question_id(int(question["id"])),
+                "subject": question["subject"],
+                "difficulty": question["difficulty"],
+                "question": question["question"],
+                "choices": [
+                    {
+                        "id": public_choice_id(int(question["id"]), choice_index),
+                        "text": str(choice),
+                    }
+                    for choice_index, choice in enumerate(question["choices"])
+                ],
+            }
+            for question in private_payload["questions"]
+        ],
+    }
 
 
 def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
@@ -4114,7 +4652,7 @@ def publish_quiz(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
     return quiz_payload(conn, quiz_date)
 
 
-def regenerate_question(
+def _regenerate_question_in_place(
     conn: sqlite3.Connection,
     *,
     quiz_date: str,
@@ -4170,4 +4708,164 @@ def regenerate_question(
         and status["verified_questions"] == len(REQUIRED_SLOTS)
     ):
         set_quiz_status(conn, quiz_date, "published")
+    return quiz_status(conn, quiz_date)
+
+
+def _replace_question_from_staging(
+    conn: sqlite3.Connection,
+    staging: sqlite3.Connection,
+    *,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
+    attempt_cutoff: int,
+) -> None:
+    staging_set = staging.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (quiz_date,)
+    ).fetchone()
+    if staging_set is None:
+        raise LookupError("Quiz set disappeared during staged question regeneration.")
+    with locked_quiz_swap(
+        conn,
+        quiz_date,
+        savepoint_name="daily_quiz_question_swap",
+    ):
+        live_set = conn.execute(
+            "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (quiz_date,)
+        ).fetchone()
+        if live_set is None:
+            raise LookupError("Quiz set disappeared during staged question regeneration.")
+        assert_quiz_regeneration_allowed(conn, quiz_date, live_set)
+        conn.execute(
+            """
+            DELETE FROM daily_quiz_questions
+            WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+            """,
+            (live_set["id"], subject, difficulty),
+        )
+        conn.execute(
+            """
+            DELETE FROM daily_quiz_candidates
+            WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+            """,
+            (live_set["id"], subject, difficulty),
+        )
+        candidate_id_map = _insert_staged_candidates(
+            conn,
+            staging,
+            live_quiz_set_id=int(live_set["id"]),
+            staging_quiz_set_id=int(staging_set["id"]),
+            subject=subject,
+            difficulty=difficulty,
+        )
+        _insert_staged_questions(
+            conn,
+            staging,
+            live_quiz_set_id=int(live_set["id"]),
+            staging_quiz_set_id=int(staging_set["id"]),
+            subject=subject,
+            difficulty=difficulty,
+        )
+        _insert_staged_attempts(
+            conn,
+            staging,
+            quiz_date=quiz_date,
+            attempt_cutoff=attempt_cutoff,
+            candidate_id_map=candidate_id_map,
+            subject=subject,
+            difficulty=difficulty,
+        )
+        _copy_staged_set_metadata(conn, staging_set, live_quiz_set_id=int(live_set["id"]))
+
+
+def regenerate_question(
+    conn: sqlite3.Connection,
+    *,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
+    config: QuizConfig,
+    provider: QuizAIProvider | None = None,
+    log: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    quiz_date = valid_quiz_date(quiz_date)
+    if subject not in SUBJECTS or difficulty not in DIFFICULTIES:
+        raise ValueError("subject or difficulty is invalid.")
+    initialize_database(conn)
+    live_set = conn.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (quiz_date,)
+    ).fetchone()
+    live_question = None
+    if live_set is not None:
+        live_question = conn.execute(
+            """
+            SELECT * FROM daily_quiz_questions
+            WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+            """,
+            (live_set["id"], subject, difficulty),
+        ).fetchone()
+        try:
+            assert_quiz_regeneration_allowed(conn, quiz_date, live_set)
+        except QuizRegenerationBlocked as error:
+            return _regeneration_failure_payload(conn, quiz_date, None, error)
+    if live_question is None:
+        return _regenerate_question_in_place(
+            conn,
+            quiz_date=quiz_date,
+            subject=subject,
+            difficulty=difficulty,
+            config=config,
+            provider=provider,
+            log=log,
+        )
+
+    staging, attempt_cutoff = _staging_connection(conn)
+    staged_result: dict[str, Any] | None = None
+    try:
+        staged_result = _regenerate_question_in_place(
+            staging,
+            quiz_date=quiz_date,
+            subject=subject,
+            difficulty=difficulty,
+            config=config,
+            provider=provider,
+            log=log,
+        )
+        staging_set = staging.execute(
+            "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (quiz_date,)
+        ).fetchone()
+        staged_question = staging.execute(
+            """
+            SELECT * FROM daily_quiz_questions
+            WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+            """,
+            (staging_set["id"], subject, difficulty),
+        ).fetchone()
+        replacement_ready = (
+            staged_question is not None
+            and int(staged_question["id"]) != int(live_question["id"])
+            and staged_result.get("status") != "failed"
+            and (
+                live_set["status"] != "published"
+                or staged_result.get("status") == "published"
+            )
+        )
+        if not replacement_ready:
+            return _regeneration_failure_payload(conn, quiz_date, staged_result)
+        _replace_question_from_staging(
+            conn,
+            staging,
+            quiz_date=quiz_date,
+            subject=subject,
+            difficulty=difficulty,
+            attempt_cutoff=attempt_cutoff,
+        )
+    except Exception as error:
+        log(
+            f"Staged question regeneration failed for {quiz_date} "
+            f"{subject}/{difficulty}: {error}"
+        )
+        return _regeneration_failure_payload(conn, quiz_date, staged_result, error)
+    finally:
+        staging.close()
     return quiz_status(conn, quiz_date)

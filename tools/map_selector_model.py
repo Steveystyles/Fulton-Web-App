@@ -122,10 +122,6 @@ def training_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def row_name(row: dict[str, Any]) -> str:
-    return clean_text(row.get("canonical_name") or row.get("place"), limit=160)
-
-
 def row_type(row: dict[str, Any]) -> str:
     return slug(row.get("place_type") or row.get("type"))
 

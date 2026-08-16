@@ -15,13 +15,41 @@ set -Eeuo pipefail
 
 COMPOSE_FILE="/home/ste/fulton-web-app-deploy/compose.yaml"
 COMPOSE_ENV_FILE="/home/ste/fulton-web-app-deploy/.env"
-if [ -f "$COMPOSE_ENV_FILE" ]; then
-  set -a
-  . "$COMPOSE_ENV_FILE"
-  set +a
-fi
-ENV_FILE="${FULTONS_ENV_FILE:-/srv/storage/appdata/fultons-quiz/app.env}"
-APPDATA_DIR="${FULTONS_HOST_DATA_DIR:-/srv/storage/appdata/fultons-quiz}"
+
+read_compose_path_setting() {
+  python3 - "${1:?dotenv path required}" "${2:?key required}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
+if not path.exists():
+    raise SystemExit(0)
+found = []
+for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    candidate, value = line.split("=", 1)
+    if candidate.strip() != key:
+        continue
+    value = value.strip()
+    if not value or len(value) > 4096:
+        raise SystemExit(f"invalid {key} in compose dotenv")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise SystemExit(f"invalid {key} in compose dotenv")
+    found.append(value)
+if len(found) > 1:
+    raise SystemExit(f"duplicate {key} in compose dotenv")
+if found:
+    print(found[0])
+PY
+}
+
+configured_env_file="$(read_compose_path_setting "$COMPOSE_ENV_FILE" "FULTONS_ENV_FILE")"
+configured_data_dir="$(read_compose_path_setting "$COMPOSE_ENV_FILE" "FULTONS_HOST_DATA_DIR")"
+ENV_FILE="${configured_env_file:-/srv/storage/appdata/fultons-quiz/app.env}"
+APPDATA_DIR="${configured_data_dir:-/srv/storage/appdata/fultons-quiz}"
 
 log() {
   printf '[fultons-restart] %s\n' "$*"
@@ -84,11 +112,24 @@ findmnt -T "$APPDATA_DIR" -o TARGET,SOURCE,FSTYPE,OPTIONS
 log "containers before restart"
 docker ps --filter name=fultons-quiz --filter name=jellyfin --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' || true
 
-log "recreating fultons-quiz from existing image"
+CURRENT_IMAGE="$(docker inspect fultons-quiz --format '{{.Image}}')"
+if [[ ! "$CURRENT_IMAGE" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  log "ERROR: current container does not expose an immutable image ID"
+  exit 1
+fi
+
+log "recreating fultons-quiz from immutable existing image $CURRENT_IMAGE"
 cd "$(dirname "$COMPOSE_FILE")"
 export FULTONS_ENV_FILE="$ENV_FILE"
 export FULTONS_HOST_DATA_DIR="$APPDATA_DIR"
-docker compose -f "$COMPOSE_FILE" up -d --force-recreate --no-build
+export FULTONS_IMAGE="$CURRENT_IMAGE"
+docker compose --env-file "$COMPOSE_ENV_FILE" -f "$COMPOSE_FILE" up -d --force-recreate --no-build
+
+RESTARTED_IMAGE="$(docker inspect fultons-quiz --format '{{.Image}}')"
+if [ "$RESTARTED_IMAGE" != "$CURRENT_IMAGE" ]; then
+  log "ERROR: restarted image $RESTARTED_IMAGE does not match $CURRENT_IMAGE"
+  exit 1
+fi
 
 log "waiting for /api/health"
 for attempt in $(seq 1 30); do
@@ -110,8 +151,8 @@ docker exec fultons-quiz python -c "import json,urllib.request; print(json.dumps
 log "database summary"
 docker exec fultons-quiz python -c "import json,os,sqlite3; p='/app/data/fultons.db'; c=sqlite3.connect(p); tables=[r[0] for r in c.execute('select name from sqlite_master where type=\"table\" order by name')]; counts={t:c.execute('select count(*) from '+t).fetchone()[0] for t in tables}; print(json.dumps({'path':p,'size':os.path.getsize(p),'counts':counts}, sort_keys=True))"
 
-log "protected endpoint check"
-docker exec fultons-quiz python -c "import http.client; conn=http.client.HTTPConnection('127.0.0.1',3000,timeout=3); conn.request('POST','/api/fact-image', body='{}', headers={'Content-Type':'application/json'}); print('fact_image_no_cookie_status=' + str(conn.getresponse().status)); conn.close()"
+log "retired endpoint compatibility check"
+docker exec fultons-quiz python -c "import http.client; paths=('/api/history','/api/facts','/api/fact-image'); statuses={}; [(lambda c,p: (c.request('GET',p), statuses.__setitem__(p,c.getresponse().status), c.close()))(http.client.HTTPConnection('127.0.0.1',3000,timeout=3),p) for p in paths]; print('retired_api_statuses=' + str(statuses)); raise SystemExit(0 if all(v == 410 for v in statuses.values()) else 1)"
 
 log "containers after restart"
 docker ps --filter name=fultons-quiz --filter name=jellyfin --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'

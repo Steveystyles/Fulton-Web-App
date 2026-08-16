@@ -192,24 +192,6 @@ def string_list(value: object, *, limit: int = 8) -> list[str]:
     return result
 
 
-def clue_map_workoutability_score(text: object) -> int:
-    context = clean_text(text, limit=320)
-    if not context or daily_map_game.MAP_WORKOUTABILITY_VAGUE_RE.fullmatch(context):
-        return 0
-    anchors = {
-        match.group(0).casefold()
-        for match in daily_map_game.MAP_WORKOUTABILITY_ANCHOR_RE.finditer(context)
-    }
-    score = min(6, len(anchors) * 2)
-    if daily_map_game.MAP_WORKOUTABILITY_ACTION_RE.search(context):
-        score += 3
-    if len(context.split()) >= 10:
-        score += 1
-    if any(character.isupper() for character in context[1:]):
-        score += 1
-    return min(12, score)
-
-
 def medium_clue_scope_score(text: object, row: dict[str, Any]) -> int:
     context = clean_text(text, limit=320)
     if not context or daily_map_game.MAP_WORKOUTABILITY_VAGUE_RE.fullmatch(context):
@@ -275,8 +257,8 @@ def clue_ladder_ordering_reasons(row: dict[str, Any], facts: list[str]) -> list[
     elif hard_clue_hook_score(hard_clue) < HARD_CLUE_REQUIRED_HOOK_SCORE:
         reasons.append("hard clue needs a distinctive fact, story, record, person, or visual hook")
 
-    hard_map_score = clue_map_workoutability_score(hard_clue)
-    easy_map_score = clue_map_workoutability_score(easy_clue)
+    hard_map_score = map_selector_model.clue_map_workoutability_score(hard_clue)
+    easy_map_score = map_selector_model.clue_map_workoutability_score(easy_clue)
     if easy_clue and hard_map_score >= EASY_CLUE_REQUIRED_WORKOUTABILITY_SCORE and easy_map_score <= hard_map_score:
         reasons.append("easy clue should be more map-useful than the hard clue")
     return reasons
@@ -615,15 +597,6 @@ def candidate_aliases(candidate: dict[str, Any]) -> list[str]:
     ]
 
 
-def fact_contains_candidate_name(fact: str, candidate: dict[str, Any]) -> bool:
-    normalized_fact = normalized_name(fact)
-    for name in candidate_aliases(candidate):
-        normalized = normalized_name(name)
-        if len(normalized) >= 5 and normalized in normalized_fact:
-            return True
-    return False
-
-
 def candidate_facts(candidate: dict[str, Any]) -> list[str]:
     return string_list(candidate.get("fun_facts"), limit=5)
 
@@ -806,7 +779,10 @@ def validate_candidate_row(
     elif medium_clue_scope_score(medium_clue, row) < MEDIUM_CLUE_REQUIRED_SCOPE_SCORE:
         reasons.append("medium clue must narrow the search or help infer the place name")
     easy_clue = str(row["easy_clue_text"] or (facts[2] if len(facts) > 2 else "")).strip()
-    if clue_map_workoutability_score(easy_clue) < EASY_CLUE_REQUIRED_WORKOUTABILITY_SCORE:
+    if (
+        map_selector_model.clue_map_workoutability_score(easy_clue)
+        < EASY_CLUE_REQUIRED_WORKOUTABILITY_SCORE
+    ):
         reasons.append("easy clue must include a practical anchor visible from a reasonable starting zoom")
     hard_hooks = daily_map_game.qualifying_hard_hook_candidates(
         daily_map_game.public_place_payload(row)

@@ -1,6 +1,9 @@
 param(
     [string]$CheckDate = (Get-Date).ToString("yyyy-MM-dd"),
-    [string]$OutputDir = ""
+    [string]$OutputDir = "",
+    [string]$SshPath = (Join-Path $env:WINDIR "System32\OpenSSH\ssh.exe"),
+    [string]$SshKey = (Join-Path ([Environment]::GetFolderPath("UserProfile")) ".ssh\codex_fultons_ed25519"),
+    [string]$Remote = "ste@192.168.0.15"
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,10 +17,6 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 $Stamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
 $JsonPath = Join-Path $OutputDir "prod_quiz_learning_check_${CheckDate}_${Stamp}.json"
 $MarkdownPath = Join-Path $OutputDir "prod_quiz_learning_check_${CheckDate}_${Stamp}.md"
-$SshPath = "C:\Windows\System32\OpenSSH\ssh.exe"
-$SshKey = "C:\Users\svens\.ssh\codex_fultons_ed25519"
-$Remote = "ste@192.168.0.15"
-
 $RemotePython = @'
 import json
 import os

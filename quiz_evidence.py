@@ -11,6 +11,8 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 from xml.etree import ElementTree
 
+from safe_http import ResponseTooLarge, fetch_public_text, read_bounded_response
+
 
 USER_AGENT = "FultonsQuizEvidence/1.0 (+https://fultons-quiz.co.uk)"
 
@@ -303,6 +305,7 @@ Do not assume the claim is true. Return a concise evidence summary with citation
         f"{base_url.rstrip('/')}/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
+            "Accept-Encoding": "identity",
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "HTTP-Referer": "https://fultons-quiz.co.uk",
@@ -314,14 +317,27 @@ Do not assume the claim is true. Return a concise evidence summary with citation
     for attempt in range(max(0, transient_retries) + 1):
         try:
             with urlopen(request, timeout=max(10, timeout_sec)) as response:
-                response_payload = json.loads(response.read().decode("utf-8"))
+                body, charset = read_bounded_response(
+                    response,
+                    max_bytes=2_000_000,
+                    label="OpenRouter evidence",
+                )
+                response_payload = json.loads(body.decode(charset))
             break
         except HTTPError as error:
+            status_code = error.code
             try:
-                detail = clean_text(error.read().decode("utf-8", errors="replace"), 500)
-            except OSError:
+                body, charset = read_bounded_response(
+                    error,
+                    max_bytes=64_000,
+                    label="OpenRouter evidence error",
+                )
+                detail = clean_text(body.decode(charset, errors="replace"), 500)
+            except (OSError, ResponseTooLarge):
                 detail = ""
-            daily_quota_exhausted = error.code == 429 and any(
+            finally:
+                error.close()
+            daily_quota_exhausted = status_code == 429 and any(
                 marker in detail.casefold()
                 for marker in (
                     "free-models-per-day",
@@ -331,7 +347,7 @@ Do not assume the claim is true. Return a concise evidence summary with citation
                 )
             )
             if (
-                error.code in {408, 429, 500, 502, 503, 504}
+                status_code in {408, 429, 500, 502, 503, 504}
                 and not daily_quota_exhausted
                 and attempt < transient_retries
             ):
@@ -339,9 +355,16 @@ Do not assume the claim is true. Return a concise evidence summary with citation
                 continue
             suffix = f": {detail}" if detail else ""
             raise EvidenceSearchUnavailable(
-                f"OpenRouter evidence search failed with HTTP {error.code}{suffix}"
+                f"OpenRouter evidence search failed with HTTP {status_code}{suffix}"
             ) from error
-        except (TimeoutError, URLError, OSError, json.JSONDecodeError) as error:
+        except (
+            TimeoutError,
+            URLError,
+            OSError,
+            ResponseTooLarge,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ) as error:
             if attempt < transient_retries:
                 time.sleep(min(30, 5 * (2**attempt)))
                 continue
@@ -396,9 +419,8 @@ def blocked_source(url: str) -> bool:
 def source_tier(url: str) -> str:
     host = source_host(url)
     if (
-        host.endswith((".gov", ".gov.uk", ".edu", ".ac.uk"))
+        host.endswith((".gov", ".gov.uk", ".edu", ".ac.uk", ".museum"))
         or any(host == item or host.endswith(f".{item}") for item in PRIMARY_SOURCE_HOSTS)
-        or any(token in host for token in ("museum", "archives", "university"))
     ):
         return "primary"
     if any(host == item or host.endswith(f".{item}") for item in REPUTABLE_SOURCE_HOSTS):
@@ -548,10 +570,12 @@ class WikipediaEvidenceParser(HTMLParser):
 
 
 def fetch_text(url: str, *, timeout_sec: int) -> str:
-    request = Request(url, headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=timeout_sec) as response:
-        charset = response.headers.get_content_charset() or "utf-8"
-        return response.read().decode(charset, errors="replace")
+    return fetch_public_text(
+        url,
+        timeout=timeout_sec,
+        headers={"User-Agent": USER_AGENT},
+        max_bytes=1_500_000,
+    )
 
 
 def fetch_page_excerpt(url: str, *, timeout_sec: int) -> str:
@@ -735,11 +759,6 @@ def wikipedia_search_queries(question: dict[str, Any]) -> list[str]:
     if answer_part and answer_part not in queries:
         queries.append(answer_part)
     return queries[:4]
-
-
-def wikipedia_search_query(question: dict[str, Any]) -> str:
-    queries = wikipedia_search_queries(question)
-    return queries[0] if queries else ""
 
 
 def wikipedia_api_payload(params: dict[str, Any], *, timeout_sec: int) -> dict[str, Any]:

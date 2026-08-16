@@ -14,6 +14,14 @@ import daily_quiz
 import server
 
 
+def generation_succeeded(result: dict[str, object]) -> bool:
+    return (
+        result.get("status") == "published"
+        and not result.get("regeneration_failed")
+        and not result.get("regeneration_blocked")
+    )
+
+
 def parse_args() -> argparse.Namespace:
     tomorrow = (datetime.now().astimezone().date() + timedelta(days=1)).isoformat()
     parser = argparse.ArgumentParser(
@@ -41,7 +49,7 @@ def main() -> int:
             log=lambda message: print(f"[daily-quiz] {message}", flush=True),
         )
     print(json.dumps(result, indent=2))
-    return 0 if result.get("status") == "published" else 1
+    return 0 if generation_succeeded(result) else 1
 
 
 if __name__ == "__main__":

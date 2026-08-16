@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from email.message import Message
 from io import BytesIO
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -33,6 +34,18 @@ class QuizEvidenceTests(unittest.TestCase):
             quiz_evidence.source_tier("https://whc.unesco.org/en/list/320"),
             "primary",
         )
+
+    def test_institution_words_in_untrusted_hostnames_do_not_grant_primary_rank(self) -> None:
+        for host in (
+            "fake-museum.example",
+            "university-facts.example",
+            "archives-not-official.example",
+        ):
+            with self.subTest(host=host):
+                self.assertEqual(
+                    quiz_evidence.source_tier(f"https://{host}/claim"),
+                    "other",
+                )
         self.assertEqual(
             quiz_evidence.source_tier(
                 "https://www.guinnessworldrecords.com/world-records/example"
@@ -185,13 +198,15 @@ class QuizEvidenceTests(unittest.TestCase):
 
     def test_openrouter_search_retries_transient_http_failure(self) -> None:
         class FakeResponse:
+            headers = Message()
+
             def __enter__(self) -> "FakeResponse":
                 return self
 
             def __exit__(self, *args: object) -> None:
                 return None
 
-            def read(self) -> bytes:
+            def read(self, _limit: int) -> bytes:
                 return json.dumps(
                     {
                         "choices": [

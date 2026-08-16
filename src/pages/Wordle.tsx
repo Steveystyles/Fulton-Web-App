@@ -21,7 +21,13 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import { api, type FeedbackColor, type WordleGuess, type WordleState } from "../lib/api";
+import {
+  api,
+  ApiError,
+  type FeedbackColor,
+  type WordleGuess,
+  type WordleState,
+} from "../lib/api";
 import type { WordleDefinition } from "../lib/api";
 
 type GuessValidity = "empty" | "short" | "checking" | "valid" | "invalid";
@@ -402,7 +408,15 @@ export function Wordle() {
 
     async function loadGame() {
       try {
-        const response = await api.wordleToday();
+        let response: WordleState;
+        try {
+          response = await api.wordleToday();
+        } catch (caughtError) {
+          if (!(caughtError instanceof ApiError) || caughtError.status !== 404) {
+            throw caughtError;
+          }
+          response = await api.startWordle();
+        }
         if (active) {
           setState(response);
         }

@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from http import HTTPStatus
 from pathlib import Path
@@ -88,6 +89,62 @@ class DailyMapGameTests(unittest.TestCase):
         )
         daily_map_game.set_puzzle_status(self.conn, puzzle_date, "published")
         return self.first_level(puzzle_date)
+
+    def snap_selection(
+        self,
+        level: sqlite3.Row,
+        *,
+        lat: float | None = None,
+        lng: float | None = None,
+        user_id: int = 1,
+    ) -> dict[str, object]:
+        selection, status = daily_map_game.snap_guess(
+            self.conn,
+            user_id=user_id,
+            level_id=level["id"],
+            lat=level["lat"] if lat is None else lat,
+            lng=level["lng"] if lng is None else lng,
+            today="2026-07-13",
+            allow_reverse_geocode=False,
+        )
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertIn("selectionId", selection)
+        return selection
+
+    def reveal_clue(self, level: sqlite3.Row, expected_count: int) -> dict[str, object]:
+        payload, status = daily_map_game.reveal_next_clue(
+            self.conn,
+            user_id=1,
+            level_id=level["id"],
+            expected_revealed_hint_count=expected_count,
+            today="2026-07-13",
+        )
+        self.assertEqual(status, HTTPStatus.OK)
+        return payload
+
+    def test_starter_seed_does_not_overwrite_curated_place_changes(self) -> None:
+        original = self.conn.execute(
+            "SELECT slug FROM map_place_pool WHERE canonical_name = 'London'"
+        ).fetchone()
+        self.assertIsNotNone(original)
+        self.conn.execute(
+            """
+            UPDATE map_place_pool
+            SET canonical_name = 'Curated London', clue_text = 'Reviewed by an editor.', lat = 51.6
+            WHERE slug = ?
+            """,
+            (original["slug"],),
+        )
+
+        daily_map_game.seed_starter_places(self.conn)
+
+        preserved = self.conn.execute(
+            "SELECT canonical_name, clue_text, lat FROM map_place_pool WHERE slug = ?",
+            (original["slug"],),
+        ).fetchone()
+        self.assertEqual(preserved["canonical_name"], "Curated London")
+        self.assertEqual(preserved["clue_text"], "Reviewed by an editor.")
+        self.assertEqual(preserved["lat"], 51.6)
 
     def make_london_quality_ready(self, *, current_profile: bool = False) -> int:
         facts = [
@@ -227,12 +284,9 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(len(payload["levels"]), 1)
         self.assertEqual(
             [clue["id"] for clue in payload["levels"][0]["clues"]],
-            ["hard", "medium", "easy", "name"],
+            ["hard"],
         )
-        self.assertEqual(
-            [clue["maxPoints"] for clue in payload["levels"][0]["clues"]],
-            [10, 7, 5, 2],
-        )
+        self.assertEqual(payload["levels"][0]["revealedHintCount"], 0)
         self.assertTrue(all("result" not in level for level in payload["levels"]))
 
     def test_generation_can_publish_a_specific_quality_place_for_qa(self) -> None:
@@ -359,6 +413,13 @@ class DailyMapGameTests(unittest.TestCase):
             puzzle_date="2026-07-13",
             user_id=1,
         )
+        self.reveal_clue(level, 0)
+        self.reveal_clue(level, 1)
+        payload = daily_map_game.daily_bundle_payload(
+            self.conn,
+            puzzle_date="2026-07-13",
+            user_id=1,
+        )
         clues = payload["levels"][0]["clues"]
 
         self.assertIn("South African", clues[1]["text"])
@@ -405,6 +466,15 @@ class DailyMapGameTests(unittest.TestCase):
             ),
         )
 
+        payload = daily_map_game.daily_bundle_payload(
+            self.conn,
+            puzzle_date="2026-07-13",
+            user_id=1,
+        )
+
+        self.assertEqual(payload["levels"][0]["mapAnchors"], [])
+        self.reveal_clue(level, 0)
+        self.reveal_clue(level, 1)
         payload = daily_map_game.daily_bundle_payload(
             self.conn,
             puzzle_date="2026-07-13",
@@ -2212,25 +2282,20 @@ class DailyMapGameTests(unittest.TestCase):
 
     def test_submit_guess_scores_correct_place_by_clues_used_and_is_idempotent(self) -> None:
         level = self.publish_named_level("Cairo")
+        selection = self.snap_selection(level)
 
         first, first_status = daily_map_game.submit_guess(
             self.conn,
             user_id=1,
             level_id=level["id"],
-            lat=level["lat"],
-            lng=level["lng"],
-            selected_name="Cairo",
-            revealed_hint_count=0,
+            selection_id=selection["selectionId"],
             today="2026-07-13",
         )
         second, second_status = daily_map_game.submit_guess(
             self.conn,
             user_id=1,
             level_id=level["id"],
-            lat=0,
-            lng=0,
-            selected_name="Luxor",
-            revealed_hint_count=3,
+            selection_id="not-even-a-valid-selection-token",
             today="2026-07-13",
         )
 
@@ -2244,15 +2309,19 @@ class DailyMapGameTests(unittest.TestCase):
 
     def test_correct_place_after_easy_clue_scores_five_points(self) -> None:
         level = self.publish_named_level("Cape Town")
+        self.reveal_clue(level, 0)
+        self.reveal_clue(level, 1)
+        selection = self.snap_selection(
+            level,
+            lat=float(level["lat"]) + 0.05,
+            lng=level["lng"],
+        )
 
         result, status = daily_map_game.submit_guess(
             self.conn,
             user_id=1,
             level_id=level["id"],
-            lat=float(level["lat"]) + 0.05,
-            lng=level["lng"],
-            selected_name="Cape Town",
-            revealed_hint_count=2,
+            selection_id=selection["selectionId"],
             today="2026-07-13",
         )
 
@@ -2264,15 +2333,14 @@ class DailyMapGameTests(unittest.TestCase):
 
     def test_wrong_place_scores_zero(self) -> None:
         level = self.publish_named_level("Cairo")
+        self.reveal_clue(level, 0)
+        selection = self.snap_selection(level, lat=51.5074, lng=-0.1278)
 
         result, status = daily_map_game.submit_guess(
             self.conn,
             user_id=1,
             level_id=level["id"],
-            lat=25.6872,
-            lng=32.6396,
-            selected_name="Luxor",
-            revealed_hint_count=1,
+            selection_id=selection["selectionId"],
             today="2026-07-13",
         )
 
@@ -2281,13 +2349,236 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(result["result"]["maxPoints"], 7)
         self.assertEqual(result["result"]["band"], "Wrong place")
         self.assertFalse(result["result"]["correct"])
-        self.assertEqual(result["result"]["selectedPlace"]["name"], "Luxor")
+        self.assertEqual(result["result"]["selectedPlace"]["name"], "London")
+
+    def test_initial_payload_does_not_leak_answer_or_unearned_clues(self) -> None:
+        level_row = self.publish_named_level("Cairo")
+        place_id = self.conn.execute(
+            "SELECT place_id FROM daily_map_levels WHERE id = ?",
+            (level_row["id"],),
+        ).fetchone()["place_id"]
+        self.conn.execute(
+            "UPDATE map_place_pool SET map_search_anchors_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    [
+                        {
+                            "name": "Cairo city centre",
+                            "lat": level_row["lat"],
+                            "lng": level_row["lng"],
+                            "min_hint_count": 0,
+                        },
+                        {
+                            "name": "Nile Delta search area",
+                            "lat": 31.1,
+                            "lng": 30.8,
+                            "min_hint_count": 0,
+                        },
+                    ]
+                ),
+                place_id,
+            ),
+        )
+
+        payload = daily_map_game.daily_bundle_payload(
+            self.conn,
+            puzzle_date="2026-07-13",
+            user_id=1,
+        )
+        level = payload["levels"][0]
+        encoded = json.dumps(payload).lower()
+
+        self.assertEqual([clue["id"] for clue in level["clues"]], ["hard"])
+        self.assertEqual(level["revealedHintCount"], 0)
+        self.assertEqual(
+            [anchor["name"] for anchor in level["mapAnchors"]],
+            ["Nile Delta search area"],
+        )
+        self.assertNotIn("cairo", encoded)
+        self.assertNotIn("answerpoint", encoded)
+        self.assertNotIn("canonicalname", encoded)
+
+    def test_forged_hint_version_cannot_restore_a_higher_score(self) -> None:
+        level = self.publish_named_level("Cairo")
+        self.reveal_clue(level, 0)
+        self.reveal_clue(level, 1)
+
+        forged = self.reveal_clue(level, 0)
+        selection = self.snap_selection(level)
+        result, status = daily_map_game.submit_guess(
+            self.conn,
+            user_id=1,
+            level_id=level["id"],
+            selection_id=selection["selectionId"],
+            today="2026-07-13",
+        )
+
+        self.assertEqual(forged["level"]["revealedHintCount"], 2)
+        self.assertEqual(status, HTTPStatus.CREATED)
+        self.assertEqual(result["result"]["revealedHintCount"], 2)
+        self.assertEqual(result["result"]["score"], 5)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_map_progress WHERE user_id = 1 AND level_id = ?",
+                (level["id"],),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_client_name_and_coordinate_forgery_cannot_score(self) -> None:
+        level = self.publish_named_level("Cairo")
+        selection = self.snap_selection(level, lat=51.5074, lng=-0.1278)
+        selection["name"] = "Cairo"
+        selection["point"] = {"lat": level["lat"], "lng": level["lng"]}
+
+        result, status = daily_map_game.submit_guess(
+            self.conn,
+            user_id=1,
+            level_id=level["id"],
+            selection_id=selection["selectionId"],
+            today="2026-07-13",
+        )
+
+        self.assertEqual(status, HTTPStatus.CREATED)
+        self.assertEqual(result["result"]["selectedPlace"]["name"], "London")
+        self.assertFalse(result["result"]["correct"])
+        self.assertEqual(result["result"]["score"], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_map_selections WHERE user_id = 1 AND level_id = ?",
+                (level["id"],),
+            ).fetchone()[0],
+            0,
+        )
+
+    def test_selection_retention_prunes_stale_and_consumed_rows_only(self) -> None:
+        level = self.publish_named_level("Cairo")
+        now = daily_map_game.utc_now()
+        stale = "2000-01-01T00:00:00+00:00"
+        rows = (
+            ("a" * 32, stale, None),
+            ("b" * 32, now, now),
+            ("c" * 32, now, None),
+        )
+        for token, created_at, consumed_at in rows:
+            self.conn.execute(
+                """
+                INSERT INTO daily_map_selections (
+                    selection_id, user_id, level_id, point_lat, point_lng,
+                    selected_name, created_at, consumed_at
+                )
+                VALUES (?, 1, ?, 30.0, 31.0, 'Cairo', ?, ?)
+                """,
+                (token, level["id"], created_at, consumed_at),
+            )
+
+        daily_map_game.prune_map_selections(self.conn)
+
+        remaining = {
+            row["selection_id"]
+            for row in self.conn.execute("SELECT selection_id FROM daily_map_selections")
+        }
+        self.assertEqual(remaining, {"c" * 32})
+
+    def test_arbitrary_coordinates_without_bound_selection_are_rejected(self) -> None:
+        level = self.publish_named_level("Cairo")
+
+        result, status = daily_map_game.submit_guess(
+            self.conn,
+            user_id=1,
+            level_id=level["id"],
+            selection_id=None,
+            today="2026-07-13",
+        )
+
+        self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+        self.assertIn("server selection", result["error"])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM daily_map_guesses").fetchone()[0],
+            0,
+        )
+
+    def test_selection_id_is_bound_to_authenticated_user(self) -> None:
+        level = self.publish_named_level("Cairo")
+        self.conn.execute("INSERT INTO users (id, username) VALUES (2, 'other')")
+        selection = self.snap_selection(level)
+
+        result, status = daily_map_game.submit_guess(
+            self.conn,
+            user_id=2,
+            level_id=level["id"],
+            selection_id=selection["selectionId"],
+            today="2026-07-13",
+        )
+
+        self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+        self.assertIn("invalid", result["error"])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM daily_map_guesses").fetchone()[0],
+            0,
+        )
+
+    def test_force_regeneration_preserves_played_round_and_result(self) -> None:
+        level = self.publish_named_level("Cairo")
+        selection = self.snap_selection(level)
+        result, status = daily_map_game.submit_guess(
+            self.conn,
+            user_id=1,
+            level_id=level["id"],
+            selection_id=selection["selectionId"],
+            today="2026-07-13",
+        )
+        self.assertEqual(status, HTTPStatus.CREATED)
+
+        regeneration = daily_map_game.generate_daily_map_game(
+            self.conn,
+            puzzle_date="2026-07-13",
+            force=True,
+        )
+
+        self.assertTrue(regeneration["regenerationBlocked"])
+        self.assertEqual(self.first_level()["id"], level["id"])
+        stored = daily_map_game.submitted_level_row(self.conn, 1, level["id"])
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["score"], result["result"]["score"])
+
+    def test_legacy_completed_result_is_read_without_rewriting(self) -> None:
+        level = self.publish_named_level("Cairo")
+        now = daily_map_game.utc_now()
+        self.conn.execute(
+            """
+            INSERT INTO daily_map_guesses (
+                user_id, level_id, guessed_lat, guessed_lng, selected_name,
+                revealed_hint_count, distance_m, score, band, completed_at,
+                created_at, updated_at
+            )
+            VALUES (1, ?, 51.5074, -0.1278, 'Cairo', 2, 3510000, 5,
+                    'Solved with easy clue', ?, ?, ?)
+            """,
+            (level["id"], now, now, now),
+        )
+
+        daily_map_game.initialize_database(self.conn)
+        payload = daily_map_game.daily_bundle_payload(
+            self.conn,
+            puzzle_date="2026-07-13",
+            user_id=1,
+        )
+
+        self.assertTrue(payload["levels"][0]["submitted"])
+        self.assertEqual(payload["levels"][0]["result"]["score"], 5)
+        stored = self.conn.execute(
+            "SELECT score, band FROM daily_map_guesses WHERE user_id = 1"
+        ).fetchone()
+        self.assertEqual(stored["score"], 5)
+        self.assertEqual(stored["band"], "Solved with easy clue")
 
     def test_snap_guess_returns_nearby_named_place(self) -> None:
         level = self.publish_named_level("Cairo")
 
         selection, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=float(level["lat"]) + 0.05,
             lng=level["lng"],
@@ -2299,11 +2590,107 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(selection["name"], "Cairo")
         self.assertEqual(selection["kind"], "place")
 
+    def test_snap_guess_prefilters_distant_places_before_haversine_work(self) -> None:
+        level = self.publish_named_level("Cairo")
+        active_count = self.conn.execute(
+            "SELECT COUNT(*) FROM map_place_pool WHERE active = 1"
+        ).fetchone()[0]
+
+        with patch.object(
+            daily_map_game,
+            "haversine_m",
+            wraps=daily_map_game.haversine_m,
+        ) as distance:
+            selection, status = daily_map_game.snap_guess(
+                self.conn,
+                user_id=1,
+                level_id=level["id"],
+                lat=level["lat"],
+                lng=level["lng"],
+                today="2026-07-13",
+                allow_reverse_geocode=False,
+            )
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(selection["name"], "Cairo")
+        self.assertLess(distance.call_count, active_count)
+
+    def test_reverse_geocode_cache_write_does_not_commit_caller_transaction(self) -> None:
+        self.conn.commit()
+        self.conn.execute("UPDATE users SET username = 'changed' WHERE id = 1")
+
+        daily_map_game.store_reverse_geocode_selection(
+            self.conn,
+            cache_key="test:cache",
+            clicked_lat=51.5,
+            clicked_lng=-0.1,
+            reverse_zoom=12,
+            name="London",
+            kind="place",
+            point_lat=51.5074,
+            point_lng=-0.1278,
+            country_code="GB",
+            admin1="England",
+            display_name="London, England",
+        )
+        self.conn.rollback()
+
+        username = self.conn.execute("SELECT username FROM users WHERE id = 1").fetchone()[0]
+        cache_count = self.conn.execute(
+            "SELECT COUNT(*) FROM map_reverse_geocode_cache WHERE cache_key = 'test:cache'"
+        ).fetchone()[0]
+        self.assertEqual(username, "tester")
+        self.assertEqual(cache_count, 0)
+
+    def test_geocoder_network_call_does_not_hold_global_rate_lock(self) -> None:
+        lock_was_available: list[bool] = []
+
+        class Response:
+            headers: dict[str, str] = {}
+
+            def __enter__(self) -> "Response":
+                acquired = daily_map_game.REVERSE_GEOCODE_LOCK.acquire(blocking=False)
+                lock_was_available.append(acquired)
+                if acquired:
+                    daily_map_game.REVERSE_GEOCODE_LOCK.release()
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self, _limit: int) -> bytes:
+                return b'{"lat":"51.5","lon":"-0.1","display_name":"London"}'
+
+        with (
+            patch.object(daily_map_game, "urlopen", return_value=Response()),
+            patch.object(daily_map_game, "REVERSE_GEOCODE_NEXT_REQUEST_AT", 0.0),
+        ):
+            payload = daily_map_game.fetch_reverse_geocode(51.5, -0.1, 12)
+
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(lock_was_available, [True])
+
+    def test_reverse_geocoder_fails_fast_when_bounded_gate_is_full(self) -> None:
+        gate = threading.BoundedSemaphore(1)
+        gate.acquire()
+        with (
+            patch.object(daily_map_game, "REVERSE_GEOCODE_GATE", gate),
+            patch.object(daily_map_game, "urlopen") as urlopen_mock,
+            patch.object(daily_map_game.time, "sleep") as sleep_mock,
+        ):
+            payload = daily_map_game.fetch_reverse_geocode(51.5, -0.1, 12)
+        gate.release()
+
+        self.assertIsNone(payload)
+        urlopen_mock.assert_not_called()
+        sleep_mock.assert_not_called()
+
     def test_snap_guess_rejects_when_no_place_is_close(self) -> None:
         level = self.publish_named_level("Cairo")
 
         payload, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=0,
             lng=0,
@@ -2337,6 +2724,7 @@ class DailyMapGameTests(unittest.TestCase):
         ) as reverse_geocode:
             selection, status = daily_map_game.snap_guess(
                 self.conn,
+                user_id=1,
                 level_id=level["id"],
                 lat=25.6872,
                 lng=32.6396,
@@ -2353,6 +2741,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         selection, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=level["lat"],
             lng=float(level["lng"]) + 0.5,
@@ -2400,6 +2789,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         selection, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=float(level["lat"]),
             lng=float(level["lng"]) + 0.5,
@@ -2425,6 +2815,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         payload, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=float(level["lat"]),
             lng=float(level["lng"]) + 4.0,
@@ -2469,6 +2860,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         selection, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=float(cairo["lat"]),
             lng=clicked_lng,
@@ -2489,6 +2881,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         selection, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=level["lat"],
             lng=level["lng"],
@@ -2504,6 +2897,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         selection, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=level["id"],
             lat=51.42,
             lng=-2.48,
@@ -2525,6 +2919,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         payload, status = daily_map_game.snap_guess(
             self.conn,
+            user_id=1,
             level_id=self.first_level()["id"],
             lat=row["lat"],
             lng=row["lng"],
@@ -2537,6 +2932,9 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertIn("No nearby place", payload["error"])
 
     def test_invalid_coordinates_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "numbers"):
+            daily_map_game.valid_coordinate(True, 0)
+
         with self.assertRaisesRegex(ValueError, "Latitude"):
             daily_map_game.valid_coordinate(91, 0)
 

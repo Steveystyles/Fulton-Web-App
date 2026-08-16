@@ -4,8 +4,10 @@ on:
   push:
     branches:
       - main
-      - beta/daily-map-game
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"
 
 permissions:
   contents: read
@@ -15,16 +17,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
 
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
       - name: Install frontend dependencies
         run: npm ci
+
+      - name: Audit frontend dependencies
+        run: npm audit --audit-level=high
 
       - name: Build frontend
         run: npm run build
@@ -35,8 +45,217 @@ jobs:
       - name: Build production container
         run: docker build -t fultons-quiz:test .
 
+      - name: Scan production container
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: fultons-quiz:test
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+
+      - name: Generate container SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: fultons-quiz:test
+          format: spdx-json
+          output-file: fultons-quiz.spdx.json
+          upload-artifact: false
+
+      - name: Upload container SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fultons-quiz-sbom
+          path: fultons-quiz.spdx.json
+
       - name: Verify production Python imports
         run: >-
           docker run --rm --entrypoint python fultons-quiz:test -c
           "import server; from tools import generate_map_place_candidates_with_ai,
           install_map_training_seed, map_clue_quality_model"
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan pushed or proposed commits for secrets
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3.37.7
+        with:
+          languages: javascript-typescript,python
+
+      - name: Analyze source
+        uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3.37.7
+
+  release-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - build
+      - secrets
+      - codeql
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      IMAGE_NAME: ghcr.io/steveystyles/fulton-web-app
+    steps:
+      - name: Check out reviewed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish the commit image
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            FULTONS_BUILD_COMMIT=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/Steveystyles/Fulton-Web-App.git
+            org.opencontainers.image.revision=${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Resolve the immutable release reference
+        id: image
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Build did not return a valid image digest." >&2
+            exit 1
+          fi
+          echo "ref=${IMAGE_NAME}@${IMAGE_DIGEST}" >> "$GITHUB_OUTPUT"
+          printf '%s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST" > release-image.txt
+
+      - name: Scan the exact published digest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.image.outputs.ref }}
+          format: spdx-json
+          output-file: fultons-quiz-release.spdx.json
+          upload-artifact: false
+
+      - name: Smoke-test the exact release digest
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+          EXPECTED_REVISION: ${{ github.sha }}
+          EXPECTED_SOURCE: https://github.com/Steveystyles/Fulton-Web-App.git
+        run: |
+          set -Eeuo pipefail
+
+          smoke_name="fultons-release-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "${smoke_name}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker pull "${IMAGE_REF}"
+
+          actual_revision="$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          actual_source="$(docker image inspect "${IMAGE_REF}" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
+          test "${actual_revision}" = "${EXPECTED_REVISION}"
+          test "${actual_source}" = "${EXPECTED_SOURCE}"
+
+          docker run --rm --entrypoint python "${IMAGE_REF}" -c \
+            "import importlib.util; assert importlib.util.find_spec('server') is not None"
+
+          docker run -d \
+            --name "${smoke_name}" \
+            --read-only \
+            --cap-drop ALL \
+            --security-opt no-new-privileges:true \
+            --pids-limit 128 \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --tmpfs /app/data:rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=1000,gid=1000 \
+            --env FULTONS_ALLOWED_HOSTS=127.0.0.1,localhost \
+            --env FULTONS_REQUIRE_EXISTING_DB=0 \
+            --env FULTONS_MIN_DB_USERS=0 \
+            --env FULTONS_SEED_DEMO_USERS=0 \
+            --env FULTONS_NEWS_MONITOR_ENABLED=0 \
+            --env FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED=0 \
+            --env FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED=0 \
+            --env FULTONS_DAILY_MAP_FUTURE_REVIEW_ENABLED=0 \
+            "${IMAGE_REF}"
+
+          healthy=0
+          for _ in $(seq 1 45); do
+            if docker exec "${smoke_name}" python -c \
+              "import json, urllib.request; payload=json.load(urllib.request.urlopen('http://127.0.0.1:3000/api/health', timeout=2)); assert payload.get('ok') is True"; then
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "${healthy}" -ne 1 ]; then
+            docker logs "${smoke_name}" || true
+            exit 1
+          fi
+
+          docker exec "${smoke_name}" python -c \
+            "import sqlite3; connection=sqlite3.connect('/app/data/fultons.db'); assert connection.execute('PRAGMA quick_check').fetchone()[0] == 'ok'"
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+
+      - name: Sign and verify the immutable digest
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: |
+          cosign sign --yes "$IMAGE_REF"
+          cosign verify \
+            --certificate-identity-regexp '^https://github\.com/Steveystyles/Fulton-Web-App/\.github/workflows/build\.yml@refs/heads/main$' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+            "$IMAGE_REF" > cosign-verification.json
+          test -s cosign-verification.json
+
+      - name: Upload release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fultons-quiz-release-${{ github.sha }}
+          path: |
+            release-image.txt
+            fultons-quiz-release.spdx.json
+            cosign-verification.json

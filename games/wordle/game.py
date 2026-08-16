@@ -13,8 +13,9 @@ MIN_WORDLE_DIFFICULTY = 1
 MAX_WORDLE_DIFFICULTY = 20
 
 
-def load_word_list() -> list[str]:
-    """Return the valid five-letter words used by the daily game."""
+@lru_cache(maxsize=1)
+def _cached_word_list() -> tuple[str, ...]:
+    """Load and normalize the immutable Wordle dictionary once per process."""
     try:
         words = [
             line.strip().lower()
@@ -24,13 +25,26 @@ def load_word_list() -> list[str]:
     except OSError as error:
         raise RuntimeError(f"Word list file not found: {WORD_LIST_FILE}") from error
 
-    return sorted(
-        {
+    return tuple(
+        sorted(
+            {
             word
             for word in words
             if len(word) == WORD_LENGTH and word.isalpha() and word.isascii()
-        }
+            }
+        )
     )
+
+
+def load_word_list() -> list[str]:
+    """Return a compatibility copy of the cached five-letter dictionary."""
+    return list(_cached_word_list())
+
+
+@lru_cache(maxsize=1)
+def valid_word_set() -> frozenset[str]:
+    """Return the cached dictionary optimized for request-path membership checks."""
+    return frozenset(_cached_word_list())
 
 
 @lru_cache(maxsize=1)
@@ -239,7 +253,7 @@ def serialize_feedback(feedback: list[tuple[str, str]]) -> list[dict[str, str]]:
 
 def valid_guess(guess: str, words: list[str] | None = None) -> bool:
     """Return True if the guess is a valid five-letter word from the word list."""
-    word_list = words if words is not None else load_word_list()
+    word_list = words if words is not None else valid_word_set()
     normalized_guess = guess.lower()
     return (
         normalized_guess.isalpha()

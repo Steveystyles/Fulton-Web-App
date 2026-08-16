@@ -639,7 +639,7 @@ export function MapGame() {
   const [selectionNotice, setSelectionNotice] = useState("");
   const [snapLoading, setSnapLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [revealedHintCount, setRevealedHintCount] = useState(0);
+  const [revealing, setRevealing] = useState(false);
   const lockButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mapLabels, setMapLabels] = useState(() => {
     try {
@@ -685,7 +685,7 @@ export function MapGame() {
     setDraftSelection(null);
     setSelectionNotice("");
     setSnapLoading(false);
-    setRevealedHintCount(0);
+    setRevealing(false);
   }, [selectedLevelId]);
 
   useEffect(() => {
@@ -713,16 +713,28 @@ export function MapGame() {
   const pendingPoint = pendingSelection?.point;
   const totalScore = levels.reduce((total, level) => total + (level.result?.score ?? 0), 0);
   const completed = levels.filter((level) => level.submitted).length;
-  const currentRevealedHintCount = selectedLevel?.result?.revealedHintCount ?? revealedHintCount;
+  const currentRevealedHintCount = selectedLevel?.revealedHintCount ?? 0;
   const clues = selectedLevel?.clues ?? [];
-  const visibleClues = clues.slice(0, Math.min(clues.length, currentRevealedHintCount + 1));
-  const nextClue = selectedLevel?.submitted ? undefined : clues[currentRevealedHintCount + 1];
+  const visibleClues = clues;
+  const nextClue = selectedLevel && !selectedLevel.submitted && currentRevealedHintCount < 3
+    ? [
+        { title: "Medium clue", maxPoints: 7 },
+        { title: "Easy clue", maxPoints: 5 },
+        { title: "Place name", maxPoints: 2 },
+      ][currentRevealedHintCount]
+    : undefined;
   const currentMaxPoints =
-    selectedLevel?.result?.maxPoints ?? clues[currentRevealedHintCount]?.maxPoints ?? selectedLevel?.maxPoints ?? 0;
+    selectedLevel?.result?.maxPoints ?? clues[clues.length - 1]?.maxPoints ?? 0;
 
   const pickPointForSelected = useCallback(
     async (point: MapPoint, zoom: number) => {
-      if (selectedLevel === undefined || selectedLevel.submitted || snapLoading || submitting) {
+      if (
+        selectedLevel === undefined ||
+        selectedLevel.submitted ||
+        snapLoading ||
+        submitting ||
+        revealing
+      ) {
         return;
       }
       const levelId = selectedLevel.id;
@@ -730,6 +742,11 @@ export function MapGame() {
       setError("");
       setSelectionNotice("");
       setDraftSelection(null);
+      setPendingSelections((current) => {
+        const next = { ...current };
+        delete next[levelId];
+        return next;
+      });
       try {
         const selection = await api.snapDailyMapGuess(levelId, point, zoom);
         if (!selection.snapped) {
@@ -756,7 +773,7 @@ export function MapGame() {
         setSnapLoading(false);
       }
     },
-    [loadGame, selectedLevel, snapLoading, submitting],
+    [loadGame, revealing, selectedLevel, snapLoading, submitting],
   );
 
   const cycleDraftSelection = useCallback((direction: -1 | 1) => {
@@ -781,7 +798,8 @@ export function MapGame() {
         selectedLevel === undefined ||
         selection === undefined ||
         selectedLevel.submitted ||
-        submitting
+        submitting ||
+        revealing
       ) {
         return;
       }
@@ -789,10 +807,10 @@ export function MapGame() {
       setError("");
       setSelectionNotice("");
       try {
-        const response = await api.submitDailyMapGuess(selectedLevel.id, selection.point, {
-          selectedName: selection.name,
-          revealedHintCount,
-        });
+        const response = await api.submitDailyMapGuess(
+          selectedLevel.id,
+          selection.selectionId,
+        );
         setGame((current) => {
           if (current === null) {
             return current;
@@ -804,7 +822,12 @@ export function MapGame() {
             ).length,
             levels: current.levels.map((level) =>
               level.id === selectedLevel.id
-                ? { ...level, submitted: true, result: response.result }
+                ? {
+                    ...level,
+                    submitted: true,
+                    revealedHintCount: response.result.revealedHintCount,
+                    result: response.result,
+                  }
                 : level,
             ),
           };
@@ -821,8 +844,42 @@ export function MapGame() {
         setSubmitting(false);
       }
     },
-    [revealedHintCount, selectedLevel, submitting],
+    [revealing, selectedLevel, submitting],
   );
+
+  const revealNextClue = useCallback(async () => {
+    if (
+      selectedLevel === undefined ||
+      selectedLevel.submitted ||
+      selectedLevel.revealedHintCount >= 3 ||
+      revealing ||
+      submitting
+    ) {
+      return;
+    }
+    setRevealing(true);
+    setError("");
+    try {
+      const response = await api.revealDailyMapClue(
+        selectedLevel.id,
+        selectedLevel.revealedHintCount,
+      );
+      setGame((current) =>
+        current === null
+          ? current
+          : {
+              ...current,
+              levels: current.levels.map((level) =>
+                level.id === selectedLevel.id ? response.level : level,
+              ),
+            },
+      );
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Clue reveal failed.");
+    } finally {
+      setRevealing(false);
+    }
+  }, [revealing, selectedLevel, submitting]);
 
   const acceptDraftSelection = useCallback(() => {
     if (selectedLevel === undefined || draftSelection === null || submitting) {
@@ -1025,10 +1082,11 @@ export function MapGame() {
             {nextClue ? (
               <button
                 type="button"
-                onClick={() => setRevealedHintCount((current) => Math.min(3, current + 1))}
+                onClick={() => void revealNextClue()}
+                disabled={revealing || submitting}
                 className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 transition hover:border-saints-red/40 saints-focus"
               >
-                Reveal {nextClue.title.toLowerCase()} - max {nextClue.maxPoints} pts
+                {revealing ? "Revealing clue" : `Reveal ${nextClue.title.toLowerCase()} - max ${nextClue.maxPoints} pts`}
               </button>
             ) : null}
           </div>
@@ -1038,9 +1096,7 @@ export function MapGame() {
             level={selectedLevel}
             mapLabels={mapLabels}
             mapStyle={mapStyle}
-            mapAnchors={(selectedLevel.mapAnchors ?? []).filter(
-              (anchor) => anchor.minHintCount <= currentRevealedHintCount,
-            )}
+            mapAnchors={selectedLevel.mapAnchors ?? []}
             acceptedSelection={pendingSelection}
             draftSelection={draftSelection}
             selectionNotice={selectionNotice}
@@ -1077,10 +1133,10 @@ export function MapGame() {
                 ref={lockButtonRef}
                 type="button"
                 onClick={() => void submitGuess()}
-                disabled={pendingPoint === undefined || draftSelection !== null || snapLoading || submitting}
+                disabled={pendingPoint === undefined || draftSelection !== null || snapLoading || submitting || revealing}
                 className={[
                   "inline-flex min-h-12 min-w-[8.5rem] items-center justify-center gap-2 rounded-lg px-4 text-sm font-black transition saints-focus",
-                  pendingPoint === undefined || draftSelection !== null || snapLoading || submitting
+                  pendingPoint === undefined || draftSelection !== null || snapLoading || submitting || revealing
                     ? "bg-slate-200 text-slate-400"
                     : "bg-saints-red text-white shadow-sm hover:bg-saints-redDark",
                 ].join(" ")}

@@ -15,15 +15,14 @@ FROM python:3.12-alpine
 WORKDIR /app
 
 ARG FULTONS_BUILD_COMMIT=unknown
-ARG FULTONS_BUILD_SOURCE=unknown
 
 RUN apk add --no-cache tzdata \
   && adduser -D -u 1000 appuser
 
 LABEL org.opencontainers.image.revision="${FULTONS_BUILD_COMMIT}" \
-      org.opencontainers.image.source="${FULTONS_BUILD_SOURCE}"
+      org.opencontainers.image.source="https://github.com/Steveystyles/Fulton-Web-App.git"
 
-COPY --chown=appuser:appuser server.py production_server.py daily_quiz.py quiz_evidence.py daily_map_game.py local_ops_settings.py ops_monitor.py wordle_game.py ./
+COPY --chown=appuser:appuser server.py daily_quiz.py quiz_evidence.py daily_map_game.py env_config.py safe_http.py wordle_game.py ./
 COPY --chown=appuser:appuser games ./games
 COPY --chown=appuser:appuser tools/__init__.py tools/build_map_learning_profile.py tools/build_map_selector_profile.py tools/build_quiz_learning_profile.py tools/evaluate_quiz_candidate_pipeline.py tools/export_map_place_review_batch.py tools/generate_ai_daily_map_round.py tools/generate_map_place_candidates_with_ai.py tools/install_map_training_seed.py tools/map_clue_failure_log.py tools/map_clue_quality_model.py tools/map_selector_model.py tools/refresh_map_learning_profile.py tools/refresh_quiz_learning_profile.py tools/rewrite_map_clues_with_ai.py tools/training_data_store.py ./tools/
 COPY --chown=appuser:appuser tools/map_launch_round.py ./tools/
@@ -46,4 +45,4 @@ VOLUME ["/app/data"]
 
 USER appuser
 
-CMD ["python", "-u", "production_server.py"]
+CMD ["python", "-u", "server.py"]

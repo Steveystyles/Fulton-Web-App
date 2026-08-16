@@ -1,19 +1,28 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { useEffect, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, type ReactNode } from "react";
 import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
-import { Account } from "../pages/Account";
-import { Admin } from "../pages/Admin";
-import { Leaderboard } from "../pages/Leaderboard";
-import { Login } from "../pages/Login";
-import { LocalOps } from "../pages/LocalOps";
-import { MapGame } from "../pages/MapGame";
-import { MapGamePromo } from "../pages/MapGamePromo";
-import { News } from "../pages/News";
-import { Quiz } from "../pages/Quiz";
-import { Wordle } from "../pages/Wordle";
+
+const Account = lazy(() => import("../pages/Account").then((module) => ({ default: module.Account })));
+const Admin = lazy(() => import("../pages/Admin").then((module) => ({ default: module.Admin })));
+const Leaderboard = lazy(() =>
+  import("../pages/Leaderboard").then((module) => ({ default: module.Leaderboard })),
+);
+const Login = lazy(() => import("../pages/Login").then((module) => ({ default: module.Login })));
+const LocalOps = lazy(() =>
+  import("../pages/LocalOps").then((module) => ({ default: module.LocalOps })),
+);
+const MapGame = lazy(() =>
+  import("../pages/MapGame").then((module) => ({ default: module.MapGame })),
+);
+const MapGamePromo = lazy(() =>
+  import("../pages/MapGamePromo").then((module) => ({ default: module.MapGamePromo })),
+);
+const News = lazy(() => import("../pages/News").then((module) => ({ default: module.News })));
+const Quiz = lazy(() => import("../pages/Quiz").then((module) => ({ default: module.Quiz })));
+const Wordle = lazy(() => import("../pages/Wordle").then((module) => ({ default: module.Wordle })));
 
 const mapTestHostnames = new Set([
   "test.fultons-quiz.com",
@@ -57,6 +66,14 @@ function AppFrame({
   );
 }
 
+function PageLoading() {
+  return (
+    <div className="saints-shell-bg flex min-h-dvh items-center justify-center px-4 text-white">
+      <p className="text-sm font-black uppercase tracking-wider">Loading</p>
+    </div>
+  );
+}
+
 export function AppRouter() {
   const { acknowledgeAnnouncement, loading, pendingAnnouncements, user } = useAuth();
   const pathname =
@@ -77,20 +94,27 @@ export function AppRouter() {
   }, [user]);
 
   if (localOpsMode) {
-    return <LocalOps />;
+    return (
+      <Suspense fallback={<PageLoading />}>
+        <LocalOps />
+      </Suspense>
+    );
   }
 
   if (promoReviewMode) {
     return (
+      <Suspense fallback={<PageLoading />}>
       <MapGamePromo
         reviewMode
         playHref={mapTestMode ? "/map" : "https://fultons-quiz.co.uk/map"}
       />
+      </Suspense>
     );
   }
 
   if (mapTestMode) {
     return (
+      <Suspense fallback={<PageLoading />}>
       <BrowserRouter>
         <div className="saints-shell-bg min-h-dvh overflow-x-hidden text-slate-950">
           <Routes>
@@ -106,6 +130,7 @@ export function AppRouter() {
           </Routes>
         </div>
       </BrowserRouter>
+      </Suspense>
     );
   }
 
@@ -123,11 +148,16 @@ export function AppRouter() {
   }
 
   if (user === null) {
-    return <Login />;
+    return (
+      <Suspense fallback={<PageLoading />}>
+        <Login />
+      </Suspense>
+    );
   }
 
   if (mapPromo) {
     return (
+      <Suspense fallback={<PageLoading />}>
       <MapGamePromo
         onDismiss={() => acknowledgeAnnouncement(mapPromo.id, "dismissed")}
         onPlay={async () => {
@@ -135,10 +165,12 @@ export function AppRouter() {
           window.location.assign("/map");
         }}
       />
+      </Suspense>
     );
   }
 
   return (
+    <Suspense fallback={<PageLoading />}>
     <BrowserRouter>
       <div className="saints-shell-bg min-h-dvh overflow-x-hidden text-slate-950">
         <Routes>
@@ -217,5 +249,6 @@ export function AppRouter() {
         </Routes>
       </div>
     </BrowserRouter>
+    </Suspense>
   );
 }

@@ -4,8 +4,10 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -391,6 +393,91 @@ class VerifierUnavailableCandidateProvider(CandidateProvider):
 
 
 class DailyQuizTests(unittest.TestCase):
+    def test_quiz_diagnostic_retention_prunes_age_and_row_overflow_only(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        daily_quiz.initialize_database(conn)
+        conn.execute(
+            "INSERT INTO daily_quiz_sets (quiz_date, status) VALUES (?, 'published')",
+            ("2026-08-15",),
+        )
+        quiz_set_id = int(
+            conn.execute(
+                "SELECT id FROM daily_quiz_sets WHERE quiz_date = ?",
+                ("2026-08-15",),
+            ).fetchone()[0]
+        )
+        now = datetime(2026, 8, 15, 12, tzinfo=timezone.utc)
+        created_values = [
+            now - timedelta(days=60),
+            now - timedelta(days=3),
+            now - timedelta(days=2),
+            now - timedelta(days=1),
+        ]
+        for index, created_at in enumerate(created_values, start=1):
+            created = created_at.isoformat()
+            conn.execute(
+                """
+                INSERT INTO daily_quiz_attempts (
+                    quiz_date, subject, difficulty, attempt_number, provider,
+                    generated_json, passed, created_at
+                ) VALUES (?, 'football', 'easy', ?, 'test', '{}', 0, ?)
+                """,
+                ("2026-08-15", index, created),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_quiz_candidates (
+                    quiz_set_id, quiz_date, subject, difficulty, batch_number,
+                    candidate_index, provider, answer, normalized_answer, hook,
+                    normalized_hook, topic_lane, status, created_at, updated_at
+                ) VALUES (
+                    ?, ?, 'football', 'easy', ?, 1, 'test', ?, ?, ?, ?,
+                    'history', 'rejected', ?, ?
+                )
+                """,
+                (
+                    quiz_set_id,
+                    "2026-08-15",
+                    index,
+                    f"Answer {index}",
+                    f"answer {index}",
+                    f"Hook {index}",
+                    f"hook {index}",
+                    created,
+                    created,
+                ),
+            )
+
+        daily_quiz.prune_quiz_diagnostics(
+            conn,
+            now=now,
+            retention_days=30,
+            max_rows=2,
+        )
+
+        attempt_numbers = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT attempt_number FROM daily_quiz_attempts ORDER BY attempt_number"
+            )
+        ]
+        candidate_batches = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT batch_number FROM daily_quiz_candidates ORDER BY batch_number"
+            )
+        ]
+        self.assertEqual(attempt_numbers, [3, 4])
+        self.assertEqual(candidate_batches, [3, 4])
+        self.assertEqual(
+            conn.execute(
+                "SELECT status FROM daily_quiz_sets WHERE id = ?", (quiz_set_id,)
+            ).fetchone()[0],
+            "published",
+        )
+        conn.close()
+
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
@@ -1061,6 +1148,16 @@ class DailyQuizTests(unittest.TestCase):
         self.assertNotIn("interesting_reason", public_question)
         self.assertNotIn("tags", public_question)
         self.assertNotIn("critic", public_question)
+        self.assertNotIn("correct_answer", public_question)
+        self.assertNotIn("explanation", public_question)
+        self.assertIsInstance(public_question["id"], str)
+        self.assertEqual(
+            set(public_question["choices"][0]),
+            {"id", "text"},
+        )
+        serialized_payload = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('"correct_answer"', serialized_payload)
+        self.assertNotIn('"explanation"', serialized_payload)
         stored = self.conn.execute(
             "SELECT evidence_json, verification_json FROM daily_quiz_questions LIMIT 1"
         ).fetchone()
@@ -1081,6 +1178,329 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(result["failed_attempts"], 2)
         with self.assertRaises(LookupError):
             daily_quiz.quiz_payload(self.conn, "2026-06-03")
+
+    def test_force_regeneration_failure_preserves_published_quiz(self) -> None:
+        quiz_date = "2026-06-13"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        before = self.conn.execute(
+            """
+            SELECT id, subject, difficulty, question, correct_answer
+            FROM daily_quiz_questions WHERE quiz_set_id = ? ORDER BY id
+            """,
+            (quiz_set["id"],),
+        ).fetchall()
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=config(max_attempts=1),
+            force=True,
+            provider=AlwaysInvalidProvider(),
+            log=lambda _: None,
+        )
+        after = self.conn.execute(
+            """
+            SELECT id, subject, difficulty, question, correct_answer
+            FROM daily_quiz_questions WHERE quiz_set_id = ? ORDER BY id
+            """,
+            (quiz_set["id"],),
+        ).fetchall()
+
+        self.assertEqual(result["status"], "published")
+        self.assertTrue(result["regeneration_failed"])
+        self.assertEqual([tuple(row) for row in after], [tuple(row) for row in before])
+
+    def test_force_regeneration_atomically_swaps_complete_quiz(self) -> None:
+        quiz_date = "2026-06-14"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            question = valid_question(subject, difficulty)
+            question["question"] = f"Old published prompt for {subject} {difficulty}?"
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=question,
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        before_ids = {
+            int(row[0])
+            for row in self.conn.execute(
+                "SELECT id FROM daily_quiz_questions WHERE quiz_set_id = ?",
+                (quiz_set["id"],),
+            )
+        }
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=config(),
+            force=True,
+            provider=PassingProvider("replacement"),
+            log=lambda _: None,
+        )
+        after_rows = self.conn.execute(
+            "SELECT id, question FROM daily_quiz_questions WHERE quiz_set_id = ?",
+            (quiz_set["id"],),
+        ).fetchall()
+
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(len(after_rows), 6)
+        self.assertTrue(before_ids.isdisjoint({int(row["id"]) for row in after_rows}))
+        self.assertFalse(any(str(row["question"]).startswith("Old published") for row in after_rows))
+
+    def test_served_quiz_blocks_force_regeneration_and_loaded_answers_stay_valid(self) -> None:
+        import server
+
+        quiz_date = "2026-08-15"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        daily_quiz.lock_published_quiz_for_play(self.conn, quiz_date)
+        loaded = daily_quiz.quiz_payload(self.conn, quiz_date)
+        loaded_general = [
+            question
+            for question in loaded["questions"]
+            if question["subject"] == "general_knowledge"
+        ]
+        submitted = [
+            {
+                "questionId": question["id"],
+                "choiceId": question["choices"][0]["id"],
+            }
+            for question in loaded_general
+        ]
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=config(),
+            force=True,
+            provider=PassingProvider("replacement"),
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result["regeneration_failed"])
+        self.assertTrue(result["regeneration_blocked"])
+        self.assertEqual(daily_quiz.quiz_payload(self.conn, quiz_date), loaded)
+        normalized, adjudications, _ = server.adjudicate_quiz_answers(
+            server.quiz_category_questions(self.conn, quiz_date, "general"),
+            submitted,
+        )
+        self.assertEqual(normalized, submitted)
+        self.assertTrue(all(item["correct"] for item in adjudications))
+
+    def test_play_lock_committed_during_staging_blocks_final_atomic_swap(self) -> None:
+        generation_started = threading.Event()
+        continue_generation = threading.Event()
+
+        class BlockingProvider(PassingProvider):
+            def generate_question(self, **kwargs: object) -> dict[str, object]:
+                if not generation_started.is_set():
+                    generation_started.set()
+                    if not continue_generation.wait(timeout=10):
+                        raise TimeoutError("test did not release staged generation")
+                return super().generate_question(**kwargs)  # type: ignore[arg-type]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "quiz-race.db"
+            writer = sqlite3.connect(db_path, timeout=5, check_same_thread=False)
+            writer.row_factory = sqlite3.Row
+            writer.execute("PRAGMA foreign_keys = ON")
+            player = sqlite3.connect(db_path, timeout=5)
+            player.row_factory = sqlite3.Row
+            daily_quiz.initialize_database(writer)
+            quiz_date = "2026-08-15"
+            quiz_set = daily_quiz.get_or_create_quiz_set(writer, quiz_date)
+            for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+                daily_quiz.save_question(
+                    writer,
+                    quiz_set_id=int(quiz_set["id"]),
+                    question=valid_question(subject, difficulty),
+                )
+            daily_quiz.set_quiz_status(writer, quiz_date, "published")
+            before_ids = [
+                int(row[0])
+                for row in writer.execute(
+                    "SELECT id FROM daily_quiz_questions ORDER BY id"
+                )
+            ]
+            outcome: dict[str, object] = {}
+
+            def regenerate() -> None:
+                outcome.update(
+                    daily_quiz.generate_daily_quiz(
+                        writer,
+                        quiz_date=quiz_date,
+                        config=config(),
+                        force=True,
+                        provider=BlockingProvider("replacement"),
+                        log=lambda _: None,
+                    )
+                )
+
+            worker = threading.Thread(target=regenerate)
+            worker.start()
+            self.assertTrue(generation_started.wait(timeout=10))
+            with player:
+                daily_quiz.lock_published_quiz_for_play(player, quiz_date)
+            continue_generation.set()
+            worker.join(timeout=20)
+            self.assertFalse(worker.is_alive())
+
+            after_ids = [
+                int(row[0])
+                for row in writer.execute(
+                    "SELECT id FROM daily_quiz_questions ORDER BY id"
+                )
+            ]
+            self.assertTrue(outcome["regeneration_blocked"])
+            self.assertEqual(after_ids, before_ids)
+            self.assertIsNotNone(
+                writer.execute(
+                    "SELECT locked_at FROM daily_quiz_sets WHERE quiz_date = ?",
+                    (quiz_date,),
+                ).fetchone()[0]
+            )
+            writer.close()
+            player.close()
+
+    def test_locked_swap_rolls_back_original_content_when_commit_fails(self) -> None:
+        class CommitFailingConnection:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+                self.rollback_called = False
+
+            @property
+            def in_transaction(self) -> bool:
+                return self.connection.in_transaction
+
+            def execute(self, *args: object, **kwargs: object):
+                return self.connection.execute(*args, **kwargs)
+
+            def commit(self) -> None:
+                raise sqlite3.OperationalError("commit failed")
+
+            def rollback(self) -> None:
+                self.rollback_called = True
+                self.connection.rollback()
+
+        quiz_date = "2026-08-15"
+        self.conn.execute(
+            "INSERT INTO daily_quiz_sets (quiz_date, status) VALUES (?, 'published')",
+            (quiz_date,),
+        )
+        self.conn.commit()
+        wrapped = CommitFailingConnection(self.conn)
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "commit failed"):
+            with daily_quiz.locked_quiz_swap(  # type: ignore[arg-type]
+                wrapped,
+                quiz_date,
+                savepoint_name="test_commit_failure",
+            ):
+                wrapped.execute(
+                    "UPDATE daily_quiz_sets SET status = 'failed' WHERE quiz_date = ?",
+                    (quiz_date,),
+                )
+
+        self.assertTrue(wrapped.rollback_called)
+        self.assertFalse(self.conn.in_transaction)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM daily_quiz_sets WHERE quiz_date = ?",
+                (quiz_date,),
+            ).fetchone()[0],
+            "published",
+        )
+
+    def test_recorded_result_blocks_single_question_regeneration(self) -> None:
+        quiz_date = "2026-08-16"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        self.conn.execute(
+            """
+            CREATE TABLE daily_quiz_results (
+                id INTEGER PRIMARY KEY,
+                game_date TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            "INSERT INTO daily_quiz_results (game_date) VALUES (?)",
+            (quiz_date,),
+        )
+        before = daily_quiz.quiz_payload(self.conn, quiz_date)
+
+        result = daily_quiz.regenerate_question(
+            self.conn,
+            quiz_date=quiz_date,
+            subject="football",
+            difficulty="easy",
+            config=config(),
+            provider=PassingProvider("replacement"),
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result["regeneration_failed"])
+        self.assertTrue(result["regeneration_blocked"])
+        self.assertEqual(daily_quiz.quiz_payload(self.conn, quiz_date), before)
+
+    def test_question_regeneration_failure_preserves_published_slot(self) -> None:
+        quiz_date = "2026-06-15"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        before = self.conn.execute(
+            """
+            SELECT id, question, correct_answer FROM daily_quiz_questions
+            WHERE quiz_set_id = ? AND subject = 'football' AND difficulty = 'easy'
+            """,
+            (quiz_set["id"],),
+        ).fetchone()
+
+        result = daily_quiz.regenerate_question(
+            self.conn,
+            quiz_date=quiz_date,
+            subject="football",
+            difficulty="easy",
+            config=config(max_attempts=1),
+            provider=AlwaysInvalidProvider(),
+            log=lambda _: None,
+        )
+        after = self.conn.execute(
+            """
+            SELECT id, question, correct_answer FROM daily_quiz_questions
+            WHERE quiz_set_id = ? AND subject = 'football' AND difficulty = 'easy'
+            """,
+            (quiz_set["id"],),
+        ).fetchone()
+
+        self.assertEqual(result["status"], "published")
+        self.assertTrue(result["regeneration_failed"])
+        self.assertEqual(tuple(after), tuple(before))
 
     def test_generation_reuses_prior_feedback_on_later_retry_cycles(self) -> None:
         provider = FeedbackReuseProvider()
@@ -1817,7 +2237,7 @@ class DailyQuizTests(unittest.TestCase):
             def __exit__(self, *args: object) -> None:
                 return None
 
-            def read(self) -> bytes:
+            def read(self, _limit: int) -> bytes:
                 return json.dumps(
                     {"choices": [{"message": {"content": self.content}}]}
                 ).encode("utf-8")
@@ -1885,7 +2305,7 @@ class DailyQuizTests(unittest.TestCase):
             def __exit__(self, *args: object) -> None:
                 return None
 
-            def read(self) -> bytes:
+            def read(self, _limit: int) -> bytes:
                 return json.dumps(
                     {
                         "candidates": [
@@ -1965,7 +2385,7 @@ class DailyQuizTests(unittest.TestCase):
         class RateLimitError:
             headers: dict[str, str] = {}
 
-            def read(self) -> bytes:
+            def read(self, _limit: int) -> bytes:
                 return json.dumps(
                     {
                         "error": {

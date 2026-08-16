@@ -455,16 +455,16 @@
     }
   ],
   "source_negative_files": [
-    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_negative_map_clue_review_20260727_152734.jsonl"
+    "data/training/map_clue_negative_map_clue_review_20260727_152734.jsonl"
   ],
   "source_failure_log_files": [
-    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_failure_log.jsonl"
+    "data/training/map_clue_failure_log.jsonl"
   ],
   "source_review_rows_files": [
-    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_review_rows_20260727_152734.jsonl"
+    "data/training/map_clue_review_rows_20260727_152734.jsonl"
   ],
   "source_place_review_feedback_files": [
-    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_all.jsonl"
+    "data/training/map_place_review_feedback_all.jsonl"
   ],
   "negative_record_count": 152,
   "failure_log_record_count": 73,
@@ -697,7 +697,7 @@
     {
       "example_id": "human-approved-4401",
       "status": "human_approved",
-      "source": "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_20260727T231959Z.json",
+      "source": "data/training/map_place_review_feedback_20260727T231959Z.json",
       "audience": "adult player; the owner's father",
       "place": "Estadio Monumental",
       "place_type": "stadium",
@@ -715,7 +715,7 @@
     {
       "example_id": "human-approved-4511",
       "status": "human_approved",
-      "source": "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_20260728T131443Z.json",
+      "source": "data/training/map_place_review_feedback_20260728T131443Z.json",
       "audience": "adult player; the owner's father",
       "place": "Canterbury Cathedral",
       "place_type": "cathedral",
@@ -732,7 +732,7 @@
     }
   ],
   "human_approved_ladder_count": 2,
-  "source_gold_examples_file": "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_gold_examples.json",
+  "source_gold_examples_file": "data/training/map_clue_gold_examples.json",
   "generator_env_var": "MAP_LEARNING_PROFILE_PATH",
   "generator_consumers": [
     "daily_map_game.generate_reviewed_clue_ladder"

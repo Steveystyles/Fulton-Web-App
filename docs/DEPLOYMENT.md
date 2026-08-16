@@ -1,362 +1,395 @@
 # Production Deployment
 
-This app is designed to run as a Docker container behind Traefik on an Ubuntu server. The home-server deploy script is `deploy/homeserver-update.sh`; it backs up app data, rebuilds the container, starts it, and checks `/api/health`.
+This application is designed to run as a Docker container behind an
+operator-controlled Traefik proxy. Production uses the image built, scanned,
+signed, and published by CI. Deployments select that image by full registry
+digest and are performed by `deploy/homeserver-update.sh`.
 
-## 1. Clone The Repository
+> This is an operator runbook, not a deployment record. The QA remediation in
+> the current working tree has not been deployed to production.
+
+## Release invariants
+
+A production rollout is allowed only when all of these conditions are true:
+
+- The reviewed commit is merged to `main`, is identified by its full
+  40-character SHA, and its required CI jobs pass.
+- CI publishes `ghcr.io/steveystyles/fulton-web-app@sha256:<digest>` and the
+  digest is copied from the CI release evidence. A tag alone is not a release
+  identifier.
+- The deployment host can read the GHCR package. The package must either be
+  public or the host must be authenticated with a dedicated account/token that
+  has only the required `read:packages` access.
+- Cosign is installed through a managed, verified installation method.
+- The exact digest verifies against the repository's `build.yml` workflow on
+  `main` and GitHub's OIDC issuer.
+- The source checkout is clean, has the canonical Git origin, and its `HEAD`
+  equals the selected image's OCI revision label.
+- The application environment and SQLite data are private, writable by the
+  service operator, and backed up before the container changes.
+
+These invariants also apply to the first production deployment. There is no
+unsigned image, mutable-tag, or local-build exception for initial rollout.
+
+## 1. Host prerequisites and layout
+
+Install Docker Engine with the Compose plugin, Git, Python 3, `flock`, and
+[Cosign](https://docs.sigstore.dev/cosign/system_config/installation/). Keep
+them current through the host's normal package/update process.
+
+The following paths are neutral examples, not a description of any live host.
+Choose private paths appropriate to the target system and use them consistently:
 
 ```bash
-sudo mkdir -p /opt/src
-sudo chown -R "$USER:$USER" /opt/src
-git clone https://github.com/Steveystyles/Fulton-Web-App.git /opt/src/fulton-web-app
-cd /opt/src/fulton-web-app
+FULTONS_DEPLOY_ROOT=/srv/fultons
+
+sudo install -d -m 0750 -o "$USER" -g "$USER" \
+  "$FULTONS_DEPLOY_ROOT/source" \
+  "$FULTONS_DEPLOY_ROOT/state" \
+  "$FULTONS_DEPLOY_ROOT/deploy" \
+  "$FULTONS_DEPLOY_ROOT/backups"
+
+git clone https://github.com/Steveystyles/Fulton-Web-App.git \
+  "$FULTONS_DEPLOY_ROOT/source"
 ```
 
-## 2. Create Runtime Storage
+The updater deliberately refuses to clone a repository during deployment.
+Provision the canonical checkout first, and never store secrets in it.
+
+The current image runs `appuser` as numeric UID `1000`. Before startup, make
+the selected data directory writable by that identity and readable by the
+operator's backup process, using a dedicated group or ACL when host UIDs differ.
+Do not make application state world-writable.
+
+## 2. Private application environment
+
+Copy `.env.example` to a private file outside the checkout, edit it without
+printing secrets, and restrict its mode:
 
 ```bash
-sudo mkdir -p /srv/storage/appdata/fultons-quiz
-sudo chown -R "$USER:$USER" /srv/storage/appdata/fultons-quiz
-cp .env.example /srv/storage/appdata/fultons-quiz/app.env
-chmod 600 /srv/storage/appdata/fultons-quiz/app.env
-nano /srv/storage/appdata/fultons-quiz/app.env
+FULTONS_DEPLOY_ROOT=/srv/fultons
+cp "$FULTONS_DEPLOY_ROOT/source/.env.example" \
+  "$FULTONS_DEPLOY_ROOT/state/app.env"
+chmod 600 "$FULTONS_DEPLOY_ROOT/state/app.env"
 ```
 
-Create the compose-side path overrides once so restarts and helper scripts always target the intended host paths:
+The application reads the process environment directly; it does not load
+`.env` or `.env.local` itself. The container receives this file through
+Compose's `env_file` setting.
 
-```bash
-mkdir -p ~/fulton-web-app-deploy
-cat > ~/fulton-web-app-deploy/.env <<'EOF'
-FULTONS_SRC_DIR=/opt/src/fulton-web-app
-FULTONS_ENV_FILE=/srv/storage/appdata/fultons-quiz/app.env
-FULTONS_HOST_DATA_DIR=/srv/storage/appdata/fultons-quiz
-EOF
-chmod 600 ~/fulton-web-app-deploy/.env
-```
-
-If your private env file and SQLite data live on different mounts, set `FULTONS_ENV_FILE` and `FULTONS_HOST_DATA_DIR` to those exact host paths instead of keeping both under `/srv/storage`.
-
-Recommended production settings:
+For an established production database, keep at least these fail-closed
+settings:
 
 ```env
 FULTONS_COOKIE_SECURE=1
 FULTONS_SEED_DEMO_USERS=0
 FULTONS_ALLOWED_ORIGINS=https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk
-FULTONS_MIN_PASSWORD_LENGTH=12
-FULTONS_LOGIN_MAX_ATTEMPTS=5
-FULTONS_LOGIN_WINDOW_SECONDS=300
-FULTONS_LOGIN_BACKOFF_SECONDS=60
-FULTONS_NEWS_MONITOR_KEY=<generate-a-long-random-value>
-FULTONS_NEWS_MONITOR_INTERVAL_SEC=600
-FULTONS_WORD_DEFINITION_TIMEOUT_SEC=5
+FULTONS_ALLOWED_HOSTS=fultons-quiz.co.uk,www.fultons-quiz.co.uk
 FULTONS_EXPECT_DATA_DIR=/app/data
 FULTONS_REQUIRE_EXISTING_DB=1
 FULTONS_MIN_DB_USERS=1
-FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED=1
-FULTONS_DAILY_MAP_GAME_RETRY_INTERVAL_SEC=300
-FULTONS_DAILY_MAP_TRANSIENT_RETRY_INTERVAL_SEC=3600
-FULTONS_DAILY_MAP_AI_GENERATION_ENABLED=1
-FULTONS_DAILY_MAP_AI_SHORTLIST_LIMIT=24
-FULTONS_DAILY_MAP_AI_MAX_CLUE_ATTEMPTS=7
-FULTONS_DAILY_MAP_AI_DISCOVER_COUNT=4
-FULTONS_DAILY_MAP_AI_DISCOVERY_ATTEMPTS=2
-AI_PROVIDER=gemini
-AI_GENERATOR_MODEL=gemini-3.5-flash
-AI_CRITIC_MODEL=gemini-3.1-flash-lite
-GEMINI_API_KEY=<private-gemini-api-key>
-MAP_CLUE_GEMINI_API_KEY=<private-map-gemini-api-key>
-MAP_CLUE_GENERATOR_MODEL=gemini-3.1-flash-lite
-MAP_CLUE_CRITIC_MODEL=gemini-3.1-flash-lite
-MAP_CLUE_MAX_ATTEMPTS=6
-MAP_CLUE_REQUIRE_AI_CRITIC=1
-AI_FALLBACK_PROVIDER=gemini
-AI_FALLBACK_GENERATOR_MODEL=gemini-3.1-flash-lite
-AI_FALLBACK_CRITIC_MODEL=gemini-3.1-flash-lite
-AI_FALLBACK_GEMINI_API_KEY=
-AI_FALLBACK_BASE_URL=
-AI_FALLBACK2_PROVIDER=openrouter
-AI_FALLBACK2_GENERATOR_MODEL=openrouter/free
-AI_FALLBACK2_CRITIC_MODEL=openrouter/free
-AI_FALLBACK2_API_KEY=<private-openrouter-api-key>
-AI_FALLBACK2_BASE_URL=https://openrouter.ai/api/v1
-AI_TIMEOUT_SEC=90
-AI_REQUEST_DELAY_SEC=12
-AI_TRANSIENT_RETRIES=3
-MAX_ATTEMPTS_PER_SLOT=15
-QUESTION_HISTORY_DAYS=90
-QUIZ_CANDIDATE_PIPELINE_ENABLED=0
-QUIZ_ANSWER_EMBARGO_DAYS=45
-QUIZ_RECOVERY_ANSWER_EMBARGO_DAYS=30
-QUIZ_QUESTION_SIMILARITY_DAYS=180
-QUIZ_CANDIDATE_BATCH_SIZE=8
-QUIZ_CANDIDATE_BATCHES_PER_SLOT=3
 QUIZ_EVIDENCE_REQUIRED=1
-QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC=90
-QUIZ_EVIDENCE_MAX_RESULTS=8
-QUIZ_EVIDENCE_OPENROUTER_MODEL=openrouter/free
-QUIZ_LEARNING_PROFILE_PATH=/app/data/training/quiz_learning_profile_20260714T170201Z.json
-INTERNAL_QUIZ_TOKEN=<generate-a-long-random-value>
-FULTONS_FACT_ROTATION_TTL_SEC=86400
-FULTONS_FACTS_GEMINI_API_KEY=<optional-separate-key-or-leave-blank-to-reuse-GEMINI_API_KEY>
-FULTONS_FACTS_AI_GENERATOR_MODEL=gemini-3.5-flash
-FULTONS_FACTS_AI_CRITIC_MODEL=gemini-3.1-flash-lite
-FULTONS_FACTS_AI_TIMEOUT_SEC=8
-FULTONS_FACTS_AI_REQUEST_DELAY_SEC=0.5
-FULTONS_FACTS_AI_TRANSIENT_RETRIES=0
-FULTONS_FACTS_AI_GENERATOR_BUDGET_SEC=12
-FULTONS_FACTS_AI_CRITIC_BUDGET_SEC=6
-FULTONS_FACT_PREWARM_ENABLED=1
-FULTONS_FACT_PREWARM_LEAD_SEC=7200
-FULTONS_FACT_PREWARM_POLL_SEC=60
-FULTONS_FACT_PREWARM_MAX_ATTEMPTS=2
-FULTONS_FACT_PREWARM_TIMEOUT_SEC=12
-FULTONS_FACT_PREWARM_TRANSIENT_RETRIES=1
-FULTONS_FACT_PREWARM_GENERATOR_BUDGET_SEC=24
-FULTONS_FACT_PREWARM_CRITIC_BUDGET_SEC=12
-FULTONS_FACT_PREWARM_WEB_SEARCH_TIMEOUT_SEC=10
-FULTONS_FACTS_FALLBACK_PROVIDER=openrouter
-FULTONS_FACTS_FALLBACK_GENERATOR_MODEL=google/gemini-2.5-flash
-FULTONS_FACTS_FALLBACK_CRITIC_MODEL=google/gemini-2.5-flash
-FULTONS_FACTS_FALLBACK2_PROVIDER=openrouter
-FULTONS_FACTS_FALLBACK2_GENERATOR_MODEL=openrouter/free
-FULTONS_FACTS_FALLBACK2_CRITIC_MODEL=openrouter/free
 ```
 
-Generate the news monitor key with:
+Generate independent random values for `FULTONS_NEWS_MONITOR_KEY` and
+`INTERNAL_QUIZ_TOKEN`, for example with `openssl rand -base64 32`. Provider
+credentials, bootstrap credentials, and internal tokens must remain blank in
+Git and must never be exposed to browser code.
 
-```bash
-openssl rand -base64 32
-```
+Set both `FULTONS_BOOTSTRAP_ADMIN_*` variables only while initializing a new,
+empty database. Remove them immediately after the admin exists.
 
-## 3. First Admin Account
+## 3. Private Compose configuration
 
-Demo accounts are disabled by default. For an existing database, keep your existing admin user.
-
-For a brand-new empty database, bootstrap one admin by setting both variables below for the first start only:
+Create `/srv/fultons/deploy/.env` (or the equivalent chosen private path) with
+mode `0600`. Its content should use the operator's selected paths and the exact
+CI digest:
 
 ```env
-FULTONS_BOOTSTRAP_ADMIN_USERNAME=<admin-username>
-FULTONS_BOOTSTRAP_ADMIN_PASSWORD=<long-random-password>
+FULTONS_SRC_DIR=/srv/fultons/source
+FULTONS_ENV_FILE=/srv/fultons/state/app.env
+FULTONS_HOST_DATA_DIR=/srv/fultons/state
+FULTONS_IMAGE=ghcr.io/steveystyles/fulton-web-app@sha256:<64-hex-digest>
+
+# Uncomment both only after the executable performs encrypted upload and
+# independent remote verification as described in the backup section.
+# FULTONS_OFFHOST_BACKUP_REQUIRED=1
+# FULTONS_OFFHOST_BACKUP_COMMAND=/srv/fultons/bin/copy-backup-encrypted
 ```
 
-After the app starts and the admin account exists, remove those two bootstrap variables from `app.env` and restart. Do not expose the public site with bootstrap credentials left in the environment.
-
-For throwaway local development only, `FULTONS_SEED_DEMO_USERS=1` creates demo users with non-production sample passwords.
-
-## 4. Build And Start
+Do not commit this file. Keep the deployment directory private:
 
 ```bash
-cd ~/fulton-web-app-deploy
-docker compose -f compose.yaml build --pull
-docker compose -f compose.yaml up -d
-docker compose -f compose.yaml ps
+chmod 700 /srv/fultons/deploy
+chmod 600 /srv/fultons/deploy/.env
 ```
 
-## 5. Update Deployment
-
-Preferred home-server update:
+When using a different layout, pass the deployment and backup roots explicitly
+for every updater invocation:
 
 ```bash
-bash deploy/homeserver-update.sh <commit-sha>
+export COMPOSE_DIR=/srv/fultons/deploy
+export BACKUP_ROOT=/srv/fultons/backups
 ```
 
-The update script writes the resolved source, env-file, and data paths into `~/fulton-web-app-deploy/.env`, builds `local/fulton-web-app:latest` directly from that resolved source tree, and refuses the rollout if the running container revision label does not match the requested commit.
+## 4. GHCR access and signed-digest preflight
 
-Manual update:
+If the GHCR package is public, the host can pull without registry credentials.
+If it is private, authenticate before any deployment. Use a dedicated service
+account where possible and enter the token without placing it in shell history:
 
 ```bash
-cd /opt/src/fulton-web-app
-git pull --ff-only
-bash deploy/homeserver-update.sh "$(git rev-parse HEAD)"
+read -r -s -p 'GHCR read token: ' GHCR_READ_TOKEN
+printf '\n'
+printf '%s' "$GHCR_READ_TOKEN" | \
+  docker login ghcr.io --username '<service-account>' --password-stdin
+unset GHCR_READ_TOKEN
 ```
 
-## 6. Health And Logs
+Protect the Docker credential store according to the host's security policy.
+Package visibility or working `docker login` is a release prerequisite, not a
+step to discover during an outage.
+
+Resolve `APP_COMMIT` and `IMAGE_REF` from the reviewed `main` workflow output,
+then verify the exact digest before first use:
 
 ```bash
-cd ~/fulton-web-app-deploy
-docker compose -f compose.yaml logs --tail=100 quiz-app
-docker exec fultons-quiz python -c "import json,urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:3000/api/health')), indent=2))"
+APP_COMMIT=<full-40-character-main-commit-sha>
+IMAGE_REF='ghcr.io/steveystyles/fulton-web-app@sha256:<64-hex-digest>'
+
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/Steveystyles/Fulton-Web-App/\.github/workflows/build\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "$IMAGE_REF"
+
+docker pull "$IMAGE_REF"
+docker image inspect "$IMAGE_REF" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.source" }} {{ index .Config.Labels "org.opencontainers.image.revision" }}'
 ```
 
-The container healthcheck calls `/api/health` internally.
+The source label must be the canonical Git repository URL and the revision must
+equal `APP_COMMIT`. The updater repeats these checks and fails closed.
 
-The image contains a versioned baseline of the map selector and clue-quality
-training data. At startup it merges missing baseline feedback into
-`/app/data/training` and replaces a learned model only when the image contains
-a newer `created_at` value. Production reviews and newer production-trained
-models are preserved.
+## 5. Verify the reverse-proxy trust boundary
 
-The app also runs storage checks at startup. In production, keep these enabled after the first real database exists:
+`deploy/compose.yaml` enables forwarded-client-IP handling and pins a CIDR for
+the external `proxy` Docker network. That value is an environment-specific
+assumption and must be verified before release.
+
+The current request model assumes:
+
+- Traefik is the app container's only non-loopback HTTP peer.
+- The app port is exposed to Docker networks but is not published directly to
+  untrusted hosts.
+- Traefik owns and sanitizes `X-Forwarded-For`/`X-Real-IP`.
+- The trusted CIDR contains only direct proxy peers, not browser/client ranges.
+- There is a single trusted proxy hop. A multi-proxy chain requires a fresh
+  review of client-IP selection before deployment.
+
+Inspect the target network rather than copying a CIDR from another host:
+
+```bash
+docker network inspect proxy
+```
+
+If the reviewed Compose CIDR does not exactly match the target proxy network,
+correct `deploy/compose.yaml` in a reviewed commit and produce a new signed
+digest. Do not compensate with a broad trusted range. A range that is too
+narrow groups users under the proxy address for throttling/audit purposes; a
+range that is too broad trusts unapproved peers.
+
+## 6. Initial production rollout
+
+### Existing production data
+
+For an existing SQLite database, update the canonical checkout to the reviewed
+`main` commit without local changes, then use the updater. It verifies the
+signature/digest, checks the live database, creates a verified backup, applies
+the reviewed Compose file, and health-checks the result with rollback support:
+
+```bash
+FULTONS_DEPLOY_ROOT=/srv/fultons
+git -C "$FULTONS_DEPLOY_ROOT/source" switch main
+git -C "$FULTONS_DEPLOY_ROOT/source" pull --ff-only
+APP_COMMIT="$(git -C "$FULTONS_DEPLOY_ROOT/source" rev-parse HEAD)"
+IMAGE_REF='ghcr.io/steveystyles/fulton-web-app@sha256:<64-hex-digest>'
+
+COMPOSE_DIR="$FULTONS_DEPLOY_ROOT/deploy" \
+BACKUP_ROOT="$FULTONS_DEPLOY_ROOT/backups" \
+FULTONS_DEPLOY_IMAGE="$IMAGE_REF" \
+  bash "$FULTONS_DEPLOY_ROOT/source/deploy/homeserver-update.sh" "$APP_COMMIT"
+```
+
+The script requires the selected commit to be reachable from `origin/main`.
+The unreachable-commit and local-build switches exist for deliberately reviewed
+exceptions/development only; they are not normal production paths.
+
+### Brand-new empty data directory
+
+For a genuinely new instance, put these one-time values in the private app
+environment (mode `0600`) while the data directory is otherwise empty:
 
 ```env
-FULTONS_EXPECT_DATA_DIR=/app/data
-FULTONS_REQUIRE_EXISTING_DB=1
-FULTONS_MIN_DB_USERS=1
+FULTONS_REQUIRE_EXISTING_DB=0
+FULTONS_MIN_DB_USERS=0
+FULTONS_SEED_DEMO_USERS=0
+FULTONS_BOOTSTRAP_ADMIN_USERNAME=<initial-admin-name>
+FULTONS_BOOTSTRAP_ADMIN_PASSWORD=<strong-one-time-password>
 ```
 
-These checks catch the common failure modes: `/app/data` not mounted, SQLite not writable, corrupt DB, missing DB, and an accidentally empty user database. Set `FULTONS_MIN_DB_USERS=0` only for a brand-new first run before an admin exists.
-
-The home-server restart and update scripts also run a host-side SQLite `PRAGMA quick_check` before recreating containers. If this fails, preserve the bad DB file and restore a known-good backup rather than letting the app create a new empty database.
-
-If `/api/health` reports a storage error, do not delete the mounted data directory. Check the compose mount first:
+Then run the normal signed-digest updater with both explicit bootstrap guards.
+The reviewed commit must exactly equal the commit passed to the updater:
 
 ```bash
-docker inspect fultons-quiz --format '{{range .Mounts}}{{println .Source "->" .Destination .RW}}{{end}}'
-ls -la /srv/storage/appdata/fultons-quiz
-docker exec fultons-quiz python -c "import sqlite3; c=sqlite3.connect('/app/data/fultons.db'); print(c.execute('PRAGMA quick_check').fetchone()[0]); print(c.execute('SELECT COUNT(*) FROM users').fetchone()[0])"
+FULTONS_DEPLOY_ROOT=/srv/fultons
+APP_COMMIT="$(git -C "$FULTONS_DEPLOY_ROOT/source" rev-parse HEAD)"
+IMAGE_REF='ghcr.io/steveystyles/fulton-web-app@sha256:<64-hex-digest>'
+
+FULTONS_ALLOW_DATABASE_BOOTSTRAP=1 \
+FULTONS_REVIEWED_COMMIT="$APP_COMMIT" \
+FULTONS_DEPLOY_IMAGE="$IMAGE_REF" \
+COMPOSE_DIR="$FULTONS_DEPLOY_ROOT/deploy" \
+BACKUP_ROOT="$FULTONS_DEPLOY_ROOT/backups" \
+  bash "$FULTONS_DEPLOY_ROOT/source/deploy/homeserver-update.sh" "$APP_COMMIT"
 ```
 
-The interesting-facts cards now use Gemini selection plus critique on top of public web evidence. Do not let this path inherit the quiz generator's long retry settings. On the free Gemini tier, keep the fact-specific timeout and retry settings short and set explicit generator/critic budgets so the page can fall back cleanly instead of stalling. If `FULTONS_FACTS_FALLBACK_*` or `FULTONS_FACTS_FALLBACK2_*` is left blank, the facts path reuses the main `AI_FALLBACK_*` and `AI_FALLBACK2_*` provider and model selection, but its own timeout, retry, and budget values should still be set explicitly. Successful reviewed facts are reused for 24 hours per place, and failed review attempts are cached in SQLite so later selections can avoid the same generic or low-quality ideas.
+The updater verifies the signature, image labels, and reviewed commit; creates
+the database in a read-only, no-network container; requires at least one admin;
+atomically promotes the database; clears both bootstrap credentials; enables
+the normal database guards; creates and verifies the first backup; then starts
+and health-checks the service. The bootstrap flags are one-shot shell variables,
+not persistent Compose settings. Never bypass this path with a direct
+`docker run` or a mutable image tag.
 
-## 7. Daily Quiz Generation
+## 7. Updates, backup gate, and rollback
 
-The rebuilt quiz backend uses a cloud AI provider for offline daily generation. The live quiz navigation remains hidden until generated questions have been reviewed and the player-facing component is reintroduced.
+Every normal update takes a full commit SHA and a canonical digest:
 
-Configure Gemini in the private app env file:
+```bash
+COMPOSE_DIR=/srv/fultons/deploy \
+BACKUP_ROOT=/srv/fultons/backups \
+FULTONS_DEPLOY_IMAGE='ghcr.io/steveystyles/fulton-web-app@sha256:<64-hex-digest>' \
+  bash /srv/fultons/source/deploy/homeserver-update.sh \
+  <full-40-character-main-commit-sha>
+```
+
+Before rollout, the updater uses SQLite's online-backup API, runs
+`PRAGMA quick_check`, archives other durable files separately, and verifies a
+private manifest and checksums. Environment files, SQLite sidecars, logs,
+caches, QA output, and temporary churn are excluded from the archive.
+
+For a required encrypted off-host copy, configure:
 
 ```env
-AI_PROVIDER=gemini
-AI_GENERATOR_MODEL=gemini-3.5-flash
-AI_CRITIC_MODEL=gemini-3.1-flash-lite
-GEMINI_API_KEY=<private-gemini-api-key>
-AI_FALLBACK_PROVIDER=gemini
-AI_FALLBACK_GENERATOR_MODEL=gemini-3.1-flash-lite
-AI_FALLBACK_CRITIC_MODEL=gemini-3.1-flash-lite
-AI_FALLBACK_GEMINI_API_KEY=
-AI_FALLBACK_BASE_URL=
-AI_FALLBACK2_PROVIDER=openrouter
-AI_FALLBACK2_GENERATOR_MODEL=openrouter/free
-AI_FALLBACK2_CRITIC_MODEL=openrouter/free
-AI_FALLBACK2_API_KEY=<private-openrouter-api-key>
-AI_FALLBACK2_BASE_URL=https://openrouter.ai/api/v1
-AI_TIMEOUT_SEC=90
-AI_REQUEST_DELAY_SEC=12
-AI_TRANSIENT_RETRIES=3
-MAX_ATTEMPTS_PER_SLOT=15
-QUESTION_HISTORY_DAYS=90
-QUIZ_CANDIDATE_PIPELINE_ENABLED=0
-QUIZ_ANSWER_EMBARGO_DAYS=45
-QUIZ_RECOVERY_ANSWER_EMBARGO_DAYS=30
-QUIZ_QUESTION_SIMILARITY_DAYS=180
-QUIZ_CANDIDATE_BATCH_SIZE=8
-QUIZ_CANDIDATE_BATCHES_PER_SLOT=3
-QUIZ_EVIDENCE_REQUIRED=1
-QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC=90
-QUIZ_EVIDENCE_MAX_RESULTS=8
-QUIZ_EVIDENCE_OPENROUTER_MODEL=openrouter/free
-QUIZ_LEARNING_PROFILE_PATH=/app/data/training/quiz_learning_profile_20260714T170201Z.json
-INTERNAL_QUIZ_TOKEN=<generate-with-openssl-rand-base64-32>
+FULTONS_OFFHOST_BACKUP_REQUIRED=1
+FULTONS_OFFHOST_BACKUP_COMMAND=/srv/fultons/bin/copy-backup-encrypted
 ```
 
-From a Windows workstation, the setup helper prompts for the Gemini key securely and stores it in the private server env file without printing it:
+The command is invoked directly with the verified backup directory as its only
+argument. After encrypted upload and independent remote verification, it must
+write `offhost-copy.verified` containing exactly the lowercase SHA-256 digest
+of `manifest.json`. Missing or mismatched proof stops the deployment before
+Compose changes anything.
 
-```powershell
-.\deploy\set-gemini-key.ps1
-```
-
-The system generates one question at a time for six slots: easy, medium, and hard general knowledge plus easy, medium, and hard football. Each candidate passes local validation, recent-question repetition checks, and a separate AI critic before it is stored. A quiz is published only after all six slots are approved. Failed attempts and critic feedback are retained in SQLite for review.
-
-Generation and critique use separate primary Gemini models. When Gemini reaches its free-tier quota or times out, the fallback chain uses the separately configured OpenRouter key: a structured-output Gemma generator first, then OpenRouter's free router. Free models can be upstream rate-limited, so failed requests remain unpublished and are retried later. A candidate is never published without a valid critic payload and passing critic scores.
-
-Map generation can use a separate Gemini project and quota. Set
-`MAP_CLUE_GEMINI_API_KEY` to the map-specific key; when it is blank, the map
-generator falls back to `GEMINI_API_KEY`. Quota and other transient map failures
-use `FULTONS_DAILY_MAP_TRANSIENT_RETRY_INTERVAL_SEC` so the scheduler does not
-retry every few minutes while waiting for the provider to recover.
-
-Generate a quiz through the protected internal endpoint:
+Review retention in dry-run mode before applying it:
 
 ```bash
-curl -X POST http://127.0.0.1:3000/internal/generate-daily-quiz \
+python3 deploy/backup-retention.py --backup-root /srv/fultons/backups
+python3 deploy/backup-retention.py --backup-root /srv/fultons/backups --apply
+```
+
+Retention defaults to daily, monthly, and annual restore points. Malformed or
+unverifiable backup directories are protected rather than deleted. Schedule a
+real restore drill; a copied file is not a proven backup until it can be
+restored.
+
+The updater records the prior healthy image and Compose definition. A rollout,
+image/revision, or health failure triggers rollback and verifies the restored
+revision and health. If rollback verification fails, stop and perform the
+documented manual recovery; do not delete the database or data directory.
+
+## 8. Health and diagnostics
+
+```bash
+docker compose --env-file /srv/fultons/deploy/.env \
+  -f /srv/fultons/deploy/compose.yaml ps
+docker compose --env-file /srv/fultons/deploy/.env \
+  -f /srv/fultons/deploy/compose.yaml logs --tail=100 quiz-app
+docker exec fultons-quiz python -c \
+  "import json,urllib.request; print(json.dumps(json.load(urllib.request.urlopen('http://127.0.0.1:3000/api/health', timeout=3)), indent=2))"
+```
+
+The public health response is intentionally minimal by default and deep storage
+checks are cached. Enable `FULTONS_HEALTH_DETAIL=1` only when operationally
+appropriate; detailed health output can disclose internal state.
+
+The container healthcheck calls `/api/health` internally. Startup also verifies
+the mounted data path, SQLite writability/integrity, database presence, and the
+minimum user count when the corresponding guards are enabled.
+
+If health reports a storage error, inspect the mount and run a read-only SQLite
+check. Preserve a bad database for forensics and restore a verified backup; do
+not let an incorrect mount silently create a replacement database.
+
+## 9. Daily content generation
+
+The quiz and map are player-facing routes. Quiz questions use opaque public
+question/choice IDs, are graded by the server against an immutable published
+version, and reveal adjudication only after submission. Map clues and scoring
+progression are also server-controlled. Do not expose generation tokens or
+internal review payloads to clients.
+
+The scheduler normally prepares future content. Production keeps evidence and
+critic gates enabled; incomplete or failed generation remains unpublished and
+is retried according to the configured transient/backoff intervals.
+
+Administrators can review quiz generation state through authenticated routes:
+
+```http
+GET /api/admin/daily-quiz-status?date=YYYY-MM-DD
+GET /api/admin/question-attempts?date=YYYY-MM-DD
+```
+
+An operator can trigger an internal generation request from loopback only when
+the private token is available to the process:
+
+```bash
+curl --fail-with-body -X POST http://127.0.0.1:3000/internal/generate-daily-quiz \
   -H "Authorization: Bearer ${INTERNAL_QUIZ_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"date":"2026-06-02","force":false}'
+  -H 'Content-Type: application/json' \
+  -d '{"date":"YYYY-MM-DD","force":false}'
 ```
 
-For a manual generation run from the application source directory:
+Force regeneration is subject to server-side safety checks and must not replace
+a published quiz after it has first been served to a player, or
+played/adjudicated content. Use the admin review workflow rather than editing
+SQLite directly.
 
-```bash
-python3 tools/generate_daily_quiz.py --date 2026-06-02
-```
+The former facts/history feature is retired. Its UI and runtime provider logic
+are removed; the old API routes return `410 Gone` for one compatibility release.
+After that window, review access logs before removing compatibility routes or
+legacy tables through an explicit, backed-up migration.
 
-From a Windows workstation, use the SSH helper to generate tomorrow's quiz and print the review JSON without exposing the internal token:
+## 10. Operational security checklist
 
-```powershell
-.\deploy\generate-daily-quiz.ps1
-```
+Before every production rollout:
 
-The Fulton server checks tomorrow's quiz at startup and then runs its internal scheduler at `00:05 Europe/London` each day. The scheduler generates the following day's quiz without requiring host cron packages. Configure it in the private env file:
+- Review the exact commit and diff; require clean CI on that commit.
+- Confirm GHCR public visibility or authenticated read access.
+- Verify the Cosign identity, issuer, digest, OCI source, and OCI revision.
+- Confirm the proxy network/CIDR assumption and that the app port is not
+  directly reachable by untrusted clients.
+- Check permissions on the app env, SQLite data, deploy state, backups, and
+  Docker credentials.
+- Rotate bootstrap/internal/provider credentials if their confidentiality is
+  uncertain; handle any host-history cleanup privately.
+- Create and verify the local backup and, when required, the encrypted off-host
+  proof before rollout.
+- Confirm sufficient storage, a clean checkout, and a healthy current service.
+- After deployment, verify container health, the running digest/revision, login,
+  quiz/map submission, and rollback readiness.
 
-```env
-FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED=1
-FULTONS_DAILY_QUIZ_SCHEDULER_HOUR=0
-FULTONS_DAILY_QUIZ_SCHEDULER_MINUTE=5
-FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC=3600
-FULTONS_DAILY_QUIZ_RECOVERY_HOUR=20
-```
-
-Provider rate-limit failures use `FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC`
-instead of the normal retry cadence so the app does not keep refreshing a rate
-limit while waiting for the upstream provider to recover.
-
-The candidate pipeline is deliberately disabled by default. When enabled, it
-discovers and filters answer ideas before composing questions. Incomplete
-next-day quizzes enter recovery mode at 20:00 UK time, reducing only the answer
-embargo and optional scope constraints; critic and evidence gates remain active.
-
-Run the seven-day shadow gate against an isolated database copy before enabling it:
-
-```bash
-python tools/evaluate_quiz_candidate_pipeline.py --start-date 2026-08-14
-```
-
-Review `data/qa/quiz-candidate-shadow/report.json` and `review-sample.csv`. Set
-`QUIZ_CANDIDATE_PIPELINE_ENABLED=1` only after both automated and manual gates pass.
-
-Do not expose the internal token in browser code or commit it to Git.
-
-Run a one-time generation for a specific date without changing the schedule:
-
-```bash
-bash /home/ste/fulton-web-app/deploy/generate-daily-quiz.sh 2026-06-01
-```
-
-Authenticated admins can review generation state and failed attempts:
-
-```http
-GET /api/admin/daily-quiz-status?date=2026-06-02
-GET /api/admin/question-attempts?date=2026-06-02
-```
-
-The public read endpoint only returns published content and omits prompts, critic scores, failed attempts, and internal notes:
-
-```http
-GET /api/daily-quiz?date=2026-06-02
-```
-
-Before publication, each generated question is checked against persisted web evidence and a separate evidence-only verifier. When an OpenRouter fallback key is configured, the evidence search automatically reuses it; `QUIZ_EVIDENCE_OPENROUTER_API_KEY` is only needed to override that key. OpenRouter web search is billed separately from model tokens, so keep the evidence scheduler paused if the key cannot perform grounded searches. `QUIZ_EVIDENCE_REQUIRED=1` is the production fail-closed setting.
-
-To switch fully to an OpenAI-compatible provider such as Groq or OpenRouter later, set `AI_PROVIDER=groq`, `AI_PROVIDER=openrouter`, or `AI_PROVIDER=openai-compatible`, then provide `AI_BASE_URL` and `AI_API_KEY`. Gemini remains the default because its API supports structured JSON output directly, while `AI_FALLBACK_*` lets you keep Gemini primary and use alternate Gemini models or a paid compatible provider as backup.
-
-## 8. Unexpected Shutdown Checks
-
-From the Windows workstation, the helper performs the public health, SSH,
-storage, Docker, and SQLite checks and only restarts when required:
-
-```powershell
-.\deploy\check-and-fix-after-power-outage.cmd
-```
-
-If the server powers off or must be unplugged before it will restart, inspect the host before running heavy workloads:
-
-```bash
-last -x | head -20
-journalctl -k -b --no-pager | egrep -i 'thermal|overheat|critical|power|battery|acpi|mce|hardware error|oom|killed process|ext4|i/o error' | tail -120
-cat /sys/class/power_supply/AC*/online 2>/dev/null || true
-for b in /sys/class/power_supply/BAT*; do [ -d "$b" ] && echo "$b" && cat "$b/status" "$b/capacity" "$b/energy_now" "$b/energy_full" "$b/energy_full_design" 2>/dev/null; done
-```
-
-A `crash` entry in `last -x`, an unclean filesystem message such as `Volume was not properly unmounted`, and a very low laptop battery usually means hard power loss rather than an app failure. Charge the battery above 30% before CPU-heavy tests, and check the AC adapter if this repeats.
-
-## Security Notes
-
-The production image runs as a non-root user. Compose enables a read-only root filesystem, drops Linux capabilities, sets `no-new-privileges`, and keeps only `/app/data` writable for SQLite and runtime data. Session cookies include `Secure` when `FULTONS_COOKIE_SECURE=1`, which assumes users access the app through HTTPS.
+The container runs as a non-root user with a read-only root filesystem, dropped
+capabilities, `no-new-privileges`, a PID limit, and only `/app/data` writable.
+Those controls reduce impact but do not replace host patching, Docker socket
+protection, least-privilege file modes, credential rotation, or restore tests.

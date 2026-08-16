@@ -1,6 +1,7 @@
 services:
   promo-api:
     image: local/fulton-promo-test:${FULTONS_PROMO_BUILD_COMMIT:?Set FULTONS_PROMO_BUILD_COMMIT}
+    pull_policy: never
     container_name: fultons-promo-api
     restart: unless-stopped
     expose:
@@ -10,12 +11,14 @@ services:
       FULTONS_PORT: 3000
       FULTONS_TIMEZONE: Europe/London
       FULTONS_COOKIE_SECURE: "1"
+      FULTONS_EXPECT_DATA_DIR: /app/data
+      FULTONS_REQUIRE_EXISTING_DB: "1"
+      FULTONS_MIN_DB_USERS: "1"
       FULTONS_SEED_DEMO_USERS: "0"
       FULTONS_NEWS_MONITOR_ENABLED: "0"
       FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED: "0"
       FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED: "0"
       FULTONS_DAILY_MAP_FUTURE_REVIEW_ENABLED: "1"
-      FULTONS_FACT_PREWARM_ENABLED: "0"
     volumes:
       - ${FULTONS_PROMO_DATA_DIR:?Set FULTONS_PROMO_DATA_DIR}:/app/data
     read_only: true
@@ -39,10 +42,10 @@ services:
       retries: 5
       start_period: 15s
     networks:
-      - proxy
+      - promo-internal
 
   promo-test:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
     container_name: fultons-promo-test
     restart: unless-stopped
     expose:
@@ -77,6 +80,7 @@ services:
       start_period: 5s
     networks:
       - proxy
+      - promo-internal
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
@@ -94,6 +98,8 @@ services:
       - "traefik.http.services.fultons-promo-test.loadbalancer.server.port=80"
 
 networks:
+  promo-internal:
+    internal: true
   proxy:
     external: true
     name: proxy
