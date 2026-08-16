@@ -1,6 +1,6 @@
 # Remotion Map Game Promo
 
-This branch adds an isolated Remotion promotional animation for the map-based location guessing game. The Remotion entry point is `src/remotion/index.ts`, and all animation-specific source lives under `src/remotion/`.
+This branch is an isolated, render-only Remotion promotional animation for the map-based location guessing game. The Remotion entry point is `src/remotion/index.ts`, and all source lives under `src/remotion/`.
 
 ## Start Remotion Studio
 
@@ -84,25 +84,9 @@ This design uses full-frame backgrounds, so transparency is not enabled by defau
 npx remotion render src/remotion/index.ts MapGamePromo out/map-game-promo-transparent.webm --image-format=png --pixel-format=yuva420p --codec=vp9
 ```
 
-## Website Usage
+## Website Delivery
 
-The reusable website wrapper is:
-
-```text
-src/components/MapGamePromoVideo.tsx
-```
-
-Example:
-
-```tsx
-<MapGamePromoVideo
-  src="/videos/map-game-promo-landscape.mp4"
-  poster="/videos/map-game-promo-poster.png"
-  className="w-full rounded-[1.75rem] shadow-card"
-/>
-```
-
-The component supports muted autoplay, `playsInline`, reduced-motion poster fallback, lazy loading via `preload="none"`, and off-screen pausing through `IntersectionObserver`. It is not mounted anywhere by default.
+This worktree does not contain or deploy the website. Render new working media into `out/`, review it, then copy an approved final asset into the consuming project. The existing files under `public/videos/` are retained delivery artifacts, not build inputs.
 
 ## Validation
 

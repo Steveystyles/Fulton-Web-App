@@ -1,68 +1,35 @@
-# Fulton's Quiz
+# Fulton's Map Game Promo
 
-Mobile-first quiz app with a server-side daily Wordle draft.
+This worktree is a render-only Remotion project for the Map Game promotional video. It intentionally contains no player API, production server, deployment scripts, or inherited website frontend.
 
-## Run Locally
-
-Start the Python API in one terminal:
+## Setup
 
 ```bash
-npm run api
+npm install
+npm run remotion:studio
 ```
 
-Start the Vite frontend in another terminal:
+The Remotion entry point is `src/remotion/index.ts`. Studio exposes landscape, square, and vertical compositions.
 
-```bash
-npm run dev
-```
-
-The Vite dev server proxies `/api` to `http://127.0.0.1:8000`.
-
-## Production-Style Run
-
-```bash
-cp .env.example .env
-npm run build
-npm start
-```
-
-`npm start` runs the hardened production wrapper in `production_server.py`. It preserves the existing API while adding stronger password requirements, secure cookies, security headers, restricted CORS preflight handling, and basic login throttling.
-
-## Local Ops Dashboard
-
-Run the local external-monitor board with:
-
-```bat
-run-local-ops-dashboard.cmd
-```
-
-That launcher starts a localhost-only board at `http://127.0.0.1:8765/ops`, enables the SSH/public-health monitor endpoints, and reuses the existing process if the board is already up. Use `run-local-ops-dashboard.cmd --no-browser` if you want it to start quietly in the background.
-
-## Homeserver Deployment
-
-The production container is built with `Dockerfile` and served through the Traefik-facing compose file at `deploy/compose.yaml`. The host runtime paths come from `~/fulton-web-app-deploy/.env`, which sets `FULTONS_ENV_FILE` and `FULTONS_HOST_DATA_DIR` for the live container.
-
-See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full server clone, environment, build, and update process.
-
-## Security Notes
-
-Production defaults are intentionally stricter than local development:
-
-- Demo users are not seeded unless `FULTONS_SEED_DEMO_USERS=1` is set.
-- Cookies are marked `Secure` by default when using the production wrapper.
-- New and reset passwords must be at least 12 characters by default.
-- Failed login attempts are throttled per username/client combination.
-- The Docker Compose service runs with a read-only container filesystem, dropped Linux capabilities, and `no-new-privileges`.
-
-## Storage
-
-- User accounts, sessions, daily Wordle games, guesses, and results are stored in `data/fultons.db` locally or `/app/data/fultons.db` inside the container.
-- Daily quiz state is stored in the SQLite database tables `daily_quiz_sets`, `daily_quiz_questions`, and `daily_quiz_attempts`. Unfinished AI-generated quizzes stay in `generating` and retry missing slots rather than falling back to local bank content.
-- The local used-word tracker is stored beside `wordle_game.py` as `used_words.txt`.
-
-## Checks
+## Validate
 
 ```bash
 npm run build
-npm run test:server
+npm run test:remotion
+npm audit --audit-level=high
 ```
+
+`npm run build` is a strict TypeScript check. Rendered files are written to the ignored `out/` directory.
+
+## Render
+
+```bash
+npm run remotion:render:landscape
+npm run remotion:render:square
+npm run remotion:render:vertical
+npm run remotion:still
+```
+
+Edit the typed promo data in `src/remotion/data/defaultGamePromoData.ts`. Branding and timing details are documented in [docs/remotion-map-game-promo.md](docs/remotion-map-game-promo.md).
+
+The committed files under `public/videos/` are existing delivery assets. New working renders belong in `out/`; copy only deliberately approved final media into another project.
