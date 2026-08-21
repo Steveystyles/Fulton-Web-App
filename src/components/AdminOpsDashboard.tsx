@@ -29,7 +29,7 @@ import {
 } from "../lib/api";
 
 type AdminOpsDashboardProps = {
-  source?: "admin" | "local";
+  source?: "local";
   standalone?: boolean;
 };
 
@@ -222,7 +222,7 @@ function ActionButton({
 }
 
 export function AdminOpsDashboard({
-  source = "admin",
+  source = "local",
   standalone = false,
 }: AdminOpsDashboardProps) {
   const [snapshot, setSnapshot] = useState<AdminOpsSnapshot | null>(null);
@@ -235,10 +235,7 @@ export function AdminOpsDashboard({
     LocalOpsActionName | "run_available_fixes" | null
   >(null);
 
-  const loadSnapshotApi =
-    source === "local"
-      ? (options?: { force?: boolean }) => api.localOpsMonitor(options)
-      : (options?: { force?: boolean }) => api.adminOpsMonitor(options);
+  const loadSnapshotApi = (options?: { force?: boolean }) => api.localOpsMonitor(options);
 
   useEffect(() => {
     let active = true;
@@ -447,11 +444,7 @@ export function AdminOpsDashboard({
             onClick={() => {
               setLoading(false);
               setRefreshing(true);
-              const refreshApi =
-                source === "local"
-                  ? (options?: { force?: boolean }) => api.localOpsMonitor(options)
-                  : (options?: { force?: boolean }) => api.adminOpsMonitor(options);
-              void refreshApi({ force: true })
+              void api.localOpsMonitor({ force: true })
                 .then((payload) => {
                   setSnapshot(payload);
                   setError("");

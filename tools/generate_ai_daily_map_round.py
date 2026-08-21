@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import re
 import sqlite3
 import sys
@@ -29,7 +28,7 @@ DEFAULT_REPORT_DIR = PROJECT_DIR / "data" / "training"
 DEFAULT_EVENT_BRIEF_CACHE_PATH = DEFAULT_REPORT_DIR / "map_event_brief_cache.json"
 MIN_RESEARCHABLE_HARD_HOOKS = 1
 MIN_RECOGNISABILITY_LEARNED_SCORE = 4.9
-MIN_RECOGNISABILITY_SELECTOR_SCORE = 80
+MIN_RECOGNISABILITY_LEARNED_CONFIDENCE = 0.5
 PLAYER_FACING_LOCALITY_NAMES = {
     "greater london": "London",
     "greater manchester": "Manchester",
@@ -92,15 +91,25 @@ DIRECT_EVIDENCE_STOPWORDS = VERIFICATION_SEARCH_STOPWORDS | {
     "between",
     "could",
     "exact",
+    "event",
+    "forever",
     "from",
     "happened",
     "have",
     "having",
     "here",
+    "home",
     "into",
     "itself",
+    "known",
     "local",
+    "nation",
+    "now",
     "occurred",
+    "remembered",
+    "suffered",
+    "team",
+    "the",
     "their",
     "through",
     "upon",
@@ -345,6 +354,7 @@ def candidate_shortlist(
     *,
     puzzle_date: str,
     limit: int = 24,
+    eligible_place_ids: set[int] | None = None,
     eligible_names: set[str] | None = None,
     excluded_names: set[str] | None = None,
     required_place_type: str | None = None,
@@ -372,8 +382,11 @@ def candidate_shortlist(
     required_type = str(required_place_type or "").strip().casefold()
     for row in rows:
         canonical_name = str(row["canonical_name"]).strip().casefold()
+        if eligible_place_ids is not None and int(row["id"]) not in eligible_place_ids:
+            continue
         if (
-            eligible_names is not None
+            eligible_place_ids is None
+            and eligible_names is not None
             and canonical_name not in eligible_names
         ):
             continue
@@ -415,6 +428,7 @@ def hard_hook_shortlist(
     *,
     puzzle_date: str,
     limit: int = 48,
+    eligible_place_ids: set[int] | None = None,
     eligible_names: set[str] | None = None,
     excluded_names: set[str] | None = None,
     required_place_type: str | None = None,
@@ -423,6 +437,7 @@ def hard_hook_shortlist(
         conn,
         puzzle_date=puzzle_date,
         limit=max(limit * 2, 80),
+        eligible_place_ids=eligible_place_ids,
         eligible_names=eligible_names,
         excluded_names=excluded_names,
         required_place_type=required_place_type,
@@ -551,18 +566,19 @@ def choose_learned_hard_hook(
         for hook in hooks
         if float(hook.get("learned_score") or 0)
         >= MIN_RECOGNISABILITY_LEARNED_SCORE
-        and int(hook.get("selector_score") or 0)
-        >= MIN_RECOGNISABILITY_SELECTOR_SCORE
+        and float(hook.get("learned_confidence") or 0)
+        >= MIN_RECOGNISABILITY_LEARNED_CONFIDENCE
     ]
     if not eligible:
         best = hooks[0]
         raise LookupError(
             "No verified hook met the minimum human-learned recognisability "
             f"thresholds (learned score >= {MIN_RECOGNISABILITY_LEARNED_SCORE:.1f} "
-            f"and selector score >= {MIN_RECOGNISABILITY_SELECTOR_SCORE}); "
+            f"and confidence >= {MIN_RECOGNISABILITY_LEARNED_CONFIDENCE:.2f}); "
             f"best remaining candidate was {best.get('place') or 'unknown'} at "
             f"{float(best.get('learned_score') or 0):.3f}/"
-            f"{int(best.get('selector_score') or 0)}."
+            f"{float(best.get('learned_confidence') or 0):.3f} "
+            f"(legacy selector {int(best.get('selector_score') or 0)})."
         )
     selected = eligible[0]
     return selected, (
@@ -884,6 +900,8 @@ def verification_token(value: str) -> str:
     normalized = "".join(
         character for character in folded if not unicodedata.combining(character)
     )
+    if normalized in {"deciding", "decisive"}:
+        return "decide"
     if normalized.isdigit():
         return normalized
     if len(normalized) > 6 and normalized.endswith("ing"):
@@ -1230,36 +1248,6 @@ def map_boundary_contains_point(
     return False
 
 
-def map_guidance_circle(
-    *,
-    lat: float,
-    lng: float,
-    radius_m: float,
-    steps: int = 64,
-) -> dict[str, Any]:
-    earth_radius_m = 6_371_008.8
-    angular_distance = radius_m / earth_radius_m
-    center_lat = math.radians(lat)
-    center_lng = math.radians(lng)
-    ring: list[list[float]] = []
-    for step in range(max(16, steps)):
-        bearing = 2 * math.pi * step / max(16, steps)
-        point_lat = math.asin(
-            math.sin(center_lat) * math.cos(angular_distance)
-            + math.cos(center_lat)
-            * math.sin(angular_distance)
-            * math.cos(bearing)
-        )
-        point_lng = center_lng + math.atan2(
-            math.sin(bearing) * math.sin(angular_distance) * math.cos(center_lat),
-            math.cos(angular_distance)
-            - math.sin(center_lat) * math.sin(point_lat),
-        )
-        ring.append([math.degrees(point_lng), math.degrees(point_lat)])
-    ring.append(ring[0])
-    return {"type": "Polygon", "coordinates": [ring]}
-
-
 def verified_map_search_anchor(
     place: dict[str, Any],
     *,
@@ -1322,7 +1310,7 @@ def verified_map_search_anchor(
     )
     if min_hint_count == 1:
         guidance_radius_m = min(300_000, max(25_000, _distance_m * 1.35 + 15_000))
-        boundary = map_guidance_circle(
+        boundary = daily_map_game.map_guidance_circle(
             lat=anchor_lat,
             lng=anchor_lng,
             radius_m=guidance_radius_m,
@@ -1514,6 +1502,7 @@ def generate_round(
     shortlist_limit: int,
     max_clue_attempts: int,
     max_place_attempts: int = 4,
+    eligible_place_ids: set[int] | None = None,
     eligible_names: set[str] | None = None,
     excluded_names: set[str] | None = None,
     required_place_type: str | None = None,
@@ -1523,12 +1512,24 @@ def generate_round(
         conn,
         puzzle_date=puzzle_date,
         limit=shortlist_limit,
+        eligible_place_ids=eligible_place_ids,
         eligible_names=eligible_names,
         excluded_names=excluded_names,
         required_place_type=required_place_type,
     )
     available = list(hooks)
     rejected_places: list[dict[str, Any]] = []
+    if not available:
+        raise RuntimeError(
+            "No discovered candidate resolved to a qualifying hard hook: "
+            + json.dumps(
+                {
+                    "eligible_place_ids": sorted(eligible_place_ids or []),
+                    "eligible_names": sorted(eligible_names or []),
+                },
+                ensure_ascii=False,
+            )
+        )
     while available and len(rejected_places) < max(1, max_place_attempts):
         selected_hook, selection_reason = choose_learned_hard_hook(available)
         place_id = int(selected_hook["place_id"])
@@ -1823,9 +1824,23 @@ def discover_uncurated_candidates(
         daily_map_game.initialize_database(conn)
         inserted = candidate_generator.insert_draft_rows(conn, accepted)
         conn.commit()
+        candidate_place_ids = resolve_candidate_place_ids(
+            conn,
+            accepted,
+            normalized_name_variants=candidate_generator.normalized_name_variants,
+        )
+        resolved_names = {
+            str(row["canonical_name"]).strip().casefold()
+            for row in conn.execute(
+                "SELECT canonical_name FROM map_place_pool "
+                f"WHERE id IN ({', '.join('?' for _ in candidate_place_ids)})",
+                candidate_place_ids,
+            ).fetchall()
+            if str(row["canonical_name"] or "").strip()
+        } if candidate_place_ids else set()
     finally:
         conn.close()
-    names = {
+    generated_names = {
         str(row.get("canonical_name") or "").strip().casefold()
         for row in accepted
         if str(row.get("canonical_name") or "").strip()
@@ -1833,12 +1848,56 @@ def discover_uncurated_candidates(
     return {
         "accepted_count": len(accepted),
         "inserted_count": inserted,
-        "candidate_names": sorted(names),
+        "candidate_place_ids": candidate_place_ids,
+        "candidate_names": sorted(resolved_names or generated_names),
         "attempts": discovery.get("attempts") or [],
         "rejected_count": len(discovery.get("rejected") or []),
         "wrong_type_count": len(generated_accepted) - len(accepted),
         "required_place_type": required_type,
     }
+
+
+def resolve_candidate_place_ids(
+    conn: sqlite3.Connection,
+    accepted: list[dict[str, Any]],
+    *,
+    normalized_name_variants: Any,
+) -> list[int]:
+    rows = conn.execute(
+        "SELECT id, slug, canonical_name, reveal_text, acceptable_aliases "
+        "FROM map_place_pool"
+    ).fetchall()
+    by_slug = {str(row["slug"]): int(row["id"]) for row in rows}
+    by_name: dict[str, int] = {}
+    for row in rows:
+        for name in (
+            row["canonical_name"],
+            row["reveal_text"],
+            *daily_map_game.split_list_text(row["acceptable_aliases"]),
+        ):
+            for variant in normalized_name_variants(name):
+                by_name.setdefault(variant, int(row["id"]))
+
+    resolved: list[int] = []
+    for candidate in accepted:
+        pool_row = candidate.get("_pool_row")
+        pool_data = pool_row if isinstance(pool_row, dict) else {}
+        place_id = by_slug.get(str(pool_data.get("slug") or ""))
+        if place_id is None:
+            candidate_variants: set[str] = set()
+            for name in (
+                candidate.get("canonical_name"),
+                pool_data.get("canonical_name"),
+                *daily_map_game.split_list_text(pool_data.get("acceptable_aliases")),
+            ):
+                candidate_variants.update(normalized_name_variants(name))
+            place_id = next(
+                (by_name[variant] for variant in candidate_variants if variant in by_name),
+                None,
+            )
+        if place_id is not None and place_id not in resolved:
+            resolved.append(place_id)
+    return resolved
 
 
 def parse_args() -> argparse.Namespace:
@@ -1894,6 +1953,7 @@ def main() -> int:
         critic_model=args.critic_model,
     )
     discovery: dict[str, Any] | None = None
+    eligible_place_ids: set[int] | None = None
     eligible_names: set[str] | None = None
     excluded_names = {
         str(name).strip().casefold()
@@ -1910,6 +1970,7 @@ def main() -> int:
             excluded_names=excluded_names,
             required_place_type=args.place_type,
         )
+        eligible_place_ids = set(discovery.get("candidate_place_ids") or []) or None
         eligible_names = set(discovery["candidate_names"])
     conn = sqlite3.connect(args.db)
     conn.row_factory = sqlite3.Row
@@ -1921,6 +1982,7 @@ def main() -> int:
             shortlist_limit=max(4, args.shortlist_limit),
             max_clue_attempts=max(1, args.max_clue_attempts),
             max_place_attempts=max(1, args.max_place_attempts),
+            eligible_place_ids=eligible_place_ids,
             eligible_names=eligible_names,
             excluded_names=excluded_names,
             required_place_type=args.place_type,

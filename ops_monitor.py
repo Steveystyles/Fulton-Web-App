@@ -4,18 +4,22 @@ import base64
 import copy
 import json
 import os
+import queue
 import re
 import socket
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import urljoin, urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from safe_http import ResponseTooLarge, read_bounded_response
 
 import local_ops_settings
 
@@ -423,6 +427,8 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
         "tableCounts": {},
         "todayQuiz": None,
         "tomorrowQuiz": None,
+        "todayMap": None,
+        "tomorrowMap": None,
     }
     if not payload["dbExists"]:
         return payload
@@ -443,6 +449,8 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
             "daily_quiz_sets",
             "daily_quiz_questions",
             "daily_quiz_attempts",
+            "daily_map_puzzles",
+            "daily_map_levels",
             "quiz_results",
             "wordle_results",
         ):
@@ -523,6 +531,32 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
 
         payload["todayQuiz"] = quiz_preview(today_date)
         payload["tomorrowQuiz"] = quiz_preview(tomorrow_date)
+
+        def map_preview(puzzle_date: str) -> dict[str, Any]:
+            puzzle = conn.execute(
+                "SELECT id, status, failure_reason FROM daily_map_puzzles WHERE puzzle_date = ?",
+                (puzzle_date,),
+            ).fetchone()
+            if puzzle is None:
+                return {
+                    "date": puzzle_date,
+                    "status": "missing",
+                    "acceptedLevels": 0,
+                    "failureReason": None,
+                }
+            accepted_levels = conn.execute(
+                "SELECT COUNT(*) AS count FROM daily_map_levels WHERE puzzle_id = ?",
+                (puzzle["id"],),
+            ).fetchone()["count"]
+            return {
+                "date": puzzle_date,
+                "status": puzzle["status"],
+                "acceptedLevels": accepted_levels,
+                "failureReason": puzzle["failure_reason"],
+            }
+
+        payload["todayMap"] = map_preview(today_date)
+        payload["tomorrowMap"] = map_preview(tomorrow_date)
     finally:
         conn.close()
     return payload
@@ -748,6 +782,20 @@ def main() -> None:
         }
     )
 
+    for test_id, label, map_preview in (
+        ("today_map", "Today map", sqlite.get("todayMap") or {}),
+        ("tomorrow_map", "Tomorrow map", sqlite.get("tomorrowMap") or {}),
+    ):
+        map_status = str(map_preview.get("status") or "missing")
+        tests.append(
+            {
+                "id": test_id,
+                "label": label,
+                "status": "pass" if map_status == "published" else "fail",
+                "detail": f"{map_status} / accepted {map_preview.get('acceptedLevels', 0)}",
+            }
+        )
+
     tomorrow_quiz = sqlite.get("tomorrowQuiz") or {}
     tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
     tests.append(
@@ -783,6 +831,10 @@ def main() -> None:
         "quiz": {
             "today": sqlite.get("todayQuiz"),
             "tomorrow": sqlite.get("tomorrowQuiz"),
+        },
+        "map": {
+            "today": sqlite.get("todayMap"),
+            "tomorrow": sqlite.get("tomorrowMap"),
         },
         "tests": tests,
         "errors": errors,
@@ -949,6 +1001,8 @@ def regenerate_question(config: dict[str, Any], params: dict[str, Any]) -> dict[
         "            config=server.DAILY_QUIZ_CONFIG,\n"
         "            log=server.safe_log,\n"
         "        )\n"
+        "        if status.get('regeneration_failed') or status.get('regeneration_blocked'):\n"
+        "            raise RuntimeError(status.get('regeneration_failure_reason') or 'Question regeneration was not applied.')\n"
         "        payload = server.daily_quiz.quiz_payload(conn, quiz_date)\n"
         "finally:\n"
         "    conn.close()\n"
@@ -1075,7 +1129,7 @@ class MonitorConfig:
     ssh_connect_timeout_sec: int
     public_health_url: str
     internal_base_url: str
-    internal_quiz_token: str
+    internal_quiz_token: str = field(repr=False)
     compose_file: str
     env_file: str
     data_dir: str
@@ -1086,57 +1140,110 @@ class MonitorConfig:
     def from_env(cls) -> "MonitorConfig":
         home_dir = Path.home()
         file_settings = local_ops_settings.load_monitor_settings()
+        normalized = local_ops_settings.normalize_monitor_settings(
+            {
+                "cacheTtlSec": os.environ.get(
+                    "FULTONS_MONITOR_CACHE_TTL_SEC", file_settings["cacheTtlSec"]
+                ),
+                "sshTarget": os.environ.get(
+                    "FULTONS_MONITOR_SSH_TARGET", file_settings["sshTarget"]
+                ),
+                "sshPort": os.environ.get(
+                    "FULTONS_MONITOR_SSH_PORT", file_settings["sshPort"]
+                ),
+                "sshKeyPath": os.environ.get(
+                    "FULTONS_MONITOR_SSH_KEY_PATH",
+                    str(
+                        file_settings.get("sshKeyPath")
+                        or (home_dir / ".ssh" / "codex_fultons_ed25519")
+                    ),
+                ),
+                "sshConnectTimeoutSec": os.environ.get(
+                    "FULTONS_MONITOR_SSH_CONNECT_TIMEOUT_SEC",
+                    file_settings["sshConnectTimeoutSec"],
+                ),
+                "publicHealthUrl": os.environ.get(
+                    "FULTONS_MONITOR_PUBLIC_HEALTH_URL", file_settings["publicHealthUrl"]
+                ),
+                "internalBaseUrl": os.environ.get(
+                    "FULTONS_MONITOR_INTERNAL_BASE_URL", file_settings["internalBaseUrl"]
+                ),
+                "internalQuizToken": os.environ.get(
+                    "FULTONS_MONITOR_INTERNAL_QUIZ_TOKEN",
+                    file_settings["internalQuizToken"],
+                ),
+                "composeFile": os.environ.get(
+                    "FULTONS_MONITOR_COMPOSE_FILE", file_settings["composeFile"]
+                ),
+                "envFile": os.environ.get(
+                    "FULTONS_MONITOR_ENV_FILE", file_settings["envFile"]
+                ),
+                "dataDir": os.environ.get(
+                    "FULTONS_MONITOR_DATA_DIR", file_settings["dataDir"]
+                ),
+                "dbPath": os.environ.get(
+                    "FULTONS_MONITOR_DB_PATH", file_settings["dbPath"]
+                ),
+                "appPort": os.environ.get(
+                    "FULTONS_MONITOR_APP_PORT", file_settings["appPort"]
+                ),
+            }
+        )
         return cls(
             enabled=os.environ.get("FULTONS_MONITOR_ENABLED", "0") == "1",
-            cache_ttl_sec=max(
-                5,
-                int(os.environ.get("FULTONS_MONITOR_CACHE_TTL_SEC", str(file_settings["cacheTtlSec"]))),
-            ),
-            ssh_target=os.environ.get("FULTONS_MONITOR_SSH_TARGET", file_settings["sshTarget"]).strip(),
-            ssh_port=max(1, int(os.environ.get("FULTONS_MONITOR_SSH_PORT", str(file_settings["sshPort"])))),
-            ssh_key_path=os.environ.get(
-                "FULTONS_MONITOR_SSH_KEY_PATH",
-                str(file_settings.get("sshKeyPath") or (home_dir / ".ssh" / "codex_fultons_ed25519")),
-            ).strip(),
-            ssh_connect_timeout_sec=max(
-                2,
-                int(
-                    os.environ.get(
-                        "FULTONS_MONITOR_SSH_CONNECT_TIMEOUT_SEC",
-                        str(file_settings["sshConnectTimeoutSec"]),
-                    )
-                ),
-            ),
-            public_health_url=os.environ.get(
-                "FULTONS_MONITOR_PUBLIC_HEALTH_URL",
-                file_settings["publicHealthUrl"],
-            ).strip(),
-            internal_base_url=os.environ.get(
-                "FULTONS_MONITOR_INTERNAL_BASE_URL",
-                file_settings["internalBaseUrl"],
-            ).strip(),
-            internal_quiz_token=os.environ.get(
-                "FULTONS_MONITOR_INTERNAL_QUIZ_TOKEN",
-                file_settings["internalQuizToken"],
-            ).strip(),
-            compose_file=os.environ.get(
-                "FULTONS_MONITOR_COMPOSE_FILE",
-                file_settings["composeFile"],
-            ).strip(),
-            env_file=os.environ.get(
-                "FULTONS_MONITOR_ENV_FILE",
-                file_settings["envFile"],
-            ).strip(),
-            data_dir=os.environ.get(
-                "FULTONS_MONITOR_DATA_DIR",
-                file_settings["dataDir"],
-            ).strip(),
-            db_path=os.environ.get(
-                "FULTONS_MONITOR_DB_PATH",
-                file_settings["dbPath"],
-            ).strip(),
-            app_port=max(1, int(os.environ.get("FULTONS_MONITOR_APP_PORT", str(file_settings["appPort"])))),
+            cache_ttl_sec=int(normalized["cacheTtlSec"]),
+            ssh_target=str(normalized["sshTarget"]),
+            ssh_port=int(normalized["sshPort"]),
+            ssh_key_path=str(normalized["sshKeyPath"]),
+            ssh_connect_timeout_sec=int(normalized["sshConnectTimeoutSec"]),
+            public_health_url=str(normalized["publicHealthUrl"]),
+            internal_base_url=str(normalized["internalBaseUrl"]),
+            internal_quiz_token=str(normalized["internalQuizToken"]),
+            compose_file=str(normalized["composeFile"]),
+            env_file=str(normalized["envFile"]),
+            data_dir=str(normalized["dataDir"]),
+            db_path=str(normalized["dbPath"]),
+            app_port=int(normalized["appPort"]),
         )
+
+class BoundedExecutor:
+    """Small daemon executor with a hard limit on queued work."""
+
+    def __init__(self, *, max_workers: int, max_queue_size: int, thread_name_prefix: str):
+        if max_workers < 1 or max_queue_size < 1:
+            raise ValueError("BoundedExecutor sizes must be positive.")
+        self._queue: queue.Queue[
+            tuple[Future[Any], Callable[..., Any], tuple[Any, ...], dict[str, Any]]
+        ] = queue.Queue(maxsize=max_queue_size)
+        self._workers: list[threading.Thread] = []
+        for index in range(max_workers):
+            worker = threading.Thread(
+                target=self._worker,
+                name=f"{thread_name_prefix}-{index + 1}",
+                daemon=True,
+            )
+            worker.start()
+            self._workers.append(worker)
+
+    def submit(self, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Future[Any]:
+        future: Future[Any] = Future()
+        self._queue.put_nowait((future, function, args, kwargs))
+        return future
+
+    def _worker(self) -> None:
+        while True:
+            future, function, args, kwargs = self._queue.get()
+            try:
+                if not future.set_running_or_notify_cancel():
+                    continue
+                try:
+                    result = function(*args, **kwargs)
+                except BaseException as error:
+                    future.set_exception(error)
+                else:
+                    future.set_result(result)
+            finally:
+                self._queue.task_done()
 
 
 _CACHE_LOCK = threading.Lock()
@@ -1150,11 +1257,173 @@ CACHE_FILE_PATH = Path(__file__).resolve().parent / "data" / "local-ops-snapshot
 SSH_RETRY_ATTEMPTS = 3
 ASYNC_LOCAL_ACTIONS = frozenset({"generate_tomorrow_quiz", "regenerate_question"})
 LOCAL_ACTION_JOB_LIMIT = 32
+LOCAL_ACTION_PENDING_LIMIT = 6
+LOCAL_ACTION_CONCURRENCY_LIMITS = {
+    "generate_tomorrow_quiz": 1,
+    "regenerate_question": 1,
+    "remove_orphaned_networks": 1,
+}
+_LOCAL_ACTION_SEMAPHORES = {
+    action: threading.BoundedSemaphore(limit)
+    for action, limit in LOCAL_ACTION_CONCURRENCY_LIMITS.items()
+}
+_LOCAL_ACTION_EXECUTOR = BoundedExecutor(
+    max_workers=2,
+    max_queue_size=4,
+    thread_name_prefix="fultons-local-action",
+)
+_SSH_REFRESH_EXECUTOR = BoundedExecutor(
+    max_workers=1,
+    max_queue_size=1,
+    thread_name_prefix="fultons-ssh-refresh",
+)
 FALLBACK_HOST_CACHE_MAX_AGE_SEC = 300
+MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
+ALLOWED_INTERNAL_REQUEST_PATHS = frozenset(
+    {
+        "/internal/generate-daily-quiz",
+        "/internal/ops-summary",
+        "/internal/regenerate-daily-quiz-question",
+    }
+)
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _url_origin(url: str) -> tuple[str, str, int]:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.casefold()
+    host = (parsed.hostname or "").casefold()
+    default_port = 443 if scheme == "https" else 80 if scheme == "http" else None
+    try:
+        port = parsed.port or default_port
+    except ValueError as error:
+        raise ValueError("URL has an invalid port.") from error
+    if not scheme or not host or port is None or parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL does not contain an allowed origin.")
+    return scheme, host, port
+
+
+def validate_internal_request_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.path not in ALLOWED_INTERNAL_REQUEST_PATHS or parsed.params or parsed.query or parsed.fragment:
+        raise ValueError("Internal ops request path is not allowed.")
+    scheme, host, port = _url_origin(url)
+    formatted_host = f"[{host}]" if ":" in host else host
+    default_port = 443 if scheme == "https" else 80
+    netloc = formatted_host if port == default_port else f"{formatted_host}:{port}"
+    base_url = local_ops_settings.validate_internal_base_url(f"{scheme}://{netloc}")
+    return f"{base_url}{parsed.path}"
+
+
+class OriginPinnedRedirectHandler(HTTPRedirectHandler):
+    def __init__(self, validator: Callable[[str], str]):
+        super().__init__()
+        self._validator = validator
+
+    def redirect_request(
+        self,
+        request: Request,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> Request | None:
+        target_url = urljoin(request.full_url, new_url)
+        try:
+            validated_target = self._validator(target_url)
+            same_origin = _url_origin(request.full_url) == _url_origin(validated_target)
+        except ValueError as error:
+            raise HTTPError(
+                target_url,
+                403,
+                "Redirect target is not allowed.",
+                headers,
+                file_pointer,
+            ) from error
+        if not same_origin:
+            raise HTTPError(
+                target_url,
+                403,
+                "Cross-origin redirects are not allowed.",
+                headers,
+                file_pointer,
+            )
+        return super().redirect_request(
+            request,
+            file_pointer,
+            code,
+            message,
+            headers,
+            validated_target,
+        )
+
+
+def _open_validated_url(
+    request: Request,
+    *,
+    timeout_sec: int,
+    validator: Callable[[str], str],
+):
+    validated_request_url = validator(request.full_url)
+    if validated_request_url != request.full_url:
+        raise ValueError("Request URL was not in canonical allowlisted form.")
+    opener = build_opener(OriginPinnedRedirectHandler(validator))
+    response = opener.open(request, timeout=timeout_sec)
+    final_url = response.geturl() if hasattr(response, "geturl") else request.full_url
+    try:
+        validated_final = validator(str(final_url))
+        final_is_allowed = (
+            validated_final == str(final_url)
+            and _url_origin(validated_final) == _url_origin(request.full_url)
+        )
+    except ValueError:
+        final_is_allowed = False
+    if not final_is_allowed:
+        response.close()
+        raise HTTPError(
+            str(final_url),
+            403,
+            "Cross-origin responses are not allowed.",
+            getattr(response, "headers", None),
+            None,
+        )
+    return response
+
+
+def _read_bounded_response(response: Any) -> str:
+    try:
+        raw, charset = read_bounded_response(
+            response,
+            max_bytes=MAX_HTTP_RESPONSE_BYTES,
+            label="Ops endpoint",
+        )
+    except ResponseTooLarge as error:
+        raise RuntimeError(str(error)) from error
+    return raw.decode(charset)
+
+
+def redact_secret_text(value: Any, *secrets: str) -> str:
+    text = str(value)
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    return text
+
+
+def redact_secret_payload(value: Any, *secrets: str) -> Any:
+    if isinstance(value, dict):
+        return {key: redact_secret_payload(item, *secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_secret_payload(item, *secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_secret_payload(item, *secrets) for item in value)
+    if isinstance(value, str):
+        return redact_secret_text(value, *secrets)
+    return value
 
 
 def parse_iso_datetime(value: str | None) -> datetime | None:
@@ -1203,23 +1472,36 @@ def is_retryable_ssh_error(message: str) -> bool:
 
 
 def can_attempt_ssh_snapshot(config: MonitorConfig) -> bool:
-    if not config.ssh_target or not config.ssh_key_path:
+    try:
+        local_ops_settings.validate_ssh_target(config.ssh_target)
+        local_ops_settings.validate_ssh_key_path(config.ssh_key_path, require_exists=True)
+    except ValueError:
         return False
-    return Path(config.ssh_key_path).exists()
+    return True
 
 
 def ssh_python_command(config: MonitorConfig, encoded_payload: str) -> list[str]:
+    ssh_target = local_ops_settings.validate_ssh_target(config.ssh_target)
+    ssh_key_path = local_ops_settings.validate_ssh_key_path(
+        config.ssh_key_path,
+        require_exists=True,
+    )
+    if config.ssh_port < 1 or config.ssh_port > 65535:
+        raise ValueError("SSH port is outside the allowed range.")
+    if config.ssh_connect_timeout_sec < 2 or config.ssh_connect_timeout_sec > 30:
+        raise ValueError("SSH connect timeout is outside the allowed range.")
     return [
         "ssh",
         "-i",
-        str(config.ssh_key_path),
+        ssh_key_path,
         "-p",
         str(config.ssh_port),
         "-o",
         "BatchMode=yes",
         "-o",
         f"ConnectTimeout={config.ssh_connect_timeout_sec}",
-        config.ssh_target,
+        "--",
+        ssh_target,
         "python3",
         "-",
         encoded_payload,
@@ -1272,6 +1554,7 @@ def disabled_snapshot(reason: str) -> dict[str, Any]:
 
 
 def probe_public_health(url: str) -> dict[str, Any]:
+    url = local_ops_settings.validate_public_health_url(url)
     parsed = urlparse(url)
     hostname = parsed.hostname
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -1296,8 +1579,14 @@ def probe_public_health(url: str) -> dict[str, Any]:
     )
     started = time.perf_counter()
     try:
-        with urlopen(request, timeout=6) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        with _open_validated_url(
+            request,
+            timeout_sec=6,
+            validator=local_ops_settings.validate_public_health_url,
+        ) as response:
+            payload = json.loads(_read_bounded_response(response))
+            if not isinstance(payload, dict):
+                raise ValueError("Public health response must be a JSON object.")
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             return {
                 "url": url,
@@ -1321,7 +1610,7 @@ def probe_public_health(url: str) -> dict[str, Any]:
             "error": f"HTTP {error.code}",
             "checkedAt": utc_now_iso(),
         }
-    except (OSError, URLError, TimeoutError, json.JSONDecodeError) as error:
+    except (OSError, URLError, TimeoutError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         return {
             "url": url,
@@ -1420,39 +1709,48 @@ def internal_quiz_request(
     *,
     timeout_sec: int,
 ) -> dict[str, Any]:
-    base_url = config.internal_base_url.rstrip("/")
-    if not base_url:
-        raise RuntimeError("Internal base URL is not configured in local ops settings.")
-    if not config.internal_quiz_token:
+    try:
+        base_url = local_ops_settings.validate_internal_base_url(config.internal_base_url)
+        token = local_ops_settings.validate_internal_quiz_token(config.internal_quiz_token)
+        request_url = validate_internal_request_url(f"{base_url}{path}")
+    except ValueError as error:
+        raise RuntimeError(f"Internal quiz request configuration is invalid: {error}") from error
+    if not token:
         raise RuntimeError("Internal quiz token is not configured in local ops settings.")
 
     request = Request(
-        f"{base_url}{path}",
+        request_url,
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Accept": "application/json",
-            "Authorization": f"Bearer {config.internal_quiz_token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "User-Agent": "FultonsOpsMonitor/1.0 (+https://fultons-quiz.co.uk)",
         },
         method="POST",
     )
     try:
-        with urlopen(request, timeout=timeout_sec) as response:
-            body = response.read().decode("utf-8")
+        with _open_validated_url(
+            request,
+            timeout_sec=timeout_sec,
+            validator=validate_internal_request_url,
+        ) as response:
+            body = _read_bounded_response(response)
     except HTTPError as error:
         detail = f"HTTP {error.code}"
         try:
-            payload = json.loads(error.read().decode("utf-8"))
-            if isinstance(payload, dict):
-                detail = str(payload.get("error") or payload)
+            error_payload = json.loads(_read_bounded_response(error))
+            if isinstance(error_payload, dict):
+                detail = str(error_payload.get("error") or error_payload)
         except Exception:
             reason = getattr(error, "reason", None)
             if reason:
                 detail = f"{detail}: {reason}"
+        detail = redact_secret_text(detail, token)
         raise RuntimeError(f"Internal quiz request failed: {detail}") from error
     except (OSError, URLError, TimeoutError) as error:
-        raise RuntimeError(f"Internal quiz request failed: {error}") from error
+        detail = redact_secret_text(error, token)
+        raise RuntimeError(f"Internal quiz request failed: {detail}") from error
 
     try:
         decoded = json.loads(body)
@@ -1460,7 +1758,7 @@ def internal_quiz_request(
         raise RuntimeError("Internal quiz request returned invalid JSON.") from error
     if not isinstance(decoded, dict):
         raise RuntimeError("Internal quiz request returned an unexpected payload.")
-    return decoded
+    return redact_secret_payload(decoded, token)
 
 
 def current_tomorrow_quiz_preview(config: MonitorConfig) -> dict[str, Any]:
@@ -1521,39 +1819,48 @@ def internal_ops_request(
     *,
     timeout_sec: int,
 ) -> dict[str, Any]:
-    base_url = config.internal_base_url.rstrip("/")
-    if not base_url:
-        raise RuntimeError("Internal base URL is not configured in local ops settings.")
-    if not config.internal_quiz_token:
+    try:
+        base_url = local_ops_settings.validate_internal_base_url(config.internal_base_url)
+        token = local_ops_settings.validate_internal_quiz_token(config.internal_quiz_token)
+        request_url = validate_internal_request_url(f"{base_url}{path}")
+    except ValueError as error:
+        raise RuntimeError(f"Internal ops request configuration is invalid: {error}") from error
+    if not token:
         raise RuntimeError("Internal quiz token is not configured in local ops settings.")
 
     request = Request(
-        f"{base_url}{path}",
+        request_url,
         headers={
             "Accept": "application/json",
-            "Authorization": f"Bearer {config.internal_quiz_token}",
+            "Authorization": f"Bearer {token}",
             "User-Agent": "FultonsOpsMonitor/1.0 (+https://fultons-quiz.co.uk)",
         },
         method="GET",
     )
     started = time.perf_counter()
     try:
-        with urlopen(request, timeout=timeout_sec) as response:
-            body = response.read().decode("utf-8")
+        with _open_validated_url(
+            request,
+            timeout_sec=timeout_sec,
+            validator=validate_internal_request_url,
+        ) as response:
+            body = _read_bounded_response(response)
             elapsed_ms = int((time.perf_counter() - started) * 1000)
     except HTTPError as error:
         detail = f"HTTP {error.code}"
         try:
-            payload = json.loads(error.read().decode("utf-8"))
-            if isinstance(payload, dict):
-                detail = str(payload.get("error") or payload)
+            error_payload = json.loads(_read_bounded_response(error))
+            if isinstance(error_payload, dict):
+                detail = str(error_payload.get("error") or error_payload)
         except Exception:
             reason = getattr(error, "reason", None)
             if reason:
                 detail = f"{detail}: {reason}"
+        detail = redact_secret_text(detail, token)
         raise RuntimeError(f"Internal ops request failed: {detail}") from error
     except (OSError, URLError, TimeoutError) as error:
-        raise RuntimeError(f"Internal ops request failed: {error}") from error
+        detail = redact_secret_text(error, token)
+        raise RuntimeError(f"Internal ops request failed: {detail}") from error
 
     try:
         decoded = json.loads(body)
@@ -1566,6 +1873,7 @@ def internal_ops_request(
         raise RuntimeError("Internal ops request returned invalid JSON.") from error
     if not isinstance(decoded, dict):
         raise RuntimeError("Internal ops request returned an unexpected payload.")
+    decoded = redact_secret_payload(decoded, token)
     decoded["responseTimeMs"] = elapsed_ms
     return decoded
 
@@ -1910,25 +2218,31 @@ def execute_local_action(action: str, params: dict[str, Any] | None = None) -> d
     config = MonitorConfig.from_env()
     if not config.enabled:
         raise RuntimeError("Local ops actions are disabled because the monitor is off.")
-    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
+    if action not in LOCAL_ACTION_CONCURRENCY_LIMITS:
         raise ValueError(f"Unsupported ops action: {action}")
-    if action == "generate_tomorrow_quiz":
-        details = generate_tomorrow_quiz_action(config)
-    elif action == "regenerate_question":
-        details = regenerate_question_action(config, params or {})
-    else:
-        details = run_remote_action(config, action, params=params)
-    snapshot = collect_dashboard_snapshot(force=True)
-    snapshot = merge_quiz_action_snapshot(snapshot, action, details)
-    update_cached_snapshot(snapshot)
-    return {
-        "action": action,
-        "status": "succeeded",
-        "done": True,
-        "message": str(details.get("message") or "Action completed."),
-        "details": details,
-        "snapshot": snapshot,
-    }
+    semaphore = _LOCAL_ACTION_SEMAPHORES[action]
+    if not semaphore.acquire(blocking=False):
+        raise RuntimeError(f"Local ops action {action} is already running at its concurrency limit.")
+    try:
+        if action == "generate_tomorrow_quiz":
+            details = generate_tomorrow_quiz_action(config)
+        elif action == "regenerate_question":
+            details = regenerate_question_action(config, params or {})
+        else:
+            details = run_remote_action(config, action, params=params)
+        snapshot = collect_dashboard_snapshot(force=True)
+        snapshot = merge_quiz_action_snapshot(snapshot, action, details)
+        update_cached_snapshot(snapshot)
+        return {
+            "action": action,
+            "status": "succeeded",
+            "done": True,
+            "message": str(details.get("message") or "Action completed."),
+            "details": details,
+            "snapshot": snapshot,
+        }
+    finally:
+        semaphore.release()
 
 
 def run_local_action(action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1980,7 +2294,7 @@ def start_local_action_job(action: str, params: dict[str, Any] | None = None) ->
     config = MonitorConfig.from_env()
     if not config.enabled:
         raise RuntimeError("Local ops actions are disabled because the monitor is off.")
-    if action not in {"generate_tomorrow_quiz", "remove_orphaned_networks", "regenerate_question"}:
+    if action not in LOCAL_ACTION_CONCURRENCY_LIMITS:
         raise ValueError(f"Unsupported ops action: {action}")
     if not is_async_local_action(action):
         return execute_local_action(action, params=params)
@@ -1997,6 +2311,17 @@ def start_local_action_job(action: str, params: dict[str, Any] | None = None) ->
                 payload["reused"] = True
                 return payload
 
+        pending_jobs = [
+            existing
+            for existing in _LOCAL_ACTION_JOBS.values()
+            if existing.get("status") in {"queued", "running"}
+        ]
+        if len(pending_jobs) >= LOCAL_ACTION_PENDING_LIMIT:
+            raise RuntimeError("The local ops action queue is full. Try again after a job finishes.")
+        per_action_limit = LOCAL_ACTION_CONCURRENCY_LIMITS[action]
+        if sum(existing.get("action") == action for existing in pending_jobs) >= per_action_limit:
+            raise RuntimeError(f"Local ops action {action} is already queued or running.")
+
         job_id = create_local_action_job_id()
         job = {
             "jobId": job_id,
@@ -2010,9 +2335,13 @@ def start_local_action_job(action: str, params: dict[str, Any] | None = None) ->
         }
         _LOCAL_ACTION_JOBS[job_id] = job
         prune_local_action_jobs_locked()
-
-    thread = threading.Thread(target=_run_local_action_job, args=(job_id,), daemon=True)
-    thread.start()
+        try:
+            _LOCAL_ACTION_EXECUTOR.submit(_run_local_action_job, job_id)
+        except queue.Full as error:
+            _LOCAL_ACTION_JOBS.pop(job_id, None)
+            raise RuntimeError(
+                "The local ops action queue is full. Try again after a job finishes."
+            ) from error
     return local_action_job_response(job)
 
 
@@ -2071,6 +2400,10 @@ def generate_tomorrow_quiz_action(config: MonitorConfig) -> dict[str, Any]:
             "transport": "https",
         }
     label = "Today" if target_label == "today" else "Tomorrow"
+    if payload.get("regeneration_failed") or payload.get("regeneration_blocked"):
+        raise RuntimeError(
+            str(payload.get("regeneration_failure_reason") or "Quiz regeneration was not applied.")
+        )
     result_preview = (
         quiz_preview_from_payload(payload, fallback_date=quiz_date, previous=existing_preview)
         if isinstance(payload, dict)
@@ -2124,6 +2457,13 @@ def regenerate_question_action(config: MonitorConfig, params: dict[str, Any]) ->
             ),
             "transport": "https",
         }
+    if payload.get("regeneration_failed") or payload.get("regeneration_blocked"):
+        raise RuntimeError(
+            str(
+                payload.get("regeneration_failure_reason")
+                or "Question regeneration was not applied."
+            )
+        )
     return {
         "ok": True,
         "date": quiz_date,
@@ -2229,6 +2569,15 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
     if quiz_status != "published":
         alerts.append(f"Tomorrow quiz is {quiz_status} with {accepted}/6 approved questions.")
 
+    map_payload = remote.get("map") if isinstance(remote.get("map"), dict) else {}
+    for label, key in (("Today", "today"), ("Tomorrow", "tomorrow")):
+        map_preview = map_payload.get(key) if isinstance(map_payload, dict) else {}
+        if not isinstance(map_preview, dict):
+            map_preview = {}
+        map_status = str(map_preview.get("status") or "missing")
+        if map_status != "published":
+            alerts.append(f"{label} map is {map_status}.")
+
     return alerts
 
 
@@ -2324,12 +2673,16 @@ def schedule_background_ssh_refresh(
             return False
         _SSH_REFRESH_IN_PROGRESS = True
 
-    thread = threading.Thread(
-        target=_background_ssh_refresh_worker,
-        args=(config, copy.deepcopy(public_probe)),
-        daemon=True,
-    )
-    thread.start()
+    try:
+        _SSH_REFRESH_EXECUTOR.submit(
+            _background_ssh_refresh_worker,
+            config,
+            copy.deepcopy(public_probe),
+        )
+    except queue.Full:
+        with _SSH_REFRESH_LOCK:
+            _SSH_REFRESH_IN_PROGRESS = False
+        return False
     return True
 
 

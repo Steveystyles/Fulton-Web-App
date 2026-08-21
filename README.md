@@ -1,6 +1,7 @@
 # Fulton's Quiz
 
-Mobile-first quiz app with a server-side daily Wordle draft.
+Mobile-first daily quiz, map game, Wordle, news, scores, and account app backed
+by a Python/SQLite server.
 
 ## Run Locally
 
@@ -9,6 +10,9 @@ Start the Python API in one terminal:
 ```bash
 npm run api
 ```
+
+The API reads the process environment directly. Export any AI provider keys
+before starting it; the launcher does not automatically load `.env.local`.
 
 Start the Vite frontend in another terminal:
 
@@ -20,13 +24,19 @@ The Vite dev server proxies `/api` to `http://127.0.0.1:8000`.
 
 ## Production-Style Run
 
+Use `.env.example` as the configuration template, but export or inject the
+values into the process environment before launch. The Python entry points do
+not automatically read `.env` or `.env.local`.
+
 ```bash
-cp .env.example .env
 npm run build
 npm start
 ```
 
-`npm start` runs the hardened production wrapper in `production_server.py`. It preserves the existing API while adding stronger password requirements, secure cookies, security headers, restricted CORS preflight handling, and basic login throttling.
+`npm start` runs `server.py` directly. Secure cookies are enabled by default;
+set `FULTONS_COOKIE_SECURE=0` only for explicit plain-HTTP local development.
+Password policy, security headers, origin checks, and login throttling are
+implemented by the core server.
 
 ## Local Ops Dashboard
 
@@ -40,18 +50,35 @@ That launcher starts a localhost-only board at `http://127.0.0.1:8765/ops`, enab
 
 ## Homeserver Deployment
 
-The production container is built with `Dockerfile` and served through the Traefik-facing compose file at `deploy/compose.yaml`. The host runtime paths come from `~/fulton-web-app-deploy/.env`, which sets `FULTONS_ENV_FILE` and `FULTONS_HOST_DATA_DIR` for the live container.
+The production container is built once in CI and served through the
+Traefik-facing Compose file at `deploy/compose.yaml` by a signed, immutable
+registry digest. Host paths and the digest are supplied through a private
+Compose dotenv outside the repository. The updater verifies the signature and
+canonical OCI source/revision labels, creates a checked SQLite online backup,
+supports a fail-closed encrypted off-host-copy gate, and health-verifies
+rollback. Local builds require an explicit development-only override.
 
 See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full server clone, environment, build, and update process.
+
+The current QA/remediation state is recorded in
+[`docs/QA_SECURITY_AUDIT_2026-08-12.md`](docs/QA_SECURITY_AUDIT_2026-08-12.md).
+That report describes local work only; it is not evidence that production has
+been updated.
 
 ## Security Notes
 
 Production defaults are intentionally stricter than local development:
 
 - Demo users are not seeded unless `FULTONS_SEED_DEMO_USERS=1` is set.
-- Cookies are marked `Secure` by default when using the production wrapper.
+- Cookies are marked `Secure` by default. Plain-HTTP local development must opt
+  out with `FULTONS_COOKIE_SECURE=0`.
 - New and reset passwords must be at least 12 characters by default.
 - Failed login attempts are throttled per username/client combination.
+- Concurrent password verifications are bounded to protect server capacity;
+  tune `FULTONS_LOGIN_MAX_CONCURRENT_VERIFICATIONS` only after load testing.
+- Forwarded client IPs are trusted only from configured proxy CIDRs. The
+  deployment assumes one operator-controlled Traefik hop and no direct public
+  connection to the app container; verify that topology before rollout.
 - The Docker Compose service runs with a read-only container filesystem, dropped Linux capabilities, and `no-new-privileges`.
 
 ## Storage
@@ -60,6 +87,9 @@ Production defaults are intentionally stricter than local development:
 - Daily quiz state is stored in the SQLite database tables `daily_quiz_sets`, `daily_quiz_questions`, and `daily_quiz_attempts`. Unfinished AI-generated quizzes stay in `generating` and retry missing slots rather than falling back to local bank content.
 - Daily map game state is stored in `map_place_pool`, `daily_map_puzzles`, `daily_map_levels`, and `daily_map_guesses`.
 - The Wordle implementation and word data live under `games/wordle/`. The root `wordle_game.py` file is a compatibility import for older scripts/tests. The local used-word tracker is stored at `games/wordle/used_words.txt`.
+- The former facts/history feature is retired. Its UI and runtime implementation
+  have been removed, and its old API paths return `410 Gone` for a compatibility
+  release rather than retaining a second content subsystem.
 
 ## Quiz Model Training Data
 
@@ -117,6 +147,20 @@ python tools/build_quiz_learning_profile.py --out-dir data/training
 ```
 
 Set `QUIZ_LEARNING_PROFILE_PATH` to the generated JSON file to add compact learned feedback to future quiz generation prompts while keeping the existing validators and critic active.
+
+The two-stage candidate pipeline can be shadow-tested without touching the live
+database or published quizzes:
+
+```bash
+python tools/evaluate_quiz_candidate_pipeline.py --start-date 2026-08-14
+```
+
+It copies quiz history into `data/qa/quiz-candidate-shadow/shadow.db`, generates
+seven unpublished comparison dates, writes automated metrics to `report.json`,
+and exports a 12-question human review sample. Production activation remains
+controlled by `QUIZ_CANDIDATE_PIPELINE_ENABLED`, which defaults to `0`. The
+pipeline enforces `QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ` (default `30`) before
+making each discovery or composition request.
 
 Run the safe fixture evaluator to confirm the held-out eval file is structurally valid:
 

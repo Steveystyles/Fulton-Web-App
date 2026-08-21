@@ -247,6 +247,7 @@ export type LocalOpsConfig = {
   publicHealthUrl: string;
   internalBaseUrl: string;
   internalQuizToken: string;
+  internalQuizTokenConfigured: boolean;
   composeFile: string;
   envFile: string;
   dataDir: string;
@@ -301,12 +302,29 @@ export type WordleDefinition = {
 
 export type QuizDifficulty = "easy" | "medium" | "hard";
 
+export type DailyQuizChoice = {
+  id: string;
+  text: string;
+};
+
 export type DailyQuizQuestion = {
+  id: string;
   difficulty: QuizDifficulty;
   question: string;
-  answers: string[];
-  correct_answer: string;
+  answers: DailyQuizChoice[];
+};
+
+export type DailyQuizSelection = {
+  questionId: string;
+  choiceId: string;
+};
+
+export type DailyQuizAdjudication = DailyQuizSelection & {
+  correct: boolean;
+  correctChoiceId: string;
+  correctAnswer: string;
   explanation: string;
+  pointsAwarded: number;
 };
 
 export type DailyQuestionsResponse = {
@@ -322,6 +340,9 @@ export type DailyQuizResult = {
   maxScore: number;
   correctCount: number;
   bonusPoints: number;
+  quizVersion: string;
+  scoringVersion: string;
+  adjudications: DailyQuizAdjudication[];
   completedAt: string;
 };
 
@@ -394,10 +415,9 @@ export type DailyMapGameLevel = {
   id: number;
   slug: QuizDifficulty;
   title: string;
-  clueText: string;
   clues: DailyMapClue[];
   mapAnchors: DailyMapAnchor[];
-  maxPoints: number;
+  revealedHintCount: number;
   submitted: boolean;
   result?: DailyMapGameResult;
 };
@@ -411,6 +431,7 @@ export type DailyMapGameResponse = {
 };
 
 export type DailyMapSnapOption = {
+  selectionId: string;
   point: MapPoint;
   clickedPoint: MapPoint;
   snapped: boolean;
@@ -448,14 +469,6 @@ export type NewsCategory = "all" | "breaking" | "news" | "live-scores";
 export type NewsResponse = {
   items: NewsItem[];
   category: NewsCategory;
-};
-
-export type HistoryEvent = {
-  year: string;
-  text: string;
-  links: Array<{ title?: string; link?: string }>;
-  category?: "history" | "sport" | "born";
-  label?: string;
 };
 
 export type LeaderboardPlayer = {
@@ -499,85 +512,14 @@ export type LeaderboardResponse = {
   };
 };
 
-export type HistoryFactTheme =
-  | "history"
-  | "landmark"
-  | "industry"
-  | "culture"
-  | "people"
-  | "date"
-  | "general";
-
-export type HistoryFact = {
-  title: string;
-  text: string;
-  theme: HistoryFactTheme;
-  sourceName: string;
-  sourceUrl: string | null;
-  confidence: "high" | "medium" | "low";
-  critique?: {
-    summary: string;
-    relevance: number;
-    interestingness: number;
-    placeSpecificity: number;
-  };
-  image?: HistoryLocationImage | null;
-};
-
-export type HistoryLocationProfile = {
-  title: string;
-  types: string[];
-  population: string | null;
-  areas: string[];
-  country: string | null;
-  inception: string | null;
-  sourceName: string;
-  sourceUrl: string | null;
-};
-
-export type HistoryLocationImage = {
-  url: string;
-  title: string;
-  sourceName: string;
-  sourceUrl: string | null;
-};
-
-export type HistoryResponse = {
-  request: {
-    location: string;
-    date: string;
-    lang: string;
-  };
-  location: {
-    title: string;
-    description: string | null;
-    profile?: HistoryLocationProfile | null;
-    facts: Array<string | HistoryFact>;
-    articleUrl: string | null;
-    thumbnailUrl: string | null;
-    images?: HistoryLocationImage[];
-  } | null;
-  globalEvents: HistoryEvent[];
-  partial: boolean;
-  warnings: Array<{ source: string; code: string; detail: string }>;
-  meta: {
-    cached: boolean;
-    eventsLanguage: string;
-    generatedAt: string;
-    rotationCreatedAt: string | null;
-    rotationExpiresAt: string | null;
-  };
-};
-
 type JsonBody = Record<string, unknown>;
 
 type PublishedQuizQuestion = {
+  id: string;
   subject: "football" | "general_knowledge";
   difficulty: QuizDifficulty;
   question: string;
-  choices: string[];
-  correct_answer: string;
-  explanation: string;
+  choices: DailyQuizChoice[];
 };
 
 type PublishedQuizResponse = {
@@ -588,7 +530,6 @@ type PublishedQuizResponse = {
 
 let dailyQuestionsPromise: Promise<DailyQuestionsResponse> | undefined;
 const newsPromises = new Map<string, Promise<NewsResponse>>();
-const historyPromises = new Map<string, Promise<HistoryResponse>>();
 
 export class ApiError extends Error {
   status: number;
@@ -609,7 +550,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const response = await fetch(path, {
     ...init,
-    credentials: "include",
+    credentials: init.credentials ?? "include",
     headers,
   });
   const data = await response.json().catch(() => null);
@@ -625,16 +566,39 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
+let cachedLocalOpsToken: string | undefined;
+
+function localOpsAccessToken(): string {
+  if (cachedLocalOpsToken !== undefined) {
+    return cachedLocalOpsToken;
+  }
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const fragment = window.location.hash.replace(/^#/, "");
+  cachedLocalOpsToken = new URLSearchParams(fragment).get("opsToken")?.trim() ?? "";
+  if (cachedLocalOpsToken) {
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
+  return cachedLocalOpsToken;
+}
+
+function localOpsRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const token = localOpsAccessToken();
+  if (!token) {
+    return Promise.reject(new ApiError("Open Local Ops using its secure launcher.", 403));
+  }
+  const headers = new Headers(init.headers);
+  headers.set("X-Fultons-Ops-Token", token);
+  return request<T>(path, { ...init, credentials: "omit", headers });
+}
+
 function jsonBody(body: JsonBody): string {
   return JSON.stringify(body);
 }
 
 function newsCacheKey(limit: number, category: NewsCategory) {
   return `${category}:${limit}`;
-}
-
-function historyCacheKey(params: { location: string; date: string; lang?: string }) {
-  return `${params.lang ?? "en"}:${params.location.trim().toLowerCase()}:${params.date}`;
 }
 
 function fetchDailyQuestions(options: { force?: boolean } = {}) {
@@ -651,11 +615,10 @@ function fetchDailyQuestions(options: { force?: boolean } = {}) {
       };
       for (const question of payload.questions) {
         const item: DailyQuizQuestion = {
+          id: question.id,
           difficulty: question.difficulty,
           question: question.question,
           answers: question.choices,
-          correct_answer: question.correct_answer,
-          explanation: question.explanation,
         };
         if (question.subject === "football") {
           questions.football.push(item);
@@ -697,36 +660,6 @@ function fetchNews(
   return promise;
 }
 
-function fetchHistory(params: { location: string; date: string; lang?: string }) {
-  const cacheKey = historyCacheKey(params);
-  const existingPromise = historyPromises.get(cacheKey);
-  if (existingPromise !== undefined) {
-    return existingPromise;
-  }
-
-  const searchParams = new URLSearchParams({
-    location: params.location,
-    date: params.date,
-    lang: params.lang ?? "en",
-  });
-  const promise = request<HistoryResponse>(`/api/facts?${searchParams.toString()}`).catch(
-    (error) => {
-      historyPromises.delete(cacheKey);
-      throw error;
-    },
-  );
-  historyPromises.set(cacheKey, promise);
-  return promise;
-}
-
-function todayIsoDate() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 export const api = {
   me() {
     return request<AuthResponse>("/api/auth/me");
@@ -758,6 +691,10 @@ export const api = {
     return request<WordleState>("/api/wordle/today");
   },
 
+  startWordle() {
+    return request<WordleState>("/api/wordle/today", { method: "POST" });
+  },
+
   wordleDefinition() {
     return request<WordleDefinition>("/api/wordle/definition");
   },
@@ -766,10 +703,14 @@ export const api = {
     return request<{ valid: boolean }>(`/api/wordle/validate/${guess}`);
   },
 
-  submitWordleGuess(guess: string) {
+  submitWordleGuess(payload: {
+    guess: string;
+    expectedAttemptsUsed: number;
+    expectedGameDate: string;
+  }) {
     return request<WordleState>("/api/wordle/guess", {
       method: "POST",
-      body: jsonBody({ guess }),
+      body: jsonBody({ ...payload }),
     });
   },
 
@@ -784,7 +725,7 @@ export const api = {
   submitDailyQuizResult(payload: {
     date: string;
     category: "football" | "general";
-    answers: string[];
+    answers: DailyQuizSelection[];
   }) {
     return request<{ result: DailyQuizResult }>("/api/daily-quiz/result", {
       method: "POST",
@@ -814,14 +755,20 @@ export const api = {
     });
   },
 
-  submitDailyMapGuess(
-    levelId: number,
-    point: MapPoint,
-    options?: { selectedName?: string; revealedHintCount?: number },
-  ) {
+  revealDailyMapClue(levelId: number, expectedRevealedHintCount: number) {
+    return request<{ level: DailyMapGameLevel }>(
+      `/api/daily-map-game/${levelId}/reveal`,
+      {
+        method: "POST",
+        body: jsonBody({ expectedRevealedHintCount }),
+      },
+    );
+  },
+
+  submitDailyMapGuess(levelId: number, selectionId: string) {
     return request<{ result: DailyMapGameResult }>(`/api/daily-map-game/${levelId}/guess`, {
       method: "POST",
-      body: jsonBody({ ...point, ...options }),
+      body: jsonBody({ selectionId }),
     });
   },
 
@@ -834,19 +781,6 @@ export const api = {
     void fetchNews(50, "breaking").catch(() => undefined);
     void fetchNews(50, "live-scores").catch(() => undefined);
     void fetchNews(12, "all").catch(() => undefined);
-  },
-
-  history(params: { location: string; date: string; lang?: string }) {
-    return fetchHistory(params);
-  },
-
-  warmHistory(location = "Paisley") {
-    void fetchHistory({ location, date: todayIsoDate(), lang: "en" }).catch(() => undefined);
-  },
-
-  warmCoreData() {
-    this.warmNews();
-    this.warmHistory();
   },
 
   adminUsers() {
@@ -873,41 +807,30 @@ export const api = {
     });
   },
 
-  adminOpsMonitor(options?: { force?: boolean }) {
-    const params = new URLSearchParams();
-    if (options?.force) {
-      params.set("force", "1");
-    }
-    const query = params.toString();
-    return request<AdminOpsSnapshot>(
-      `/api/admin/ops-monitor${query ? `?${query}` : ""}`,
-    );
-  },
-
   localOpsMonitor(options?: { force?: boolean }) {
     const params = new URLSearchParams();
     if (options?.force) {
       params.set("force", "1");
     }
     const query = params.toString();
-    return request<AdminOpsSnapshot>(
+    return localOpsRequest<AdminOpsSnapshot>(
       `/api/local/ops-monitor${query ? `?${query}` : ""}`,
     );
   },
 
   localOpsConfig() {
-    return request<LocalOpsConfigResponse>("/api/local/ops-config");
+    return localOpsRequest<LocalOpsConfigResponse>("/api/local/ops-config");
   },
 
   updateLocalOpsConfig(payload: LocalOpsConfig) {
-    return request<LocalOpsConfigResponse>("/api/local/ops-config", {
+    return localOpsRequest<LocalOpsConfigResponse>("/api/local/ops-config", {
       method: "POST",
       body: jsonBody(payload),
     });
   },
 
   localOpsAction(requestPayload: LocalOpsActionRequest) {
-    return request<LocalOpsActionResponse>("/api/local/ops-action", {
+    return localOpsRequest<LocalOpsActionResponse>("/api/local/ops-action", {
       method: "POST",
       body: jsonBody(requestPayload),
     });
@@ -915,6 +838,8 @@ export const api = {
 
   localOpsActionStatus(jobId: string) {
     const params = new URLSearchParams({ jobId });
-    return request<LocalOpsActionResponse>(`/api/local/ops-action-status?${params.toString()}`);
+    return localOpsRequest<LocalOpsActionResponse>(
+      `/api/local/ops-action-status?${params.toString()}`,
+    );
   },
 };

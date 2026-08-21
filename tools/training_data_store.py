@@ -119,14 +119,6 @@ def map_place_review_is_clean_approval(row: dict[str, Any]) -> bool:
     return bool(str(row.get("place") or row.get("canonical_name") or "").strip())
 
 
-def clean_map_place_review_names(paths: list[Path]) -> set[str]:
-    return {
-        str(row.get("place") or row.get("canonical_name") or "").strip().casefold()
-        for row in read_map_place_review_feedback_rows(paths)
-        if map_place_review_is_clean_approval(row)
-    }
-
-
 def failed_map_place_review_names(paths: list[Path]) -> set[str]:
     names: set[str] = set()
     for row in read_map_place_review_feedback_rows(paths):

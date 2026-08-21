@@ -1,6 +1,5 @@
 import { LogOut, ShieldCheck, UserRound } from "lucide-react";
 import { NavLink } from "react-router-dom";
-import crest from "../assets/crest.svg";
 import { useAuth } from "../context/AuthContext";
 
 const headerButtonClass =
@@ -12,7 +11,7 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
   return (
     <header className="saints-stripe-edge flex min-h-16 items-center gap-3 bg-saints-black px-4 pb-1 text-white">
       <img
-        src={crest}
+        src="/favicon.svg"
         alt="St Mirren Football Club crest"
         className="h-11 w-11 shrink-0 rounded-full bg-white object-contain"
       />

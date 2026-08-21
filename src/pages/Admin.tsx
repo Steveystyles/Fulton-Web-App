@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
 import { KeyRound, Plus, ShieldCheck, Trash2, UsersRound } from "lucide-react";
-import { AdminOpsDashboard } from "../components/AdminOpsDashboard";
 import { Card } from "../components/Card";
 import { PageContainer } from "../components/PageContainer";
 import { useAuth } from "../context/AuthContext";
@@ -106,8 +105,6 @@ export function Admin() {
 
   return (
     <PageContainer title={isAdmin ? "ADMIN" : "PLAYERS"} number="A">
-      {isAdmin ? <AdminOpsDashboard /> : null}
-
       <Card>
         <form className="space-y-4" onSubmit={handleAddUser}>
           <div className="flex items-start gap-3">

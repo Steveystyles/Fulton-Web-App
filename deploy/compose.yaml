@@ -1,9 +1,8 @@
 services:
   quiz-app:
-    build:
-      context: ${FULTONS_SRC_DIR:-/opt/src/fulton-web-app}
-    image: ${FULTONS_IMAGE:-local/fulton-web-app:latest}
+    image: ${FULTONS_IMAGE:?Set FULTONS_IMAGE to an immutable image digest}
     container_name: fultons-quiz
+    pull_policy: never
     restart: unless-stopped
     expose:
       - "3000"
@@ -13,6 +12,10 @@ services:
       FULTONS_HOST: 0.0.0.0
       FULTONS_PORT: 3000
       FULTONS_TIMEZONE: Europe/London
+      # The external proxy network on this host is 172.18.0.0/16. Only peers
+      # inside that explicit boundary may supply the client IP used by throttles/audits.
+      FULTONS_TRUST_PROXY_HEADERS: "1"
+      FULTONS_TRUSTED_PROXY_CIDRS: 172.18.0.0/16
     volumes:
       - ${FULTONS_HOST_DATA_DIR:-/srv/storage/appdata/fultons-quiz}:/app/data
     read_only: true

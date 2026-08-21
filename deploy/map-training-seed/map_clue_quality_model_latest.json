@@ -3,8 +3,8 @@
   "created_at": "2026-08-02T20:53:06+00:00",
   "row_count": 649,
   "source_files": [
-    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_clue_review_rows_20260727_152734.jsonl",
-    "C:\\Users\\svens\\Desktop\\fultonsite\\Fulton Web App\\data\\training\\map_place_review_feedback_all.jsonl"
+    "data/training/map_clue_review_rows_20260727_152734.jsonl",
+    "data/training/map_place_review_feedback_all.jsonl"
   ],
   "source_counts": {
     "labelled_1000": 607,

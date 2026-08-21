@@ -4,11 +4,11 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import threading
 import time
 import hashlib
-from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -17,6 +17,10 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+from env_config import env_bool, env_float, env_int
+from safe_http import read_bounded_response
+
 
 DIFFICULTIES = ("easy", "medium", "hard")
 
@@ -56,7 +60,9 @@ SNAP_TOUCH_RADIUS_CAP_M = {
 }
 
 MAX_SNAP_ALTERNATIVES = 5
-PLAYABLE_PLACE_SAMPLE_LIMIT = 250
+MAP_SELECTION_TTL_HOURS = env_int(
+    "FULTONS_MAP_SELECTION_TTL_HOURS", 48, minimum=1, maximum=168
+)
 MAP_EXCLUDED_CANONICAL_NAMES = frozenset(
     {
         "aflaj irrigation systems of oman",
@@ -80,10 +86,30 @@ REVERSE_GEOCODE_USER_AGENT = os.environ.get(
     "FultonsQuiz/0.1 (+https://fultons-quiz.co.uk)",
 )
 REVERSE_GEOCODE_LANGUAGE = os.environ.get("FULTONS_REVERSE_GEOCODE_LANGUAGE", "en").strip() or "en"
-REVERSE_GEOCODE_TIMEOUT_SEC = float(os.environ.get("FULTONS_REVERSE_GEOCODE_TIMEOUT_SEC", "3"))
-REVERSE_GEOCODE_ENABLED = os.environ.get("FULTONS_REVERSE_GEOCODE_ENABLED", "1") != "0"
-REVERSE_GEOCODE_MIN_INTERVAL_SEC = 1.1
+REVERSE_GEOCODE_TIMEOUT_SEC = env_float(
+    "FULTONS_REVERSE_GEOCODE_TIMEOUT_SEC", 3.0, minimum=0.25, maximum=30.0
+)
+REVERSE_GEOCODE_ENABLED = env_bool("FULTONS_REVERSE_GEOCODE_ENABLED", True)
+REVERSE_GEOCODE_MIN_INTERVAL_SEC = env_float(
+    "FULTONS_REVERSE_GEOCODE_MIN_INTERVAL_SEC", 1.1, minimum=0.1, maximum=60.0
+)
+REVERSE_GEOCODE_MAX_RESPONSE_BYTES = env_int(
+    "FULTONS_REVERSE_GEOCODE_MAX_RESPONSE_BYTES",
+    1_000_000,
+    minimum=16_384,
+    maximum=5_000_000,
+)
+REVERSE_GEOCODE_CACHE_TTL_DAYS = env_int(
+    "FULTONS_REVERSE_GEOCODE_CACHE_TTL_DAYS", 30, minimum=1, maximum=3650
+)
+REVERSE_GEOCODE_CACHE_ROW_LIMIT = env_int(
+    "FULTONS_REVERSE_GEOCODE_CACHE_ROW_LIMIT", 5000, minimum=100, maximum=1_000_000
+)
+REVERSE_GEOCODE_MAX_CONCURRENT = env_int(
+    "FULTONS_REVERSE_GEOCODE_MAX_CONCURRENT", 2, minimum=1, maximum=8
+)
 REVERSE_GEOCODE_LOCK = threading.Lock()
+REVERSE_GEOCODE_GATE = threading.BoundedSemaphore(REVERSE_GEOCODE_MAX_CONCURRENT)
 REVERSE_GEOCODE_NEXT_REQUEST_AT = 0.0
 
 RECENT_USE_DAYS = 30
@@ -416,6 +442,8 @@ MAP_CLUE_GENERIC_UNNAMED_IDENTITY_RE = re.compile(
 )
 MAP_HARD_HOOK_EVENT_ACTION_RE = re.compile(
     r"\b(?:beat|defeated|stunned|shocked|won|lost|scored|set|broke|"
+    r"suffer\w*.{0,50}\bdefeat|victory\b.{0,70}\bover\b|"
+    r"captur\w*.{0,70}\b(?:image|photo|photograph)|"
     r"clinched|secured|assassinat\w*|murder\w*|kill\w*|slew|slain|shot|"
     r"attack\w*|bomb\w*|besieged|siege|"
     r"escaped?|fled|vanish\w*|disappear\w*|collaps\w*|destroy\w*|"
@@ -435,7 +463,9 @@ MAP_HARD_HOOK_RECOGNITION_SIGNAL_RE = re.compile(
     r"first(?:-ever)?|only|last surviving|oldest|largest|smallest|longest|"
     r"highest|deepest|fastest|most visited|birthplace|discovery|invention|"
     r"ritual|tradition|pilgrimage|legend|myth|annual race|cultural movement|"
-    r"natural phenomenon|mass migration)\b",
+    r"natural phenomenon|mass migration)\b|"
+    r"\btwo\b.{0,100}\bclubs?\b.{0,100}\bshare\w*\b.{0,80}"
+    r"\b(?:pitch|stadium|ground|arena|venue)\b",
     re.IGNORECASE,
 )
 MAP_HARD_HOOK_DISTINCTIVE_MARKER_RE = re.compile(
@@ -448,7 +478,7 @@ MAP_HARD_HOOK_DISTINCTIVE_MARKER_RE = re.compile(
 )
 MAP_HARD_HOOK_NAMED_EVENT_RE = re.compile(
     r"\b(?:world cup|european cup|champions league|european championship|"
-    r"olympic|commonwealth games|uprising|revolution|maracanazo|"
+    r"olympic|commonwealth games|uprising|revolution|blitz|maracanazo|"
     r"atomic bomb|goal of the century|hand of god|hundred years[’'] war|"
     r"second world war|first world war|civil rights|moon landing)\b",
     re.IGNORECASE,
@@ -542,6 +572,14 @@ MAP_HARD_TEAM_SIDES_RE = re.compile(
     rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+lost\s+"
     rf"\d+\s*[-\u2013\u2014]\s*\d+\s+to\s+"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+suffer\w*\b.{{0,100}}?\b"
+    rf"(?:defeat|loss)\s+(?:to|against)\s+"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"(?:victory|win)\s+for\s+{MAP_HARD_TEAM_NAME_PATTERN}\s+over\s+"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}|"
+    rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+(?:recorded|claimed|earned)?\s*"
+    rf"(?:a\s+)?(?:\d+\s*[-\u2013\u2014]\s*\d+\s+)?"
+    rf"(?:victory|win)\s+over\s+{MAP_HARD_TEAM_NAME_PATTERN}|"
     rf"{MAP_HARD_TEAM_NAME_PATTERN}\s+"
     rf"(?:secured|claimed|won|lifted)\b.{{0,100}}?\b"
     rf"(?:by\s+)?defeating\s+(?:the\s+|host nation\s+)?"
@@ -763,8 +801,10 @@ MAP_CLUE_LEARNED_PASS_THRESHOLDS = {
 class MapClueConfig:
     learning_profile_path: str = DEFAULT_MAP_LEARNING_PROFILE_PATH
     clue_quality_model_path: str = ""
-    max_attempts_per_place: int = max(1, int(os.environ.get("MAP_CLUE_MAX_ATTEMPTS", "6")))
-    require_ai_critic: bool = os.environ.get("MAP_CLUE_REQUIRE_AI_CRITIC", "1") != "0"
+    max_attempts_per_place: int = env_int(
+        "MAP_CLUE_MAX_ATTEMPTS", 6, minimum=1, maximum=50
+    )
+    require_ai_critic: bool = env_bool("MAP_CLUE_REQUIRE_AI_CRITIC", True)
 
 
 class MapClueProvider(Protocol):
@@ -1245,11 +1285,47 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             UNIQUE (user_id, level_id)
         );
 
+        CREATE TABLE IF NOT EXISTS daily_map_progress (
+            user_id INTEGER NOT NULL,
+            level_id INTEGER NOT NULL,
+            revealed_hint_count INTEGER NOT NULL DEFAULT 0
+                CHECK (revealed_hint_count BETWEEN 0 AND 3),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, level_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (level_id) REFERENCES daily_map_levels(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_map_selections (
+            selection_id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            level_id INTEGER NOT NULL,
+            point_lat REAL NOT NULL CHECK (point_lat BETWEEN -90 AND 90),
+            point_lng REAL NOT NULL CHECK (point_lng BETWEEN -180 AND 180),
+            selected_name TEXT NOT NULL CHECK (
+                length(selected_name) BETWEEN 1 AND 200
+            ),
+            created_at TEXT NOT NULL,
+            consumed_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (level_id) REFERENCES daily_map_levels(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_daily_map_levels_puzzle
         ON daily_map_levels (puzzle_id, level_slug);
 
         CREATE INDEX IF NOT EXISTS idx_daily_map_guesses_user_level
         ON daily_map_guesses (user_id, level_id);
+
+        CREATE INDEX IF NOT EXISTS idx_daily_map_selections_user_level
+        ON daily_map_selections (user_id, level_id, consumed_at);
+
+        CREATE INDEX IF NOT EXISTS idx_daily_map_selections_retention
+        ON daily_map_selections (consumed_at, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_map_place_pool_active_lat
+        ON map_place_pool (active, lat);
 
         CREATE TABLE IF NOT EXISTS map_reverse_geocode_cache (
             cache_key TEXT PRIMARY KEY,
@@ -1266,6 +1342,9 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             display_name TEXT,
             created_at TEXT NOT NULL
         );
+
+        CREATE INDEX IF NOT EXISTS idx_map_reverse_geocode_cache_created_at
+        ON map_reverse_geocode_cache (created_at);
         """
     )
     ensure_column(conn, "map_place_pool", "scoring_radius_m", "INTEGER")
@@ -1301,9 +1380,15 @@ def initialize_database(conn: sqlite3.Connection) -> None:
         "revealed_hint_count",
         "INTEGER NOT NULL DEFAULT 0",
     )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_map_place_pool_active_radius
+        ON map_place_pool (active, scoring_radius_m DESC)
+        """
+    )
+    prune_map_selections(conn)
     seed_starter_places(conn)
     backfill_missing_scoring_radii(conn)
-    backfill_daily_map_guess_scores(conn)
 
 
 def seed_starter_places(conn: sqlite3.Connection) -> None:
@@ -1326,41 +1411,7 @@ def seed_starter_places(conn: sqlite3.Connection) -> None:
                 avoid_in_clues, review_status, review_notes, scoring_radius_m, active, created_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
-            ON CONFLICT(slug) DO UPDATE SET
-                canonical_name = excluded.canonical_name,
-                country_code = excluded.country_code,
-                admin1 = excluded.admin1,
-                place_type = excluded.place_type,
-                difficulty = excluded.difficulty,
-                lat = excluded.lat,
-                lng = excluded.lng,
-                clue_text = excluded.clue_text,
-                medium_clue_text = CASE
-                    WHEN excluded.medium_clue_text <> '' THEN excluded.medium_clue_text
-                    ELSE map_place_pool.medium_clue_text
-                END,
-                easy_clue_text = CASE
-                    WHEN excluded.easy_clue_text <> '' THEN excluded.easy_clue_text
-                    ELSE map_place_pool.easy_clue_text
-                END,
-                reveal_text = excluded.reveal_text,
-                acceptable_aliases = excluded.acceptable_aliases,
-                nearby_context = excluded.nearby_context,
-                verified_facts_json = CASE
-                    WHEN excluded.verified_facts_json <> '[]' THEN excluded.verified_facts_json
-                    ELSE map_place_pool.verified_facts_json
-                END,
-                sources_json = CASE
-                    WHEN excluded.sources_json <> '[]' THEN excluded.sources_json
-                    ELSE map_place_pool.sources_json
-                END,
-                avoid_in_clues = excluded.avoid_in_clues,
-                review_status = map_place_pool.review_status,
-                review_notes = CASE
-                    WHEN excluded.review_notes <> '' THEN excluded.review_notes
-                    ELSE map_place_pool.review_notes
-                END,
-                scoring_radius_m = excluded.scoring_radius_m
+            ON CONFLICT(slug) DO NOTHING
             """,
             (
                 place["slug"],
@@ -1401,9 +1452,17 @@ def backfill_missing_scoring_radii(conn: sqlite3.Connection) -> None:
         )
 
 
-def commit_if_needed(conn: sqlite3.Connection) -> None:
-    if conn.in_transaction:
-        conn.commit()
+def prune_map_selections(conn: sqlite3.Connection) -> None:
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=MAP_SELECTION_TTL_HOURS)
+    ).replace(microsecond=0).isoformat()
+    conn.execute(
+        """
+        DELETE FROM daily_map_selections
+        WHERE consumed_at IS NOT NULL OR created_at < ?
+        """,
+        (cutoff,),
+    )
 
 
 def get_or_create_puzzle(conn: sqlite3.Connection, puzzle_date: str) -> sqlite3.Row:
@@ -1446,16 +1505,48 @@ def recent_cutoff(puzzle_date: str) -> str:
     return (current - timedelta(days=RECENT_USE_DAYS)).isoformat()
 
 
-def select_place(conn: sqlite3.Connection, puzzle_date: str, difficulty: str) -> sqlite3.Row | None:
-    params = (difficulty, puzzle_date, recent_cutoff(puzzle_date), puzzle_date)
+def least_recently_used_rows(
+    conn: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    *,
+    puzzle_date: str,
+) -> list[sqlite3.Row]:
+    if len(rows) <= 1:
+        return rows
+    last_used: dict[int, str] = {}
+    for row in rows:
+        used = conn.execute(
+            """
+            SELECT MAX(daily_map_puzzles.puzzle_date)
+            FROM daily_map_levels
+            INNER JOIN daily_map_puzzles
+                ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+            WHERE daily_map_levels.place_id = ?
+              AND daily_map_puzzles.status = 'published'
+              AND daily_map_puzzles.puzzle_date < ?
+            """,
+            (row["id"], puzzle_date),
+        ).fetchone()[0]
+        last_used[int(row["id"])] = str(used or "")
+    oldest = min(last_used.values())
+    return [row for row in rows if last_used[int(row["id"])] == oldest]
+
+
+def select_daily_place(
+    conn: sqlite3.Connection,
+    puzzle_date: str,
+    *,
+    required_place_type: str | None = None,
+) -> sqlite3.Row | None:
+    normalized_place_type = str(required_place_type or "").strip().casefold()
     rows = conn.execute(
         """
         SELECT *
         FROM map_place_pool
-        WHERE difficulty = ?
-          AND active = 1
+        WHERE active = 1
           AND clue_text <> ''
           AND reveal_text <> ''
+          AND (? = '' OR LOWER(place_type) = ?)
           AND (cooldown_until IS NULL OR cooldown_until < ?)
           AND id NOT IN (
               SELECT daily_map_levels.place_id
@@ -1467,47 +1558,15 @@ def select_place(conn: sqlite3.Connection, puzzle_date: str, difficulty: str) ->
         )
         ORDER BY COALESCE(validation_grade, 0) DESC, id
         """,
-        params,
+        (
+            normalized_place_type,
+            normalized_place_type,
+            puzzle_date,
+            recent_cutoff(puzzle_date),
+            puzzle_date,
+        ),
     ).fetchall()
-    row = best_quality_place(rows, puzzle_date=puzzle_date)
-    if row is not None:
-        return row
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM map_place_pool
-        WHERE difficulty = ?
-          AND active = 1
-          AND clue_text <> ''
-          AND reveal_text <> ''
-        ORDER BY COALESCE(validation_grade, 0) DESC, id
-        """,
-        (difficulty,),
-    ).fetchall()
-    return best_quality_place(rows, puzzle_date=puzzle_date)
-
-
-def select_daily_place(conn: sqlite3.Connection, puzzle_date: str) -> sqlite3.Row | None:
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM map_place_pool
-        WHERE active = 1
-          AND clue_text <> ''
-          AND reveal_text <> ''
-          AND (cooldown_until IS NULL OR cooldown_until < ?)
-          AND id NOT IN (
-              SELECT daily_map_levels.place_id
-              FROM daily_map_levels
-              INNER JOIN daily_map_puzzles
-                  ON daily_map_puzzles.id = daily_map_levels.puzzle_id
-              WHERE daily_map_puzzles.puzzle_date >= ?
-                AND daily_map_puzzles.puzzle_date <= ?
-        )
-        ORDER BY COALESCE(validation_grade, 0) DESC, id
-        """,
-        (puzzle_date, recent_cutoff(puzzle_date), puzzle_date),
-    ).fetchall()
+    rows = [row for row in rows if row_has_playable_map_guidance(row)]
     row = best_quality_place(rows, puzzle_date=puzzle_date)
     if row is not None:
         return row
@@ -1518,10 +1577,20 @@ def select_daily_place(conn: sqlite3.Connection, puzzle_date: str) -> sqlite3.Ro
         WHERE active = 1
           AND clue_text <> ''
           AND reveal_text <> ''
+          AND (? = '' OR LOWER(place_type) = ?)
         ORDER BY COALESCE(validation_grade, 0) DESC, id
         """,
+        (normalized_place_type, normalized_place_type),
     ).fetchall()
-    return best_quality_place(rows, puzzle_date=puzzle_date)
+    quality_rows = [
+        row
+        for row in rows
+        if row_passes_map_clue_quality(row) and row_has_playable_map_guidance(row)
+    ]
+    return best_quality_place(
+        least_recently_used_rows(conn, quality_rows, puzzle_date=puzzle_date),
+        puzzle_date=puzzle_date,
+    )
 
 
 def map_learning_profile_hash(path: str = DEFAULT_MAP_LEARNING_PROFILE_PATH) -> str:
@@ -1549,7 +1618,11 @@ def selected_qa_place(
         """,
         (place_id,),
     ).fetchone()
-    if row is None or not row_passes_map_clue_quality(row):
+    if (
+        row is None
+        or not row_passes_map_clue_quality(row)
+        or not row_has_playable_map_guidance(row)
+    ):
         return None
     if require_current_profile:
         current_profile_hash = map_learning_profile_hash()
@@ -1564,6 +1637,7 @@ def generate_daily_map_game(
     puzzle_date: str,
     force: bool = False,
     preferred_place_id: int | None = None,
+    required_place_type: str | None = None,
     require_current_profile_for_qa: bool = True,
     log: Any | None = None,
 ) -> dict[str, Any]:
@@ -1574,19 +1648,32 @@ def generate_daily_map_game(
         return puzzle_status(conn, puzzle_date)
 
     if force:
-        conn.execute(
+        played = conn.execute(
             """
-            DELETE FROM daily_map_guesses
-            WHERE level_id IN (
-                SELECT daily_map_levels.id
+            SELECT EXISTS (
+                SELECT 1
                 FROM daily_map_levels
-                INNER JOIN daily_map_puzzles
-                    ON daily_map_puzzles.id = daily_map_levels.puzzle_id
-                WHERE daily_map_puzzles.puzzle_date = ?
-            )
+                INNER JOIN daily_map_guesses
+                    ON daily_map_guesses.level_id = daily_map_levels.id
+                WHERE daily_map_levels.puzzle_id = ?
+                UNION ALL
+                SELECT 1
+                FROM daily_map_levels
+                INNER JOIN daily_map_progress
+                    ON daily_map_progress.level_id = daily_map_levels.id
+                WHERE daily_map_levels.puzzle_id = ?
+                  AND daily_map_progress.revealed_hint_count > 0
+            ) AS played
             """,
-            (puzzle_date,),
-        )
+            (puzzle["id"], puzzle["id"]),
+        ).fetchone()["played"]
+        if played:
+            status = puzzle_status(conn, puzzle_date)
+            status["regenerationBlocked"] = True
+            status["regenerationBlockReason"] = (
+                "The published round already has player activity."
+            )
+            return status
         conn.execute(
             """
             DELETE FROM daily_map_levels
@@ -1611,13 +1698,21 @@ def generate_daily_map_game(
             require_current_profile=require_current_profile_for_qa,
         )
         if preferred_place_id is not None
-        else select_daily_place(conn, puzzle_date)
+        else select_daily_place(
+            conn,
+            puzzle_date,
+            required_place_type=required_place_type,
+        )
     )
     if place is None:
         reason = (
             f"Requested QA map place {preferred_place_id} is unavailable or fails the clue quality gate."
             if preferred_place_id is not None
-            else "No active map-game place is available."
+            else (
+                f"No active {required_place_type} map-game place is available."
+                if required_place_type
+                else "No active map-game place is available."
+            )
         )
         set_puzzle_status(conn, puzzle_date, "failed", failure_reason=reason)
         if log is not None:
@@ -1709,6 +1804,7 @@ def level_rows(conn: sqlite3.Connection, puzzle_date: str, user_id: int) -> list
             daily_map_guesses.guessed_lng,
             daily_map_guesses.selected_name,
             daily_map_guesses.revealed_hint_count,
+            daily_map_progress.revealed_hint_count AS progress_revealed_hint_count,
             daily_map_guesses.distance_m,
             daily_map_guesses.score,
             daily_map_guesses.band,
@@ -1721,6 +1817,9 @@ def level_rows(conn: sqlite3.Connection, puzzle_date: str, user_id: int) -> list
         LEFT JOIN daily_map_guesses
             ON daily_map_guesses.level_id = daily_map_levels.id
             AND daily_map_guesses.user_id = ?
+        LEFT JOIN daily_map_progress
+            ON daily_map_progress.level_id = daily_map_levels.id
+            AND daily_map_progress.user_id = ?
         WHERE daily_map_puzzles.puzzle_date = ?
           AND daily_map_puzzles.status = 'published'
         ORDER BY
@@ -1730,7 +1829,7 @@ def level_rows(conn: sqlite3.Connection, puzzle_date: str, user_id: int) -> list
                 ELSE 3
             END
         """,
-        (user_id, puzzle_date),
+        (user_id, user_id, puzzle_date),
     ).fetchall()
 
 
@@ -1796,7 +1895,12 @@ def mask_answer_name(text: object, answer_name: object) -> str:
         return ""
     if not name:
         return value
-    return re.sub(re.escape(name), "This place", value, flags=re.IGNORECASE)
+    return re.sub(
+        rf"(?<!\w){re.escape(name)}(?!\w)",
+        "This place",
+        value,
+        flags=re.IGNORECASE,
+    )
 
 
 def parse_json_list(value: object) -> list[Any]:
@@ -3388,13 +3492,6 @@ def row_passes_map_clue_quality(row: sqlite3.Row) -> bool:
     return map_clue_critic_passed(critic)
 
 
-def first_quality_place(rows: list[sqlite3.Row]) -> sqlite3.Row | None:
-    for row in rows:
-        if row_passes_map_clue_quality(row):
-            return row
-    return None
-
-
 def stable_place_tiebreaker(row: sqlite3.Row | dict[str, Any], puzzle_date: str) -> int:
     try:
         place_id = row["id"]  # type: ignore[index]
@@ -3661,11 +3758,13 @@ def clue_ladder_for_row(row: sqlite3.Row) -> list[dict[str, Any]]:
         easy_text = mask_answer_name(row["reveal_text"], place_name)
     if not easy_text:
         easy_text = f"This place is in {region_text}."
+    hard_text = mask_answer_name(str(row["clue_text"] or "").strip(), place_name)
+    easy_text = mask_answer_name(easy_text, place_name)
     return [
         {
             "id": "hard",
             "title": "Hard clue",
-            "text": row["clue_text"],
+            "text": hard_text,
             "maxPoints": MAP_CLUE_SCORES[0],
         },
         {
@@ -3692,17 +3791,39 @@ def clue_ladder_for_row(row: sqlite3.Row) -> list[dict[str, Any]]:
 
 def serialize_level(row: sqlite3.Row) -> dict[str, Any]:
     clues = clue_ladder_for_row(row)
+    submitted = row["guess_id"] is not None
+    revealed_hint_count = normalized_revealed_hint_count(
+        row["revealed_hint_count"]
+        if submitted
+        else row["progress_revealed_hint_count"]
+    )
+    earned_clues = clues[: revealed_hint_count + 1]
+    earned_anchors = [
+        anchor
+        for anchor in serialize_map_search_anchors(row["map_search_anchors_json"])
+        if int(anchor["minHintCount"]) <= revealed_hint_count
+        and not (
+            revealed_hint_count < 3
+            and mask_answer_name(anchor["name"], row["canonical_name"])
+            != anchor["name"]
+        )
+        and haversine_m(
+            float(anchor["point"]["lat"]),
+            float(anchor["point"]["lng"]),
+            float(row["answer_lat"]),
+            float(row["answer_lng"]),
+        ) > 1
+    ]
     payload: dict[str, Any] = {
         "id": row["level_id"],
         "slug": row["level_slug"],
         "title": "Daily Place",
-        "clueText": clues[0]["text"],
-        "clues": clues,
-        "mapAnchors": serialize_map_search_anchors(row["map_search_anchors_json"]),
-        "maxPoints": MAP_MAX_SCORE,
-        "submitted": row["guess_id"] is not None,
+        "clues": earned_clues,
+        "mapAnchors": earned_anchors,
+        "revealedHintCount": revealed_hint_count,
+        "submitted": submitted,
     }
-    if row["guess_id"] is not None:
+    if submitted:
         payload["result"] = reveal_payload_from_row(row)
     return payload
 
@@ -3714,7 +3835,9 @@ def reveal_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         row["scoring_radius_m"],
     )
     outside_target_m = graded_distance_m(distance_m, target_radius_m)
-    correct = row["band"] != "Wrong place"
+    # Treat the stored score as the immutable result for legacy rows whose band
+    # predates the current "Wrong place" vocabulary.
+    correct = int(row["score"]) > 0
     revealed_hint_count = normalized_revealed_hint_count(row["revealed_hint_count"])
     selected_name = row["selected_name"]
     return {
@@ -3746,7 +3869,12 @@ def reveal_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def valid_coordinate(lat: object, lng: object) -> tuple[float, float]:
-    if not isinstance(lat, (int, float)) or not isinstance(lng, (int, float)):
+    if (
+        isinstance(lat, bool)
+        or isinstance(lng, bool)
+        or not isinstance(lat, (int, float))
+        or not isinstance(lng, (int, float))
+    ):
         raise ValueError("Guess coordinates must be numbers.")
     lat_value = float(lat)
     lng_value = float(lng)
@@ -3859,6 +3987,119 @@ def selection_payload(
     return payload
 
 
+def bind_selection_option(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    level_id: int,
+    option: dict[str, Any],
+) -> dict[str, Any]:
+    point = option.get("point")
+    if not isinstance(point, dict):
+        raise ValueError("Map selection is missing its point.")
+    point_lat, point_lng = valid_coordinate(point.get("lat"), point.get("lng"))
+    name = str(option.get("name") or "").strip()[:200]
+    if not name:
+        raise ValueError("Map selection is missing its place name.")
+    selection_id = ""
+    for _ in range(3):
+        selection_id = secrets.token_urlsafe(24)
+        try:
+            conn.execute(
+                """
+                INSERT INTO daily_map_selections (
+                    selection_id, user_id, level_id, point_lat, point_lng,
+                    selected_name, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    selection_id,
+                    user_id,
+                    level_id,
+                    point_lat,
+                    point_lng,
+                    name,
+                    utc_now(),
+                ),
+            )
+            break
+        except sqlite3.IntegrityError:
+            selection_id = ""
+    if not selection_id:
+        raise RuntimeError("Map selection could not be bound.")
+    bound = dict(option)
+    bound["point"] = {"lat": point_lat, "lng": point_lng}
+    bound["name"] = name
+    clicked_point = option.get("clickedPoint")
+    if isinstance(clicked_point, dict):
+        clicked_lat, clicked_lng = valid_coordinate(
+            clicked_point.get("lat"),
+            clicked_point.get("lng"),
+        )
+        bound["clickedPoint"] = {"lat": clicked_lat, "lng": clicked_lng}
+    bound["snapped"] = True
+    bound["kind"] = str(option.get("kind") or "place").strip()[:32] or "place"
+    bound["distanceMeters"] = min(
+        max(int(option.get("distanceMeters") or 0), 0),
+        50_000_000,
+    )
+    bound["snapRadiusMeters"] = min(
+        max(int(option.get("snapRadiusMeters") or 0), 0),
+        1_000_000,
+    )
+    country_code = option.get("countryCode")
+    bound["countryCode"] = (
+        str(country_code).strip()[:8] if country_code is not None else None
+    )
+    admin1 = option.get("admin1")
+    bound["admin1"] = str(admin1).strip()[:160] if admin1 is not None else None
+    bound["selectionId"] = selection_id
+    bound.pop("alternatives", None)
+    bound.pop("selectedIndex", None)
+    return bound
+
+
+def bind_selection_payload(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    level_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    conn.execute(
+        """
+        DELETE FROM daily_map_selections
+        WHERE user_id = ? AND level_id = ? AND consumed_at IS NULL
+        """,
+        (user_id, level_id),
+    )
+    alternatives = payload.get("alternatives")
+    bound_alternatives = [
+        bind_selection_option(
+            conn,
+            user_id=user_id,
+            level_id=level_id,
+            option=option,
+        )
+        for option in alternatives
+        if isinstance(option, dict)
+    ] if isinstance(alternatives, list) else []
+    bound = bind_selection_option(
+        conn,
+        user_id=user_id,
+        level_id=level_id,
+        option=payload,
+    )
+    if bound_alternatives:
+        bound["alternatives"] = bound_alternatives
+        bound["selectedIndex"] = min(
+            max(int(payload.get("selectedIndex") or 0), 0),
+            len(bound_alternatives) - 1,
+        )
+    return bound
+
+
 def serialize_map_boundary(value: object) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
@@ -3916,6 +4157,37 @@ def serialize_map_boundary(value: object) -> dict[str, Any] | None:
     return boundary if len(encoded) <= 250_000 else None
 
 
+def map_guidance_circle(
+    *,
+    lat: float,
+    lng: float,
+    radius_m: float,
+    steps: int = 64,
+) -> dict[str, Any]:
+    earth_radius_m = 6_371_008.8
+    angular_distance = radius_m / earth_radius_m
+    center_lat = math.radians(lat)
+    center_lng = math.radians(lng)
+    point_count = max(16, min(128, int(steps)))
+    ring: list[list[float]] = []
+    for step in range(point_count):
+        bearing = 2 * math.pi * step / point_count
+        point_lat = math.asin(
+            math.sin(center_lat) * math.cos(angular_distance)
+            + math.cos(center_lat)
+            * math.sin(angular_distance)
+            * math.cos(bearing)
+        )
+        point_lng = center_lng + math.atan2(
+            math.sin(bearing) * math.sin(angular_distance) * math.cos(center_lat),
+            math.cos(angular_distance)
+            - math.sin(center_lat) * math.sin(point_lat),
+        )
+        ring.append([math.degrees(point_lng), math.degrees(point_lat)])
+    ring.append(ring[0])
+    return {"type": "Polygon", "coordinates": [ring]}
+
+
 def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
     anchors: list[dict[str, Any]] = []
     for item in parse_json_list(value):
@@ -3941,6 +4213,18 @@ def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
             "maxZoom": normalized_max_zoom,
         }
         boundary = serialize_map_boundary(item.get("boundary"))
+        if boundary is None:
+            try:
+                guidance_radius_m = float(item.get("guidance_radius_m") or 0)
+            except (TypeError, ValueError):
+                guidance_radius_m = 0
+            if math.isfinite(guidance_radius_m) and 1_000 <= guidance_radius_m <= 500_000:
+                boundary = map_guidance_circle(
+                    lat=lat,
+                    lng=lng,
+                    radius_m=guidance_radius_m,
+                )
+                item = {**item, "boundary_kind": "guidance"}
         if boundary is not None:
             boundary_kind = str(item.get("boundary_kind") or "administrative").strip()
             if boundary_kind not in {"administrative", "guidance"}:
@@ -3954,6 +4238,28 @@ def serialize_map_search_anchors(value: object) -> list[dict[str, Any]]:
             anchor["boundaryMinZoom"] = min(19, max(1, boundary_min_zoom))
         anchors.append(anchor)
     return anchors[:3]
+
+
+def row_has_playable_map_guidance(row: sqlite3.Row | dict[str, Any]) -> bool:
+    try:
+        canonical_name = str(row["canonical_name"] or "").strip()
+        anchors = serialize_map_search_anchors(row["map_search_anchors_json"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return False
+    if not canonical_name or not anchors:
+        return False
+    has_drawable_area = any(
+        anchor.get("boundary") is not None and int(anchor.get("minHintCount", 3)) <= 2
+        for anchor in anchors
+    )
+    canonical_key = normalized_place_name(canonical_name)
+    has_easy_target = any(
+        int(anchor.get("minHintCount", 0)) == 2
+        and normalized_place_name(anchor.get("name")) == canonical_key
+        and int(anchor.get("minZoom", 19)) >= 10
+        for anchor in anchors
+    )
+    return has_drawable_area and has_easy_target
 
 
 def reverse_geocode_zoom_for_level(level_slug: str, map_zoom: float | None) -> int:
@@ -4027,6 +4333,9 @@ def cached_reverse_geocode_selection(
     clicked_lng: float,
     snap_radius_m: int,
 ) -> dict[str, Any] | None:
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=REVERSE_GEOCODE_CACHE_TTL_DAYS)
+    ).replace(microsecond=0).isoformat()
     row = conn.execute(
         """
         SELECT
@@ -4037,9 +4346,9 @@ def cached_reverse_geocode_selection(
             country_code,
             admin1
         FROM map_reverse_geocode_cache
-        WHERE cache_key = ?
+        WHERE cache_key = ? AND created_at >= ?
         """,
-        (cache_key,),
+        (cache_key, cutoff),
     ).fetchone()
     if row is None:
         return None
@@ -4130,17 +4439,37 @@ def reverse_geocode_admin(result: dict[str, Any]) -> tuple[str | None, str | Non
     return country, None
 
 
+def wait_for_geocoder_rate_slot() -> None:
+    """Reserve a provider request slot without holding the lock during sleep or I/O."""
+    global REVERSE_GEOCODE_NEXT_REQUEST_AT
+    with REVERSE_GEOCODE_LOCK:
+        now = time.monotonic()
+        scheduled_at = max(now, REVERSE_GEOCODE_NEXT_REQUEST_AT)
+        REVERSE_GEOCODE_NEXT_REQUEST_AT = (
+            scheduled_at + REVERSE_GEOCODE_MIN_INTERVAL_SEC
+        )
+    delay = scheduled_at - now
+    if delay > 0:
+        time.sleep(delay)
+
+
+def bounded_json_response(response: Any) -> Any:
+    body, charset = read_bounded_response(
+        response,
+        max_bytes=REVERSE_GEOCODE_MAX_RESPONSE_BYTES,
+        label="Geocoder",
+    )
+    return json.loads(body.decode(charset))
+
+
 def fetch_reverse_geocode(lat: float, lng: float, reverse_zoom: int) -> dict[str, Any] | None:
     if not REVERSE_GEOCODE_ENABLED or not REVERSE_GEOCODE_URL.strip():
         return None
 
-    global REVERSE_GEOCODE_NEXT_REQUEST_AT
-    with REVERSE_GEOCODE_LOCK:
-        now = time.monotonic()
-        if REVERSE_GEOCODE_NEXT_REQUEST_AT > now:
-            time.sleep(REVERSE_GEOCODE_NEXT_REQUEST_AT - now)
-        REVERSE_GEOCODE_NEXT_REQUEST_AT = time.monotonic() + REVERSE_GEOCODE_MIN_INTERVAL_SEC
-
+    if not REVERSE_GEOCODE_GATE.acquire(blocking=False):
+        return None
+    try:
+        wait_for_geocoder_rate_slot()
         query = urlencode(
             {
                 "format": "jsonv2",
@@ -4156,15 +4485,22 @@ def fetch_reverse_geocode(lat: float, lng: float, reverse_zoom: int) -> dict[str
             f"{REVERSE_GEOCODE_URL}{separator}{query}",
             headers={
                 "Accept": "application/json",
+                "Accept-Encoding": "identity",
                 "Accept-Language": REVERSE_GEOCODE_LANGUAGE,
                 "User-Agent": REVERSE_GEOCODE_USER_AGENT,
             },
         )
         try:
             with urlopen(request, timeout=REVERSE_GEOCODE_TIMEOUT_SEC) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+                payload = bounded_json_response(response)
+                return payload if isinstance(payload, dict) else None
+        except HTTPError as error:
+            error.close()
             return None
+        except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError):
+            return None
+    finally:
+        REVERSE_GEOCODE_GATE.release()
 
 
 def fetch_forward_geocode(
@@ -4182,13 +4518,10 @@ def fetch_forward_geocode(
     ):
         return []
 
-    global REVERSE_GEOCODE_NEXT_REQUEST_AT
-    with REVERSE_GEOCODE_LOCK:
-        now = time.monotonic()
-        if REVERSE_GEOCODE_NEXT_REQUEST_AT > now:
-            time.sleep(REVERSE_GEOCODE_NEXT_REQUEST_AT - now)
-        REVERSE_GEOCODE_NEXT_REQUEST_AT = time.monotonic() + REVERSE_GEOCODE_MIN_INTERVAL_SEC
-
+    if not REVERSE_GEOCODE_GATE.acquire(blocking=False):
+        return []
+    try:
+        wait_for_geocoder_rate_slot()
         params = {
             "format": "jsonv2",
             "q": query_value,
@@ -4207,15 +4540,21 @@ def fetch_forward_geocode(
             f"{FORWARD_GEOCODE_URL}{separator}{urlencode(params)}",
             headers={
                 "Accept": "application/json",
+                "Accept-Encoding": "identity",
                 "Accept-Language": REVERSE_GEOCODE_LANGUAGE,
                 "User-Agent": REVERSE_GEOCODE_USER_AGENT,
             },
         )
         try:
             with urlopen(request, timeout=REVERSE_GEOCODE_TIMEOUT_SEC) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+                payload = bounded_json_response(response)
+        except HTTPError as error:
+            error.close()
             return []
+        except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError, OSError, ValueError):
+            return []
+    finally:
+        REVERSE_GEOCODE_GATE.release()
     return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
 
 
@@ -4269,7 +4608,25 @@ def store_reverse_geocode_selection(
             utc_now(),
         ),
     )
-    commit_if_needed(conn)
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=REVERSE_GEOCODE_CACHE_TTL_DAYS)
+    ).replace(microsecond=0).isoformat()
+    conn.execute(
+        "DELETE FROM map_reverse_geocode_cache WHERE created_at < ?",
+        (cutoff,),
+    )
+    conn.execute(
+        """
+        DELETE FROM map_reverse_geocode_cache
+        WHERE cache_key IN (
+            SELECT cache_key
+            FROM map_reverse_geocode_cache
+            ORDER BY created_at DESC, cache_key DESC
+            LIMIT -1 OFFSET ?
+        )
+        """,
+        (REVERSE_GEOCODE_CACHE_ROW_LIMIT,),
+    )
 
 
 def reverse_geocode_candidate(
@@ -4356,6 +4713,7 @@ def reverse_geocode_candidate(
 def snap_guess(
     conn: sqlite3.Connection,
     *,
+    user_id: int,
     level_id: int,
     lat: object,
     lng: object,
@@ -4371,6 +4729,23 @@ def snap_guess(
     if level["puzzle_date"] != today:
         return {"error": "Only today's map game can be selected."}, HTTPStatus.BAD_REQUEST
 
+    largest_stored_radius = conn.execute(
+        """
+        SELECT scoring_radius_m
+        FROM map_place_pool
+        WHERE active = 1
+        ORDER BY scoring_radius_m DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    candidate_radius_m = max(
+        max(SNAP_TOUCH_RADIUS_CAP_M.values()),
+        max(SNAP_RADIUS_FLOOR_M.values()),
+        int(largest_stored_radius["scoring_radius_m"] or 0)
+        if largest_stored_radius is not None
+        else 0,
+    )
+    latitude_delta = min(180.0, (candidate_radius_m / 110_000.0) + 0.01)
     candidates = conn.execute(
         """
         SELECT
@@ -4383,8 +4758,12 @@ def snap_guess(
             lng,
             scoring_radius_m
         FROM map_place_pool
-        WHERE active = 1
-        """
+        WHERE active = 1 AND lat BETWEEN ? AND ?
+        """,
+        (
+            max(-90.0, guess_lat - latitude_delta),
+            min(90.0, guess_lat + latitude_delta),
+        ),
     ).fetchall()
     nearby_places: list[tuple[int, int, sqlite3.Row]] = []
     for place in candidates:
@@ -4414,7 +4793,12 @@ def snap_guess(
             zoom=click_zoom,
         )
         if reverse_selection is not None:
-            return reverse_selection, HTTPStatus.OK
+            return bind_selection_payload(
+                conn,
+                user_id=user_id,
+                level_id=level_id,
+                payload=reverse_selection,
+            ), HTTPStatus.OK
 
     if not nearby_places:
         return {
@@ -4458,7 +4842,7 @@ def snap_guess(
 
     best = nearby_places[0]
     distance_m, snap_radius_m, place = best
-    return selection_payload(
+    payload = selection_payload(
         point_lat=float(place["lat"]),
         point_lng=float(place["lng"]),
         clicked_lat=guess_lat,
@@ -4472,6 +4856,12 @@ def snap_guess(
         admin1=place["admin1"],
         alternatives=alternatives,
         selected_index=0,
+    )
+    return bind_selection_payload(
+        conn,
+        user_id=user_id,
+        level_id=level_id,
+        payload=payload,
     ), HTTPStatus.OK
 
 
@@ -4486,12 +4876,6 @@ def normalized_revealed_hint_count(value: object | None) -> int:
 def normalized_place_name(value: object | None) -> str:
     text = str(value or "").lower()
     return "".join(character for character in text if character.isalnum())
-
-
-def selected_place_matches_answer(selected_name: object | None, answer_name: object | None) -> bool:
-    selected = normalized_place_name(selected_name)
-    answer = normalized_place_name(answer_name)
-    return bool(selected and answer and selected == answer)
 
 
 def score_for_revealed_hint_count(revealed_hint_count: int, *, correct: bool) -> int:
@@ -4512,35 +4896,8 @@ def result_band(*, correct: bool, revealed_hint_count: int) -> str:
     return "Solved after name reveal"
 
 
-def score_guess(distance_m: int, level_slug: str) -> int:
-    target_radius_m = normalized_scoring_radius_m(level_slug)
-    return MAP_MAX_SCORE if distance_m <= target_radius_m else 0
-
-
 def graded_distance_m(distance_m: int, target_radius_m: int) -> int:
     return max(0, int(distance_m) - int(target_radius_m))
-
-
-def accuracy_band(
-    distance_m: int,
-    *,
-    inside_target_area: bool = False,
-    raw_distance_m: int | None = None,
-) -> str:
-    if inside_target_area:
-        if raw_distance_m is not None and raw_distance_m <= 1_000:
-            return "Bullseye"
-        return "Correct area"
-    distance_km = distance_m / 1000.0
-    if distance_km <= 1:
-        return "Bullseye"
-    if distance_km <= 10:
-        return "Excellent"
-    if distance_km <= 50:
-        return "Close"
-    if distance_km <= 200:
-        return "Nearby"
-    return "Far"
 
 
 def score_components(
@@ -4549,13 +4906,11 @@ def score_components(
     level_slug: str,
     scoring_radius_m: object | None,
     revealed_hint_count: object | None = None,
-    selected_name: object | None = None,
-    answer_name: object | None = None,
 ) -> dict[str, int | str | bool]:
     target_radius_m = normalized_scoring_radius_m(level_slug, scoring_radius_m)
     outside_target_m = graded_distance_m(distance_m, target_radius_m)
     revealed_count = normalized_revealed_hint_count(revealed_hint_count)
-    correct = distance_m <= target_radius_m or selected_place_matches_answer(selected_name, answer_name)
+    correct = distance_m <= target_radius_m
     return {
         "target_radius_m": target_radius_m,
         "graded_distance_m": outside_target_m,
@@ -4565,50 +4920,6 @@ def score_components(
         "score": score_for_revealed_hint_count(revealed_count, correct=correct),
         "band": result_band(correct=correct, revealed_hint_count=revealed_count),
     }
-
-
-def backfill_daily_map_guess_scores(conn: sqlite3.Connection) -> None:
-    rows = conn.execute(
-        """
-        SELECT
-            daily_map_guesses.id AS guess_id,
-            daily_map_guesses.distance_m,
-            daily_map_guesses.score,
-            daily_map_guesses.band,
-            daily_map_guesses.selected_name,
-            daily_map_guesses.revealed_hint_count,
-            daily_map_levels.level_slug,
-            map_place_pool.canonical_name,
-            map_place_pool.scoring_radius_m
-        FROM daily_map_guesses
-        INNER JOIN daily_map_levels
-            ON daily_map_levels.id = daily_map_guesses.level_id
-        INNER JOIN map_place_pool
-            ON map_place_pool.id = daily_map_levels.place_id
-        """
-    ).fetchall()
-    now = utc_now()
-    for row in rows:
-        components = score_components(
-            distance_m=int(row["distance_m"]),
-            level_slug=row["level_slug"],
-            scoring_radius_m=row["scoring_radius_m"],
-            revealed_hint_count=row["revealed_hint_count"],
-            selected_name=row["selected_name"],
-            answer_name=row["canonical_name"],
-        )
-        score = int(components["score"])
-        band = str(components["band"])
-        if int(row["score"]) == score and row["band"] == band:
-            continue
-        conn.execute(
-            """
-            UPDATE daily_map_guesses
-            SET score = ?, band = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (score, band, now, row["guess_id"]),
-        )
 
 
 def load_level_for_submission(conn: sqlite3.Connection, level_id: int) -> sqlite3.Row | None:
@@ -4680,22 +4991,112 @@ def submitted_level_row(conn: sqlite3.Connection, user_id: int, level_id: int) -
     ).fetchone()
 
 
+def user_level_payload(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    level_id: int,
+    puzzle_date: str,
+) -> dict[str, Any] | None:
+    for row in level_rows(conn, puzzle_date, user_id):
+        if int(row["level_id"]) == level_id:
+            return serialize_level(row)
+    return None
+
+
+def persisted_revealed_hint_count(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    level_id: int,
+) -> int:
+    row = conn.execute(
+        """
+        SELECT revealed_hint_count
+        FROM daily_map_progress
+        WHERE user_id = ? AND level_id = ?
+        """,
+        (user_id, level_id),
+    ).fetchone()
+    return normalized_revealed_hint_count(
+        row["revealed_hint_count"] if row is not None else 0
+    )
+
+
+def reveal_next_clue(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    level_id: int,
+    expected_revealed_hint_count: object,
+    today: str,
+) -> tuple[dict[str, Any], int]:
+    level = load_level_for_submission(conn, level_id)
+    if level is None or level["status"] != "published":
+        return {"error": "Map-game level was not found."}, HTTPStatus.NOT_FOUND
+    if level["puzzle_date"] != today:
+        return {"error": "Only today's map game can reveal clues."}, HTTPStatus.BAD_REQUEST
+    if (
+        type(expected_revealed_hint_count) is not int
+        or not 0 <= expected_revealed_hint_count <= 3
+    ):
+        return {
+            "error": "expectedRevealedHintCount must be an integer from 0 to 3."
+        }, HTTPStatus.BAD_REQUEST
+
+    existing = submitted_level_row(conn, user_id, level_id)
+    if existing is None:
+        current_count = persisted_revealed_hint_count(
+            conn,
+            user_id=user_id,
+            level_id=level_id,
+        )
+        # A retry of an already-applied reveal is a no-op. A forged future version
+        # also cannot skip server-side progression.
+        if expected_revealed_hint_count == current_count and current_count < 3:
+            next_count = current_count + 1
+            now = utc_now()
+            conn.execute(
+                """
+                INSERT INTO daily_map_progress (
+                    user_id, level_id, revealed_hint_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, level_id) DO UPDATE SET
+                    revealed_hint_count = excluded.revealed_hint_count,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, level_id, next_count, now, now),
+            )
+
+    payload = user_level_payload(
+        conn,
+        user_id=user_id,
+        level_id=level_id,
+        puzzle_date=level["puzzle_date"],
+    )
+    if payload is None:
+        return {"error": "Map-game level was not found."}, HTTPStatus.NOT_FOUND
+    return {"level": payload}, HTTPStatus.OK
+
+
+def valid_selection_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    token = value.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
+        return None
+    return token
+
+
 def submit_guess(
     conn: sqlite3.Connection,
     *,
     user_id: int,
     level_id: int,
-    lat: object,
-    lng: object,
-    selected_name: object | None = None,
-    revealed_hint_count: object | None = None,
+    selection_id: object,
     today: str,
 ) -> tuple[dict[str, Any], int]:
-    guess_lat, guess_lng = valid_coordinate(lat, lng)
-    selected_name_value = str(selected_name).strip() if selected_name is not None else None
-    if selected_name_value == "":
-        selected_name_value = None
-    revealed_count = normalized_revealed_hint_count(revealed_hint_count)
     level = load_level_for_submission(conn, level_id)
     if level is None or level["status"] != "published":
         return {"error": "Map-game level was not found."}, HTTPStatus.NOT_FOUND
@@ -4704,7 +5105,37 @@ def submit_guess(
 
     existing = submitted_level_row(conn, user_id, level_id)
     if existing is not None:
+        conn.execute(
+            "DELETE FROM daily_map_selections WHERE user_id = ? AND level_id = ?",
+            (user_id, level_id),
+        )
+        conn.execute(
+            "DELETE FROM daily_map_progress WHERE user_id = ? AND level_id = ?",
+            (user_id, level_id),
+        )
         return {"result": reveal_payload_from_row(existing)}, HTTPStatus.OK
+
+    token = valid_selection_id(selection_id)
+    if token is None:
+        return {"error": "A valid server selection is required."}, HTTPStatus.BAD_REQUEST
+    selection = conn.execute(
+        """
+        SELECT point_lat, point_lng, selected_name, consumed_at
+        FROM daily_map_selections
+        WHERE selection_id = ? AND user_id = ? AND level_id = ?
+        """,
+        (token, user_id, level_id),
+    ).fetchone()
+    if selection is None or selection["consumed_at"] is not None:
+        return {"error": "Map selection is invalid or has already been used."}, HTTPStatus.BAD_REQUEST
+
+    guess_lat, guess_lng = valid_coordinate(selection["point_lat"], selection["point_lng"])
+    selected_name_value = str(selection["selected_name"])
+    revealed_count = persisted_revealed_hint_count(
+        conn,
+        user_id=user_id,
+        level_id=level_id,
+    )
 
     distance_m = haversine_m(
         guess_lat,
@@ -4717,41 +5148,48 @@ def submit_guess(
         level_slug=level["level_slug"],
         scoring_radius_m=level["scoring_radius_m"],
         revealed_hint_count=revealed_count,
-        selected_name=selected_name_value,
-        answer_name=level["canonical_name"],
     )
     score = int(components["score"])
     band = str(components["band"])
     now = utc_now()
-    try:
-        conn.execute(
-            """
-            INSERT INTO daily_map_guesses (
-                user_id, level_id, guessed_lat, guessed_lng, selected_name,
-                revealed_hint_count, distance_m, score, band, completed_at,
-                created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                user_id,
-                level_id,
-                guess_lat,
-                guess_lng,
-                selected_name_value,
-                revealed_count,
-                distance_m,
-                score,
-                band,
-                now,
-                now,
-                now,
-            ),
+    cursor = conn.execute(
+        """
+        INSERT INTO daily_map_guesses (
+            user_id, level_id, guessed_lat, guessed_lng, selected_name,
+            revealed_hint_count, distance_m, score, band, completed_at,
+            created_at, updated_at
         )
-    except sqlite3.IntegrityError:
-        pass
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, level_id) DO NOTHING
+        """,
+        (
+            user_id,
+            level_id,
+            guess_lat,
+            guess_lng,
+            selected_name_value,
+            revealed_count,
+            distance_m,
+            score,
+            band,
+            now,
+            now,
+            now,
+        ),
+    )
+    created = cursor.rowcount == 1
 
     row = submitted_level_row(conn, user_id, level_id)
     if row is None:
         return {"error": "Map-game guess could not be saved."}, HTTPStatus.INTERNAL_SERVER_ERROR
-    return {"result": reveal_payload_from_row(row)}, HTTPStatus.CREATED
+    conn.execute(
+        "DELETE FROM daily_map_selections WHERE user_id = ? AND level_id = ?",
+        (user_id, level_id),
+    )
+    conn.execute(
+        "DELETE FROM daily_map_progress WHERE user_id = ? AND level_id = ?",
+        (user_id, level_id),
+    )
+    return {
+        "result": reveal_payload_from_row(row)
+    }, HTTPStatus.CREATED if created else HTTPStatus.OK

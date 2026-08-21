@@ -165,6 +165,55 @@ class QuizLearningOpsTests(unittest.TestCase):
         self.assertTrue(any("duplicate" in error for error in errors))
         self.assertTrue(any("longer than 240" in error for error in errors))
 
+    def test_refresh_profile_adds_smoothed_candidate_policy(self) -> None:
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-07-15")
+        candidate = {
+            "answer": "Example FC",
+            "hook": "A documented final made this club a useful candidate for the learning fixture.",
+            "topic_lane": "famous incidents and matches",
+            "era": "twentieth century",
+            "region": "Europe",
+            "tags": ["famous final", "learning fixture"],
+            "evidence_query": "Example FC documented final",
+        }
+        daily_quiz.insert_candidate(
+            self.conn,
+            quiz_set_id=int(quiz_set["id"]),
+            quiz_date="2026-07-15",
+            subject="football",
+            difficulty="easy",
+            batch_number=1,
+            candidate_index=1,
+            provider="test-provider",
+            generation_mode="normal",
+            candidate=candidate,
+            status="accepted",
+        )
+        rejected = {**candidate, "answer": "Rejected FC", "evidence_query": "Rejected FC final"}
+        daily_quiz.insert_candidate(
+            self.conn,
+            quiz_set_id=int(quiz_set["id"]),
+            quiz_date="2026-07-15",
+            subject="football",
+            difficulty="easy",
+            batch_number=1,
+            candidate_index=2,
+            provider="test-provider",
+            generation_mode="normal",
+            candidate=rejected,
+            status="rejected",
+            rejection_stage="evidence",
+            failure_reason="Evidence did not support the hook.",
+        )
+
+        policy = refresh.candidate_policy_from_database(self.conn)
+
+        slot = policy["football/easy"]
+        self.assertEqual(slot["sample_count"], 2)
+        self.assertEqual(slot["lane_weights"]["famous incidents and matches"], 0.5)
+        self.assertEqual(slot["provider_weights"]["test-provider"], 0.5)
+        self.assertEqual(slot["failure_categories"]["evidence"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

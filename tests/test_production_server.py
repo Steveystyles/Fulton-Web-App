@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -26,12 +26,70 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertIsNone(server.validate_password("correct-horse-battery"))
 
     def test_session_cookie_can_be_marked_secure(self) -> None:
-        import production_server
+        import server
 
-        header = production_server.session_header("token-value")
+        with patch.object(server, "COOKIE_SECURE", True):
+            header = server.session_header("token-value")
         self.assertIn("HttpOnly", header)
         self.assertIn("SameSite=Lax", header)
         self.assertIn("Secure", header)
+
+    def test_daily_map_generation_rejects_truthy_string_force(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers = {"Authorization": "Bearer test-token"}
+
+            def read_json(self) -> dict[str, object]:
+                return {"date": "2026-08-11", "force": "false"}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+        with (
+            patch.object(
+                server,
+                "DAILY_QUIZ_CONFIG",
+                SimpleNamespace(internal_token="test-token"),
+            ),
+            patch("server.generate_daily_map_game_for_date") as generate,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/internal/generate-daily-map-game",
+                "",
+            )
+
+        self.assertEqual(
+            sent_errors,
+            [(HTTPStatus.BAD_REQUEST, "force must be a JSON boolean.")],
+        )
+        generate.assert_not_called()
+
+    def test_retired_facts_history_apis_return_gone(self) -> None:
+        import server
+
+        responses: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                responses.append((status, message))
+
+        for path in ("/api/history", "/api/facts", "/api/fact-image"):
+            for method in ("GET", "POST"):
+                server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                    DummyHandler(),
+                    method,
+                    path,
+                    "",
+                )
+
+        self.assertEqual(len(responses), 6)
+        self.assertTrue(all(status == HTTPStatus.GONE for status, _message in responses))
+        self.assertTrue(all("retired" in message.lower() for _status, message in responses))
 
     def test_current_user_avoids_session_cleanup_write_on_read_path(self) -> None:
         import server
@@ -148,63 +206,6 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(payload["status"], "disabled")
         self.assertIn("FULTONS_MONITOR_ENABLED", payload["reason"])
 
-    def test_admin_ops_monitor_route_requires_admin(self) -> None:
-        import server
-
-        sent_errors: list[tuple[HTTPStatus, str]] = []
-
-        class DummyHandler:
-            headers = {"Cookie": "fultons_session=token"}
-
-            def send_error_json(self, status: HTTPStatus, message: str) -> None:
-                sent_errors.append((status, message))
-
-        with (
-            patch("server.connect_db") as connect_db,
-            patch("server.get_cookie_value", return_value="token"),
-            patch("server.current_user", return_value={"id": 1, "role": "mod"}),
-            patch("ops_monitor.collect_dashboard_snapshot") as collect_snapshot,
-        ):
-            connect_db.return_value.__enter__.return_value = object()
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "GET",
-                "/api/admin/ops-monitor",
-                "",
-            )
-
-        self.assertEqual(sent_errors, [(HTTPStatus.FORBIDDEN, "Admin access required.")])
-        collect_snapshot.assert_not_called()
-
-    def test_admin_ops_monitor_route_returns_snapshot_for_admin(self) -> None:
-        import server
-
-        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
-
-        class DummyHandler:
-            headers = {"Cookie": "fultons_session=token"}
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                sent.append((status, payload))
-
-        snapshot = {"enabled": True, "status": "healthy"}
-        with (
-            patch("server.connect_db") as connect_db,
-            patch("server.get_cookie_value", return_value="token"),
-            patch("server.current_user", return_value={"id": 1, "role": "admin"}),
-            patch("ops_monitor.collect_dashboard_snapshot", return_value=snapshot) as collect_snapshot,
-        ):
-            connect_db.return_value.__enter__.return_value = object()
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "GET",
-                "/api/admin/ops-monitor",
-                "force=1",
-            )
-
-        self.assertEqual(sent, [(HTTPStatus.OK, snapshot)])
-        collect_snapshot.assert_called_once_with(force=True)
-
     def test_internal_get_routes_through_api_handler(self) -> None:
         import server
 
@@ -281,344 +282,51 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(sent_errors, [(HTTPStatus.BAD_REQUEST, "rows must be a list.")])
 
-    def test_local_ops_config_route_returns_saved_settings(self) -> None:
-        import server
-
-        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
-
-        class DummyHandler:
-            client_address = ("127.0.0.1", 12345)
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                sent.append((status, payload))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        response = {"config": {"sshTarget": "ste@192.168.0.15"}, "settingsPath": "C:/temp.json"}
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("local_ops_settings.monitor_settings_response", return_value=response),
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "GET",
-                "/api/local/ops-config",
-                "",
-            )
-
-        self.assertEqual(sent, [(HTTPStatus.OK, response)])
-
-    def test_local_ops_config_route_saves_settings(self) -> None:
-        import server
-
-        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
-
-        class DummyHandler:
-            client_address = ("127.0.0.1", 12345)
-
-            def read_json(self) -> dict[str, object]:
-                return {"sshTarget": "ste@192.168.0.22", "sshPort": 2222}
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                sent.append((status, payload))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        saved = {"sshTarget": "ste@192.168.0.22", "sshPort": 2222}
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("local_ops_settings.save_monitor_settings", return_value=saved),
-            patch("local_ops_settings.SETTINGS_PATH", "C:/temp.json"),
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "POST",
-                "/api/local/ops-config",
-                "",
-            )
-
-        self.assertEqual(
-            sent,
-            [(HTTPStatus.OK, {"config": saved, "settingsPath": "C:/temp.json"})],
-        )
-
-    def test_local_ops_monitor_route_requires_loopback(self) -> None:
+    def test_authenticated_player_server_does_not_expose_any_ops_monitor_route(self) -> None:
         import server
 
         sent_errors: list[tuple[HTTPStatus, str]] = []
 
         class DummyHandler:
-            client_address = ("192.168.0.9", 12345)
+            headers = {"Cookie": "fultons_session=token"}
 
             def send_error_json(self, status: HTTPStatus, message: str) -> None:
                 sent_errors.append((status, message))
 
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
+            def handle_admin(
+                self,
+                conn: object,
+                user: object,
+                method: str,
+                path: str,
+            ) -> None:
+                server.FultonsHandler.handle_admin(self, conn, user, method, path)  # type: ignore[arg-type]
 
         with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.collect_dashboard_snapshot") as collect_snapshot,
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch(
+                "server.current_user",
+                return_value={"id": 1, "role": "admin", "is_moderator": 0},
+            ),
         ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "GET",
-                "/api/local/ops-monitor",
-                "",
-            )
+            connect_db.return_value.__enter__.return_value = object()
+            for path in ("/api/local/ops-monitor", "/api/admin/ops-monitor"):
+                server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                    DummyHandler(),
+                    "GET",
+                    path,
+                    "",
+                )
 
         self.assertEqual(
             sent_errors,
-            [(HTTPStatus.FORBIDDEN, "Local ops dashboard is available only from localhost.")],
+            [
+                (HTTPStatus.NOT_FOUND, "API route not found."),
+                (HTTPStatus.NOT_FOUND, "Admin route not found."),
+            ],
         )
-        collect_snapshot.assert_not_called()
-
-    def test_local_ops_monitor_route_returns_snapshot_for_loopback(self) -> None:
-        import server
-
-        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
-
-        class DummyHandler:
-            client_address = ("127.0.0.1", 12345)
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                sent.append((status, payload))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        snapshot = {"enabled": True, "status": "healthy"}
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.collect_dashboard_snapshot", return_value=snapshot) as collect_snapshot,
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "GET",
-                "/api/local/ops-monitor",
-                "force=1",
-            )
-
-        self.assertEqual(sent, [(HTTPStatus.OK, snapshot)])
-        collect_snapshot.assert_called_once_with(force=True)
-
-    def test_local_ops_action_route_requires_loopback(self) -> None:
-        import server
-
-        sent_errors: list[tuple[HTTPStatus, str]] = []
-
-        class DummyHandler:
-            client_address = ("192.168.0.9", 12345)
-
-            def send_error_json(self, status: HTTPStatus, message: str) -> None:
-                sent_errors.append((status, message))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.run_local_action") as run_local_action,
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "POST",
-                "/api/local/ops-action",
-                "",
-            )
-
-        self.assertEqual(
-            sent_errors,
-            [(HTTPStatus.FORBIDDEN, "Local ops dashboard is available only from localhost.")],
-        )
-        run_local_action.assert_not_called()
-
-    def test_local_ops_action_route_runs_requested_action(self) -> None:
-        import server
-
-        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
-
-        class DummyHandler:
-            client_address = ("127.0.0.1", 12345)
-
-            def read_json(self) -> dict[str, object]:
-                return {"action": "remove_orphaned_networks"}
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                sent.append((status, payload))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        response = {
-            "action": "remove_orphaned_networks",
-            "message": "Removed 2 orphaned network(s).",
-            "details": {"removedNetworks": ["fultons-quiz_app"]},
-            "snapshot": {"enabled": True, "status": "healthy"},
-        }
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.run_local_action", return_value=response) as run_local_action,
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "POST",
-                "/api/local/ops-action",
-                "",
-            )
-
-        self.assertEqual(sent, [(HTTPStatus.OK, response)])
-        run_local_action.assert_called_once_with("remove_orphaned_networks", params=None)
-
-    def test_local_ops_action_route_starts_async_job_for_regenerate_question(self) -> None:
-        import server
-
-        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
-
-        class DummyHandler:
-            client_address = ("127.0.0.1", 12345)
-
-            def read_json(self) -> dict[str, object]:
-                return {
-                    "action": "regenerate_question",
-                    "params": {
-                        "date": "2026-06-03",
-                        "subject": "football",
-                        "difficulty": "hard",
-                    },
-                }
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                sent.append((status, payload))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        response = {
-            "action": "regenerate_question",
-            "status": "queued",
-            "done": False,
-            "jobId": "ops-123",
-            "message": "Refreshing football / hard for 2026-06-03.",
-        }
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.start_local_action_job", return_value=response) as start_local_action_job,
-            patch("ops_monitor.run_local_action") as run_local_action,
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "POST",
-                "/api/local/ops-action",
-                "",
-            )
-
-        self.assertEqual(sent, [(HTTPStatus.ACCEPTED, response)])
-        start_local_action_job.assert_called_once_with(
-            "regenerate_question",
-            params={"date": "2026-06-03", "subject": "football", "difficulty": "hard"},
-        )
-        run_local_action.assert_not_called()
-
-    def test_local_ops_action_status_route_returns_job(self) -> None:
-        import server
-
-        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
-
-        class DummyHandler:
-            client_address = ("127.0.0.1", 12345)
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                sent.append((status, payload))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        response = {
-            "action": "regenerate_question",
-            "status": "running",
-            "done": False,
-            "jobId": "ops-123",
-            "message": "Refreshing football / hard for 2026-06-03.",
-        }
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.get_local_action_job", return_value=response) as get_local_action_job,
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "GET",
-                "/api/local/ops-action-status",
-                "jobId=ops-123",
-            )
-
-        self.assertEqual(sent, [(HTTPStatus.OK, response)])
-        get_local_action_job.assert_called_once_with("ops-123")
-
-    def test_local_ops_action_route_rejects_invalid_action(self) -> None:
-        import server
-
-        sent_errors: list[tuple[HTTPStatus, str]] = []
-
-        class DummyHandler:
-            client_address = ("127.0.0.1", 12345)
-
-            def read_json(self) -> dict[str, object]:
-                return {"action": "drop_database"}
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
-                raise AssertionError("send_json should not be called for invalid actions")
-
-            def send_error_json(self, status: HTTPStatus, message: str) -> None:
-                sent_errors.append((status, message))
-
-            def client_ip(self) -> str:
-                return self.client_address[0]
-
-            def is_loopback_request(self) -> bool:
-                return server.FultonsHandler.is_loopback_request(self)  # type: ignore[arg-type]
-
-        with (
-            patch("server.LOCAL_OPS_ENABLED", True),
-            patch("ops_monitor.run_local_action", side_effect=ValueError("Unsupported ops action: drop_database")),
-        ):
-            server.FultonsHandler.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "POST",
-                "/api/local/ops-action",
-                "",
-            )
-
-        self.assertEqual(
-            sent_errors,
-            [(HTTPStatus.BAD_REQUEST, "Unsupported ops action: drop_database")],
-        )
+        self.assertFalse(hasattr(server, "ops_monitor"))
 
     def test_internal_regenerate_daily_quiz_question_requires_valid_token(self) -> None:
         import server
@@ -641,6 +349,118 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(sent_errors, [(HTTPStatus.UNAUTHORIZED, "Invalid internal token.")])
 
+    def test_internal_generate_daily_quiz_rejects_string_force_flag(self) -> None:
+        import server
+
+        sent_errors: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers = {"Authorization": "Bearer expected-token"}
+
+            def client_ip(self) -> str:
+                return "127.0.0.1"
+
+            def read_json(self) -> dict[str, object]:
+                return {"date": "2026-06-03", "force": "false"}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                sent_errors.append((status, message))
+
+        with (
+            patch("server.DAILY_QUIZ_CONFIG", SimpleNamespace(internal_token="expected-token")),
+            patch("server.daily_quiz.generate_daily_quiz") as generate_daily_quiz,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "POST",
+                "/internal/generate-daily-quiz",
+                "",
+            )
+
+        self.assertEqual(
+            sent_errors,
+            [(HTTPStatus.BAD_REQUEST, "force must be a JSON boolean.")],
+        )
+        generate_daily_quiz.assert_not_called()
+
+    def test_public_daily_quiz_route_rejects_non_current_dates(self) -> None:
+        import server
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def __init__(self) -> None:
+                self.errors: list[tuple[HTTPStatus, str]] = []
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                self.errors.append((status, message))
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                raise AssertionError(f"Unexpected playable payload: {status} {payload}")
+
+        for requested_date in ("2026-06-22", "2026-06-24", "not-a-date"):
+            with self.subTest(requested_date=requested_date):
+                handler = DummyHandler()
+                with (
+                    patch("server.connect_db") as connect_db,
+                    patch("server.get_cookie_value", return_value="token"),
+                    patch("server.current_user", return_value={"id": 1, "role": "user"}),
+                    patch("server.today_game_date", return_value="2026-06-23"),
+                    patch("server.daily_quiz.quiz_payload") as quiz_payload,
+                ):
+                    connect_db.return_value.__enter__.return_value = object()
+                    server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                        handler,
+                        "GET",
+                        "/api/daily-quiz",
+                        f"date={requested_date}",
+                    )
+
+                self.assertEqual(handler.errors[0][0], HTTPStatus.NOT_FOUND)
+                quiz_payload.assert_not_called()
+
+    def test_public_daily_quiz_locks_content_before_serializing_it(self) -> None:
+        import server
+
+        calls: list[str] = []
+        sent: list[tuple[HTTPStatus, dict[str, object]]] = []
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                raise AssertionError(f"unexpected API error {status}: {message}")
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                sent.append((status, payload))
+
+        conn = object()
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1, "role": "user"}),
+            patch("server.today_game_date", return_value="2026-06-23"),
+            patch(
+                "server.daily_quiz.lock_published_quiz_for_play",
+                side_effect=lambda *_: calls.append("lock"),
+            ),
+            patch(
+                "server.daily_quiz.quiz_payload",
+                side_effect=lambda *_: calls.append("payload")
+                or {"date": "2026-06-23", "status": "published", "questions": []},
+            ),
+        ):
+            connect_db.return_value.__enter__.return_value = conn
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                DummyHandler(),
+                "GET",
+                "/api/daily-quiz",
+                "",
+            )
+
+        self.assertEqual(calls, ["lock", "payload"])
+        self.assertEqual(sent[0][0], HTTPStatus.OK)
+
     def test_internal_regenerate_daily_quiz_question_returns_payload(self) -> None:
         import server
 
@@ -648,6 +468,9 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         class DummyHandler:
             headers = {"Authorization": "Bearer expected-token"}
+
+            def client_ip(self) -> str:
+                return "127.0.0.1"
 
             def read_json(self) -> dict[str, object]:
                 return {
@@ -675,7 +498,11 @@ class ProductionServerHardeningTests(unittest.TestCase):
             patch("server.DAILY_QUIZ_CONFIG", SimpleNamespace(internal_token="expected-token")),
             patch("server.connect_db") as connect_db,
             patch("server.daily_quiz.regenerate_question", return_value=status_only) as regenerate,
-            patch("server.daily_quiz.quiz_payload", return_value=published) as quiz_payload,
+            patch(
+                "server.daily_quiz.quiz_questions_payload",
+                return_value=published,
+            ) as quiz_payload,
+            patch("server.record_audit_event") as audit,
         ):
             connect_db.return_value.__enter__.return_value = object()
             server.FultonsHandler.route_api(  # type: ignore[arg-type]
@@ -688,6 +515,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(sent, [(HTTPStatus.OK, published)])
         regenerate.assert_called_once()
         quiz_payload.assert_called_once_with(connect_db.return_value.__enter__.return_value, "2026-06-03")
+        audit.assert_called_once()
 
     def test_ops_quiz_preview_includes_saved_questions_while_generating(self) -> None:
         import daily_quiz
@@ -754,7 +582,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             cache_ttl_sec=15,
             ssh_target="ste@192.168.0.15",
             ssh_port=22,
-            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_key_path="C:/Users/tester/.ssh/codex_fultons_ed25519",
             ssh_connect_timeout_sec=6,
             public_health_url="https://example.com/api/health",
             internal_base_url="https://example.com",
@@ -832,7 +660,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             cache_ttl_sec=15,
             ssh_target="ste@192.168.0.15",
             ssh_port=22,
-            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_key_path="C:/Users/tester/.ssh/codex_fultons_ed25519",
             ssh_connect_timeout_sec=6,
             public_health_url="https://example.com/api/health",
             internal_base_url="https://example.com",
@@ -933,7 +761,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             cache_ttl_sec=15,
             ssh_target="ste@192.168.0.15",
             ssh_port=22,
-            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_key_path="C:/Users/tester/.ssh/codex_fultons_ed25519",
             ssh_connect_timeout_sec=6,
             public_health_url="https://example.com/api/health",
             internal_base_url="https://example.com",
@@ -1054,7 +882,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             cache_ttl_sec=15,
             ssh_target="ste@192.168.0.15",
             ssh_port=22,
-            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_key_path="C:/Users/tester/.ssh/codex_fultons_ed25519",
             ssh_connect_timeout_sec=6,
             public_health_url="https://example.com/api/health",
             internal_base_url="https://example.com",
@@ -1132,7 +960,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             cache_ttl_sec=15,
             ssh_target="ste@192.168.0.15",
             ssh_port=22,
-            ssh_key_path="C:/Users/svens/.ssh/codex_fultons_ed25519",
+            ssh_key_path="C:/Users/tester/.ssh/codex_fultons_ed25519",
             ssh_connect_timeout_sec=6,
             public_health_url="https://example.com/api/health",
             internal_base_url="https://example.com",
@@ -1300,71 +1128,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(payload["remote"]["quiz"]["tomorrow"]["status"], "published")
         self.assertGreaterEqual(payload["cacheAgeSec"], 0)
 
-    def test_fact_image_route_requires_login(self) -> None:
-        import production_server
 
-        error: list[tuple[HTTPStatus, str]] = []
-
-        class DummyHandler:
-            headers: dict[str, str] = {}
-
-            def send_error_json(self, status: HTTPStatus, message: str) -> None:
-                error.append((status, message))
-
-        with (
-            patch("server.connect_db") as connect_db,
-            patch("server.get_cookie_value", return_value=None),
-            patch("server.current_user", return_value=None),
-            patch("production_server.compute_fact_image") as compute_fact_image,
-        ):
-            connect_db.return_value.__enter__.return_value = object()
-            production_server.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "POST",
-                "/api/fact-image",
-            )
-
-        self.assertEqual(error, [(HTTPStatus.UNAUTHORIZED, "Login required.")])
-        compute_fact_image.assert_not_called()
-
-    def test_fact_image_route_resolves_images_for_logged_in_users(self) -> None:
-        import production_server
-
-        sent: list[tuple[HTTPStatus, dict[str, str]]] = []
-
-        class DummyHandler:
-            headers = {"Cookie": "fultons_session=token"}
-
-            def read_json(self) -> dict[str, str]:
-                return {
-                    "title": "Paisley Abbey",
-                    "text": "Paisley Abbey is a local landmark.",
-                    "placeTitle": "Paisley",
-                }
-
-            def send_json(self, status: HTTPStatus, payload: dict[str, str]) -> None:
-                sent.append((status, payload))
-
-        image = {"url": "https://upload.wikimedia.org/paisley-abbey.jpg"}
-        with (
-            patch("server.connect_db") as connect_db,
-            patch("server.get_cookie_value", return_value="token"),
-            patch("server.current_user", return_value={"id": 1}),
-            patch("production_server.compute_fact_image", return_value=image) as compute_fact_image,
-        ):
-            connect_db.return_value.__enter__.return_value = object()
-            production_server.route_api(  # type: ignore[arg-type]
-                DummyHandler(),
-                "POST",
-                "/api/fact-image",
-            )
-
-        self.assertEqual(sent, [(HTTPStatus.OK, image)])
-        compute_fact_image.assert_called_once_with(
-            "Paisley Abbey",
-            "Paisley Abbey is a local landmark.",
-            "Paisley",
-        )
 
     def test_production_permissions_policy_allows_geolocation(self) -> None:
         import server
@@ -1582,958 +1346,26 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
-    def test_wikipedia_summary_prefers_paisley_town_alias(self) -> None:
-        import server
 
-        with patch("server.fetch_json_url", return_value={"title": "Paisley, Renfrewshire"}) as fetch:
-            payload = server.fetch_wikipedia_summary("Paisley", "en")
 
-        self.assertEqual(payload["title"], "Paisley, Renfrewshire")
-        self.assertIn("Paisley,_Renfrewshire", fetch.call_args[0][0])
 
-    def test_location_facts_are_themed_sourced_and_structured(self) -> None:
-        import server
 
-        summary = {
-            "title": "Paisley, Renfrewshire",
-            "extract": (
-                "Paisley is a town in Renfrewshire, Scotland. "
-                "Paisley Abbey is a medieval landmark in the town."
-            ),
-        }
-        extract = (
-            "Paisley became known for its textile industry and the Paisley pattern. "
-            "The town has hosted cultural events and arts activity. "
-            "Notable people from Paisley include writers, musicians and footballers. "
-            "The historic centre contains important public buildings and churches."
-        )
-        entity = {
-            "id": "Q123",
-            "labels": {"en": {"value": "Paisley"}},
-            "claims": {
-                "P31": [
-                    {"mainsnak": {"datavalue": {"value": {"numeric-id": 486972}}}},
-                ],
-                "P1082": [
-                    {"mainsnak": {"datavalue": {"value": {"amount": "+77220"}}}},
-                ],
-                "P571": [
-                    {"mainsnak": {"datavalue": {"value": {"time": "+1157-01-01T00:00:00Z"}}}},
-                ],
-                "P131": [
-                    {"mainsnak": {"datavalue": {"value": {"numeric-id": 211091}}}},
-                ],
-            },
-        }
 
-        with patch(
-            "server.fetch_wikidata_labels",
-            return_value={"Q486972": "human settlement", "Q211091": "Renfrewshire"},
-        ):
-            profile = server.wikidata_profile(entity, "en", "Paisley")
-            facts = server.build_location_facts(
-                summary,
-                extract,
-                8,
-                "https://en.wikipedia.org/wiki/Paisley,_Renfrewshire",
-                entity,
-                "en",
-            )
 
-        self.assertEqual(profile["population"], "77,220")
-        self.assertEqual(profile["areas"], ["Renfrewshire"])
-        self.assertGreaterEqual(len(facts), 6)
-        self.assertTrue(all(isinstance(fact, dict) for fact in facts))
-        self.assertTrue(all(fact["sourceName"] and fact["sourceUrl"] for fact in facts))
-        self.assertTrue(all(fact["confidence"] in {"high", "medium", "low"} for fact in facts))
-        self.assertEqual({fact["sourceName"] for fact in facts}, {"Wikipedia", "Wikidata"})
-        self.assertTrue({"history", "landmark", "industry", "culture"}.intersection(
-            {fact["theme"] for fact in facts}
-        ))
 
-    def test_reviewed_location_facts_generate_ai_text_and_attach_internal_critique(self) -> None:
-        import server
 
-        candidates = [
-            {
-                "title": "History",
-                "text": "Paisley Abbey was founded in the 12th century and remains one of the town's best-known landmarks.",
-                "theme": "history",
-                "sourceName": "Wikipedia",
-                "sourceUrl": "https://example.com/abbey",
-                "confidence": "medium",
-            },
-            {
-                "title": "Industry",
-                "text": "Paisley gave its name to the Paisley pattern through the town's textile industry.",
-                "theme": "industry",
-                "sourceName": "Wikipedia",
-                "sourceUrl": "https://example.com/pattern",
-                "confidence": "medium",
-            },
-            {
-                "title": "Culture",
-                "text": "Paisley has hosted major cultural events and arts activity in its town centre.",
-                "theme": "culture",
-                "sourceName": "Wikipedia",
-                "sourceUrl": "https://example.com/culture",
-                "confidence": "medium",
-            },
-        ]
-        selection = {
-            "facts": [
-                {
-                    "title": "Paisley Abbey",
-                    "text": "Paisley Abbey remains one of the town's defining landmarks, with roots going back to the 12th century.",
-                    "theme": "history",
-                    "sourceEvidenceIndex": 0,
-                },
-                {
-                    "title": "Paisley's textile legacy",
-                    "text": "Paisley's textile trade made its famous pattern known far beyond Renfrewshire.",
-                    "theme": "industry",
-                    "sourceEvidenceIndex": 1,
-                },
-            ]
-        }
-        critique = {
-            "overallPassed": True,
-            "notes": "Both facts are specific and distinctive.",
-            "facts": [
-                {
-                    "factIndex": 0,
-                    "passed": True,
-                    "relevance": 10,
-                    "interestingness": 8,
-                    "placeSpecificity": 10,
-                    "summary": "It names a landmark strongly associated with Paisley.",
-                },
-                {
-                    "factIndex": 1,
-                    "passed": True,
-                    "relevance": 9,
-                    "interestingness": 8,
-                    "placeSpecificity": 9,
-                    "summary": "It links Paisley to a distinctive export and identity marker.",
-                },
-            ],
-        }
 
-        original_data_dir = server.DATA_DIR
-        original_db_path = server.DB_PATH
-        try:
-            data_dir = Path(self.temp_dir.name) / "runtime-db"
-            server.DATA_DIR = data_dir
-            server.DB_PATH = data_dir / "fultons.db"
-            server.initialize_database()
-            rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
-            evidence = [
-                {
-                    "title": "Paisley Abbey history",
-                    "sourceName": "Paisley Abbey",
-                    "sourceUrl": "https://paisleyabbey.org.uk/history",
-                    "snippet": "Paisley Abbey traces its origins to the 12th century.",
-                    "excerpt": "Paisley Abbey traces its origins to the 12th century and remains central to the town's story.",
-                },
-                {
-                    "title": "Paisley Pattern",
-                    "sourceName": "Renfrewshire Council",
-                    "sourceUrl": "https://www.renfrewshire.gov.uk/article/12345/paisley-pattern-history",
-                    "snippet": "Paisley's textile trade spread the paisley pattern widely.",
-                    "excerpt": "Paisley's textile trade spread the paisley pattern far beyond Renfrewshire.",
-                },
-            ]
 
-            with (
-                patch("server.FACTS_GEMINI_API_KEY", "test-key"),
-                patch("server.search_web_fact_evidence", return_value=evidence),
-                patch("server.facts_ai_json_response", side_effect=[selection, critique]) as gemini_request,
-            ):
-                facts = server.reviewed_location_facts(
-                    rotation_key,
-                    "Paisley, Renfrewshire",
-                    candidates,
-                    limit=2,
-                    recent_texts=["Paisley Abbey is a medieval landmark in the town."],
-                )
 
-            self.assertEqual(len(facts), 2)
-            self.assertEqual(facts[0]["title"], "Paisley Abbey")
-            self.assertEqual(facts[0]["sourceUrl"], "https://paisleyabbey.org.uk/history")
-            self.assertEqual(facts[1]["title"], "Paisley's textile legacy")
-            self.assertEqual(facts[1]["critique"]["relevance"], 9)
-            self.assertIn("distinctive export", facts[1]["critique"]["summary"])
-            self.assertEqual(gemini_request.call_count, 2)
-        finally:
-            server.DATA_DIR = original_data_dir
-            server.DB_PATH = original_db_path
 
-    def test_facts_ai_json_response_uses_openrouter_fallback_after_gemini_failure(self) -> None:
-        import server
 
-        fallback_payload = {
-            "facts": [
-                {
-                    "title": "Paisley Abbey",
-                    "text": "Paisley Abbey remains one of the town's defining landmarks.",
-                    "theme": "history",
-                    "sourceEvidenceIndex": 0,
-                }
-            ]
-        }
 
-        with (
-            patch("server.FACTS_GEMINI_API_KEY", "test-key"),
-            patch("server.FACTS_FALLBACK_PROVIDER", "openrouter"),
-            patch("server.FACTS_FALLBACK_API_KEY", "fallback-key"),
-            patch("server.FACTS_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1"),
-            patch("server.FACTS_FALLBACK_GENERATOR_MODEL", "openai/gpt-4.1-mini"),
-            patch(
-                "server.facts_gemini_json_response",
-                side_effect=RuntimeError("Gemini request failed with HTTP 429."),
-            ),
-            patch(
-                "server.facts_compatible_json_response",
-                return_value=fallback_payload,
-            ) as compatible_request,
-        ):
-            payload = server.facts_ai_json_response(
-                task="generator",
-                model=server.FACTS_AI_GENERATOR_MODEL,
-                prompt="Prompt",
-                schema={"type": "object"},
-            )
 
-        self.assertEqual(payload, fallback_payload)
-        compatible_request.assert_called_once_with(
-            provider_name="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            api_key="fallback-key",
-            model="openai/gpt-4.1-mini",
-            prompt="Prompt",
-            schema={"type": "object"},
-        )
 
-    def test_facts_ai_json_response_uses_second_fallback_after_first_fails(self) -> None:
-        import server
 
-        fallback_payload = {
-            "facts": [
-                {
-                    "title": "Paisley Book Festival",
-                    "text": "Paisley hosts a book festival in the town centre.",
-                    "theme": "culture",
-                    "sourceEvidenceIndex": 1,
-                }
-            ]
-        }
 
-        with (
-            patch("server.FACTS_GEMINI_API_KEY", ""),
-            patch("server.FACTS_FALLBACK_PROVIDER", "openrouter"),
-            patch("server.FACTS_FALLBACK_API_KEY", "fallback-key"),
-            patch("server.FACTS_FALLBACK_BASE_URL", "https://openrouter.ai/api/v1"),
-            patch("server.FACTS_FALLBACK_GENERATOR_MODEL", "google/gemini-2.5-flash"),
-            patch("server.FACTS_FALLBACK2_PROVIDER", "openrouter"),
-            patch("server.FACTS_FALLBACK2_API_KEY", "fallback2-key"),
-            patch("server.FACTS_FALLBACK2_BASE_URL", "https://openrouter.ai/api/v1"),
-            patch("server.FACTS_FALLBACK2_GENERATOR_MODEL", "openrouter/free"),
-            patch(
-                "server.facts_compatible_json_response",
-                side_effect=[RuntimeError("primary fallback unavailable"), fallback_payload],
-            ) as compatible_request,
-        ):
-            payload = server.facts_ai_json_response(
-                task="generator",
-                model=server.FACTS_AI_GENERATOR_MODEL,
-                prompt="Prompt",
-                schema={"type": "object"},
-            )
 
-        self.assertEqual(payload, fallback_payload)
-        self.assertEqual(compatible_request.call_count, 2)
 
-    def test_public_history_fact_hides_internal_critique(self) -> None:
-        import server
-
-        public_fact = server.public_history_fact(
-            {
-                "title": "Paisley Abbey",
-                "text": "Paisley Abbey is a medieval landmark in the town.",
-                "theme": "landmark",
-                "sourceName": "Wikipedia + Wikidata",
-                "sourceUrl": "https://example.com/abbey",
-                "confidence": "high",
-                "critique": {
-                    "summary": "Internal only",
-                    "relevance": 10,
-                    "interestingness": 9,
-                    "placeSpecificity": 10,
-                },
-            }
-        )
-
-        self.assertNotIn("critique", public_fact)
-        self.assertEqual(public_fact["sourceName"], "Wikipedia + Wikidata")
-
-    def test_history_fact_review_failures_are_cached_for_future_attempts(self) -> None:
-        import server
-
-        original_data_dir = server.DATA_DIR
-        original_db_path = server.DB_PATH
-        try:
-            data_dir = Path(self.temp_dir.name) / "runtime-db"
-            server.DATA_DIR = data_dir
-            server.DB_PATH = data_dir / "fultons.db"
-            server.initialize_database()
-            rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
-
-            server.store_history_fact_review_failure(
-                rotation_key,
-                selection={"facts": [{"candidateIndex": 2, "title": "Generic fact", "text": "Paisley is a town in Scotland."}]},
-                critique={"overallPassed": False, "notes": "Too generic."},
-                failure_reason="Gemini critique rejected the selected facts.",
-            )
-
-            failures = server.recent_history_fact_review_failures(rotation_key)
-
-            self.assertEqual(len(failures), 1)
-            self.assertEqual(failures[0]["failureReason"], "Gemini critique rejected the selected facts.")
-            self.assertEqual(failures[0]["selection"]["facts"][0]["candidateIndex"], 2)
-            self.assertEqual(failures[0]["critique"]["notes"], "Too generic.")
-        finally:
-            server.DATA_DIR = original_data_dir
-            server.DB_PATH = original_db_path
-
-    def test_history_fact_rotation_expires_after_24_hours(self) -> None:
-        import server
-
-        original_data_dir = server.DATA_DIR
-        original_db_path = server.DB_PATH
-        try:
-            data_dir = Path(self.temp_dir.name) / "runtime-db"
-            server.DATA_DIR = data_dir
-            server.DB_PATH = data_dir / "fultons.db"
-            server.initialize_database()
-
-            rotation_key = server.history_fact_rotation_key("Paisley, Renfrewshire", "en")
-            facts = [
-                {
-                    "title": "Paisley Abbey",
-                    "text": "Paisley Abbey is a medieval landmark in the town.",
-                    "theme": "landmark",
-                    "sourceName": "Wikipedia",
-                    "sourceUrl": "https://example.com/abbey",
-                    "confidence": "medium",
-                }
-            ]
-            created_at = (datetime.now(timezone.utc) - timedelta(hours=23)).replace(microsecond=0).isoformat()
-            server.store_rotated_history_facts(rotation_key, facts, created_at=created_at)
-
-            active = server.current_rotated_history_facts(
-                rotation_key,
-                now=datetime.now(timezone.utc),
-            )
-            expired = server.current_rotated_history_facts(
-                rotation_key,
-                now=datetime.now(timezone.utc) + timedelta(hours=2),
-            )
-
-            self.assertEqual(active, facts)
-            self.assertIsNone(expired)
-        finally:
-            server.DATA_DIR = original_data_dir
-            server.DB_PATH = original_db_path
-
-    def test_history_cache_get_discards_cached_payload_without_location(self) -> None:
-        import server
-
-        server.HISTORY_CACHE.clear()
-        self.addCleanup(server.HISTORY_CACHE.clear)
-        server.HISTORY_CACHE["history:test"] = (
-            server.time.time() + 60,
-            {
-                "request": {"location": "Paisley", "date": "2026-06-04", "lang": "en"},
-                "location": None,
-                "globalEvents": [],
-                "partial": True,
-                "warnings": [
-                    {
-                        "source": "wikipedia",
-                        "code": "upstream_unavailable",
-                        "detail": "Location facts are currently unavailable.",
-                    }
-                ],
-                "meta": {"cached": False, "generatedAt": "2026-06-04T10:00:00+00:00"},
-            },
-        )
-
-        cached = server.history_cache_get("history:test")
-
-        self.assertIsNone(cached)
-        self.assertNotIn("history:test", server.HISTORY_CACHE)
-
-    def test_history_payload_does_not_cache_partial_result_without_location(self) -> None:
-        import server
-
-        server.HISTORY_CACHE.clear()
-        self.addCleanup(server.HISTORY_CACHE.clear)
-        fetch_summary_calls = 0
-        rotation_created_at = datetime(2026, 6, 4, 11, 30, 0, tzinfo=timezone.utc)
-
-        def fake_fetch_summary(_location: str, _lang: str) -> dict[str, object]:
-            nonlocal fetch_summary_calls
-            fetch_summary_calls += 1
-            if fetch_summary_calls == 1:
-                raise RuntimeError("Temporary upstream failure")
-            return {
-                "title": "Paisley",
-                "description": "Town in Scotland",
-                "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Paisley"}},
-                "thumbnail": {"source": "https://example.com/paisley.jpg"},
-            }
-
-        rotated_facts = [
-            {
-                "title": "Paisley Abbey",
-                "text": "Paisley Abbey is one of the town's best-known landmarks.",
-                "theme": "history",
-                "sourceName": "Paisley Abbey",
-                "sourceUrl": "https://paisleyabbey.org.uk/history",
-                "confidence": "high",
-            }
-        ]
-        events = [{"year": "1163", "description": "A notable event."}]
-
-        with (
-            patch("server.fetch_wikipedia_summary", side_effect=fake_fetch_summary),
-            patch("server.fetch_history_events", return_value=events),
-            patch("server.fetch_wikipedia_plain_extract", return_value="Paisley is a town in Scotland."),
-            patch("server.fetch_wikipedia_images", return_value=[]),
-            patch(
-                "server.current_rotated_history_facts_record",
-                return_value=(rotated_facts, rotation_created_at),
-            ),
-            patch("server.schedule_history_fact_prewarm", return_value=False),
-            patch("server.wikidata_profile", return_value={}),
-        ):
-            first_payload, first_status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
-            self.assertEqual(first_status, HTTPStatus.OK)
-            self.assertIsNone(first_payload["location"])
-            self.assertEqual(first_payload["globalEvents"], events)
-            self.assertNotIn("en:paisley:2026-06-04:2:5", server.HISTORY_CACHE)
-
-            second_payload, second_status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
-
-        self.assertEqual(second_status, HTTPStatus.OK)
-        self.assertEqual(fetch_summary_calls, 2)
-        self.assertIsInstance(second_payload["location"], dict)
-        self.assertEqual(second_payload["location"]["title"], "Paisley")
-        self.assertEqual(second_payload["location"]["facts"][0]["title"], "Paisley Abbey")
-        self.assertFalse(second_payload["meta"]["cached"])
-        self.assertEqual(second_payload["meta"]["rotationCreatedAt"], "2026-06-04T11:30:00+00:00")
-        self.assertEqual(second_payload["meta"]["rotationExpiresAt"], "2026-06-05T11:30:00+00:00")
-        self.assertIn("en:paisley:2026-06-04:2:5", server.HISTORY_CACHE)
-
-    def test_history_payload_cache_expires_when_fact_rotation_expires(self) -> None:
-        import server
-
-        server.HISTORY_CACHE.clear()
-        self.addCleanup(server.HISTORY_CACHE.clear)
-
-        rotation_created_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=23)
-        rotated_facts = [
-            {
-                "title": "Paisley Abbey",
-                "text": "Paisley Abbey is one of the town's best-known landmarks.",
-                "theme": "history",
-                "sourceName": "Paisley Abbey",
-                "sourceUrl": "https://paisleyabbey.org.uk/history",
-                "confidence": "high",
-            }
-        ]
-
-        with (
-            patch(
-                "server.fetch_wikipedia_summary",
-                return_value={
-                    "title": "Paisley",
-                    "description": "Town in Scotland",
-                    "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Paisley"}},
-                    "thumbnail": {"source": "https://example.com/paisley.jpg"},
-                },
-            ),
-            patch("server.fetch_history_events", return_value=[]),
-            patch("server.fetch_wikipedia_plain_extract", return_value="Paisley is a town in Scotland."),
-            patch("server.fetch_wikipedia_images", return_value=[]),
-            patch(
-                "server.current_rotated_history_facts_record",
-                return_value=(rotated_facts, rotation_created_at),
-            ),
-            patch("server.schedule_history_fact_prewarm", return_value=False),
-            patch("server.wikidata_profile", return_value={}),
-        ):
-            _payload, status = server.history_payload("Paisley", "2026-06-04", "en", 2, 5)
-
-        self.assertEqual(status, HTTPStatus.OK)
-        expires_at, cached_payload = server.HISTORY_CACHE["en:paisley:2026-06-04:2:5"]
-        expected_expiry = rotation_created_at.timestamp() + server.FACT_ROTATION_TTL_SEC
-        self.assertAlmostEqual(expires_at, expected_expiry, delta=1.0)
-        self.assertEqual(
-            cached_payload["meta"]["rotationExpiresAt"],
-            (rotation_created_at + timedelta(seconds=server.FACT_ROTATION_TTL_SEC)).isoformat(),
-        )
-
-    def test_schedule_history_fact_prewarm_avoids_duplicate_active_job(self) -> None:
-        import server
-
-        original_data_dir = server.DATA_DIR
-        original_db_path = server.DB_PATH
-        try:
-            data_dir = Path(self.temp_dir.name) / "runtime-db"
-            server.DATA_DIR = data_dir
-            server.DB_PATH = data_dir / "fultons.db"
-            server.initialize_database()
-
-            now = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
-            source_rotation_created_at = now - timedelta(
-                seconds=server.FACT_ROTATION_TTL_SEC - 1800
-            )
-
-            first = server.schedule_history_fact_prewarm(
-                rotation_key="v4:en:paisley",
-                location_query="Paisley",
-                place_title="Paisley, Renfrewshire",
-                lang="en",
-                limit_facts=2,
-                source_rotation_created_at=source_rotation_created_at,
-                now=now,
-            )
-            second = server.schedule_history_fact_prewarm(
-                rotation_key="v4:en:paisley",
-                location_query="Paisley",
-                place_title="Paisley, Renfrewshire",
-                lang="en",
-                limit_facts=2,
-                source_rotation_created_at=source_rotation_created_at,
-                now=now,
-            )
-
-            with closing(server.connect_db()) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT rotation_key, status, target_not_before_at
-                    FROM history_fact_prewarm_jobs
-                    ORDER BY id ASC
-                    """
-                ).fetchall()
-
-            self.assertTrue(first)
-            self.assertFalse(second)
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["rotation_key"], "v4:en:paisley")
-            self.assertEqual(rows[0]["status"], "pending")
-        finally:
-            server.DATA_DIR = original_data_dir
-            server.DB_PATH = original_db_path
-
-    def test_promote_ready_history_fact_prewarm_consumes_job_and_stores_rotation(self) -> None:
-        import server
-
-        original_data_dir = server.DATA_DIR
-        original_db_path = server.DB_PATH
-        try:
-            data_dir = Path(self.temp_dir.name) / "runtime-db"
-            server.DATA_DIR = data_dir
-            server.DB_PATH = data_dir / "fultons.db"
-            server.initialize_database()
-
-            facts = [
-                {
-                    "title": "Royal Birthplace",
-                    "text": "Robert II was born in Paisley in 1316.",
-                    "theme": "people",
-                    "sourceName": "paisley.is",
-                    "sourceUrl": "https://paisley.is/visit/paisley/",
-                    "confidence": "medium",
-                },
-                {
-                    "title": "Paisley Pattern",
-                    "text": "Paisley's textile industry made the pattern famous worldwide.",
-                    "theme": "industry",
-                    "sourceName": "bbc.com",
-                    "sourceUrl": "https://www.bbc.com/culture/article/paisley-pattern",
-                    "confidence": "medium",
-                },
-            ]
-
-            with closing(server.connect_db()) as conn:
-                with conn:
-                    conn.execute(
-                        """
-                        INSERT INTO history_fact_prewarm_jobs (
-                            rotation_key,
-                            location_query,
-                            place_title,
-                            lang,
-                            limit_facts,
-                            source_rotation_created_at,
-                            target_not_before_at,
-                            status,
-                            facts_json,
-                            attempts,
-                            created_at,
-                            completed_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?, 1, ?, ?)
-                        """,
-                        (
-                            "v4:en:paisley",
-                            "Paisley",
-                            "Paisley, Renfrewshire",
-                            "en",
-                            2,
-                            "2026-06-05T11:00:00+00:00",
-                            "2026-06-06T11:00:00+00:00",
-                            json.dumps(facts, ensure_ascii=True),
-                            "2026-06-06T10:00:00+00:00",
-                            "2026-06-06T10:05:00+00:00",
-                        ),
-                    )
-
-            promoted = server.promote_ready_history_fact_prewarm(
-                "v4:en:paisley",
-                now=datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc),
-            )
-
-            self.assertIsNotNone(promoted)
-            promoted_facts, promoted_created_at = promoted or ([], datetime.now(timezone.utc))
-            self.assertEqual(len(promoted_facts), 2)
-            self.assertEqual(promoted_facts[0]["title"], "Royal Birthplace")
-            self.assertIsNotNone(promoted_created_at)
-
-            with closing(server.connect_db()) as conn:
-                rotation = conn.execute(
-                    """
-                    SELECT facts_json
-                    FROM history_fact_rotations
-                    WHERE rotation_key = ?
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    ("v4:en:paisley",),
-                ).fetchone()
-                job = conn.execute(
-                    "SELECT status FROM history_fact_prewarm_jobs WHERE rotation_key = ?",
-                    ("v4:en:paisley",),
-                ).fetchone()
-
-            self.assertIsNotNone(rotation)
-            self.assertEqual(json.loads(str(rotation["facts_json"]))[0]["title"], "Royal Birthplace")
-            self.assertEqual(job["status"], "consumed")
-        finally:
-            server.DATA_DIR = original_data_dir
-            server.DB_PATH = original_db_path
-
-    def test_history_payload_promotes_ready_prewarm_before_cold_regeneration(self) -> None:
-        import server
-
-        server.HISTORY_CACHE.clear()
-        self.addCleanup(server.HISTORY_CACHE.clear)
-        ready_facts = [
-            {
-                "title": "Royal Birthplace",
-                "text": "Robert II was born in Paisley in 1316.",
-                "theme": "people",
-                "sourceName": "paisley.is",
-                "sourceUrl": "https://paisley.is/visit/paisley/",
-                "confidence": "medium",
-            },
-            {
-                "title": "Paisley Pattern",
-                "text": "Paisley's textile industry made the pattern famous worldwide.",
-                "theme": "industry",
-                "sourceName": "bbc.com",
-                "sourceUrl": "https://www.bbc.com/culture/article/paisley-pattern",
-                "confidence": "medium",
-            },
-        ]
-        promoted_created_at = datetime(2026, 6, 6, 12, 0, 0, tzinfo=timezone.utc)
-        location_context = {
-            "title": "Paisley",
-            "description": "Town in Scotland",
-            "articleUrl": "https://en.wikipedia.org/wiki/Paisley",
-            "thumbnailUrl": "https://example.com/paisley.jpg",
-            "wiki": {},
-            "plainExtract": "Paisley is a town in Scotland.",
-            "wikidataEntity": None,
-            "locationImages": [],
-        }
-
-        with (
-            patch("server.load_history_location_context", return_value=location_context),
-            patch("server.fetch_history_events", return_value=[]),
-            patch("server.current_rotated_history_facts_record", return_value=None),
-            patch(
-                "server.promote_ready_history_fact_prewarm",
-                return_value=(ready_facts, promoted_created_at),
-            ) as promote_ready,
-            patch("server.build_history_rotation_facts_from_context") as cold_build,
-            patch("server.wikidata_profile", return_value={}),
-        ):
-            payload, status = server.history_payload("Paisley", "2026-06-06", "en", 2, 5)
-
-        self.assertEqual(status, HTTPStatus.OK)
-        self.assertEqual(payload["location"]["facts"][0]["title"], "Royal Birthplace")
-        self.assertEqual(payload["meta"]["rotationCreatedAt"], "2026-06-06T12:00:00+00:00")
-        promote_ready.assert_called_once()
-        cold_build.assert_not_called()
-
-    def test_history_payload_enqueues_prewarm_for_near_expiry_rotation(self) -> None:
-        import server
-
-        server.HISTORY_CACHE.clear()
-        self.addCleanup(server.HISTORY_CACHE.clear)
-        rotation_created_at = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(
-            seconds=server.FACT_ROTATION_TTL_SEC - 1800
-        )
-        rotated_facts = [
-            {
-                "title": "Paisley Abbey",
-                "text": "Paisley Abbey is one of the town's best-known landmarks.",
-                "theme": "history",
-                "sourceName": "Paisley Abbey",
-                "sourceUrl": "https://paisleyabbey.org.uk/history",
-                "confidence": "high",
-            }
-        ]
-        location_context = {
-            "title": "Paisley",
-            "description": "Town in Scotland",
-            "articleUrl": "https://en.wikipedia.org/wiki/Paisley",
-            "thumbnailUrl": "https://example.com/paisley.jpg",
-            "wiki": {},
-            "plainExtract": "Paisley is a town in Scotland.",
-            "wikidataEntity": None,
-            "locationImages": [],
-        }
-
-        with (
-            patch("server.load_history_location_context", return_value=location_context),
-            patch("server.fetch_history_events", return_value=[]),
-            patch(
-                "server.current_rotated_history_facts_record",
-                return_value=(rotated_facts, rotation_created_at),
-            ),
-            patch("server.schedule_history_fact_prewarm", return_value=True) as schedule_prewarm,
-            patch("server.wikidata_profile", return_value={}),
-        ):
-            payload, status = server.history_payload("Paisley", "2026-06-06", "en", 2, 5)
-
-        self.assertEqual(status, HTTPStatus.OK)
-        self.assertEqual(payload["location"]["facts"][0]["title"], "Paisley Abbey")
-        schedule_prewarm.assert_called_once()
-        self.assertEqual(
-            schedule_prewarm.call_args.kwargs["rotation_key"],
-            "v4:en:paisleyrenfrewshire",
-        )
-        self.assertEqual(schedule_prewarm.call_args.kwargs["location_query"], "Paisley")
-
-    def test_history_payload_cache_hit_still_enqueues_prewarm(self) -> None:
-        import server
-
-        server.HISTORY_CACHE.clear()
-        self.addCleanup(server.HISTORY_CACHE.clear)
-        cache_key = "en:paisley:2026-06-06:2:5"
-        cached_payload = {
-            "request": {"location": "Paisley", "date": "2026-06-06", "lang": "en"},
-            "location": {
-                "title": "Paisley",
-                "description": "Town in Scotland",
-                "facts": [
-                    {
-                        "title": "Paisley Abbey",
-                        "text": "Paisley Abbey is one of the town's best-known landmarks.",
-                        "theme": "history",
-                        "sourceName": "Paisley Abbey",
-                        "sourceUrl": "https://paisleyabbey.org.uk/history",
-                        "confidence": "high",
-                    }
-                ],
-                "articleUrl": "https://en.wikipedia.org/wiki/Paisley",
-                "thumbnailUrl": "https://example.com/paisley.jpg",
-                "images": [],
-            },
-            "globalEvents": [],
-            "partial": False,
-            "warnings": [],
-            "meta": {
-                "cached": False,
-                "eventsLanguage": "en",
-                "generatedAt": "2026-06-06T10:30:00+00:00",
-                "rotationCreatedAt": (
-                    datetime.now(timezone.utc).replace(microsecond=0)
-                    - timedelta(seconds=server.FACT_ROTATION_TTL_SEC - 1800)
-                ).isoformat(),
-                "rotationExpiresAt": None,
-            },
-        }
-        server.HISTORY_CACHE[cache_key] = (server.time.time() + 60, cached_payload)
-
-        with patch("server.schedule_history_fact_prewarm", return_value=True) as schedule_prewarm:
-            payload, status = server.history_payload("Paisley", "2026-06-06", "en", 2, 5)
-
-        self.assertEqual(status, HTTPStatus.OK)
-        self.assertTrue(payload["meta"]["cached"])
-        schedule_prewarm.assert_called_once()
-
-    def test_wikipedia_images_keep_location_photos_and_skip_badges(self) -> None:
-        import server
-
-        summary = {
-            "title": "Paisley, Renfrewshire",
-            "thumbnail": {"source": "https://upload.wikimedia.org/paisley-lead.jpg"},
-        }
-        article_url = "https://en.wikipedia.org/wiki/Paisley,_Renfrewshire"
-        media_payload = {
-            "query": {
-                "pages": {
-                    "1": {
-                        "title": "File:Paisley town centre.jpg",
-                        "imageinfo": [{
-                            "thumburl": "https://upload.wikimedia.org/paisley-town-centre.jpg",
-                            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Paisley_town_centre.jpg",
-                        }],
-                    },
-                    "2": {
-                        "title": "File:Paisley coat of arms.svg",
-                        "imageinfo": [{
-                            "thumburl": "https://upload.wikimedia.org/paisley-arms.svg",
-                        }],
-                    },
-                    "3": {
-                        "title": "File:Paisley Abbey.png",
-                        "imageinfo": [{
-                            "url": "https://upload.wikimedia.org/paisley-abbey.png",
-                        }],
-                    },
-                }
-            }
-        }
-
-        with patch("server.fetch_json_url", return_value=media_payload) as fetch:
-            images = server.fetch_wikipedia_images(summary, "en", article_url, limit=4)
-
-        self.assertEqual(
-            [image["url"] for image in images],
-            [
-                "https://upload.wikimedia.org/paisley-lead.jpg",
-                "https://upload.wikimedia.org/paisley-town-centre.jpg",
-                "https://upload.wikimedia.org/paisley-abbey.png",
-            ],
-        )
-        self.assertEqual(images[0]["sourceName"], "Wikipedia")
-        self.assertEqual(images[1]["sourceName"], "Wikimedia Commons")
-        self.assertIn("generator=images", fetch.call_args[0][0])
-
-    def test_fact_images_only_attach_when_media_title_matches_fact_text(self) -> None:
-        import server
-
-        facts = [
-            {
-                "title": "Landmark",
-                "text": "Paisley Abbey is a medieval landmark in the town.",
-                "theme": "landmark",
-            },
-            {
-                "title": "Industry",
-                "text": "Paisley became a global centre of the weaving industry.",
-                "theme": "industry",
-            },
-        ]
-        images = [
-            {
-                "url": "https://upload.wikimedia.org/paisley-abbey.jpg",
-                "title": "Paisley Abbey from the west.jpg",
-                "sourceName": "Wikimedia Commons",
-                "sourceUrl": None,
-            },
-            {
-                "url": "https://upload.wikimedia.org/townscape.jpg",
-                "title": "Paisley town centre.jpg",
-                "sourceName": "Wikimedia Commons",
-                "sourceUrl": None,
-            },
-        ]
-
-        matched = server.attach_fact_images(facts, images, "Paisley, Renfrewshire")
-
-        self.assertEqual(matched[0]["image"]["title"], "Paisley Abbey from the west.jpg")
-        self.assertNotIn("image", matched[1])
-
-    def test_missing_fact_image_can_be_retrieved_from_commons_search(self) -> None:
-        import server
-
-        fact = {
-            "title": "Landmark",
-            "text": "Paisley Abbey is a medieval landmark in the town.",
-            "theme": "landmark",
-        }
-        search_payload = {
-            "query": {
-                "pages": {
-                    "1": {
-                        "title": "File:Paisley Abbey cloisters.jpg",
-                        "imageinfo": [{
-                            "thumburl": "https://upload.wikimedia.org/paisley-abbey-cloisters.jpg",
-                        }],
-                    },
-                }
-            }
-        }
-
-        with patch("server.fetch_json_url", return_value=search_payload) as fetch:
-            image = server.fetch_commons_fact_image(fact, "Paisley, Renfrewshire")
-
-        self.assertEqual(image["title"], "Paisley Abbey cloisters.jpg")
-        self.assertIn("commons.wikimedia.org", fetch.call_args[0][0])
-        self.assertIn("generator=search", fetch.call_args[0][0])
-
-    def test_fact_image_queries_include_shorter_fact_searches(self) -> None:
-        import server
-
-        queries = server.fact_image_queries(
-            {
-                "title": "Industry",
-                "text": (
-                    "Paisley became a global centre of the weaving industry, "
-                    "giving its name to the Paisley shawl and Paisley pattern."
-                ),
-            },
-            "Paisley, Renfrewshire",
-        )
-
-        self.assertIn("Paisley weaving industry shawl pattern", queries)
-        self.assertIn("Paisley shawl pattern", queries)
-
-    def test_fact_image_match_rejects_wrong_roman_numeral_person(self) -> None:
-        import server
-
-        score = server.fact_image_match_score(
-            {
-                "title": "People",
-                "text": "Robert II is believed to have been born in Paisley Abbey.",
-            },
-            {
-                "url": "https://upload.wikimedia.org/robert-iii.jpg",
-                "title": "King Robert III memorial, Paisley Abbey.jpg",
-                "sourceName": "Wikimedia Commons",
-                "sourceUrl": None,
-            },
-            server.fact_image_terms("Paisley, Renfrewshire"),
-        )
-
-        self.assertEqual(score, 0)
 
     def test_wordle_points_curve(self) -> None:
         import server
@@ -2543,6 +1375,162 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(server.wordle_score("won", 1, difficulty=20), 48)
         self.assertEqual(server.wordle_score("lost", 6), 0)
         self.assertEqual(server.wordle_score("lost", 3, difficulty=20), 0)
+
+    def test_wordle_guess_rejects_stale_game_date_after_midnight(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-23T22:59:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+
+                with patch("server.today_game_date", return_value="2026-06-23"):
+                    old_game = server.ensure_daily_game(conn)
+                    old_state = server.serialize_wordle_state(conn, user_id, old_game)
+
+                with patch("server.today_game_date", return_value="2026-06-24"):
+                    payload, status = server.submit_wordle_guess(
+                        conn,
+                        user_id,
+                        "raise",
+                        old_state["result"]["attemptsUsed"],
+                        old_state["game"]["date"],
+                    )
+
+                new_day_attempts = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM wordle_guesses
+                    INNER JOIN wordle_results ON wordle_results.id = wordle_guesses.result_id
+                    INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+                    WHERE daily_wordle_games.game_date = '2026-06-24'
+                    """
+                ).fetchone()[0]
+                new_day_results = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM wordle_results
+                    INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+                    WHERE daily_wordle_games.game_date = '2026-06-24'
+                    """
+                ).fetchone()[0]
+
+            self.assertEqual(status, HTTPStatus.CONFLICT)
+            self.assertIn("day changed", payload["error"])
+            self.assertEqual(new_day_attempts, 0)
+            self.assertEqual(new_day_results, 0)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_guess_requires_canonical_expected_game_date(self) -> None:
+        import server
+
+        for expected_game_date in (None, "", "2026-6-24", "2026-02-30"):
+            with self.subTest(expected_game_date=expected_game_date):
+                payload, status = server.submit_wordle_guess(  # type: ignore[arg-type]
+                    None,
+                    1,
+                    "raise",
+                    0,
+                    expected_game_date,
+                )
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("expectedGameDate", payload["error"])
+
+    def test_wordle_guess_date_contract_preserves_retry_idempotence(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-24T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+
+                with patch("server.today_game_date", return_value="2026-06-24"):
+                    first, first_status = server.submit_wordle_guess(
+                        conn,
+                        user_id,
+                        "raise",
+                        0,
+                        "2026-06-24",
+                    )
+                    repeated, repeated_status = server.submit_wordle_guess(
+                        conn,
+                        user_id,
+                        "raise",
+                        0,
+                        "2026-06-24",
+                    )
+
+                guess_count = conn.execute("SELECT COUNT(*) FROM wordle_guesses").fetchone()[0]
+
+            self.assertEqual(first_status, HTTPStatus.OK)
+            self.assertEqual(repeated_status, HTTPStatus.OK)
+            self.assertEqual(first["result"]["attemptsUsed"], 1)
+            self.assertEqual(repeated["result"]["attemptsUsed"], 1)
+            self.assertEqual(guess_count, 1)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_guess_handler_wires_expected_game_date(self) -> None:
+        import server
+
+        responses: list[tuple[HTTPStatus, dict[str, object]]] = []
+        conn = object()
+
+        class DummyHandler:
+            def read_json(self) -> dict[str, object]:
+                return {
+                    "guess": "raise",
+                    "expectedAttemptsUsed": 2,
+                    "expectedGameDate": "2026-06-24",
+                }
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                responses.append((status, payload))
+
+        with patch.object(
+            server,
+            "submit_wordle_guess",
+            return_value=({"ok": True}, HTTPStatus.OK),
+        ) as submit:
+            server.FultonsHandler.handle_wordle_guess(  # type: ignore[arg-type]
+                DummyHandler(),
+                conn,
+                {"id": 7},
+            )
+
+        submit.assert_called_once_with(conn, 7, "raise", 2, "2026-06-24")
+        self.assertEqual(responses, [(HTTPStatus.OK, {"ok": True})])
 
     def test_wordle_assignment_uses_streak_based_difficulty_pool(self) -> None:
         import server
@@ -2955,7 +1943,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             def __exit__(self, *_: object) -> None:
                 return None
 
-            def read(self) -> bytes:
+            def read(self, _limit: int) -> bytes:
                 return json.dumps(
                     [
                         {
@@ -3056,7 +2044,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(result["definition"], "oil")
         self.assertEqual(result["sourceUrl"], "https://en.wiktionary.org/wiki/ulzie")
 
-    def test_quiz_scoring_adds_perfect_round_bonus(self) -> None:
+    def test_quiz_scoring_adds_perfect_round_bonus_from_adjudications(self) -> None:
         import server
 
         questions = [
@@ -3066,13 +2054,74 @@ class ProductionServerHardeningTests(unittest.TestCase):
         ]
 
         self.assertEqual(
-            server.score_quiz_answers(questions, ["A", "B", "C"]),
+            server.score_quiz_adjudications(
+                questions,
+                [{"correct": True}, {"correct": True}, {"correct": True}],
+            ),
             {"score": 12, "maxScore": 12, "correctCount": 3, "bonusPoints": 3},
         )
         self.assertEqual(
-            server.score_quiz_answers(questions, ["A", "wrong", "C"]),
+            server.score_quiz_adjudications(
+                questions,
+                [{"correct": True}, {"correct": False}, {"correct": True}],
+            ),
             {"score": 6, "maxScore": 12, "correctCount": 2, "bonusPoints": 0},
         )
+
+    def test_quiz_adjudication_rejects_answer_text_and_cross_question_ids(self) -> None:
+        import server
+
+        questions = [
+            {
+                "id": 41,
+                "subject": "football",
+                "difficulty": "easy",
+                "question": "First?",
+                "choices": ["A", "B", "C", "D"],
+                "correct_answer": "A",
+                "explanation": "First explanation.",
+            },
+            {
+                "id": 42,
+                "subject": "football",
+                "difficulty": "medium",
+                "question": "Second?",
+                "choices": ["E", "F", "G", "H"],
+                "correct_answer": "F",
+                "explanation": "Second explanation.",
+            },
+        ]
+
+        with self.assertRaisesRegex(ValueError, "question and choice IDs"):
+            server.adjudicate_quiz_answers(questions, ["A", "F"])
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            server.adjudicate_quiz_answers(
+                questions,
+                [
+                    {
+                        "questionId": server.daily_quiz.public_question_id(41),
+                        "choiceId": server.daily_quiz.public_choice_id(42, 0),
+                    },
+                    {
+                        "questionId": server.daily_quiz.public_question_id(42),
+                        "choiceId": server.daily_quiz.public_choice_id(42, 1),
+                    },
+                ],
+            )
+        with self.assertRaisesRegex(ValueError, "only be answered once"):
+            server.adjudicate_quiz_answers(
+                questions,
+                [
+                    {
+                        "questionId": server.daily_quiz.public_question_id(41),
+                        "choiceId": server.daily_quiz.public_choice_id(41, 0),
+                    },
+                    {
+                        "questionId": server.daily_quiz.public_question_id(41),
+                        "choiceId": server.daily_quiz.public_choice_id(41, 1),
+                    },
+                ],
+            )
 
     def test_daily_quiz_result_scores_once_and_updates_leaderboard(self) -> None:
         import server
@@ -3123,19 +2172,37 @@ class ProductionServerHardeningTests(unittest.TestCase):
                             ),
                         )
                 with patch("server.today_game_date", return_value="2026-06-01"):
+                    questions = server.quiz_category_questions(conn, "2026-06-01", "football")
+                    first_answers = [
+                        {
+                            "questionId": server.daily_quiz.public_question_id(question["id"]),
+                            "choiceId": server.daily_quiz.public_choice_id(
+                                question["id"], 1 if index == 1 else 0
+                            ),
+                        }
+                        for index, question in enumerate(questions)
+                    ]
                     first, first_status = server.save_daily_quiz_result(
                         conn,
                         user_id,
                         "2026-06-01",
                         "football",
-                        ["A", "wrong", "C"],
+                        first_answers,
+                    )
+                    conn.execute(
+                        """
+                        UPDATE daily_quiz_questions
+                        SET correct_answer = 'X', explanation = 'Content changed later.'
+                        WHERE quiz_set_id = ?
+                        """,
+                        (quiz_set_id,),
                     )
                     repeated, repeated_status = server.save_daily_quiz_result(
                         conn,
                         user_id,
                         "2026-06-01",
                         "football",
-                        ["wrong", "wrong", "wrong"],
+                        ["legacy", "clients", "remain idempotent"],
                     )
                     leaderboard = server.leaderboard_payload(conn)
 
@@ -3144,7 +2211,12 @@ class ProductionServerHardeningTests(unittest.TestCase):
             self.assertEqual(first["result"]["score"], 6)
             self.assertEqual(first["result"]["maxScore"], 12)
             self.assertEqual(first["result"]["bonusPoints"], 0)
+            self.assertEqual(first["result"]["scoringVersion"], "opaque-choice-v1")
+            self.assertEqual(len(first["result"]["adjudications"]), 3)
             self.assertEqual(repeated["result"]["score"], 6)
+            self.assertEqual(
+                repeated["result"]["quizVersion"], first["result"]["quizVersion"]
+            )
             self.assertEqual(leaderboard["players"][0]["totalPoints"], 6)
             self.assertEqual(leaderboard["players"][0]["weeklyPoints"], 6)
             self.assertEqual(leaderboard["players"][0]["quizPoints"], 6)
@@ -3156,7 +2228,437 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
-    def test_leaderboard_excludes_admin_accounts(self) -> None:
+    def test_database_startup_never_regrades_legacy_quiz_results(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+            now = "2026-06-01T12:00:00+00:00"
+            with closing(server.connect_db()) as conn, conn:
+                user_id = conn.execute(
+                    """
+                    INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                    VALUES ('legacy-player', 'hash', 'user', ?, ?)
+                    """,
+                    (now, now),
+                ).lastrowid
+                quiz_set_id = conn.execute(
+                    """
+                    INSERT INTO daily_quiz_sets (quiz_date, status, published_at)
+                    VALUES ('2026-06-01', 'published', ?)
+                    """,
+                    (now,),
+                ).lastrowid
+                for difficulty, answer in (("easy", "A"), ("medium", "B"), ("hard", "C")):
+                    conn.execute(
+                        """
+                        INSERT INTO daily_quiz_questions (
+                            quiz_set_id, subject, difficulty, question, choices_json,
+                            correct_answer, explanation, interesting_reason, tags_json,
+                            normalized_question, created_at
+                        )
+                        VALUES (?, 'football', ?, ?, ?, ?, 'Verified.', 'Memorable.', '[]', ?, ?)
+                        """,
+                        (
+                            quiz_set_id,
+                            difficulty,
+                            f"Legacy {difficulty}?",
+                            json.dumps([answer, "X", "Y", "Z"]),
+                            answer,
+                            f"legacy {difficulty}",
+                            now,
+                        ),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO daily_quiz_results (
+                        user_id, game_date, category, answers_json, score, max_score,
+                        correct_count, bonus_points, completed_at, created_at, updated_at
+                    ) VALUES (?, '2026-06-01', 'football', '["A","B","C"]', 4, 9, 1, 0, ?, ?, ?)
+                    """,
+                    (user_id, now, now, now),
+                )
+
+            server.initialize_database()
+            with closing(server.connect_db()) as conn:
+                row = conn.execute(
+                    """
+                    SELECT score, max_score, correct_count, bonus_points,
+                           quiz_version, scoring_version, adjudication_json
+                    FROM daily_quiz_results
+                    """
+                ).fetchone()
+
+            self.assertEqual(tuple(row[:4]), (4, 9, 1, 0))
+            self.assertEqual(row["quiz_version"], "legacy")
+            self.assertEqual(row["scoring_version"], "legacy")
+            self.assertEqual(json.loads(row["adjudication_json"]), [])
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_daily_map_guess_updates_leaderboard_map_points(self) -> None:
+        import daily_map_game
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-08-11T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    puzzle = daily_map_game.get_or_create_puzzle(conn, "2026-08-11")
+                    place = conn.execute(
+                        "SELECT * FROM map_place_pool WHERE canonical_name = 'Cairo'"
+                    ).fetchone()
+                    self.assertIsNotNone(place)
+                    config = daily_map_game.SCORE_CONFIG[place["difficulty"]]
+                    level_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_levels (
+                            puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            puzzle["id"],
+                            place["difficulty"],
+                            place["id"],
+                            config["max_points"],
+                            config["lambda_km"],
+                            now,
+                        ),
+                    ).lastrowid
+                    daily_map_game.set_puzzle_status(conn, "2026-08-11", "published")
+                    selection, selection_status = daily_map_game.snap_guess(
+                        conn,
+                        user_id=user_id,
+                        level_id=level_id,
+                        lat=place["lat"],
+                        lng=place["lng"],
+                        today="2026-08-11",
+                        allow_reverse_geocode=False,
+                    )
+                    self.assertEqual(selection_status, HTTPStatus.OK)
+                    with patch("daily_map_game.utc_now", return_value=now):
+                        result, status = daily_map_game.submit_guess(
+                            conn,
+                            user_id=user_id,
+                            level_id=level_id,
+                            selection_id=selection["selectionId"],
+                            today="2026-08-11",
+                        )
+                    self.assertEqual(status, HTTPStatus.CREATED)
+                    self.assertEqual(result["result"]["score"], 10)
+
+                with patch("server.today_game_date", return_value="2026-08-11"):
+                    leaderboard = server.leaderboard_payload(conn)
+
+            player = leaderboard["players"][0]
+            self.assertEqual(player["username"], "dad")
+            self.assertEqual(player["mapPoints"], 10)
+            self.assertEqual(player["weeklyMapPoints"], 10)
+            self.assertEqual(player["mapPlayed"], 1)
+            self.assertEqual(player["totalPoints"], 10)
+            self.assertEqual(player["weeklyPoints"], 10)
+            self.assertEqual(leaderboard["summary"]["mapPlays"], 1)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_daily_map_weekly_points_use_guess_completion_date(self) -> None:
+        import daily_map_game
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-08-11T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    puzzle = daily_map_game.get_or_create_puzzle(conn, "2026-08-04")
+                    place = conn.execute(
+                        "SELECT * FROM map_place_pool WHERE canonical_name = 'Cairo'"
+                    ).fetchone()
+                    self.assertIsNotNone(place)
+                    config = daily_map_game.SCORE_CONFIG[place["difficulty"]]
+                    level_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_levels (
+                            puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            puzzle["id"],
+                            place["difficulty"],
+                            place["id"],
+                            config["max_points"],
+                            config["lambda_km"],
+                            now,
+                        ),
+                    ).lastrowid
+                    daily_map_game.set_puzzle_status(conn, "2026-08-04", "published")
+                    selection, selection_status = daily_map_game.snap_guess(
+                        conn,
+                        user_id=user_id,
+                        level_id=level_id,
+                        lat=place["lat"],
+                        lng=place["lng"],
+                        today="2026-08-04",
+                        allow_reverse_geocode=False,
+                    )
+                    self.assertEqual(selection_status, HTTPStatus.OK)
+                    with patch("daily_map_game.utc_now", return_value=now):
+                        result, status = daily_map_game.submit_guess(
+                            conn,
+                            user_id=user_id,
+                            level_id=level_id,
+                            selection_id=selection["selectionId"],
+                            today="2026-08-04",
+                        )
+                    self.assertEqual(status, HTTPStatus.CREATED)
+                    self.assertEqual(result["result"]["score"], 10)
+
+                with patch("server.today_game_date", return_value="2026-08-11"):
+                    leaderboard = server.leaderboard_payload(conn)
+
+            player = leaderboard["players"][0]
+            self.assertEqual(player["mapPoints"], 10)
+            self.assertEqual(player["weeklyMapPoints"], 10)
+            self.assertEqual(player["weeklyPoints"], 10)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_daily_map_weekly_points_use_london_midnight_across_bst_end(self) -> None:
+        import server
+
+        class LondonBstEnd2026(tzinfo):
+            """Minimal London zone for the explicit 2026 BST-end boundary under test."""
+
+            transition = datetime(2026, 10, 25, 2)
+
+            def utcoffset(self, value: datetime | None) -> timedelta:
+                if value is not None and value.replace(tzinfo=None) < self.transition:
+                    return timedelta(hours=1)
+                return timedelta(0)
+
+            def dst(self, value: datetime | None) -> timedelta:
+                return self.utcoffset(value)
+
+            def tzname(self, value: datetime | None) -> str:
+                return "BST" if self.dst(value) else "GMT"
+
+        london_timezone = LondonBstEnd2026()
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-10-24T23:30:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    place_id = conn.execute(
+                        "SELECT id FROM map_place_pool ORDER BY id LIMIT 1"
+                    ).fetchone()["id"]
+                    puzzle_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_puzzles (
+                            puzzle_date, status, generated_at, published_at
+                        ) VALUES ('2026-10-25', 'published', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    level_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_levels (
+                            puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+                        ) VALUES (?, 'easy', ?, 10, 1.0, ?)
+                        """,
+                        (puzzle_id, place_id, now),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO daily_map_guesses (
+                            user_id, level_id, guessed_lat, guessed_lng, selected_name,
+                            revealed_hint_count, distance_m, score, band, completed_at,
+                            created_at, updated_at
+                        ) VALUES (?, ?, 0, 0, NULL, 0, 0, 10, 'Solved', ?, ?, ?)
+                        """,
+                        (user_id, level_id, now, now, now),
+                    )
+
+                with (
+                    patch.object(server, "SERVER_TZ", london_timezone),
+                    patch("server.today_game_date", return_value="2026-10-31"),
+                ):
+                    bounds = server.game_date_period_utc_bounds(
+                        "2026-10-25",
+                        "2026-10-31",
+                    )
+                    leaderboard = server.leaderboard_payload(conn)
+
+            self.assertEqual(
+                bounds,
+                (
+                    "2026-10-24T23:00:00+00:00",
+                    "2026-11-01T00:00:00+00:00",
+                ),
+            )
+            self.assertEqual(leaderboard["summary"]["periodStart"], "2026-10-25")
+            self.assertEqual(leaderboard["players"][0]["weeklyMapPoints"], 10)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_leaderboard_weekly_points_exclude_future_dates_for_all_games(self) -> None:
+        import server
+
+        london_timezone = timezone(timedelta(hours=1), "BST")
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-02T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+
+                    for game_date in ("2026-06-02", "2026-06-03"):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (
+                                game_date, secret_word, cycle, created_at
+                            ) VALUES (?, 'raise', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
+                            ) VALUES (?, ?, 'won', 3, 4, ?, ?, ?)
+                            """,
+                            (user_id, game_id, now, now, now),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO daily_quiz_results (
+                                user_id, game_date, category, answers_json, score, max_score,
+                                correct_count, bonus_points, completed_at, created_at, updated_at
+                            ) VALUES (?, ?, 'football', '[]', 6, 12, 2, 0, ?, ?, ?)
+                            """,
+                            (user_id, game_date, now, now, now),
+                        )
+
+                    place_id = conn.execute(
+                        "SELECT id FROM map_place_pool ORDER BY id LIMIT 1"
+                    ).fetchone()["id"]
+                    puzzle_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_puzzles (
+                            puzzle_date, status, generated_at, published_at
+                        ) VALUES ('2026-06-02', 'published', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    for level_slug, completed_at in (
+                        ("easy", "2026-06-02T12:00:00+00:00"),
+                        ("medium", "2026-06-02T23:00:00+00:00"),
+                    ):
+                        level_id = conn.execute(
+                            """
+                            INSERT INTO daily_map_levels (
+                                puzzle_id, level_slug, place_id, max_points,
+                                lambda_km, created_at
+                            ) VALUES (?, ?, ?, 10, 1.0, ?)
+                            """,
+                            (puzzle_id, level_slug, place_id, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO daily_map_guesses (
+                                user_id, level_id, guessed_lat, guessed_lng, selected_name,
+                                revealed_hint_count, distance_m, score, band, completed_at,
+                                created_at, updated_at
+                            ) VALUES (?, ?, 0, 0, NULL, 0, 0, 10, 'Solved', ?, ?, ?)
+                            """,
+                            (user_id, level_id, completed_at, completed_at, completed_at),
+                        )
+
+                with (
+                    patch.object(server, "SERVER_TZ", london_timezone),
+                    patch("server.today_game_date", return_value="2026-06-02"),
+                ):
+                    leaderboard = server.leaderboard_payload(conn)
+
+            player = leaderboard["players"][0]
+            self.assertEqual(player["weeklyWordlePoints"], 4)
+            self.assertEqual(player["weeklyQuizPoints"], 6)
+            self.assertEqual(player["weeklyMapPoints"], 10)
+            self.assertEqual(player["weeklyPoints"], 20)
+            self.assertEqual(player["wordlePoints"], 8)
+            self.assertEqual(player["quizPoints"], 12)
+            self.assertEqual(player["mapPoints"], 20)
+            self.assertEqual(player["totalPoints"], 40)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_leaderboard_includes_admin_accounts(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
@@ -3200,8 +2702,11 @@ class ProductionServerHardeningTests(unittest.TestCase):
                         )
                 payload = server.leaderboard_payload(conn)
 
-            self.assertEqual([player["username"] for player in payload["players"]], ["dad"])
-            self.assertEqual(payload["players"][0]["totalPoints"], 6)
+            self.assertEqual(
+                [player["username"] for player in payload["players"]],
+                ["admin", "dad"],
+            )
+            self.assertEqual([player["totalPoints"] for player in payload["players"]], [9, 6])
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
@@ -3882,6 +3387,38 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(before_window, datetime(2026, 6, 1, 0, 5, tzinfo=timezone.utc))
         self.assertEqual(after_window, datetime(2026, 6, 2, 0, 5, tzinfo=timezone.utc))
 
+    def test_daily_quiz_recovery_mode_starts_at_8pm_uk_time(self) -> None:
+        import server
+
+        target = "2026-08-12"
+        with patch(
+            "server.server_timezone", return_value=timezone(timedelta(hours=1))
+        ):
+            before = server.daily_quiz_generation_mode(
+                target,
+                datetime(2026, 8, 11, 18, 59, tzinfo=timezone.utc),
+            )
+            at_threshold = server.daily_quiz_generation_mode(
+                target,
+                datetime(2026, 8, 11, 19, 0, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(before, "normal")
+        self.assertEqual(at_threshold, "recovery")
+
+    def test_missing_today_quiz_always_uses_recovery_mode(self) -> None:
+        import server
+
+        with patch(
+            "server.server_timezone", return_value=timezone(timedelta(hours=1))
+        ):
+            mode = server.daily_quiz_generation_mode(
+                "2026-08-12",
+                datetime(2026, 8, 12, 0, 30, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(mode, "recovery")
+
     def test_daily_quiz_scheduler_skips_already_published_tomorrow(self) -> None:
         import daily_quiz
         import server
@@ -4134,36 +3671,6 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(conn.commit_calls, 4)
         self.assertFalse(conn.in_transaction)
 
-    def test_history_events_prefer_recent_sport_and_birth_highlights(self) -> None:
-        import server
-
-        source_payload = {
-            "data": {
-                "Events": [
-                    {"year": "45 BC", "text": "A very old event happened.", "links": []},
-                    {"year": "2021", "text": "A landmark science mission launched.", "links": []},
-                    {"year": "1967", "text": "A football club won a European cup.", "links": []},
-                    {"year": "1998", "text": "A major agreement was signed.", "links": []},
-                ],
-                "Births": [
-                    {"year": "1987", "text": "A famous singer and actor was born.", "links": []},
-                    {"year": "1880", "text": "A local clerk was born.", "links": []},
-                ],
-            }
-        }
-
-        with patch("server.fetch_json_url", return_value=source_payload):
-            events = server.fetch_history_events(5, 21, 5)
-
-        categories = {event.get("category") for event in events}
-        event_text = " ".join(event["text"] for event in events)
-
-        self.assertIn("history", categories)
-        self.assertIn("sport", categories)
-        self.assertIn("born", categories)
-        self.assertIn("football club won", event_text)
-        self.assertIn("famous singer and actor", event_text)
-        self.assertNotEqual(events[0]["year"], "45 BC")
 
     def test_daily_map_scheduler_discovers_candidates_before_clue_generation(self) -> None:
         import daily_map_game
@@ -4196,6 +3703,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 "server.generate_ai_daily_map_round.discover_uncurated_candidates",
                 return_value={
                     "accepted_count": 1,
+                    "candidate_place_ids": [42],
                     "candidate_names": ["fresh stadium"],
                 },
             ) as discover,
@@ -4216,10 +3724,76 @@ class ProductionServerHardeningTests(unittest.TestCase):
             puzzle_date="2026-07-29",
             count=4,
             max_attempts=2,
+            excluded_names=set(),
             required_place_type=None,
         )
+        self.assertEqual(generate.call_args.kwargs["eligible_place_ids"], {42})
         self.assertEqual(generate.call_args.kwargs["eligible_names"], {"fresh stadium"})
         self.assertIsNone(generate.call_args.kwargs["required_place_type"])
+
+    def test_daily_map_scheduler_discovers_fresh_batch_after_generation_rejection(self) -> None:
+        import daily_map_game
+        import server
+
+        db_path = Path(self.temp_dir.name) / "fultons.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+        provider = object()
+        generated = {
+            "place": "Second Stadium",
+            "learning_profile_hash": "profile-hash",
+            "critic_mode": "ai",
+            "publish_result": {"date": "2026-07-29", "status": "published"},
+        }
+
+        with (
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ENABLED", True),
+            patch.object(server, "DAILY_MAP_AI_DISCOVER_COUNT", 4),
+            patch.object(server, "DAILY_MAP_AI_DISCOVERY_ATTEMPTS", 2),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ROUNDS", 2),
+            patch(
+                "server.map_clue_rewriter.ConfiguredMapClueProvider.from_env",
+                return_value=provider,
+            ),
+            patch(
+                "server.generate_ai_daily_map_round.discover_uncurated_candidates",
+                side_effect=[
+                    {
+                        "accepted_count": 1,
+                        "candidate_place_ids": [41],
+                        "candidate_names": ["first stadium"],
+                    },
+                    {
+                        "accepted_count": 1,
+                        "candidate_place_ids": [42],
+                        "candidate_names": ["second stadium"],
+                    },
+                ],
+            ) as discover,
+            patch(
+                "server.generate_ai_daily_map_round.generate_round",
+                side_effect=[LookupError("First batch failed quality gates."), generated],
+            ) as generate,
+        ):
+            result = server.generate_daily_map_game_for_date(
+                conn,
+                puzzle_date="2026-07-29",
+            )
+
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(discover.call_count, 2)
+        self.assertEqual(discover.call_args_list[0].kwargs["excluded_names"], set())
+        self.assertEqual(
+            discover.call_args_list[1].kwargs["excluded_names"],
+            {"first stadium"},
+        )
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(generate.call_args_list[0].kwargs["eligible_place_ids"], {41})
+        self.assertEqual(generate.call_args_list[1].kwargs["eligible_place_ids"], {42})
 
     def test_daily_map_generation_reports_original_failure_after_schema_initialization(self) -> None:
         import daily_map_game
@@ -4256,6 +3830,67 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "failed")
         self.assertIn("No learned hook passed", result["failureReason"])
+
+    def test_daily_map_generation_publishes_reviewed_fallback_after_ai_failure(self) -> None:
+        import daily_map_game
+        import server
+        from tools import install_map_reviewed_fallbacks
+
+        db_path = Path(self.temp_dir.name) / "map-generation-fallback.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+        install_map_reviewed_fallbacks.install_seed(
+            conn,
+            Path(__file__).resolve().parents[1]
+            / "deploy"
+            / "map-reviewed-fallbacks.json",
+        )
+        conn.commit()
+
+        with (
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "DAILY_MAP_AI_GENERATION_ENABLED", True),
+            patch.object(server, "DAILY_MAP_AI_DISCOVER_COUNT", 0),
+            patch.object(server, "DAILY_MAP_STADIUM_LAUNCH_DATE", ""),
+            patch(
+                "server.map_clue_rewriter.ConfiguredMapClueProvider.from_env",
+                return_value=object(),
+            ),
+            patch(
+                "server.generate_ai_daily_map_round.generate_round",
+                side_effect=LookupError("No learned hook passed."),
+            ),
+        ):
+            result = server.generate_daily_map_game_for_date(
+                conn,
+                puzzle_date="2026-08-07",
+            )
+
+        self.assertEqual(result["status"], "published")
+        published = conn.execute(
+            """
+            SELECT map_place_pool.canonical_name
+            FROM daily_map_levels
+            INNER JOIN daily_map_puzzles
+                ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+            INNER JOIN map_place_pool
+                ON map_place_pool.id = daily_map_levels.place_id
+            WHERE daily_map_puzzles.puzzle_date = '2026-08-07'
+            """
+        ).fetchone()
+        self.assertIsNotNone(published)
+
+    def test_daily_map_prepares_two_days_ahead(self) -> None:
+        import server
+
+        now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+        with patch.object(server, "DAILY_MAP_PREPARE_DAYS_AHEAD", 2):
+            dates = server.active_daily_map_game_dates(now)
+
+        self.assertEqual(dates, ["2026-08-05", "2026-08-06", "2026-08-07"])
 
     def test_daily_map_launch_prefers_stadiums_for_first_three_rounds(self) -> None:
         import server

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
+import threading
 import unittest
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -86,6 +90,53 @@ def passing_critic() -> dict[str, object]:
     }
 
 
+def supporting_evidence(question: dict[str, object], **_: object) -> list[dict[str, str]]:
+    answer = str(question.get("correct_answer") or "")
+    claim = " ".join(
+        str(question.get(field) or "")
+        for field in ("question", "explanation", "interesting_reason")
+    )
+    return [
+        {
+            "title": f"Official record for {answer}",
+            "source_name": "example.edu",
+            "source_url": "https://example.edu/reference/one",
+            "tier": "primary",
+            "snippet": f"{answer}. {claim}",
+            "excerpt": f"The documented answer is {answer}. {claim}",
+            "query": answer,
+        },
+        {
+            "title": f"Independent account of {answer}",
+            "source_name": "bbc.co.uk",
+            "source_url": "https://www.bbc.co.uk/archive/two",
+            "tier": "reputable",
+            "snippet": f"{answer}. {claim}",
+            "excerpt": f"Independent evidence identifies {answer}. {claim}",
+            "query": answer,
+        },
+    ]
+
+
+def passing_verification(evidence: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "passed": True,
+        "premise_supported": True,
+        "answer_supported": True,
+        "unique_answer": True,
+        "claims": [
+            {
+                "claim": "The question premise and proposed answer are supported.",
+                "status": "supported",
+                "evidence_indices": list(range(min(2, len(evidence)))),
+            }
+        ],
+        "failure_reasons": [],
+        "feedback_to_generator": "",
+        "notes": "The supplied evidence supports publication.",
+    }
+
+
 class FakeProvider:
     name = "fake"
 
@@ -127,6 +178,9 @@ class FakeProvider:
             critic["feedback_to_generator"] = "Use a more memorable historical connection."
         return critic
 
+    def verify_question(self, *, evidence: list[dict[str, object]], **_: object) -> dict[str, object]:
+        return passing_verification(evidence)
+
 
 class AlwaysInvalidProvider:
     name = "always-invalid"
@@ -136,6 +190,9 @@ class AlwaysInvalidProvider:
 
     def critique_question(self, **_: object) -> dict[str, object]:
         raise AssertionError("Invalid questions must not reach the critic.")
+
+    def verify_question(self, **_: object) -> dict[str, object]:
+        raise AssertionError("Invalid questions must not reach the verifier.")
 
 
 class AlwaysFailingProvider:
@@ -147,6 +204,9 @@ class AlwaysFailingProvider:
         raise RuntimeError(self.reason)
 
     def critique_question(self, **_: object) -> dict[str, object]:
+        raise RuntimeError(self.reason)
+
+    def verify_question(self, **_: object) -> dict[str, object]:
         raise RuntimeError(self.reason)
 
 
@@ -176,6 +236,9 @@ class PassingProvider:
         critic["corrected_difficulty"] = difficulty
         return critic
 
+    def verify_question(self, *, evidence: list[dict[str, object]], **_: object) -> dict[str, object]:
+        return passing_verification(evidence)
+
 class CriticUnavailableProvider(PassingProvider):
     def critique_question(
         self,
@@ -194,6 +257,16 @@ class InvalidCriticProvider(PassingProvider):
         *args: object,
         **kwargs: object,
     ) -> dict[str, object]:
+        return {"passed": True}
+
+
+class VerifierUnavailableProvider(PassingProvider):
+    def verify_question(self, **_: object) -> dict[str, object]:
+        raise RuntimeError("Gemini request failed with HTTP 429.")
+
+
+class InvalidVerifierProvider(PassingProvider):
+    def verify_question(self, **_: object) -> dict[str, object]:
         return {"passed": True}
 
 
@@ -217,19 +290,714 @@ class FeedbackReuseProvider(PassingProvider):
         return valid_question(subject, difficulty)
 
 
+class CandidateProvider(PassingProvider):
+    def __init__(
+        self,
+        name: str = "candidate-provider",
+        *,
+        blocked_answer: str | None = None,
+        invalid_first_batch: bool = False,
+    ) -> None:
+        super().__init__(name)
+        self.blocked_answer = blocked_answer
+        self.invalid_first_batch = invalid_first_batch
+        self.discovery_calls = 0
+        self.discovery_feedback_calls: list[list[str]] = []
+        self.composition_calls = 0
+        self.critic_calls = 0
+
+    def discover_candidates(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        topic_lane: str,
+        batch_size: int,
+        feedback: list[str],
+        **_: object,
+    ) -> dict[str, object]:
+        self.discovery_calls += 1
+        self.discovery_feedback_calls.append(list(feedback))
+        if self.invalid_first_batch and self.discovery_calls == 1:
+            return {"candidates": [{"answer": "invalid"} for _ in range(batch_size)]}
+        candidates: list[dict[str, object]] = []
+        for index in range(batch_size):
+            answer = (
+                self.blocked_answer
+                if self.blocked_answer and self.discovery_calls == 1
+                else f"{subject} {difficulty} candidate {self.discovery_calls}-{index}"
+            )
+            hook_templates = (
+                "A documented ceremony connected {answer} with a landmark public milestone recorded by contemporary sources.",
+                "Archival evidence shows that {answer} played the decisive role in an unusual competition incident.",
+                "Researchers identify {answer} through a distinctive discovery that changed later practice in the field.",
+            )
+            hook = hook_templates[(self.discovery_calls - 1) % len(hook_templates)].format(
+                answer=answer
+            )
+            candidates.append(
+                {
+                    "answer": answer,
+                    "hook": hook,
+                    "topic_lane": topic_lane,
+                    "era": "twentieth century",
+                    "region": "Europe",
+                    "tags": [topic_lane, f"test-event-{self.discovery_calls}-{index}"],
+                    "evidence_query": f"{answer} documented historical milestone",
+                }
+            )
+        return {"candidates": candidates}
+
+    def compose_question(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        candidate: dict[str, object],
+        **_: object,
+    ) -> dict[str, object]:
+        self.composition_calls += 1
+        answer = str(candidate["answer"])
+        hook = str(candidate["hook"])
+        slot_question = str(valid_question(subject, difficulty)["question"])
+        return {
+            "subject": subject,
+            "difficulty": difficulty,
+            "question": slot_question,
+            "choices": [answer, "Alternative Alpha", "Alternative Beta", "Alternative Gamma"],
+            "correct_answer": answer,
+            "explanation": f"{answer} is correct because the supplied evidence documents the milestone clearly.",
+            "interesting_reason": hook,
+            "tags": list(candidate["tags"]),
+        }
+
+    def critique_question(self, **kwargs: object) -> dict[str, object]:
+        self.critic_calls += 1
+        return super().critique_question(**kwargs)
+
+
+class DiscoveryUnavailableCandidateProvider(CandidateProvider):
+    def discover_candidates(self, **_: object) -> dict[str, object]:
+        self.discovery_calls += 1
+        raise RuntimeError("Gemini request failed with HTTP 429.")
+
+
+class VerifierUnavailableCandidateProvider(CandidateProvider):
+    def __init__(self, name: str = "verifier-unavailable") -> None:
+        super().__init__(name)
+        self.verifier_calls = 0
+
+    def verify_question(self, **_: object) -> dict[str, object]:
+        self.verifier_calls += 1
+        raise RuntimeError("Gemini request failed with HTTP 429.")
+
+
 class DailyQuizTests(unittest.TestCase):
+    def test_quiz_diagnostic_retention_prunes_age_and_row_overflow_only(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        daily_quiz.initialize_database(conn)
+        conn.execute(
+            "INSERT INTO daily_quiz_sets (quiz_date, status) VALUES (?, 'published')",
+            ("2026-08-15",),
+        )
+        quiz_set_id = int(
+            conn.execute(
+                "SELECT id FROM daily_quiz_sets WHERE quiz_date = ?",
+                ("2026-08-15",),
+            ).fetchone()[0]
+        )
+        now = datetime(2026, 8, 15, 12, tzinfo=timezone.utc)
+        created_values = [
+            now - timedelta(days=60),
+            now - timedelta(days=3),
+            now - timedelta(days=2),
+            now - timedelta(days=1),
+        ]
+        for index, created_at in enumerate(created_values, start=1):
+            created = created_at.isoformat()
+            conn.execute(
+                """
+                INSERT INTO daily_quiz_attempts (
+                    quiz_date, subject, difficulty, attempt_number, provider,
+                    generated_json, passed, created_at
+                ) VALUES (?, 'football', 'easy', ?, 'test', '{}', 0, ?)
+                """,
+                ("2026-08-15", index, created),
+            )
+            conn.execute(
+                """
+                INSERT INTO daily_quiz_candidates (
+                    quiz_set_id, quiz_date, subject, difficulty, batch_number,
+                    candidate_index, provider, answer, normalized_answer, hook,
+                    normalized_hook, topic_lane, status, created_at, updated_at
+                ) VALUES (
+                    ?, ?, 'football', 'easy', ?, 1, 'test', ?, ?, ?, ?,
+                    'history', 'rejected', ?, ?
+                )
+                """,
+                (
+                    quiz_set_id,
+                    "2026-08-15",
+                    index,
+                    f"Answer {index}",
+                    f"answer {index}",
+                    f"Hook {index}",
+                    f"hook {index}",
+                    created,
+                    created,
+                ),
+            )
+
+        daily_quiz.prune_quiz_diagnostics(
+            conn,
+            now=now,
+            retention_days=30,
+            max_rows=2,
+        )
+
+        attempt_numbers = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT attempt_number FROM daily_quiz_attempts ORDER BY attempt_number"
+            )
+        ]
+        candidate_batches = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT batch_number FROM daily_quiz_candidates ORDER BY batch_number"
+            )
+        ]
+        self.assertEqual(attempt_numbers, [3, 4])
+        self.assertEqual(candidate_batches, [3, 4])
+        self.assertEqual(
+            conn.execute(
+                "SELECT status FROM daily_quiz_sets WHERE id = ?", (quiz_set_id,)
+            ).fetchone()[0],
+            "published",
+        )
+        conn.close()
+
     def setUp(self) -> None:
         self.conn = sqlite3.connect(":memory:")
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         daily_quiz.initialize_database(self.conn)
         self.addCleanup(self.conn.close)
+        evidence_patcher = patch(
+            "daily_quiz.collect_question_evidence",
+            side_effect=supporting_evidence,
+        )
+        evidence_patcher.start()
+        self.addCleanup(evidence_patcher.stop)
 
     def test_validator_accepts_well_formed_question(self) -> None:
         result = daily_quiz.validate_question(valid_question())
 
         self.assertTrue(result.passed)
         self.assertIsNotNone(result.question)
+
+    def test_config_reuses_openrouter_fallback_for_evidence_search(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "AI_PROVIDER": "gemini",
+                "GEMINI_API_KEY": "gemini-key",
+                "AI_FALLBACK_PROVIDER": "openrouter",
+                "AI_FALLBACK_GENERATOR_MODEL": "openrouter/free",
+                "AI_FALLBACK_CRITIC_MODEL": "openrouter/free",
+                "AI_FALLBACK_API_KEY": "openrouter-key",
+                "AI_FALLBACK_BASE_URL": "https://openrouter.ai/api/v1",
+            },
+            clear=True,
+        ):
+            loaded = daily_quiz.QuizConfig.from_env()
+
+        self.assertEqual(loaded.evidence_openrouter_api_key, "openrouter-key")
+        self.assertEqual(loaded.evidence_openrouter_model, "openrouter/free")
+        self.assertEqual(
+            loaded.evidence_openrouter_base_url,
+            "https://openrouter.ai/api/v1",
+        )
+
+    def test_candidate_pipeline_publishes_verified_questions(self) -> None:
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=8,
+            candidate_batches_per_slot=3,
+        )
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-08-20",
+            config=pipeline_config,
+            provider=provider,
+        )
+
+        self.assertEqual(result["status"], "published")
+        status = daily_quiz.quiz_status(self.conn, "2026-08-20")
+        self.assertEqual(status["pipeline_version"], "candidate-v1")
+        self.assertEqual(status["verified_questions"], 6)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_candidates WHERE status='accepted'"
+            ).fetchone()[0],
+            6,
+        )
+        self.assertEqual(provider.composition_calls, 6)
+
+    def test_candidate_evidence_probe_preserves_tailored_search_query(self) -> None:
+        candidate = {
+            "answer": "Example Answer",
+            "hook": "A documented event provides a memorable and uniquely identifying fact.",
+            "topic_lane": "world history incidents",
+            "era": "twentieth century",
+            "region": "Europe",
+            "tags": ["documented event", "public milestone"],
+            "evidence_query": "Example Answer documented public milestone",
+        }
+
+        probe = daily_quiz.candidate_evidence_probe(
+            candidate,
+            subject="general_knowledge",
+            difficulty="medium",
+        )
+
+        self.assertEqual(probe["evidence_query"], candidate["evidence_query"])
+
+    def test_candidate_feedback_summarizes_every_rejected_answer_in_run(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        for index in range(12):
+            daily_quiz.insert_candidate(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="hard",
+                batch_number=index + 1,
+                candidate_index=1,
+                provider="test",
+                generation_mode="normal",
+                candidate={
+                    "answer": f"Rejected Answer {index}",
+                    "hook": f"Documented rejected hook number {index} for this test run.",
+                    "topic_lane": "famous incidents and matches",
+                    "era": "",
+                    "region": "",
+                    "tags": ["test", f"rejected-{index}"],
+                    "evidence_query": f"Rejected Answer {index} documented event",
+                },
+                status="rejected",
+                rejection_stage="local",
+                failure_reason="Correct answer is inside the answer embargo window.",
+            )
+
+        feedback = daily_quiz.recent_candidate_rejection_feedback(
+            self.conn,
+            quiz_set_id=target["id"],
+            subject="football",
+            difficulty="hard",
+            limit=3,
+        )
+
+        self.assertEqual(len(feedback), 3)
+        summary = feedback[-1]
+        self.assertIn("Rejected Answer 0", summary)
+        self.assertIn("Rejected Answer 11", summary)
+
+    def test_candidate_call_budget_stops_new_calls_and_survives_retry(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=2,
+            candidate_max_calls_per_quiz=1,
+        )
+        logs: list[str] = []
+
+        first = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=logs.append,
+        )
+        second = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=logs.append,
+        )
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(provider.discovery_calls, 1)
+        self.assertEqual(provider.composition_calls, 0)
+        self.assertEqual(
+            daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
+            1,
+        )
+        self.assertTrue(any("call budget exhausted (1/1)" in entry for entry in logs))
+
+        self.conn.execute(
+            "DELETE FROM daily_quiz_candidates WHERE quiz_set_id = ?", (target["id"],)
+        )
+        self.assertEqual(
+            daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
+            0,
+        )
+
+    def test_candidate_pipeline_filters_embargoed_answer_before_composition(self) -> None:
+        old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-18")
+        old_question = valid_question("football", "easy")
+        old_question["question"] = (
+            "Which football side is represented by this deliberately older embargo example?"
+        )
+        old_question["correct_answer"] = "Blocked Football Answer"
+        old_question["choices"][0] = "Blocked Football Answer"
+        daily_quiz.save_question(
+            self.conn,
+            quiz_set_id=old_set["id"],
+            question=old_question,
+            evidence=supporting_evidence(old_question),
+            verification=passing_verification(supporting_evidence(old_question)),
+        )
+        daily_quiz.set_quiz_status(self.conn, "2026-08-18", "published")
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider(blocked_answer="Blocked Football Answer")
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=8,
+            candidate_batches_per_slot=2,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(provider.discovery_calls, 2)
+        self.assertEqual(provider.composition_calls, 1)
+        self.assertTrue(
+            any(
+                "Blocked Football Answer" in entry
+                for entry in provider.discovery_feedback_calls[1]
+            )
+        )
+        local_rejections = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM daily_quiz_candidates
+            WHERE rejection_stage='local' AND failure_reason LIKE '%embargo%'
+            """
+        ).fetchone()[0]
+        self.assertEqual(local_rejections, 8)
+
+    def test_candidate_pipeline_does_not_compose_unsupported_hook(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+        unsupported = [
+            {
+                "title": "Unrelated source",
+                "source_name": "example.edu",
+                "source_url": "https://example.edu/unrelated",
+                "tier": "primary",
+                "snippet": "This source concerns an unrelated subject.",
+                "excerpt": "No proposed answer or hook is discussed.",
+                "query": "unrelated",
+            }
+        ]
+
+        with patch("daily_quiz.configured_question_evidence", return_value=unsupported):
+            result = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="easy",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(provider.composition_calls, 0)
+        self.assertEqual(provider.critic_calls, 0)
+
+    def test_candidate_pipeline_rejects_final_question_from_180_day_history(self) -> None:
+        old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-04-20")
+        old_question = valid_question("football", "easy")
+        daily_quiz.save_question(
+            self.conn,
+            quiz_set_id=old_set["id"],
+            question=old_question,
+            evidence=supporting_evidence(old_question),
+            verification=passing_verification(supporting_evidence(old_question)),
+        )
+        daily_quiz.set_quiz_status(self.conn, "2026-04-20", "published")
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+            question_similarity_days=180,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertIsNone(result)
+        rejected = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM daily_quiz_candidates
+            WHERE rejection_stage='composition'
+              AND failure_reason LIKE '%180-day history%'
+            """
+        ).fetchone()[0]
+        self.assertEqual(rejected, 1)
+        self.assertEqual(provider.composition_calls, 1)
+        self.assertEqual(
+            daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
+            2,
+        )
+        recorded = self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_attempts WHERE candidate_id IS NOT NULL"
+        ).fetchone()[0]
+        self.assertEqual(recorded, 1)
+
+    def test_candidate_pipeline_rotates_provider_after_bad_batch(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        first = CandidateProvider("first", invalid_first_batch=True)
+        second = CandidateProvider("second")
+        chain = daily_quiz.FallbackQuizProvider([first, second])
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=2,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="general_knowledge",
+            difficulty="easy",
+            provider=chain,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(first.discovery_calls, 1)
+        self.assertEqual(second.discovery_calls, 1)
+        self.assertEqual(second.composition_calls, 1)
+
+    def test_candidate_pipeline_falls_back_when_discovery_provider_is_unavailable(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        unavailable = DiscoveryUnavailableCandidateProvider("unavailable")
+        fallback = CandidateProvider("fallback")
+        chain = daily_quiz.FallbackQuizProvider([unavailable, fallback])
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=chain,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(unavailable.discovery_calls, 1)
+        self.assertEqual(fallback.discovery_calls, 1)
+        provider = self.conn.execute(
+            "SELECT provider FROM daily_quiz_candidates ORDER BY id LIMIT 1"
+        ).fetchone()["provider"]
+        self.assertEqual(provider, "fallback")
+
+    def test_candidate_pipeline_falls_back_when_verifier_is_unavailable(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        composer = CandidateProvider("composer")
+        critic = CandidateProvider("critic")
+        unavailable = VerifierUnavailableCandidateProvider()
+        chain = daily_quiz.FallbackQuizProvider([composer, critic, unavailable])
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=chain,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(unavailable.verifier_calls, 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_candidates WHERE status='accepted'"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_candidate_pipeline_resumes_after_all_verifiers_are_unavailable(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        unavailable = VerifierUnavailableCandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+
+        first = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=unavailable,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+        resumable = self.conn.execute(
+            """
+            SELECT status, rejection_stage FROM daily_quiz_candidates
+            WHERE status='verified' ORDER BY id LIMIT 1
+            """
+        ).fetchone()
+
+        fallback = CandidateProvider("recovered")
+        second = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=fallback,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertIsNone(first)
+        self.assertIsNotNone(resumable)
+        self.assertEqual(resumable["rejection_stage"], "transient")
+        self.assertTrue(second)
+        self.assertEqual(fallback.discovery_calls, 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_candidates WHERE status='accepted'"
+            ).fetchone()[0],
+            1,
+        )
+
+    def test_candidate_pipeline_remembers_rejected_candidates_across_retries(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+        )
+        unsupported = [
+            {
+                "title": "Unrelated source",
+                "source_name": "example.edu",
+                "source_url": "https://example.edu/unrelated",
+                "tier": "primary",
+                "snippet": "No candidate is discussed here.",
+                "excerpt": "This is intentionally unrelated.",
+                "query": "unrelated",
+            }
+        ]
+        with patch(
+            "daily_quiz.configured_question_evidence", return_value=unsupported
+        ) as evidence_search:
+            first = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="easy",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+            provider.discovery_calls = 0
+            second = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="easy",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(evidence_search.call_count, 1)
+        remembered = self.conn.execute(
+            """
+            SELECT COUNT(*) FROM daily_quiz_candidates
+            WHERE rejection_stage='local'
+              AND failure_reason LIKE '%already failed during this generation run%'
+            """
+        ).fetchone()[0]
+        self.assertEqual(remembered, 2)
 
     def test_validator_rejects_invalid_question_shapes(self) -> None:
         cases: list[tuple[str, dict[str, object]]] = []
@@ -274,6 +1042,17 @@ class DailyQuizTests(unittest.TestCase):
     def test_validator_rejects_explicit_current_fact_language(self) -> None:
         question = valid_question()
         question["question"] = "Which football manager is currently top of the league this season?"
+
+        result = daily_quiz.validate_question(question)
+
+        self.assertFalse(result.passed)
+        self.assertIn("volatile current fact", result.reason)
+
+    def test_validator_rejects_live_ranking_language(self) -> None:
+        question = valid_question(subject="football")
+        question["question"] = (
+            "Which national team consistently ranks among Europe's top-performing teams?"
+        )
 
         result = daily_quiz.validate_question(question)
 
@@ -335,7 +1114,24 @@ class DailyQuizTests(unittest.TestCase):
         result = daily_quiz.check_repetition(question, previous)
 
         self.assertFalse(result.passed)
-        self.assertIn("quiz slot", result.reason)
+        self.assertIn("quiz subject", result.reason)
+
+    def test_repetition_rejects_recent_answer_at_different_difficulty(self) -> None:
+        question = {
+            **valid_question(subject="football", difficulty="easy"),
+            "correct_answer": "Australia",
+        }
+        previous = [
+            {
+                **valid_question(subject="football", difficulty="medium"),
+                "correct_answer": "Australia",
+            }
+        ]
+
+        result = daily_quiz.check_repetition(question, previous)
+
+        self.assertFalse(result.passed)
+        self.assertIn("quiz subject", result.reason)
 
     def test_repetition_rejects_answer_with_generic_qualifier_removed(self) -> None:
         question = {
@@ -354,7 +1150,7 @@ class DailyQuizTests(unittest.TestCase):
         result = daily_quiz.check_repetition(question, previous)
 
         self.assertFalse(result.passed)
-        self.assertIn("quiz slot", result.reason)
+        self.assertIn("quiz subject", result.reason)
 
     def test_repetition_rejects_answer_already_used_in_same_quiz(self) -> None:
         question = valid_question(difficulty="medium")
@@ -439,6 +1235,7 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(len(payload["questions"]), 6)
         status = daily_quiz.quiz_status(self.conn, "2026-06-02")
         self.assertEqual(status["accepted_questions"], 6)
+        self.assertEqual(status["verified_questions"], 6)
         self.assertEqual(status["failed_attempts"], 2)
         self.assertTrue(
             any(
@@ -451,6 +1248,21 @@ class DailyQuizTests(unittest.TestCase):
         self.assertNotIn("interesting_reason", public_question)
         self.assertNotIn("tags", public_question)
         self.assertNotIn("critic", public_question)
+        self.assertNotIn("correct_answer", public_question)
+        self.assertNotIn("explanation", public_question)
+        self.assertIsInstance(public_question["id"], str)
+        self.assertEqual(
+            set(public_question["choices"][0]),
+            {"id", "text"},
+        )
+        serialized_payload = json.dumps(payload, sort_keys=True)
+        self.assertNotIn('"correct_answer"', serialized_payload)
+        self.assertNotIn('"explanation"', serialized_payload)
+        stored = self.conn.execute(
+            "SELECT evidence_json, verification_json FROM daily_quiz_questions LIMIT 1"
+        ).fetchone()
+        self.assertEqual(len(json.loads(stored["evidence_json"])), 2)
+        self.assertTrue(json.loads(stored["verification_json"])["passed"])
 
     def test_generation_keeps_quiz_generating_after_retry_limit(self) -> None:
         result = daily_quiz.generate_daily_quiz(
@@ -466,6 +1278,329 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(result["failed_attempts"], 2)
         with self.assertRaises(LookupError):
             daily_quiz.quiz_payload(self.conn, "2026-06-03")
+
+    def test_force_regeneration_failure_preserves_published_quiz(self) -> None:
+        quiz_date = "2026-06-13"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        before = self.conn.execute(
+            """
+            SELECT id, subject, difficulty, question, correct_answer
+            FROM daily_quiz_questions WHERE quiz_set_id = ? ORDER BY id
+            """,
+            (quiz_set["id"],),
+        ).fetchall()
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=config(max_attempts=1),
+            force=True,
+            provider=AlwaysInvalidProvider(),
+            log=lambda _: None,
+        )
+        after = self.conn.execute(
+            """
+            SELECT id, subject, difficulty, question, correct_answer
+            FROM daily_quiz_questions WHERE quiz_set_id = ? ORDER BY id
+            """,
+            (quiz_set["id"],),
+        ).fetchall()
+
+        self.assertEqual(result["status"], "published")
+        self.assertTrue(result["regeneration_failed"])
+        self.assertEqual([tuple(row) for row in after], [tuple(row) for row in before])
+
+    def test_force_regeneration_atomically_swaps_complete_quiz(self) -> None:
+        quiz_date = "2026-06-14"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            question = valid_question(subject, difficulty)
+            question["question"] = f"Old published prompt for {subject} {difficulty}?"
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=question,
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        before_ids = {
+            int(row[0])
+            for row in self.conn.execute(
+                "SELECT id FROM daily_quiz_questions WHERE quiz_set_id = ?",
+                (quiz_set["id"],),
+            )
+        }
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=config(),
+            force=True,
+            provider=PassingProvider("replacement"),
+            log=lambda _: None,
+        )
+        after_rows = self.conn.execute(
+            "SELECT id, question FROM daily_quiz_questions WHERE quiz_set_id = ?",
+            (quiz_set["id"],),
+        ).fetchall()
+
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(len(after_rows), 6)
+        self.assertTrue(before_ids.isdisjoint({int(row["id"]) for row in after_rows}))
+        self.assertFalse(any(str(row["question"]).startswith("Old published") for row in after_rows))
+
+    def test_served_quiz_blocks_force_regeneration_and_loaded_answers_stay_valid(self) -> None:
+        import server
+
+        quiz_date = "2026-08-15"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        daily_quiz.lock_published_quiz_for_play(self.conn, quiz_date)
+        loaded = daily_quiz.quiz_payload(self.conn, quiz_date)
+        loaded_general = [
+            question
+            for question in loaded["questions"]
+            if question["subject"] == "general_knowledge"
+        ]
+        submitted = [
+            {
+                "questionId": question["id"],
+                "choiceId": question["choices"][0]["id"],
+            }
+            for question in loaded_general
+        ]
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=config(),
+            force=True,
+            provider=PassingProvider("replacement"),
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result["regeneration_failed"])
+        self.assertTrue(result["regeneration_blocked"])
+        self.assertEqual(daily_quiz.quiz_payload(self.conn, quiz_date), loaded)
+        normalized, adjudications, _ = server.adjudicate_quiz_answers(
+            server.quiz_category_questions(self.conn, quiz_date, "general"),
+            submitted,
+        )
+        self.assertEqual(normalized, submitted)
+        self.assertTrue(all(item["correct"] for item in adjudications))
+
+    def test_play_lock_committed_during_staging_blocks_final_atomic_swap(self) -> None:
+        generation_started = threading.Event()
+        continue_generation = threading.Event()
+
+        class BlockingProvider(PassingProvider):
+            def generate_question(self, **kwargs: object) -> dict[str, object]:
+                if not generation_started.is_set():
+                    generation_started.set()
+                    if not continue_generation.wait(timeout=10):
+                        raise TimeoutError("test did not release staged generation")
+                return super().generate_question(**kwargs)  # type: ignore[arg-type]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "quiz-race.db"
+            writer = sqlite3.connect(db_path, timeout=5, check_same_thread=False)
+            writer.row_factory = sqlite3.Row
+            writer.execute("PRAGMA foreign_keys = ON")
+            player = sqlite3.connect(db_path, timeout=5)
+            player.row_factory = sqlite3.Row
+            daily_quiz.initialize_database(writer)
+            quiz_date = "2026-08-15"
+            quiz_set = daily_quiz.get_or_create_quiz_set(writer, quiz_date)
+            for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+                daily_quiz.save_question(
+                    writer,
+                    quiz_set_id=int(quiz_set["id"]),
+                    question=valid_question(subject, difficulty),
+                )
+            daily_quiz.set_quiz_status(writer, quiz_date, "published")
+            before_ids = [
+                int(row[0])
+                for row in writer.execute(
+                    "SELECT id FROM daily_quiz_questions ORDER BY id"
+                )
+            ]
+            outcome: dict[str, object] = {}
+
+            def regenerate() -> None:
+                outcome.update(
+                    daily_quiz.generate_daily_quiz(
+                        writer,
+                        quiz_date=quiz_date,
+                        config=config(),
+                        force=True,
+                        provider=BlockingProvider("replacement"),
+                        log=lambda _: None,
+                    )
+                )
+
+            worker = threading.Thread(target=regenerate)
+            worker.start()
+            self.assertTrue(generation_started.wait(timeout=10))
+            with player:
+                daily_quiz.lock_published_quiz_for_play(player, quiz_date)
+            continue_generation.set()
+            worker.join(timeout=20)
+            self.assertFalse(worker.is_alive())
+
+            after_ids = [
+                int(row[0])
+                for row in writer.execute(
+                    "SELECT id FROM daily_quiz_questions ORDER BY id"
+                )
+            ]
+            self.assertTrue(outcome["regeneration_blocked"])
+            self.assertEqual(after_ids, before_ids)
+            self.assertIsNotNone(
+                writer.execute(
+                    "SELECT locked_at FROM daily_quiz_sets WHERE quiz_date = ?",
+                    (quiz_date,),
+                ).fetchone()[0]
+            )
+            writer.close()
+            player.close()
+
+    def test_locked_swap_rolls_back_original_content_when_commit_fails(self) -> None:
+        class CommitFailingConnection:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self.connection = connection
+                self.rollback_called = False
+
+            @property
+            def in_transaction(self) -> bool:
+                return self.connection.in_transaction
+
+            def execute(self, *args: object, **kwargs: object):
+                return self.connection.execute(*args, **kwargs)
+
+            def commit(self) -> None:
+                raise sqlite3.OperationalError("commit failed")
+
+            def rollback(self) -> None:
+                self.rollback_called = True
+                self.connection.rollback()
+
+        quiz_date = "2026-08-15"
+        self.conn.execute(
+            "INSERT INTO daily_quiz_sets (quiz_date, status) VALUES (?, 'published')",
+            (quiz_date,),
+        )
+        self.conn.commit()
+        wrapped = CommitFailingConnection(self.conn)
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "commit failed"):
+            with daily_quiz.locked_quiz_swap(  # type: ignore[arg-type]
+                wrapped,
+                quiz_date,
+                savepoint_name="test_commit_failure",
+            ):
+                wrapped.execute(
+                    "UPDATE daily_quiz_sets SET status = 'failed' WHERE quiz_date = ?",
+                    (quiz_date,),
+                )
+
+        self.assertTrue(wrapped.rollback_called)
+        self.assertFalse(self.conn.in_transaction)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM daily_quiz_sets WHERE quiz_date = ?",
+                (quiz_date,),
+            ).fetchone()[0],
+            "published",
+        )
+
+    def test_recorded_result_blocks_single_question_regeneration(self) -> None:
+        quiz_date = "2026-08-16"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        self.conn.execute(
+            """
+            CREATE TABLE daily_quiz_results (
+                id INTEGER PRIMARY KEY,
+                game_date TEXT NOT NULL
+            )
+            """
+        )
+        self.conn.execute(
+            "INSERT INTO daily_quiz_results (game_date) VALUES (?)",
+            (quiz_date,),
+        )
+        before = daily_quiz.quiz_payload(self.conn, quiz_date)
+
+        result = daily_quiz.regenerate_question(
+            self.conn,
+            quiz_date=quiz_date,
+            subject="football",
+            difficulty="easy",
+            config=config(),
+            provider=PassingProvider("replacement"),
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result["regeneration_failed"])
+        self.assertTrue(result["regeneration_blocked"])
+        self.assertEqual(daily_quiz.quiz_payload(self.conn, quiz_date), before)
+
+    def test_question_regeneration_failure_preserves_published_slot(self) -> None:
+        quiz_date = "2026-06-15"
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=valid_question(subject, difficulty),
+            )
+        daily_quiz.set_quiz_status(self.conn, quiz_date, "published")
+        before = self.conn.execute(
+            """
+            SELECT id, question, correct_answer FROM daily_quiz_questions
+            WHERE quiz_set_id = ? AND subject = 'football' AND difficulty = 'easy'
+            """,
+            (quiz_set["id"],),
+        ).fetchone()
+
+        result = daily_quiz.regenerate_question(
+            self.conn,
+            quiz_date=quiz_date,
+            subject="football",
+            difficulty="easy",
+            config=config(max_attempts=1),
+            provider=AlwaysInvalidProvider(),
+            log=lambda _: None,
+        )
+        after = self.conn.execute(
+            """
+            SELECT id, question, correct_answer FROM daily_quiz_questions
+            WHERE quiz_set_id = ? AND subject = 'football' AND difficulty = 'easy'
+            """,
+            (quiz_set["id"],),
+        ).fetchone()
+
+        self.assertEqual(result["status"], "published")
+        self.assertTrue(result["regeneration_failed"])
+        self.assertEqual(tuple(after), tuple(before))
 
     def test_generation_reuses_prior_feedback_on_later_retry_cycles(self) -> None:
         provider = FeedbackReuseProvider()
@@ -575,6 +1710,56 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(feedback, ["Missing required fields: question."])
 
+    def test_transient_evidence_failure_does_not_blacklist_generated_answer(self) -> None:
+        question = valid_question(subject="general_knowledge", difficulty="easy")
+        daily_quiz.save_attempt(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+            attempt_number=1,
+            provider="openrouter",
+            generated=question,
+            critic=passing_critic(),
+            passed=False,
+            failure_reason="OpenRouter evidence search failed with HTTP 500.",
+        )
+
+        feedback = daily_quiz.prior_attempt_feedback(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+        )
+
+        self.assertEqual(feedback, [])
+
+    def test_verifier_format_failure_does_not_blacklist_generated_answer(self) -> None:
+        question = valid_question(subject="general_knowledge", difficulty="easy")
+        daily_quiz.save_attempt(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+            attempt_number=1,
+            provider="openrouter",
+            generated=question,
+            critic=passing_critic(),
+            passed=False,
+            failure_reason=(
+                "Evidence verifier request failed: AI response does not contain a JSON object."
+            ),
+        )
+
+        feedback = daily_quiz.prior_attempt_feedback(
+            self.conn,
+            quiz_date="2026-06-03",
+            subject="general_knowledge",
+            difficulty="easy",
+        )
+
+        self.assertEqual(feedback, [])
+
     def test_prior_attempt_feedback_names_rejected_answer(self) -> None:
         daily_quiz.save_attempt(
             self.conn,
@@ -631,6 +1816,17 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIn('"tactics"', prompt)
         self.assertIn('"Failure 0"', prompt)
+
+    def test_football_critic_receives_medium_difficulty_guidance(self) -> None:
+        prompt = daily_quiz.critic_prompt(
+            "football",
+            "medium",
+            valid_question("football", "medium"),
+            [],
+        )
+
+        self.assertIn("direct recall question", prompt)
+        self.assertIn("easy, not medium", prompt)
 
     def test_prior_attempt_feedback_prefers_newest_failures(self) -> None:
         for index in range(7):
@@ -764,6 +1960,312 @@ class DailyQuizTests(unittest.TestCase):
         self.assertFalse(payload["last_failure_transient"])
         self.assertIn("Critic payload invalid", payload["last_failure_reason"])
 
+    def test_generation_defers_when_evidence_search_is_unavailable(self) -> None:
+        with patch(
+            "daily_quiz.collect_question_evidence",
+            side_effect=daily_quiz.EvidenceSearchUnavailable(
+                "Evidence search unavailable: DNS lookup failed"
+            ),
+        ):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-09",
+                config=config(),
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertTrue(payload["last_failure_transient"])
+        self.assertIn("Evidence search unavailable", payload["last_failure_reason"])
+
+    def test_generation_uses_wikipedia_when_openrouter_search_is_capped(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        with (
+            patch(
+                "daily_quiz.collect_openrouter_question_evidence",
+                side_effect=daily_quiz.EvidenceSearchUnavailable(
+                    "OpenRouter evidence search failed with HTTP 429"
+                ),
+            ) as openrouter_search,
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                side_effect=supporting_evidence,
+            ) as wikipedia_search,
+        ):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-09",
+                config=evidence_config,
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "published")
+        self.assertEqual(len(payload["questions"]), 6)
+        self.assertEqual(
+            daily_quiz.quiz_status(self.conn, "2026-06-09")["verified_questions"],
+            6,
+        )
+        self.assertEqual(openrouter_search.call_count, 6)
+        self.assertEqual(wikipedia_search.call_count, 6)
+
+    def test_generation_supplements_incomplete_openrouter_evidence(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        with (
+            patch("daily_quiz.collect_openrouter_question_evidence", return_value=[]),
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                side_effect=supporting_evidence,
+            ) as wikipedia_search,
+        ):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-09",
+                config=evidence_config,
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "published")
+        self.assertEqual(len(payload["questions"]), 6)
+        self.assertEqual(wikipedia_search.call_count, 6)
+
+    def test_capped_openrouter_supplements_incomplete_wikipedia_with_bing(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        question = valid_question()
+        wikipedia_evidence = supporting_evidence(question)[:1]
+        bing_evidence = [
+            {
+                **wikipedia_evidence[0],
+                "source_name": "Independent source",
+                "source_url": "https://example.org/independent-source",
+                "tier": "reputable",
+            }
+        ]
+        with (
+            patch(
+                "daily_quiz.collect_openrouter_question_evidence",
+                side_effect=daily_quiz.EvidenceSearchUnavailable(
+                    "OpenRouter evidence search failed with HTTP 429"
+                ),
+            ),
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                return_value=wikipedia_evidence,
+            ),
+            patch("daily_quiz.precheck_question_evidence", return_value={"passed": False}),
+            patch(
+                "daily_quiz.collect_question_evidence",
+                return_value=bing_evidence,
+            ) as bing_search,
+        ):
+            evidence = daily_quiz.configured_question_evidence(
+                question,
+                config=evidence_config,
+            )
+
+        self.assertEqual(len(evidence), 2)
+        self.assertEqual(bing_search.call_count, 1)
+
+    def test_candidate_evidence_requires_trusted_source_before_short_circuit(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        question = valid_question()
+        question["_requires_reputable_evidence"] = True
+        wikipedia_evidence = [
+            {
+                **supporting_evidence(question)[0],
+                "source_name": "Wikipedia",
+                "source_url": "https://en.wikipedia.org/wiki/Example",
+                "tier": "reference",
+            }
+        ]
+        bing_evidence = [
+            {
+                **supporting_evidence(question)[1],
+                "source_name": "Official archive",
+                "source_url": "https://example.edu/official-record",
+                "tier": "primary",
+            }
+        ]
+        with (
+            patch(
+                "daily_quiz.collect_openrouter_question_evidence",
+                side_effect=daily_quiz.EvidenceSearchUnavailable(
+                    "OpenRouter evidence search failed with HTTP 429"
+                ),
+            ),
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                return_value=wikipedia_evidence,
+            ),
+            patch("daily_quiz.precheck_question_evidence", return_value={"passed": True}),
+            patch(
+                "daily_quiz.collect_question_evidence",
+                return_value=bing_evidence,
+            ) as bing_search,
+        ):
+            evidence = daily_quiz.configured_question_evidence(
+                question,
+                config=evidence_config,
+            )
+
+        self.assertEqual(len(evidence), 2)
+        self.assertEqual(bing_search.call_count, 1)
+
+    def test_evidence_supplement_merges_longer_excerpt_for_duplicate_url(self) -> None:
+        evidence_config = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "evidence_openrouter_api_key": "openrouter-key",
+                "evidence_openrouter_base_url": "https://openrouter.ai/api/v1",
+                "evidence_openrouter_model": "openrouter/free",
+            }
+        )
+        question = {
+            "question": "Which national team changed confederations in 2006?",
+            "correct_answer": "Australia",
+            "explanation": "Australia joined the AFC in 2006.",
+            "interesting_reason": (
+                "Australia won in 2015, becoming the only team to win two "
+                "confederation cups."
+            ),
+        }
+        shared_url = "https://en.wikipedia.org/wiki/Australia_national_team"
+        openrouter_evidence = [
+            {
+                "title": "Australia national team",
+                "source_name": "Wikipedia",
+                "source_url": shared_url,
+                "tier": "reference",
+                "snippet": "Australia joined the AFC in 2006.",
+                "excerpt": "Australia joined the AFC in 2006.",
+                "query": "Australia 2006",
+            }
+        ]
+        wikipedia_evidence = [
+            {
+                **openrouter_evidence[0],
+                "excerpt": (
+                    "Australia joined the AFC in 2006 and won in 2015, becoming the "
+                    "only team to win two confederation cups."
+                ),
+            },
+            {
+                **openrouter_evidence[0],
+                "source_name": "The Guardian",
+                "source_url": "https://www.theguardian.com/football/australia-2015",
+                "tier": "reputable",
+                "snippet": "Australia won the Asian Cup in 2015.",
+                "excerpt": "Australia won the Asian Cup in 2015.",
+            },
+        ]
+        with (
+            patch(
+                "daily_quiz.collect_openrouter_question_evidence",
+                return_value=openrouter_evidence,
+            ),
+            patch(
+                "daily_quiz.collect_wikipedia_question_evidence",
+                return_value=wikipedia_evidence,
+            ),
+        ):
+            evidence = daily_quiz.configured_question_evidence(
+                question,
+                config=evidence_config,
+            )
+
+        self.assertEqual(len(evidence), 2)
+        self.assertIn("won in 2015", evidence[0]["excerpt"])
+
+    def test_generation_rejects_question_with_no_supporting_evidence(self) -> None:
+        with patch("daily_quiz.collect_question_evidence", return_value=[]):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-10",
+                config=config(max_attempts=1),
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertFalse(payload["last_failure_transient"])
+        self.assertIn("no usable sources", payload["last_failure_reason"])
+        attempt = daily_quiz.question_attempts(self.conn, "2026-06-10")["attempts"][0]
+        self.assertEqual(attempt["evidence"], [])
+        self.assertFalse(attempt["verification"]["passed"])
+
+    def test_generation_defers_when_evidence_verifier_is_unavailable(self) -> None:
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-11",
+            config=config(),
+            provider=VerifierUnavailableProvider("gemini"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertTrue(payload["last_failure_transient"])
+        self.assertIn("Evidence verifier request failed", payload["last_failure_reason"])
+
+    def test_generation_rejects_invalid_evidence_verifier_payload(self) -> None:
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-12",
+            config=config(max_attempts=1),
+            provider=InvalidVerifierProvider("invalid-verifier"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(payload["status"], "generating")
+        self.assertEqual(payload["accepted_questions"], 0)
+        self.assertFalse(payload["last_failure_transient"])
+        self.assertIn("Evidence verifier payload invalid", payload["last_failure_reason"])
+
+    def test_manual_publish_rejects_unverified_questions(self) -> None:
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-06-13")
+        for subject in daily_quiz.SUBJECTS:
+            for difficulty in daily_quiz.DIFFICULTIES:
+                daily_quiz.save_question(
+                    self.conn,
+                    quiz_set_id=quiz_set["id"],
+                    question=valid_question(subject, difficulty),
+                )
+
+        with self.assertRaisesRegex(ValueError, "evidence verification"):
+            daily_quiz.publish_quiz(self.conn, "2026-06-13")
+
     def test_provider_chain_from_config_includes_openrouter_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
             daily_quiz.QuizConfig(
@@ -780,6 +2282,14 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
         self.assertEqual([provider.name for provider in chain.providers], ["gemini", "openrouter"])
+
+    def test_hard_football_prompts_reject_inferred_statistical_superlatives(self) -> None:
+        generator = daily_quiz.generator_prompt("football", "hard", [], [])
+        critic = daily_quiz.critic_prompt("football", "hard", valid_question("football", "hard"), [])
+
+        for prompt in (generator, critic):
+            self.assertIn("do not manufacture a statistical superlative", prompt)
+            self.assertIn("cross-era format changes", prompt)
 
     def test_openai_compatible_provider_keeps_http_error_details(self) -> None:
         provider = daily_quiz.OpenAICompatibleProvider(
@@ -816,6 +2326,52 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIn("insufficient_quota", detail)
         self.assertIn("current quota", detail)
 
+    def test_openrouter_retries_invalid_json_with_response_healing_enabled(self) -> None:
+        class FakeResponse:
+            def __init__(self, content: str) -> None:
+                self.content = content
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self, _limit: int) -> bytes:
+                return json.dumps(
+                    {"choices": [{"message": {"content": self.content}}]}
+                ).encode("utf-8")
+
+        provider = daily_quiz.OpenAICompatibleProvider(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "provider": "openrouter",
+                    "generator_model": "openrouter/free",
+                    "critic_model": "openrouter/free",
+                    "compatible_api_key": "test-key",
+                    "compatible_base_url": "https://openrouter.ai/api/v1",
+                    "transient_retries": 1,
+                    "request_delay_sec": 0,
+                }
+            )
+        )
+        with (
+            patch(
+                "daily_quiz.urlopen",
+                side_effect=[FakeResponse('{"passed": true'), FakeResponse('{"passed": true}')],
+            ) as request,
+            patch.object(provider, "_defer_retry") as retry,
+        ):
+            payload = provider._request("openrouter/free", "Return a decision.")
+
+        self.assertEqual(payload, {"passed": True})
+        self.assertEqual(request.call_count, 2)
+        retry.assert_called_once_with(0)
+        request_payload = json.loads(request.call_args_list[0].args[0].data.decode("utf-8"))
+        self.assertEqual(request_payload["plugins"], [{"id": "response-healing"}])
+        self.assertTrue(daily_quiz.is_transient_provider_failure("Provider returned invalid JSON."))
+
     def test_gemini_provider_keeps_http_error_details(self) -> None:
         provider = daily_quiz.GeminiProvider(config())
         error = HTTPError(
@@ -840,6 +2396,42 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIn("RESOURCE_EXHAUSTED", detail)
         self.assertIn("Quota exceeded", detail)
+
+    def test_gemini_provider_retries_network_timeout(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self, _limit: int) -> bytes:
+                return json.dumps(
+                    {
+                        "candidates": [
+                            {"content": {"parts": [{"text": '{"passed": true}'}]}}
+                        ]
+                    }
+                ).encode("utf-8")
+
+        provider = daily_quiz.GeminiProvider(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "transient_retries": 1,
+                    "request_delay_sec": 0,
+                }
+            )
+        )
+        with (
+            patch("daily_quiz.urlopen", side_effect=[TimeoutError("read timed out"), FakeResponse()]) as request,
+            patch.object(provider, "_defer_transient_retry") as retry,
+        ):
+            payload = provider._request("test-model", "Return a decision.", {})
+
+        self.assertEqual(payload, {"passed": True})
+        self.assertEqual(request.call_count, 2)
+        retry.assert_called_once_with(0)
 
     def test_provider_chain_reuses_primary_gemini_key_for_gemini_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
@@ -893,7 +2485,7 @@ class DailyQuizTests(unittest.TestCase):
         class RateLimitError:
             headers: dict[str, str] = {}
 
-            def read(self) -> bytes:
+            def read(self, _limit: int) -> bytes:
                 return json.dumps(
                     {
                         "error": {

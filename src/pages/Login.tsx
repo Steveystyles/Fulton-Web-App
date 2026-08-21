@@ -1,6 +1,5 @@
 import { FormEvent, useState } from "react";
 import { LogIn, ShieldCheck } from "lucide-react";
-import crest from "../assets/crest.svg";
 import { useAuth } from "../context/AuthContext";
 
 export function Login() {
@@ -30,7 +29,7 @@ export function Login() {
         <section className="max-w-full overflow-hidden rounded-[1.75rem] saints-card p-5">
           <div className="flex items-center gap-3">
             <img
-              src={crest}
+              src="/favicon.svg"
               alt=""
               className="h-14 w-14 shrink-0 rounded-full bg-white object-contain"
               aria-hidden="true"

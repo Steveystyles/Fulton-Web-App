@@ -50,11 +50,22 @@ Recovered map feedback state:
   - `src/components/PlaceholderPage.tsx`
   - `src/components/StatCard.tsx`
   - `src/assets/crest-placeholder.svg`
+- Removed the paused, unreachable facts frontend cluster:
+  - `src/pages/Facts.tsx`
+  - `src/components/HistoryKnowledge.tsx`
+  - `src/components/FactCardImage.tsx`
+- Removed the corresponding unused client API types, request cache, and background
+  facts prewarm.
+- Removed the retired server facts/history implementation, provider configuration,
+  prewarm worker, generated-image wrapper, and feature-specific tests. The three
+  retired API paths return `410 Gone` for one compatibility release.
+- Removed thirteen repository-unreferenced Python helpers and consolidated a
+  duplicated map workoutability scorer, timezone loader, production cookie
+  implementation, and crest asset.
 
 ## Keep In Place
 
 - `server.py`: main API/static server and route owner.
-- `production_server.py`: hardened production wrapper used by `npm start` and Docker.
 - `daily_quiz.py`: daily quiz generation, validation, storage, and provider logic.
 - `daily_map_game.py`: map game generation, selection, clue validation, scoring, and storage logic.
 - `data/fultons.db`: live local SQLite database. Do not merge this into JSON; it is the operational source of truth.
@@ -82,13 +93,17 @@ Completed in this cleanup pass.
 
 ## Product Decisions Needed
 
-- `/facts` currently redirects to `/map`, so `src/pages/Facts.tsx`, `src/components/HistoryKnowledge.tsx`, and `src/components/FactCardImage.tsx` are not active in the route tree. The server-side facts API is still present. Decide whether the facts feature is paused or should be removed.
+- Existing databases may still contain `history_fact_rotations`,
+  `history_fact_review_failures`, and `history_fact_prewarm_jobs`. Runtime no
+  longer creates or uses these tables. Drop them only in a reviewed, backed-up
+  offline database migration after the `410 Gone` compatibility release.
 - `daily_quiz.py` and `daily_map_game.py` are large root modules. They can be moved into a backend package later, but that is higher risk than the Wordle move because many tools/tests import them directly and both modules compute project paths.
 - `data/training` still contains many candidate-generation CSV/JSON runs. These are mostly experiment history, while the playable place bank now lives in `data/fultons.db`. Archive old candidate runs after confirming no current review batch still depends on them.
 
 ## Suggested Next Cleanup Pass
 
-1. Decide whether to keep or remove the paused facts frontend route/components.
+1. After the compatibility release, confirm retired API traffic is absent and
+   schedule the backed-up offline table-drop migration.
 2. Decide whether to move the power-outage scripts into an ops folder and update README references.
 3. Optionally split the large root backend modules into a package in a later, higher-risk refactor.
 

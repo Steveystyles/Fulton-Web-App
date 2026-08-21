@@ -142,8 +142,9 @@ type MapCanvasProps = {
   draftSelection: DailyMapSnapSelection | null;
   selectionNotice: string;
   snapLoading: boolean;
+  submitting: boolean;
   onMapPick: (point: MapPoint, zoom: number) => void;
-  onAcceptDraft: () => void;
+  onUseDraft: () => void;
   onRejectDraft: () => void;
   onCycleDraft: (direction: -1 | 1) => void;
   onDismissSelectionNotice: () => void;
@@ -158,8 +159,9 @@ function MapCanvas({
   draftSelection,
   selectionNotice,
   snapLoading,
+  submitting,
   onMapPick,
-  onAcceptDraft,
+  onUseDraft,
   onRejectDraft,
   onCycleDraft,
   onDismissSelectionNotice,
@@ -513,13 +515,14 @@ function MapCanvas({
               </p>
             ) : null}
           </div>
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             {(draftSelection.alternatives?.length ?? 0) > 1 ? (
               <>
                 <button
                   type="button"
                   aria-label="Previous nearby place"
                   onClick={() => onCycleDraft(-1)}
+                  disabled={submitting}
                   className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
                 >
                   <ChevronLeft aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
@@ -528,6 +531,7 @@ function MapCanvas({
                   type="button"
                   aria-label="Next nearby place"
                   onClick={() => onCycleDraft(1)}
+                  disabled={submitting}
                   className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
                 >
                   <ChevronRight aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
@@ -539,17 +543,24 @@ function MapCanvas({
                 type="button"
                 aria-label="Reject selected place"
                 onClick={onRejectDraft}
+                disabled={submitting}
                 className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
               >
                 <X aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
               </button>
               <button
                 type="button"
-                aria-label="Accept selected place"
-                onClick={onAcceptDraft}
-                className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-sm saints-focus"
+                aria-label="Use selected place"
+                onClick={onUseDraft}
+                disabled={submitting}
+                className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-black text-white shadow-sm saints-focus disabled:cursor-not-allowed disabled:bg-emerald-300"
               >
-                <Check aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
+                {submitting ? (
+                  <LoaderCircle aria-hidden="true" className="h-5 w-5 animate-spin" />
+                ) : (
+                  <Check aria-hidden="true" className="h-5 w-5" strokeWidth={3} />
+                )}
+                Use this place
               </button>
             </div>
           </div>
@@ -629,7 +640,8 @@ export function MapGame() {
   const [selectionNotice, setSelectionNotice] = useState("");
   const [snapLoading, setSnapLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [revealedHintCount, setRevealedHintCount] = useState(0);
+  const [revealing, setRevealing] = useState(false);
+  const submitInFlightRef = useRef(false);
   const lockButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mapLabels, setMapLabels] = useState(() => {
     try {
@@ -675,7 +687,7 @@ export function MapGame() {
     setDraftSelection(null);
     setSelectionNotice("");
     setSnapLoading(false);
-    setRevealedHintCount(0);
+    setRevealing(false);
   }, [selectedLevelId]);
 
   useEffect(() => {
@@ -703,16 +715,28 @@ export function MapGame() {
   const pendingPoint = pendingSelection?.point;
   const totalScore = levels.reduce((total, level) => total + (level.result?.score ?? 0), 0);
   const completed = levels.filter((level) => level.submitted).length;
-  const currentRevealedHintCount = selectedLevel?.result?.revealedHintCount ?? revealedHintCount;
+  const currentRevealedHintCount = selectedLevel?.revealedHintCount ?? 0;
   const clues = selectedLevel?.clues ?? [];
-  const visibleClues = clues.slice(0, Math.min(clues.length, currentRevealedHintCount + 1));
-  const nextClue = selectedLevel?.submitted ? undefined : clues[currentRevealedHintCount + 1];
+  const visibleClues = clues;
+  const nextClue = selectedLevel && !selectedLevel.submitted && currentRevealedHintCount < 3
+    ? [
+        { title: "Medium clue", maxPoints: 7 },
+        { title: "Easy clue", maxPoints: 5 },
+        { title: "Place name", maxPoints: 2 },
+      ][currentRevealedHintCount]
+    : undefined;
   const currentMaxPoints =
-    selectedLevel?.result?.maxPoints ?? clues[currentRevealedHintCount]?.maxPoints ?? selectedLevel?.maxPoints ?? 0;
+    selectedLevel?.result?.maxPoints ?? clues[clues.length - 1]?.maxPoints ?? 0;
 
   const pickPointForSelected = useCallback(
     async (point: MapPoint, zoom: number) => {
-      if (selectedLevel === undefined || selectedLevel.submitted || snapLoading) {
+      if (
+        selectedLevel === undefined ||
+        selectedLevel.submitted ||
+        snapLoading ||
+        submitting ||
+        revealing
+      ) {
         return;
       }
       const levelId = selectedLevel.id;
@@ -720,6 +744,11 @@ export function MapGame() {
       setError("");
       setSelectionNotice("");
       setDraftSelection(null);
+      setPendingSelections((current) => {
+        const next = { ...current };
+        delete next[levelId];
+        return next;
+      });
       try {
         const selection = await api.snapDailyMapGuess(levelId, point, zoom);
         if (!selection.snapped) {
@@ -746,7 +775,7 @@ export function MapGame() {
         setSnapLoading(false);
       }
     },
-    [loadGame, selectedLevel, snapLoading],
+    [loadGame, revealing, selectedLevel, snapLoading, submitting],
   );
 
   const cycleDraftSelection = useCallback((direction: -1 | 1) => {
@@ -765,7 +794,99 @@ export function MapGame() {
     });
   }, []);
 
-  const acceptDraftSelection = useCallback(() => {
+  const submitSelectedGuess = useCallback(
+    async (selection: DailyMapSnapSelection | undefined) => {
+      if (
+        selectedLevel === undefined ||
+        selection === undefined ||
+        selectedLevel.submitted ||
+        submitInFlightRef.current ||
+        submitting ||
+        revealing
+      ) {
+        return;
+      }
+      submitInFlightRef.current = true;
+      setSubmitting(true);
+      setError("");
+      setSelectionNotice("");
+      try {
+        const response = await api.submitDailyMapGuess(
+          selectedLevel.id,
+          selection.selectionId,
+        );
+        setGame((current) => {
+          if (current === null) {
+            return current;
+          }
+          return {
+            ...current,
+            completedLevels: current.levels.filter((level) =>
+              level.id === selectedLevel.id ? true : level.submitted,
+            ).length,
+            levels: current.levels.map((level) =>
+              level.id === selectedLevel.id
+                ? {
+                    ...level,
+                    submitted: true,
+                    revealedHintCount: response.result.revealedHintCount,
+                    result: response.result,
+                  }
+                : level,
+            ),
+          };
+        });
+        setPendingSelections((current) => {
+          const next = { ...current };
+          delete next[selectedLevel.id];
+          return next;
+        });
+        setDraftSelection(null);
+      } catch (caughtError) {
+        setError(caughtError instanceof Error ? caughtError.message : "Guess failed to submit.");
+      } finally {
+        submitInFlightRef.current = false;
+        setSubmitting(false);
+      }
+    },
+    [revealing, selectedLevel, submitting],
+  );
+
+  const revealNextClue = useCallback(async () => {
+    if (
+      selectedLevel === undefined ||
+      selectedLevel.submitted ||
+      selectedLevel.revealedHintCount >= 3 ||
+      revealing ||
+      submitting
+    ) {
+      return;
+    }
+    setRevealing(true);
+    setError("");
+    try {
+      const response = await api.revealDailyMapClue(
+        selectedLevel.id,
+        selectedLevel.revealedHintCount,
+      );
+      setGame((current) =>
+        current === null
+          ? current
+          : {
+              ...current,
+              levels: current.levels.map((level) =>
+                level.id === selectedLevel.id ? response.level : level,
+              ),
+            },
+      );
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Clue reveal failed.");
+    } finally {
+      setRevealing(false);
+    }
+  }, [revealing, selectedLevel, submitting]);
+
+  const useDraftSelection = useCallback(() => {
     if (selectedLevel === undefined || draftSelection === null) {
       return;
     }
@@ -791,52 +912,6 @@ export function MapGame() {
   const dismissSelectionNotice = useCallback(() => {
     setSelectionNotice("");
   }, []);
-
-  async function submitGuess() {
-    if (
-      selectedLevel === undefined ||
-      pendingPoint === undefined ||
-      draftSelection !== null ||
-      selectedLevel.submitted
-    ) {
-      return;
-    }
-    setSubmitting(true);
-    setError("");
-    setSelectionNotice("");
-    try {
-      const response = await api.submitDailyMapGuess(selectedLevel.id, pendingPoint, {
-        selectedName: pendingSelection?.name,
-        revealedHintCount,
-      });
-      setGame((current) => {
-        if (current === null) {
-          return current;
-        }
-        return {
-          ...current,
-          completedLevels: current.levels.filter((level) =>
-            level.id === selectedLevel.id ? true : level.submitted,
-          ).length,
-          levels: current.levels.map((level) =>
-            level.id === selectedLevel.id
-              ? { ...level, submitted: true, result: response.result }
-              : level,
-          ),
-        };
-      });
-      setPendingSelections((current) => {
-        const next = { ...current };
-        delete next[selectedLevel.id];
-        return next;
-      });
-      setDraftSelection(null);
-    } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : "Guess failed to submit.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
 
   if (loading) {
     return (
@@ -997,10 +1072,11 @@ export function MapGame() {
             {nextClue ? (
               <button
                 type="button"
-                onClick={() => setRevealedHintCount((current) => Math.min(3, current + 1))}
+                onClick={() => void revealNextClue()}
+                disabled={revealing || submitting}
                 className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 transition hover:border-saints-red/40 saints-focus"
               >
-                Reveal {nextClue.title.toLowerCase()} - max {nextClue.maxPoints} pts
+                {revealing ? "Revealing clue" : `Reveal ${nextClue.title.toLowerCase()} - max ${nextClue.maxPoints} pts`}
               </button>
             ) : null}
           </div>
@@ -1010,15 +1086,14 @@ export function MapGame() {
             level={selectedLevel}
             mapLabels={mapLabels}
             mapStyle={mapStyle}
-            mapAnchors={(selectedLevel.mapAnchors ?? []).filter(
-              (anchor) => anchor.minHintCount <= currentRevealedHintCount,
-            )}
+            mapAnchors={selectedLevel.mapAnchors ?? []}
             acceptedSelection={pendingSelection}
             draftSelection={draftSelection}
             selectionNotice={selectionNotice}
             snapLoading={snapLoading}
+            submitting={submitting}
             onMapPick={pickPointForSelected}
-            onAcceptDraft={acceptDraftSelection}
+            onUseDraft={useDraftSelection}
             onRejectDraft={rejectDraftSelection}
             onCycleDraft={cycleDraftSelection}
             onDismissSelectionNotice={dismissSelectionNotice}
@@ -1047,11 +1122,11 @@ export function MapGame() {
               <button
                 ref={lockButtonRef}
                 type="button"
-                onClick={() => void submitGuess()}
-                disabled={pendingPoint === undefined || draftSelection !== null || snapLoading || submitting}
+                onClick={() => void submitSelectedGuess(pendingSelection)}
+                disabled={pendingPoint === undefined || draftSelection !== null || snapLoading || submitting || revealing}
                 className={[
                   "inline-flex min-h-12 min-w-[8.5rem] items-center justify-center gap-2 rounded-lg px-4 text-sm font-black transition saints-focus",
-                  pendingPoint === undefined || draftSelection !== null || snapLoading || submitting
+                  pendingPoint === undefined || draftSelection !== null || snapLoading || submitting || revealing
                     ? "bg-slate-200 text-slate-400"
                     : "bg-saints-red text-white shadow-sm hover:bg-saints-redDark",
                 ].join(" ")}

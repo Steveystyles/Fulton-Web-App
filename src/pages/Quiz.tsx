@@ -49,7 +49,8 @@ export function Quiz() {
       }
     }
 
-    void loadDailyQuestions();
+    // The app may stay open across midnight, so do not reuse yesterday's cached quiz.
+    void loadDailyQuestions(true);
     document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       active = false;

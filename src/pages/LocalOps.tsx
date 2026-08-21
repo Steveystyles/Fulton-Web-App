@@ -12,6 +12,7 @@ const emptyConfig: LocalOpsConfig = {
   publicHealthUrl: "",
   internalBaseUrl: "",
   internalQuizToken: "",
+  internalQuizTokenConfigured: false,
   composeFile: "",
   envFile: "",
   dataDir: "",
@@ -220,9 +221,18 @@ export function LocalOps() {
                       type="password"
                       value={config.internalQuizToken}
                       onChange={(event) => updateField("internalQuizToken", event.target.value)}
+                      autoComplete="new-password"
+                      spellCheck={false}
                       className="mt-2 h-12 w-full rounded-2xl border border-white/10 bg-white/8 px-3 text-sm font-bold text-white outline-none transition focus:border-white/30 focus:ring-4 focus:ring-white/10"
-                      placeholder="Bearer token used for quiz fixes"
+                      placeholder={
+                        config.internalQuizTokenConfigured
+                          ? "Configured — leave blank to keep it"
+                          : "Bearer token used for quiz fixes"
+                      }
                     />
+                    <span className="mt-2 block text-xs font-semibold text-white/50">
+                      This value is write-only and is never returned by the settings API.
+                    </span>
                   </label>
 
                   <details className="rounded-[1.4rem] border border-white/10 bg-white/5 px-4 py-3">

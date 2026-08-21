@@ -1,75 +1,421 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
-APP_COMMIT="${1:?Usage: homeserver-update.sh <commit-sha>}"
-APP_REPO_URL="${APP_REPO_URL:-https://github.com/Steveystyles/Fulton-Web-App.git}"
-SRC_DIR="${SRC_DIR:-${HOME}/fulton-web-app}"
+readonly CANONICAL_APP_REPO_URL="https://github.com/Steveystyles/Fulton-Web-App.git"
+readonly CANONICAL_APP_SSH_REPO_URL="git@github.com:Steveystyles/Fulton-Web-App.git"
+readonly CANONICAL_IMAGE_REPOSITORY="ghcr.io/steveystyles/fulton-web-app"
+readonly COSIGN_CERTIFICATE_IDENTITY_REGEXP='^https://github\.com/Steveystyles/Fulton-Web-App/\.github/workflows/build\.yml@refs/heads/main$'
+readonly COSIGN_CERTIFICATE_OIDC_ISSUER='https://token.actions.githubusercontent.com'
+readonly SHA_PATTERN='^[0-9a-f]{40}$'
+readonly DIGEST_IMAGE_PATTERN='^[A-Za-z0-9._:/-]+@sha256:[0-9a-f]{64}$'
+
+APP_COMMIT="${1:-}"
+APP_REPO_URL="${APP_REPO_URL:-${CANONICAL_APP_REPO_URL}}"
 COMPOSE_DIR="${COMPOSE_DIR:-${HOME}/fulton-web-app-deploy}"
-COMPOSE_ENV_FILE="${COMPOSE_ENV_FILE:-${COMPOSE_DIR}/.env}"
-if [ -f "${COMPOSE_ENV_FILE}" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "${COMPOSE_ENV_FILE}"
-  set +a
-fi
-DATA_DIR="${DATA_DIR:-${FULTONS_HOST_DATA_DIR:-/srv/storage/appdata/fultons-quiz}}"
-BACKUP_ROOT="${BACKUP_ROOT:-/srv/storage/backups}"
-COMPOSE_FILE="${COMPOSE_DIR}/compose.yaml"
-ENV_FILE="${ENV_FILE:-${FULTONS_ENV_FILE:-${DATA_DIR}/app.env}}"
+COMPOSE_ENV_FILE="${COMPOSE_DIR}/.env"
 
-log() {
-  printf '[fultons-deploy] %s\n' "$*"
-}
-
-resolve_abs_path() {
-  python3 - "${1:?path required}" <<'PY'
-import os
-import sys
-
-print(os.path.realpath(sys.argv[1]))
-PY
-}
-
-upsert_env_var() {
-  local file="${1:?file required}"
-  local key="${2:?key required}"
-  local value="${3-}"
-  python3 - "${file}" "${key}" "${value}" <<'PY'
+read_compose_path_setting() {
+  python3 - "${1:?dotenv path required}" "${2:?key required}" <<'PY'
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 key = sys.argv[2]
+if not path.exists():
+    raise SystemExit(0)
+if path.is_symlink() or not path.is_file():
+    raise SystemExit("compose dotenv must be a regular, non-symlink file")
+found = []
+for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    candidate, value = line.split("=", 1)
+    if candidate.strip() != key:
+        continue
+    value = value.strip()
+    if not value or len(value) > 4096:
+        raise SystemExit(f"invalid {key} in compose dotenv")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise SystemExit(f"invalid {key} in compose dotenv")
+    found.append(value)
+if len(found) > 1:
+    raise SystemExit(f"duplicate {key} in compose dotenv")
+if found:
+    print(found[0])
+PY
+}
+
+configured_src_dir="$(read_compose_path_setting "${COMPOSE_ENV_FILE}" "FULTONS_SRC_DIR")"
+configured_env_file="$(read_compose_path_setting "${COMPOSE_ENV_FILE}" "FULTONS_ENV_FILE")"
+configured_data_dir="$(read_compose_path_setting "${COMPOSE_ENV_FILE}" "FULTONS_HOST_DATA_DIR")"
+configured_offhost_required="$(read_compose_path_setting "${COMPOSE_ENV_FILE}" "FULTONS_OFFHOST_BACKUP_REQUIRED")"
+configured_offhost_command="$(read_compose_path_setting "${COMPOSE_ENV_FILE}" "FULTONS_OFFHOST_BACKUP_COMMAND")"
+SRC_DIR="${SRC_DIR:-${configured_src_dir:-${HOME}/fulton-web-app}}"
+DATA_DIR="${DATA_DIR:-${FULTONS_HOST_DATA_DIR:-${configured_data_dir:-/srv/storage/appdata/fultons-quiz}}}"
+BACKUP_ROOT="${BACKUP_ROOT:-/srv/storage/backups/fultons-quiz}"
+ENV_FILE="${ENV_FILE:-${FULTONS_ENV_FILE:-${configured_env_file:-${DATA_DIR}/app.env}}}"
+DEPLOY_IMAGE="${FULTONS_DEPLOY_IMAGE:-}"
+OFFHOST_BACKUP_REQUIRED="${FULTONS_OFFHOST_BACKUP_REQUIRED:-${configured_offhost_required:-0}}"
+OFFHOST_BACKUP_COMMAND="${FULTONS_OFFHOST_BACKUP_COMMAND:-${configured_offhost_command:-}}"
+# This is deliberately process-only: persisting the bootstrap gate in deploy/.env
+# would turn a one-shot reviewed exception into an ambient deployment capability.
+ALLOW_DATABASE_BOOTSTRAP="${FULTONS_ALLOW_DATABASE_BOOTSTRAP:-0}"
+LOCAL_BUILD_DEV_OVERRIDE="${FULTONS_ALLOW_LOCAL_BUILD_DEV_OVERRIDE:-0}"
+ALLOW_UNREACHABLE_COMMIT="${FULTONS_ALLOW_UNREACHABLE_COMMIT:-0}"
+REVIEWED_COMMIT="${FULTONS_REVIEWED_COMMIT:-}"
+HEALTH_ATTEMPTS="${FULTONS_DEPLOY_HEALTH_ATTEMPTS:-30}"
+HEALTH_INTERVAL_SEC="${FULTONS_DEPLOY_HEALTH_INTERVAL_SEC:-2}"
+
+COMPOSE_FILE=""
+BACKUP_DIR=""
+PREVIOUS_IMAGE=""
+PREVIOUS_REVISION=""
+ROLLOUT_STARTED=0
+DEPLOY_SUCCEEDED=0
+ROLLBACK_RUNNING=0
+PREVIOUS_COMPOSE_FILE=""
+PREVIOUS_COMPOSE_ENV_FILE=""
+BOOTSTRAP_MODE=0
+BOOTSTRAP_STAGE=""
+
+log() {
+  printf '[fultons-deploy] %s\n' "$*"
+}
+
+fail() {
+  log "ERROR: $*"
+  return 1
+}
+
+require_boolean() {
+  local name="${1:?name required}"
+  local value="${2-}"
+  case "${value}" in
+    0|1) ;;
+    *) fail "${name} must be 0 or 1 (received ${value})." ;;
+  esac
+}
+
+require_positive_integer() {
+  local name="${1:?name required}"
+  local value="${2-}"
+  [[ "${value}" =~ ^[1-9][0-9]*$ ]] || fail "${name} must be a positive integer."
+}
+
+resolve_abs_path() {
+  python3 - "${1:?path required}" <<'PY'
+import os
+import re
+import sys
+
+raw = sys.argv[1]
+if not raw or any(ord(character) < 32 or ord(character) == 127 for character in raw):
+    raise SystemExit("deployment path contains control characters")
+if not re.fullmatch(r"/[A-Za-z0-9._/-]+", raw):
+    raise SystemExit("deployment path contains unsupported characters")
+print(os.path.realpath(raw))
+PY
+}
+
+require_safe_directory_path() {
+  local name="${1:?name required}"
+  local path="${2:?path required}"
+  case "${path}" in
+    /|/home|/srv|/var|/tmp|"${HOME}") fail "${name} is too broad: ${path}" ;;
+  esac
+  [[ "${path}" = /* ]] || fail "${name} must be absolute: ${path}"
+}
+
+atomic_upsert_env_var() {
+  local file="${1:?file required}"
+  local key="${2:?key required}"
+  local value="${3-}"
+  python3 - "${file}" "${key}" "${value}" <<'PY'
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+path = Path(sys.argv[1])
+key = sys.argv[2]
 value = sys.argv[3]
+if path.is_symlink() or (path.exists() and not path.is_file()):
+    raise SystemExit(f"environment path is not a regular, non-symlink file: {path}")
 prefix = f"{key}="
 lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-updated = False
 result = []
+updated = False
 for line in lines:
-    if line.startswith(prefix):
-        result.append(prefix + value)
-        updated = True
+    candidate = line.split("=", 1)[0].strip() if "=" in line else ""
+    if candidate == key:
+        if not updated:
+            result.append(prefix + value)
+            updated = True
     else:
         result.append(line)
 if not updated:
     result.append(prefix + value)
-path.write_text("\n".join(result).rstrip("\n") + "\n", encoding="utf-8")
+
+path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+try:
+    os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        descriptor = -1
+        handle.write("\n".join(result).rstrip("\n") + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
 PY
 }
 
-if [ -d "${SRC_DIR}/.git" ]; then
-  log "Fetching latest git refs"
-  git -C "${SRC_DIR}" fetch --tags --prune origin
-  git -C "${SRC_DIR}" checkout --detach "${APP_COMMIT}"
-  git -C "${SRC_DIR}" reset --hard "${APP_COMMIT}"
-  git -C "${SRC_DIR}" clean -fdx
-elif [ -f "${SRC_DIR}/deploy/compose.yaml" ]; then
-  log "Using unpacked source at ${SRC_DIR}"
-else
-  log "Cloning ${APP_REPO_URL} into ${SRC_DIR}"
-  rm -rf "${SRC_DIR}"
-  git clone "${APP_REPO_URL}" "${SRC_DIR}"
-  git -C "${SRC_DIR}" checkout --detach "${APP_COMMIT}"
+validate_bootstrap_environment() {
+  python3 - "${ENV_FILE}" "${DATA_DIR}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+environment_path = Path(sys.argv[1])
+data_dir = Path(sys.argv[2])
+if environment_path.is_symlink() or not environment_path.is_file():
+    raise SystemExit("bootstrap environment must be a regular, non-symlink file")
+
+allowed_path = environment_path.resolve(strict=True)
+for entry in data_dir.iterdir():
+    if entry.is_symlink():
+        raise SystemExit(f"bootstrap data directory contains a link: {entry.name}")
+    try:
+        is_environment = entry.resolve(strict=True) == allowed_path
+    except OSError as error:
+        raise SystemExit(f"cannot inspect bootstrap data entry {entry.name}: {error}") from error
+    if not is_environment:
+        raise SystemExit(
+            f"bootstrap requires an otherwise empty data directory; found {entry.name}"
+        )
+
+required = {
+    "FULTONS_REQUIRE_EXISTING_DB": "0",
+    "FULTONS_MIN_DB_USERS": "0",
+    "FULTONS_SEED_DEMO_USERS": "0",
+}
+secrets = {
+    "FULTONS_BOOTSTRAP_ADMIN_USERNAME",
+    "FULTONS_BOOTSTRAP_ADMIN_PASSWORD",
+}
+values = {}
+for raw_line in environment_path.read_text(encoding="utf-8-sig").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    key = key.strip()
+    if key not in required and key not in secrets:
+        continue
+    if key in values:
+        raise SystemExit(f"bootstrap environment contains duplicate {key}")
+    values[key] = value.strip()
+
+for key, expected in required.items():
+    if values.get(key) != expected:
+        raise SystemExit(f"bootstrap requires {key}={expected}")
+for key in secrets:
+    value = values.get(key, "")
+    if not value or any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise SystemExit(f"bootstrap requires a non-empty, single-line {key}")
+PY
+}
+
+finalize_bootstrap_environment() {
+  python3 - "${ENV_FILE}" <<'PY'
+import os
+import stat
+import sys
+import tempfile
+from pathlib import Path
+
+path = Path(sys.argv[1])
+if path.is_symlink() or not path.is_file():
+    raise SystemExit("bootstrap environment must be a regular, non-symlink file")
+updates = {
+    "FULTONS_REQUIRE_EXISTING_DB": "1",
+    "FULTONS_MIN_DB_USERS": "1",
+    "FULTONS_SEED_DEMO_USERS": "0",
+    "FULTONS_BOOTSTRAP_ADMIN_USERNAME": "",
+    "FULTONS_BOOTSTRAP_ADMIN_PASSWORD": "",
+}
+result = []
+written = set()
+for line in path.read_text(encoding="utf-8-sig").splitlines():
+    key = line.split("=", 1)[0].strip() if "=" in line else ""
+    if key in updates:
+        if key not in written:
+            result.append(f"{key}={updates[key]}")
+            written.add(key)
+        continue
+    result.append(line)
+for key, value in updates.items():
+    if key not in written:
+        result.append(f"{key}={value}")
+
+descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+try:
+    os.chmod(temporary, stat.S_IRUSR | stat.S_IWUSR)
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        descriptor = -1
+        handle.write("\n".join(result).rstrip("\n") + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+finally:
+    if descriptor >= 0:
+        os.close(descriptor)
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+}
+
+compose() {
+  docker compose --env-file "${COMPOSE_ENV_FILE}" -f "${COMPOSE_FILE}" "$@"
+}
+
+container_exists() {
+  docker container inspect fultons-quiz >/dev/null 2>&1
+}
+
+container_is_healthy() {
+  docker exec fultons-quiz python -c \
+    "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:3000/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') else 1)" \
+    >/dev/null 2>&1
+}
+
+wait_for_health() {
+  local label="${1:?health label required}"
+  local attempt
+  for ((attempt = 1; attempt <= HEALTH_ATTEMPTS; attempt += 1)); do
+    if container_is_healthy; then
+      log "${label} health check passed"
+      return 0
+    fi
+    sleep "${HEALTH_INTERVAL_SEC}"
+  done
+  docker logs --tail 80 fultons-quiz || true
+  fail "${label} health check failed after ${HEALTH_ATTEMPTS} attempts."
+}
+
+rollback_deployment() {
+  local original_status="${1:-1}"
+  trap - ERR INT TERM
+  if [ "${ROLLBACK_RUNNING}" = "1" ]; then
+    exit "${original_status}"
+  fi
+  ROLLBACK_RUNNING=1
+
+  if [ "${ROLLOUT_STARTED}" != "1" ] || [ "${DEPLOY_SUCCEEDED}" = "1" ]; then
+    exit "${original_status}"
+  fi
+  if [ -z "${PREVIOUS_IMAGE}" ]; then
+    log "Rollback unavailable: no previous healthy container image was recorded."
+    exit "${original_status}"
+  fi
+
+  log "Rolling back to immutable image ${PREVIOUS_IMAGE}"
+  if [ -n "${PREVIOUS_COMPOSE_FILE}" ] && [ -f "${PREVIOUS_COMPOSE_FILE}" ]; then
+    if ! cp -p "${PREVIOUS_COMPOSE_FILE}" "${COMPOSE_FILE}"; then
+      log "CRITICAL: could not restore the previous compose definition."
+      exit "${original_status}"
+    fi
+  fi
+  if [ -n "${PREVIOUS_COMPOSE_ENV_FILE}" ] && [ -f "${PREVIOUS_COMPOSE_ENV_FILE}" ]; then
+    if ! cp -p "${PREVIOUS_COMPOSE_ENV_FILE}" "${COMPOSE_ENV_FILE}"; then
+      log "CRITICAL: could not restore the previous compose environment."
+      exit "${original_status}"
+    fi
+  else
+    if ! atomic_upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_IMAGE" "${PREVIOUS_IMAGE}"; then
+      log "CRITICAL: could not restore the previous compose image selection."
+      exit "${original_status}"
+    fi
+  fi
+  unset FULTONS_SRC_DIR FULTONS_ENV_FILE FULTONS_HOST_DATA_DIR
+  export FULTONS_IMAGE="${PREVIOUS_IMAGE}"
+  if ! compose up -d --no-build --force-recreate quiz-app; then
+    log "CRITICAL: compose rollback failed."
+    exit "${original_status}"
+  fi
+  if ! wait_for_health "Rollback"; then
+    log "CRITICAL: rollback container did not become healthy. Manual recovery is required."
+    exit "${original_status}"
+  fi
+  local rollback_image
+  rollback_image="$(docker inspect fultons-quiz --format '{{.Image}}')"
+  if [ "${rollback_image}" != "${PREVIOUS_IMAGE}" ]; then
+    log "CRITICAL: rollback image ${rollback_image:-unknown} does not match ${PREVIOUS_IMAGE}."
+    exit "${original_status}"
+  fi
+  if [ -n "${PREVIOUS_REVISION}" ]; then
+    local rollback_revision
+    rollback_revision="$(docker inspect fultons-quiz --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+    if [ "${rollback_revision}" != "${PREVIOUS_REVISION}" ]; then
+      log "CRITICAL: rollback revision ${rollback_revision:-unknown} does not match ${PREVIOUS_REVISION}."
+      exit "${original_status}"
+    fi
+  fi
+  log "Rollback health and revision verification passed."
+  exit "${original_status}"
+}
+
+on_error() {
+  local status=$?
+  local line="${BASH_LINENO[0]:-unknown}"
+  log "Deployment failed at line ${line} (status ${status})."
+  rollback_deployment "${status}"
+}
+
+trap on_error ERR
+trap 'rollback_deployment 130' INT
+trap 'rollback_deployment 143' TERM
+
+require_boolean "FULTONS_OFFHOST_BACKUP_REQUIRED" "${OFFHOST_BACKUP_REQUIRED}"
+require_boolean "FULTONS_ALLOW_DATABASE_BOOTSTRAP" "${ALLOW_DATABASE_BOOTSTRAP}"
+require_boolean "FULTONS_ALLOW_LOCAL_BUILD_DEV_OVERRIDE" "${LOCAL_BUILD_DEV_OVERRIDE}"
+require_boolean "FULTONS_ALLOW_UNREACHABLE_COMMIT" "${ALLOW_UNREACHABLE_COMMIT}"
+require_positive_integer "FULTONS_DEPLOY_HEALTH_ATTEMPTS" "${HEALTH_ATTEMPTS}"
+require_positive_integer "FULTONS_DEPLOY_HEALTH_INTERVAL_SEC" "${HEALTH_INTERVAL_SEC}"
+
+[[ "${APP_COMMIT}" =~ ${SHA_PATTERN} ]] || fail \
+  "Usage: homeserver-update.sh <full-lowercase-40-character-commit-sha>"
+if [ "${APP_REPO_URL}" != "${CANONICAL_APP_REPO_URL}" ]; then
+  fail "APP_REPO_URL must be the canonical OCI source ${CANONICAL_APP_REPO_URL}."
+fi
+if [ "${ALLOW_UNREACHABLE_COMMIT}" = "1" ] && [ "${REVIEWED_COMMIT}" != "${APP_COMMIT}" ]; then
+  fail "Unreachable-commit override requires FULTONS_REVIEWED_COMMIT=${APP_COMMIT}."
+fi
+if [ "${LOCAL_BUILD_DEV_OVERRIDE}" = "1" ] && [ "${REVIEWED_COMMIT}" != "${APP_COMMIT}" ]; then
+  fail "Local-build development override requires FULTONS_REVIEWED_COMMIT=${APP_COMMIT}."
 fi
 
 SRC_DIR="$(resolve_abs_path "${SRC_DIR}")"
@@ -79,310 +425,299 @@ COMPOSE_DIR="$(resolve_abs_path "${COMPOSE_DIR}")"
 ENV_FILE="$(resolve_abs_path "${ENV_FILE}")"
 COMPOSE_FILE="${COMPOSE_DIR}/compose.yaml"
 COMPOSE_ENV_FILE="${COMPOSE_DIR}/.env"
+require_safe_directory_path "SRC_DIR" "${SRC_DIR}"
+require_safe_directory_path "DATA_DIR" "${DATA_DIR}"
+require_safe_directory_path "BACKUP_ROOT" "${BACKUP_ROOT}"
+require_safe_directory_path "COMPOSE_DIR" "${COMPOSE_DIR}"
 
-mkdir -p "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}" "$(dirname "${ENV_FILE}")"
+mkdir -p -m 700 "${DATA_DIR}" "${BACKUP_ROOT}" "${COMPOSE_DIR}" "$(dirname "${ENV_FILE}")"
+chmod 700 "${BACKUP_ROOT}" "${COMPOSE_DIR}" || true
+command -v flock >/dev/null 2>&1 || fail "flock is required to serialize deployments."
+exec 9>"${COMPOSE_DIR}/.deploy.lock"
+chmod 600 "${COMPOSE_DIR}/.deploy.lock"
+flock -n 9 || fail "Another Fulton deployment is already running."
+if [ -f "${COMPOSE_FILE}" ]; then
+  PREVIOUS_COMPOSE_FILE="${COMPOSE_DIR}/.compose.yaml.rollback"
+  install -m 600 "${COMPOSE_FILE}" "${PREVIOUS_COMPOSE_FILE}"
+fi
+if [ -f "${COMPOSE_ENV_FILE}" ]; then
+  PREVIOUS_COMPOSE_ENV_FILE="${COMPOSE_DIR}/.env.rollback"
+  install -m 600 "${COMPOSE_ENV_FILE}" "${PREVIOUS_COMPOSE_ENV_FILE}"
+fi
 
-if [ ! -f "${ENV_FILE}" ]; then
-  if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
-    log "Refusing to replace an existing deployment with a missing environment file: ${ENV_FILE}"
-    log "Recover the private environment and correct ${COMPOSE_ENV_FILE} before retrying."
-    exit 1
+if [ ! -d "${SRC_DIR}/.git" ]; then
+  fail "A pre-existing canonical Git checkout is required at ${SRC_DIR}; cloning during deployment is disabled."
+fi
+actual_origin="$(git -C "${SRC_DIR}" remote get-url origin)"
+if [ "${actual_origin}" != "${CANONICAL_APP_REPO_URL}" ] && \
+   [ "${actual_origin}" != "${CANONICAL_APP_SSH_REPO_URL}" ]; then
+  fail "Source checkout origin is ${actual_origin}; expected canonical HTTPS or SSH origin."
+fi
+
+log "Fetching canonical refs without changing the healthy checkout"
+git -C "${SRC_DIR}" fetch --tags --prune origin
+git -C "${SRC_DIR}" cat-file -e "${APP_COMMIT}^{commit}"
+actual_head="$(git -C "${SRC_DIR}" rev-parse HEAD)"
+if [ "${actual_head}" != "${APP_COMMIT}" ]; then
+  fail "Source checkout HEAD ${actual_head} does not match requested commit ${APP_COMMIT}."
+fi
+if [ -n "$(git -C "${SRC_DIR}" status --porcelain --untracked-files=all)" ]; then
+  fail "Source checkout must be clean so deployment helpers match the reviewed commit."
+fi
+if ! git -C "${SRC_DIR}" merge-base --is-ancestor "${APP_COMMIT}" "origin/main"; then
+  if [ "${ALLOW_UNREACHABLE_COMMIT}" != "1" ]; then
+    fail "Commit ${APP_COMMIT} is not reachable from origin/main. A reviewed override is required."
   fi
-  log "Creating private app env file at ${ENV_FILE}"
-  cat > "${ENV_FILE}" <<'EOF'
-# Private container environment for Fulton Web App.
-# Keep this file out of Git.
-FULTONS_NEWS_MONITOR_KEY=
-FULTONS_NEWS_MONITOR_INTERVAL_SEC=600
-FULTONS_WORD_DEFINITION_TIMEOUT_SEC=5
-FULTONS_COOKIE_SECURE=1
-FULTONS_SEED_DEMO_USERS=0
-FULTONS_ALLOWED_ORIGINS=https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk
-FULTONS_MIN_PASSWORD_LENGTH=12
-FULTONS_LOGIN_MAX_ATTEMPTS=5
-FULTONS_LOGIN_WINDOW_SECONDS=300
-FULTONS_LOGIN_BACKOFF_SECONDS=60
-EOF
+  log "Using explicit reviewed override for commit not reachable from origin/main."
+fi
+
+if [ -L "${ENV_FILE}" ] || [ ! -f "${ENV_FILE}" ]; then
+  fail "Private application environment is missing at ${ENV_FILE}; deployment will not synthesize credentials."
 fi
 chmod 600 "${ENV_FILE}"
 
-ensure_env_var() {
-  local key="${1:?key required}"
-  local value="${2:-}"
-  if ! grep -q "^${key}=" "${ENV_FILE}"; then
-    printf '%s=%s\n' "${key}" "${value}" >> "${ENV_FILE}"
+if container_exists; then
+  if [ ! -f "${COMPOSE_FILE}" ] || [ ! -f "${COMPOSE_ENV_FILE}" ]; then
+    fail "A healthy deployment requires its compose.yaml and .env for verified rollback."
   fi
-}
-
-migrate_env_var_value() {
-  local key="${1:?key required}"
-  local old_value="${2:-}"
-  local new_value="${3:-}"
-  if grep -q "^${key}=${old_value}$" "${ENV_FILE}"; then
-    python3 - "${ENV_FILE}" "${key}" "${new_value}" <<'PY'
-import sys
-from pathlib import Path
-
-env_path = Path(sys.argv[1])
-key = sys.argv[2]
-new_value = sys.argv[3]
-prefix = f"{key}="
-
-lines = env_path.read_text(encoding="utf-8").splitlines()
-env_path.write_text(
-    "\n".join((f"{prefix}{new_value}" if line.startswith(prefix) else line) for line in lines) + "\n",
-    encoding="utf-8",
-)
-PY
+  container_is_healthy || fail "Existing fultons-quiz container is not healthy; repair it before deploying."
+  # Docker's immutable local content ID remains a valid rollback target even
+  # when the legacy compose file originally selected a mutable tag.
+  PREVIOUS_IMAGE="$(docker inspect fultons-quiz --format '{{.Image}}')"
+  PREVIOUS_REVISION="$(docker inspect fultons-quiz --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+  if [ -z "${PREVIOUS_IMAGE}" ]; then
+    fail "Could not record the current healthy container image for rollback."
   fi
-}
-
-default_env_var_when_blank() {
-  local key="${1:?key required}"
-  local value="${2:-}"
-  python3 - "${ENV_FILE}" "${key}" "${value}" <<'PY'
-import sys
-from pathlib import Path
-
-env_path = Path(sys.argv[1])
-key = sys.argv[2]
-value = sys.argv[3]
-prefix = f"{key}="
-
-lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-updated = False
-for index, line in enumerate(lines):
-    if line.startswith(prefix):
-        if not line[len(prefix):].strip():
-            lines[index] = prefix + value
-        updated = True
-        break
-if not updated:
-    lines.append(prefix + value)
-env_path.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
-PY
-}
-
-ensure_env_var "FULTONS_COOKIE_SECURE" "1"
-ensure_env_var "FULTONS_SEED_DEMO_USERS" "0"
-ensure_env_var "FULTONS_ALLOWED_ORIGINS" "https://fultons-quiz.co.uk,https://www.fultons-quiz.co.uk"
-ensure_env_var "FULTONS_MIN_PASSWORD_LENGTH" "12"
-ensure_env_var "FULTONS_LOGIN_MAX_ATTEMPTS" "5"
-ensure_env_var "FULTONS_LOGIN_WINDOW_SECONDS" "300"
-ensure_env_var "FULTONS_LOGIN_BACKOFF_SECONDS" "60"
-ensure_env_var "FULTONS_NEWS_MONITOR_INTERVAL_SEC" "600"
-migrate_env_var_value "FULTONS_NEWS_MONITOR_INTERVAL_SEC" "3600" "600"
-ensure_env_var "FULTONS_WORD_DEFINITION_TIMEOUT_SEC" "5"
-ensure_env_var "FULTONS_EXPECT_DATA_DIR" "/app/data"
-ensure_env_var "FULTONS_REQUIRE_EXISTING_DB" "1"
-ensure_env_var "FULTONS_MIN_DB_USERS" "1"
-ensure_env_var "FULTONS_DAILY_QUIZ_SCHEDULER_ENABLED" "1"
-ensure_env_var "FULTONS_DAILY_QUIZ_SCHEDULER_HOUR" "0"
-ensure_env_var "FULTONS_DAILY_QUIZ_SCHEDULER_MINUTE" "5"
-ensure_env_var "FULTONS_DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC" "3600"
-ensure_env_var "FULTONS_DAILY_MAP_GAME_SCHEDULER_ENABLED" "1"
-ensure_env_var "FULTONS_DAILY_MAP_GAME_SCHEDULER_HOUR" "0"
-ensure_env_var "FULTONS_DAILY_MAP_GAME_SCHEDULER_MINUTE" "0"
-migrate_env_var_value "FULTONS_DAILY_MAP_GAME_SCHEDULER_MINUTE" "2" "0"
-ensure_env_var "FULTONS_DAILY_MAP_GAME_RETRY_INTERVAL_SEC" "300"
-ensure_env_var "FULTONS_DAILY_MAP_TRANSIENT_RETRY_INTERVAL_SEC" "3600"
-ensure_env_var "FULTONS_DAILY_MAP_AI_GENERATION_ENABLED" "1"
-ensure_env_var "FULTONS_DAILY_MAP_AI_SHORTLIST_LIMIT" "24"
-ensure_env_var "FULTONS_DAILY_MAP_AI_MAX_CLUE_ATTEMPTS" "7"
-ensure_env_var "FULTONS_DAILY_MAP_AI_DISCOVER_COUNT" "4"
-ensure_env_var "FULTONS_DAILY_MAP_AI_DISCOVERY_ATTEMPTS" "2"
-ensure_env_var "FULTONS_DAILY_MAP_STADIUM_LAUNCH_DATE" "2026-08-04"
-ensure_env_var "FULTONS_DAILY_MAP_STADIUM_LAUNCH_ROUNDS" "3"
-ensure_env_var "FULTONS_MAP_PROMO_CAMPAIGN_ID" "daily-map-launch-2026-08-04"
-ensure_env_var "FULTONS_MAP_PROMO_AVAILABLE_DATE" "2026-08-04"
-ensure_env_var "VITE_FULTONS_MAP_TILE_URL" ""
-ensure_env_var "VITE_FULTONS_MAP_TILE_URL_CLEAR_BASE" ""
-ensure_env_var "VITE_FULTONS_MAP_TILE_URL_NO_LABELS" ""
-ensure_env_var "VITE_FULTONS_MAP_TILE_ATTRIBUTION" ""
-ensure_env_var "AI_PROVIDER" "gemini"
-ensure_env_var "AI_GENERATOR_MODEL" "gemini-3.5-flash"
-ensure_env_var "AI_CRITIC_MODEL" "gemini-3.1-flash-lite"
-ensure_env_var "GEMINI_API_KEY" ""
-ensure_env_var "MAP_CLUE_GEMINI_API_KEY" ""
-ensure_env_var "MAP_CLUE_GENERATOR_MODEL" "gemini-3.1-flash-lite"
-ensure_env_var "MAP_CLUE_CRITIC_MODEL" "gemini-3.1-flash-lite"
-ensure_env_var "MAP_CLUE_MAX_ATTEMPTS" "6"
-ensure_env_var "MAP_CLUE_REQUIRE_AI_CRITIC" "1"
-ensure_env_var "AI_BASE_URL" ""
-ensure_env_var "AI_API_KEY" ""
-ensure_env_var "AI_FALLBACK_PROVIDER" "openrouter"
-ensure_env_var "AI_FALLBACK_GENERATOR_MODEL" "google/gemma-4-26b-a4b-it:free"
-ensure_env_var "AI_FALLBACK_CRITIC_MODEL" "openrouter/free"
-ensure_env_var "AI_FALLBACK_API_KEY" ""
-ensure_env_var "AI_FALLBACK_BASE_URL" "https://openrouter.ai/api/v1"
-ensure_env_var "AI_FALLBACK2_PROVIDER" "openrouter"
-ensure_env_var "AI_FALLBACK2_GENERATOR_MODEL" "openrouter/free"
-ensure_env_var "AI_FALLBACK2_CRITIC_MODEL" "openrouter/free"
-ensure_env_var "AI_FALLBACK_GEMINI_API_KEY" ""
-ensure_env_var "AI_FALLBACK2_GEMINI_API_KEY" ""
-ensure_env_var "AI_FALLBACK2_API_KEY" ""
-ensure_env_var "AI_FALLBACK2_BASE_URL" "https://openrouter.ai/api/v1"
-ensure_env_var "AI_TIMEOUT_SEC" "90"
-ensure_env_var "AI_REQUEST_DELAY_SEC" "12"
-ensure_env_var "AI_TRANSIENT_RETRIES" "3"
-ensure_env_var "MAX_ATTEMPTS_PER_SLOT" "15"
-ensure_env_var "QUESTION_HISTORY_DAYS" "90"
-ensure_env_var "QUIZ_LEARNING_PROFILE_PATH" ""
-ensure_env_var "INTERNAL_QUIZ_TOKEN" ""
-migrate_env_var_value "AI_FALLBACK_PROVIDER" "gemini" "openrouter"
-migrate_env_var_value "AI_FALLBACK_GENERATOR_MODEL" "gemini-2.5-flash" "google/gemma-4-26b-a4b-it:free"
-migrate_env_var_value "AI_FALLBACK_CRITIC_MODEL" "gemini-2.5-flash-lite" "openrouter/free"
-migrate_env_var_value "AI_FALLBACK_GENERATOR_MODEL" "openai/gpt-oss-120b:free" "google/gemma-4-26b-a4b-it:free"
-migrate_env_var_value "AI_FALLBACK_CRITIC_MODEL" "openai/gpt-oss-120b:free" "openrouter/free"
-migrate_env_var_value "AI_FALLBACK2_PROVIDER" "gemini" "openrouter"
-migrate_env_var_value "AI_FALLBACK2_GENERATOR_MODEL" "gemini-3.1-flash-lite" "openrouter/free"
-migrate_env_var_value "AI_FALLBACK2_CRITIC_MODEL" "gemini-3.1-flash-lite" "openrouter/free"
-migrate_env_var_value "AI_FALLBACK2_GENERATOR_MODEL" "openai/gpt-oss-120b:free" "openrouter/free"
-migrate_env_var_value "AI_FALLBACK2_CRITIC_MODEL" "openai/gpt-oss-120b:free" "openrouter/free"
-migrate_env_var_value "AI_FALLBACK2_GENERATOR_MODEL" "gemini-2.0-flash" "openrouter/free"
-migrate_env_var_value "AI_FALLBACK2_CRITIC_MODEL" "gemini-2.0-flash-lite" "openrouter/free"
-default_env_var_when_blank "AI_FALLBACK_PROVIDER" "openrouter"
-default_env_var_when_blank "AI_FALLBACK_GENERATOR_MODEL" "google/gemma-4-26b-a4b-it:free"
-default_env_var_when_blank "AI_FALLBACK_CRITIC_MODEL" "openrouter/free"
-default_env_var_when_blank "AI_FALLBACK_BASE_URL" "https://openrouter.ai/api/v1"
-default_env_var_when_blank "AI_FALLBACK2_PROVIDER" "openrouter"
-default_env_var_when_blank "AI_FALLBACK2_GENERATOR_MODEL" "openrouter/free"
-default_env_var_when_blank "AI_FALLBACK2_CRITIC_MODEL" "openrouter/free"
-default_env_var_when_blank "AI_FALLBACK2_BASE_URL" "https://openrouter.ai/api/v1"
-
-if [ -d "${DATA_DIR}" ]; then
-  backup_dir="${BACKUP_ROOT}/fultons-quiz-$(date -u +%Y%m%d%H%M%S)"
-  log "Backing up ${DATA_DIR} to ${backup_dir}"
-  mkdir -p "${backup_dir}"
-  tar -C "${DATA_DIR}" --exclude='./localai' -cf - . | tar -C "${backup_dir}" -xf -
+  [[ "${PREVIOUS_IMAGE}" =~ ^sha256:[0-9a-f]{64}$ ]] || fail \
+    "The healthy current deployment did not expose an immutable image ID for rollback."
+  log "Recorded healthy rollback image ${PREVIOUS_IMAGE}"
 fi
 
-log "Checking runtime database before restart"
-python3 - "${DATA_DIR}/fultons.db" <<'PY'
-import json
-import os
+if [ -L "${DATA_DIR}/fultons.db" ]; then
+  fail "Runtime database cannot be a symbolic link."
+fi
+if [ ! -f "${DATA_DIR}/fultons.db" ]; then
+  [ "${ALLOW_DATABASE_BOOTSTRAP}" = "1" ] || fail \
+    "Required runtime database is missing; set FULTONS_ALLOW_DATABASE_BOOTSTRAP=1 only for a reviewed first deployment."
+  [ "${LOCAL_BUILD_DEV_OVERRIDE}" = "0" ] || fail \
+    "Database bootstrap requires a signed registry digest; local-build override is not accepted."
+  [ "${REVIEWED_COMMIT}" = "${APP_COMMIT}" ] || fail \
+    "Database bootstrap requires FULTONS_REVIEWED_COMMIT=${APP_COMMIT}."
+  if container_exists; then
+    fail "Database bootstrap is forbidden while a fultons-quiz container exists."
+  fi
+  validate_bootstrap_environment
+  BOOTSTRAP_MODE=1
+fi
+
+if [ "${LOCAL_BUILD_DEV_OVERRIDE}" = "1" ]; then
+  log "Building locally under explicit development override; production must supply a registry digest."
+  local_tag="local/fulton-web-app:dev-${APP_COMMIT}"
+  git -C "${SRC_DIR}" archive --format=tar "${APP_COMMIT}" | docker build --pull \
+    --build-arg "FULTONS_BUILD_COMMIT=${APP_COMMIT}" \
+    --label "org.opencontainers.image.source=${CANONICAL_APP_REPO_URL}" \
+    --label "org.opencontainers.image.revision=${APP_COMMIT}" \
+    -t "${local_tag}" -
+  local_image_id="$(docker image inspect "${local_tag}" --format '{{.Id}}')"
+  [[ "${local_image_id}" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "Local build did not produce a content-addressed image ID."
+  DEPLOY_IMAGE="${local_image_id}"
+else
+  [[ "${DEPLOY_IMAGE}" =~ ${DIGEST_IMAGE_PATTERN} ]] || fail \
+    "FULTONS_DEPLOY_IMAGE must be an immutable registry reference ending @sha256:<64 hex>."
+  image_repository="${DEPLOY_IMAGE%@sha256:*}"
+  if [ "${image_repository}" != "${CANONICAL_IMAGE_REPOSITORY}" ]; then
+    fail "FULTONS_DEPLOY_IMAGE must use canonical repository ${CANONICAL_IMAGE_REPOSITORY}."
+  fi
+  command -v cosign >/dev/null 2>&1 || fail \
+    "cosign is required to verify the signed production image."
+  log "Verifying keyless GitHub Actions signature for immutable image"
+  cosign verify \
+    --certificate-identity-regexp "${COSIGN_CERTIFICATE_IDENTITY_REGEXP}" \
+    --certificate-oidc-issuer "${COSIGN_CERTIFICATE_OIDC_ISSUER}" \
+    "${DEPLOY_IMAGE}" >/dev/null
+  docker pull "${DEPLOY_IMAGE}"
+fi
+
+image_revision="$(docker image inspect "${DEPLOY_IMAGE}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+image_source="$(docker image inspect "${DEPLOY_IMAGE}" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')"
+if [ "${image_revision}" != "${APP_COMMIT}" ]; then
+  fail "Image revision ${image_revision:-unknown} does not match requested commit ${APP_COMMIT}."
+fi
+if [ "${image_source}" != "${CANONICAL_APP_REPO_URL}" ]; then
+  fail "Image source ${image_source:-unknown} is not the canonical OCI source."
+fi
+
+if [ "${BOOTSTRAP_MODE}" = "1" ]; then
+  log "Initializing the first database with the verified signed image in an isolated staging directory"
+  BOOTSTRAP_STAGE="$(mktemp -d "${DATA_DIR}/.fultons-bootstrap-${APP_COMMIT}.XXXXXX")"
+  chmod 700 "${BOOTSTRAP_STAGE}"
+  docker run --rm \
+    --network none \
+    --read-only \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+    --env-file "${ENV_FILE}" \
+    --env FULTONS_EXPECT_DATA_DIR=/app/data \
+    --volume "${BOOTSTRAP_STAGE}:/app/data" \
+    --entrypoint python \
+    "${DEPLOY_IMAGE}" -c \
+    "import server; server.assert_runtime_storage_ready('signed bootstrap preflight'); server.initialize_database(); server.assert_runtime_storage_ready('signed bootstrap completion')"
+
+  python3 - "${BOOTSTRAP_STAGE}" <<'PY'
 import sqlite3
 import sys
+from pathlib import Path
 
-db_path = sys.argv[1]
-if not os.path.exists(db_path):
-    print(json.dumps({"dbPath": db_path, "exists": False}))
-    raise SystemExit(0)
-
+stage = Path(sys.argv[1])
+database = stage / "fultons.db"
+entries = list(stage.iterdir())
+if entries != [database] or database.is_symlink() or not database.is_file():
+    raise SystemExit("signed bootstrap produced unexpected data-directory entries")
+connection = sqlite3.connect(f"{database.resolve(strict=True).as_uri()}?mode=ro", uri=True, timeout=10)
 try:
-    conn = sqlite3.connect(db_path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    try:
-        quick_check = conn.execute("PRAGMA quick_check").fetchone()[0]
-        user_table = conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'"
-        ).fetchone()[0]
-        user_count = None
-        if user_table:
-            user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        payload = {
-            "dbPath": db_path,
-            "exists": True,
-            "size": os.path.getsize(db_path),
-            "quickCheck": quick_check,
-            "userCount": user_count,
-        }
-        print(json.dumps(payload, sort_keys=True))
-        if quick_check != "ok":
-            raise SystemExit("SQLite quick_check failed")
-    finally:
-        conn.close()
-except sqlite3.Error as exc:
-    raise SystemExit(f"SQLite startup preflight failed: {exc}") from exc
+    check = connection.execute("PRAGMA quick_check").fetchone()[0]
+    user_count = int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+    admin_count = int(
+        connection.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'").fetchone()[0]
+    )
+finally:
+    connection.close()
+if check != "ok" or user_count < 1 or admin_count < 1:
+    raise SystemExit(
+        f"signed bootstrap validation failed: quick_check={check!r}, "
+        f"users={user_count}, admins={admin_count}"
+    )
 PY
 
-cp "${SRC_DIR}/deploy/compose.yaml" "${COMPOSE_FILE}"
-upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_SRC_DIR" "${SRC_DIR}"
-upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_ENV_FILE" "${ENV_FILE}"
-upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_HOST_DATA_DIR" "${DATA_DIR}"
-upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_IMAGE" "local/fulton-web-app:${APP_COMMIT}"
-export FULTONS_IMAGE="local/fulton-web-app:${APP_COMMIT}"
-chmod 600 "${COMPOSE_ENV_FILE}"
+  # Clear one-time credentials and enable normal production storage guards in
+  # one atomic replacement before the staged database becomes live.
+  finalize_bootstrap_environment
+  python3 - "${BOOTSTRAP_STAGE}/fultons.db" "${DATA_DIR}/fultons.db" <<'PY'
+import os
+import sys
+from pathlib import Path
 
-log "Normalizing data ownership"
-docker run --rm -v "${DATA_DIR}:/data" alpine:3.22 sh -c \
-  'find /data -mindepth 1 -maxdepth 1 ! -name localai -exec chown -R 1000:1000 {} +'
-
-rollback_tag=""
-if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
-  previous_image_id="$(docker inspect fultons-quiz --format '{{.Image}}')"
-  rollback_tag="local/fulton-web-app:rollback-$(date -u +%Y%m%d%H%M%S)"
-  docker tag "${previous_image_id}" "${rollback_tag}"
-  log "Preserved current image as ${rollback_tag}"
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+if source.is_symlink() or not source.is_file() or destination.exists():
+    raise SystemExit("refusing unsafe bootstrap database promotion")
+os.replace(source, destination)
+os.chmod(destination, 0o600)
+directory = os.open(destination.parent, os.O_RDONLY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+PY
+  rmdir "${BOOTSTRAP_STAGE}"
+  BOOTSTRAP_STAGE=""
+  log "Signed database bootstrap succeeded; one-time credentials were removed."
 fi
 
-log "Building local/fulton-web-app:${APP_COMMIT} while production remains online"
-docker build \
-  --pull \
-  --build-arg "FULTONS_BUILD_COMMIT=${APP_COMMIT}" \
-  --build-arg "FULTONS_BUILD_SOURCE=${SRC_DIR}" \
-  -t "local/fulton-web-app:${APP_COMMIT}" \
-  "${SRC_DIR}"
-docker tag "local/fulton-web-app:${APP_COMMIT}" local/fulton-web-app:latest
+log "Checking live SQLite before backup"
+python3 - "${DATA_DIR}/fultons.db" <<'PY'
+import sqlite3
+import sys
+from pathlib import Path
 
-if [ "${IMPORT_MAP_LAUNCH_ROUND:-0}" = "1" ]; then
-  log "Validating the packaged launch round against the production database"
-  docker run --rm \
-    -v "${DATA_DIR}:/app/data" \
-    --entrypoint python \
-    "local/fulton-web-app:${APP_COMMIT}" \
-    -m tools.map_launch_round import \
-    --db /app/data/fultons.db \
-    --input /app/map-launch-round/map-launch-round-2026-08-04.json \
-    --dry-run
+path = sys.argv[1]
+database = Path(path)
+if not database.is_file():
+    raise SystemExit(f"Required runtime database is missing: {path}")
+connection = sqlite3.connect(f"{database.resolve(strict=True).as_uri()}?mode=ro", uri=True, timeout=10)
+try:
+    check = connection.execute("PRAGMA quick_check").fetchone()[0]
+    users_table = connection.execute(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+    ).fetchone()[0]
+    user_count = (
+        int(connection.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+        if users_table == 1
+        else 0
+    )
+finally:
+    connection.close()
+if check != "ok":
+    raise SystemExit(f"SQLite preflight failed: {check}")
+if user_count < 1:
+    raise SystemExit("SQLite preflight failed: users table is missing or empty")
+PY
 
-  log "Publishing the validated launch round before application startup"
-  docker run --rm \
-    -v "${DATA_DIR}:/app/data" \
-    --entrypoint python \
-    "local/fulton-web-app:${APP_COMMIT}" \
-    -m tools.map_launch_round import \
-    --db /app/data/fultons.db \
-    --input /app/map-launch-round/map-launch-round-2026-08-04.json
+log "Creating transactionally consistent private backup"
+BACKUP_DIR="$(python3 "${SRC_DIR}/deploy/backup_manager.py" create \
+  --data-dir "${DATA_DIR}" --backup-root "${BACKUP_ROOT}")"
+python3 "${SRC_DIR}/deploy/backup_manager.py" verify "${BACKUP_DIR}" >/dev/null
+
+if [ "${OFFHOST_BACKUP_REQUIRED}" = "1" ] && [ -z "${OFFHOST_BACKUP_COMMAND}" ]; then
+  fail "Off-host backup is required but FULTONS_OFFHOST_BACKUP_COMMAND is not configured."
+fi
+if [ -n "${OFFHOST_BACKUP_COMMAND}" ]; then
+  log "Running configured off-host encrypted-copy gate"
+  export FULTONS_BACKUP_DIR="${BACKUP_DIR}"
+  export FULTONS_BACKUP_MANIFEST="${BACKUP_DIR}/manifest.json"
+  # The administrator owns this executable and its encryption/remote verification policy.
+  # It is deliberately not passed through a shell, so shell metacharacters are not interpreted.
+  if [[ "${OFFHOST_BACKUP_COMMAND}" != /* ]] || [ ! -x "${OFFHOST_BACKUP_COMMAND}" ]; then
+    fail "FULTONS_OFFHOST_BACKUP_COMMAND must be an absolute executable path."
+  fi
+  "${OFFHOST_BACKUP_COMMAND}" "${BACKUP_DIR}"
+  offhost_marker="${BACKUP_DIR}/offhost-copy.verified"
+  if [ "${OFFHOST_BACKUP_REQUIRED}" = "1" ] && \
+     { [ -L "${offhost_marker}" ] || [ ! -f "${offhost_marker}" ]; }; then
+    fail "Required off-host copy did not write offhost-copy.verified after encrypted remote verification."
+  fi
+  if [ -e "${offhost_marker}" ] || [ -L "${offhost_marker}" ]; then
+    [ ! -L "${offhost_marker}" ] && [ -f "${offhost_marker}" ] || fail \
+      "Off-host verification marker is not a regular file."
+    chmod 600 "${offhost_marker}"
+  fi
+  python3 "${SRC_DIR}/deploy/backup_manager.py" verify "${BACKUP_DIR}" >/dev/null
+  if [ "${OFFHOST_BACKUP_REQUIRED}" = "1" ]; then
+    python3 "${SRC_DIR}/deploy/backup_manager.py" verify-offhost "${BACKUP_DIR}" >/dev/null
+  fi
 fi
 
-if docker ps -a --format '{{.Names}}' | grep -qx 'fultons-quiz'; then
-  log "Replacing existing fultons-quiz container after successful build"
-  docker rm -f fultons-quiz
+compose_candidate="${COMPOSE_DIR}/.compose.yaml.${APP_COMMIT}.new"
+install -m 600 "${SRC_DIR}/deploy/compose.yaml" "${compose_candidate}"
+candidate_env="${COMPOSE_DIR}/.env.candidate-${APP_COMMIT}"
+if [ -f "${COMPOSE_ENV_FILE}" ]; then
+  install -m 600 "${COMPOSE_ENV_FILE}" "${candidate_env}"
+else
+  : > "${candidate_env}"
+  chmod 600 "${candidate_env}"
 fi
-
-log "Starting fultons-quiz"
+atomic_upsert_env_var "${candidate_env}" "FULTONS_SRC_DIR" "${SRC_DIR}"
+atomic_upsert_env_var "${candidate_env}" "FULTONS_ENV_FILE" "${ENV_FILE}"
+atomic_upsert_env_var "${candidate_env}" "FULTONS_HOST_DATA_DIR" "${DATA_DIR}"
+atomic_upsert_env_var "${candidate_env}" "FULTONS_IMAGE" "${DEPLOY_IMAGE}"
 export FULTONS_SRC_DIR="${SRC_DIR}"
 export FULTONS_ENV_FILE="${ENV_FILE}"
 export FULTONS_HOST_DATA_DIR="${DATA_DIR}"
-cd "${COMPOSE_DIR}"
-docker compose -f "${COMPOSE_FILE}" up -d --no-build
+export FULTONS_IMAGE="${DEPLOY_IMAGE}"
+docker compose --env-file "${candidate_env}" -f "${compose_candidate}" config --quiet
+ROLLOUT_STARTED=1
+mv -f "${compose_candidate}" "${COMPOSE_FILE}"
+chmod 600 "${COMPOSE_FILE}"
+mv -f "${candidate_env}" "${COMPOSE_ENV_FILE}"
+chmod 600 "${COMPOSE_ENV_FILE}"
+log "All preflight checks passed; applying digest-selected image"
+compose up -d --no-build --force-recreate quiz-app
 
-log "Verifying running container revision"
+running_image_id="$(docker inspect fultons-quiz --format '{{.Image}}')"
+selected_image_id="$(docker image inspect "${DEPLOY_IMAGE}" --format '{{.Id}}')"
+if [ "${running_image_id}" != "${selected_image_id}" ]; then
+  fail "Running image ID ${running_image_id:-unknown} does not match selected ${selected_image_id}."
+fi
 running_revision="$(docker inspect fultons-quiz --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
 if [ "${running_revision}" != "${APP_COMMIT}" ]; then
-  log "Running revision ${running_revision:-unknown} does not match expected ${APP_COMMIT}"
-  docker logs --tail 80 fultons-quiz || true
-  exit 1
+  fail "Running revision ${running_revision:-unknown} does not match requested commit ${APP_COMMIT}."
 fi
+wait_for_health "Deployment"
 
-log "Waiting for health endpoint"
-for attempt in $(seq 1 30); do
-  if docker exec fultons-quiz python -c "import json,urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:3000/api/health', timeout=3)); raise SystemExit(0 if data.get('ok') else 1)" >/dev/null 2>&1; then
-    log "Health check passed"
-    docker ps --filter name=fultons-quiz --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
-    exit 0
-  fi
-  sleep 2
-done
-
-log "Health check failed"
-docker logs --tail 80 fultons-quiz || true
-if [ -n "${rollback_tag}" ]; then
-  log "Rolling back to ${rollback_tag}"
-  upsert_env_var "${COMPOSE_ENV_FILE}" "FULTONS_IMAGE" "${rollback_tag}"
-  export FULTONS_IMAGE="${rollback_tag}"
-  docker rm -f fultons-quiz >/dev/null 2>&1 || true
-  docker compose -f "${COMPOSE_FILE}" up -d --no-build
-fi
-exit 1
+DEPLOY_SUCCEEDED=1
+trap - ERR INT TERM
+rm -f "${candidate_env}" "${PREVIOUS_COMPOSE_FILE}" "${PREVIOUS_COMPOSE_ENV_FILE}"
+log "Deployment succeeded with ${DEPLOY_IMAGE}; verified backup: ${BACKUP_DIR}"
+log "Run backup_manager.py retention without --apply to review 30 daily / 12 monthly / 3 annual retention."
+docker ps --filter name=fultons-quiz --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
