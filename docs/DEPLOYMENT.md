@@ -53,6 +53,11 @@ git clone https://github.com/Steveystyles/Fulton-Web-App.git \
   "$FULTONS_DEPLOY_ROOT/source"
 ```
 
+For a private repository, the source checkout may instead use the exact
+canonical SSH origin `git@github.com:Steveystyles/Fulton-Web-App.git` with a
+dedicated read-only deploy key. Host aliases and alternate repository URLs are
+rejected by the updater.
+
 The updater deliberately refuses to clone a repository during deployment.
 Provision the canonical checkout first, and never store secrets in it.
 

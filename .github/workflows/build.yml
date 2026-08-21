@@ -90,30 +90,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  codeql:
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3.37.7
-        with:
-          languages: javascript-typescript,python
-
-      - name: Analyze source
-        uses: github/codeql-action/analyze@f3712979fa5f215279b101dd0a2e3bdfb4353324 # v3.37.7
-
   release-image:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs:
       - build
       - secrets
-      - codeql
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -3,6 +3,7 @@ set -Eeuo pipefail
 umask 077
 
 readonly CANONICAL_APP_REPO_URL="https://github.com/Steveystyles/Fulton-Web-App.git"
+readonly CANONICAL_APP_SSH_REPO_URL="git@github.com:Steveystyles/Fulton-Web-App.git"
 readonly CANONICAL_IMAGE_REPOSITORY="ghcr.io/steveystyles/fulton-web-app"
 readonly COSIGN_CERTIFICATE_IDENTITY_REGEXP='^https://github\.com/Steveystyles/Fulton-Web-App/\.github/workflows/build\.yml@refs/heads/main$'
 readonly COSIGN_CERTIFICATE_OIDC_ISSUER='https://token.actions.githubusercontent.com'
@@ -448,8 +449,9 @@ if [ ! -d "${SRC_DIR}/.git" ]; then
   fail "A pre-existing canonical Git checkout is required at ${SRC_DIR}; cloning during deployment is disabled."
 fi
 actual_origin="$(git -C "${SRC_DIR}" remote get-url origin)"
-if [ "${actual_origin}" != "${CANONICAL_APP_REPO_URL}" ]; then
-  fail "Source checkout origin is ${actual_origin}; expected ${CANONICAL_APP_REPO_URL}."
+if [ "${actual_origin}" != "${CANONICAL_APP_REPO_URL}" ] && \
+   [ "${actual_origin}" != "${CANONICAL_APP_SSH_REPO_URL}" ]; then
+  fail "Source checkout origin is ${actual_origin}; expected canonical HTTPS or SSH origin."
 fi
 
 log "Fetching canonical refs without changing the healthy checkout"

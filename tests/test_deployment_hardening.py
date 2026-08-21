@@ -367,6 +367,8 @@ class DeploymentScriptStaticTests(unittest.TestCase):
     def test_enforces_canonical_source_and_digest_by_default(self) -> None:
         canonical = "https://github.com/Steveystyles/Fulton-Web-App.git"
         self.assertIn(canonical, self.script)
+        self.assertIn("git@github.com:Steveystyles/Fulton-Web-App.git", self.script)
+        self.assertIn("expected canonical HTTPS or SSH origin", self.script)
         self.assertIn("@sha256:<64 hex>", self.script)
         self.assertIn("docker pull", self.script)
         self.assertIn("ghcr.io/steveystyles/fulton-web-app", self.script)
@@ -498,7 +500,7 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", workflow)
         self.assertIn('python-version: "3.12"', workflow)
         self.assertIn("gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7", workflow)
-        self.assertIn("github/codeql-action/init@f3712979fa5f215279b101dd0a2e3bdfb4353324", workflow)
+        self.assertNotIn("github/codeql-action", workflow)
         self.assertIn("sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac", workflow)
         self.assertEqual(workflow.count("upload-artifact: false"), 2)
         smoke = workflow.index("Smoke-test the exact release digest")

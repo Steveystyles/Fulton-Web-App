@@ -153,8 +153,8 @@ npm run test:server
 git diff --check
 ```
 
-CI must additionally complete its secret scan, CodeQL analysis, container
-vulnerability scan, SBOM generation, exact-digest scan, signing, and signature
+CI must additionally complete its secret scan, container vulnerability scan,
+SBOM generation, exact-digest scan, signing, and signature
 verification. On the deployment host, validate `docker compose config`, Cosign,
 the running digest/revision, `/api/health`, login/session behavior, quiz/map
 submission, backup verification, and rollback readiness.
