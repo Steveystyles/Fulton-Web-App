@@ -39,6 +39,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Run frontend API contract tests
+        run: npm run test:client
+
       - name: Run server tests
         run: npm run test:server
 

@@ -144,7 +144,7 @@ type MapCanvasProps = {
   snapLoading: boolean;
   submitting: boolean;
   onMapPick: (point: MapPoint, zoom: number) => void;
-  onAcceptDraft: () => void;
+  onUseDraft: () => void;
   onRejectDraft: () => void;
   onCycleDraft: (direction: -1 | 1) => void;
   onDismissSelectionNotice: () => void;
@@ -161,7 +161,7 @@ function MapCanvas({
   snapLoading,
   submitting,
   onMapPick,
-  onAcceptDraft,
+  onUseDraft,
   onRejectDraft,
   onCycleDraft,
   onDismissSelectionNotice,
@@ -515,7 +515,7 @@ function MapCanvas({
               </p>
             ) : null}
           </div>
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             {(draftSelection.alternatives?.length ?? 0) > 1 ? (
               <>
                 <button
@@ -550,16 +550,17 @@ function MapCanvas({
               </button>
               <button
                 type="button"
-                aria-label="Lock selected place"
-                onClick={onAcceptDraft}
+                aria-label="Use selected place"
+                onClick={onUseDraft}
                 disabled={submitting}
-                className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-emerald-600 text-white shadow-sm saints-focus disabled:cursor-not-allowed disabled:bg-emerald-300"
+                className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-black text-white shadow-sm saints-focus disabled:cursor-not-allowed disabled:bg-emerald-300"
               >
                 {submitting ? (
-                  <LoaderCircle aria-hidden="true" className="h-6 w-6 animate-spin" />
+                  <LoaderCircle aria-hidden="true" className="h-5 w-5 animate-spin" />
                 ) : (
-                  <Check aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
+                  <Check aria-hidden="true" className="h-5 w-5" strokeWidth={3} />
                 )}
+                Use this place
               </button>
             </div>
           </div>
@@ -640,6 +641,7 @@ export function MapGame() {
   const [snapLoading, setSnapLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  const submitInFlightRef = useRef(false);
   const lockButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mapLabels, setMapLabels] = useState(() => {
     try {
@@ -798,11 +800,13 @@ export function MapGame() {
         selectedLevel === undefined ||
         selection === undefined ||
         selectedLevel.submitted ||
+        submitInFlightRef.current ||
         submitting ||
         revealing
       ) {
         return;
       }
+      submitInFlightRef.current = true;
       setSubmitting(true);
       setError("");
       setSelectionNotice("");
@@ -841,6 +845,7 @@ export function MapGame() {
       } catch (caughtError) {
         setError(caughtError instanceof Error ? caughtError.message : "Guess failed to submit.");
       } finally {
+        submitInFlightRef.current = false;
         setSubmitting(false);
       }
     },
@@ -881,14 +886,7 @@ export function MapGame() {
     }
   }, [revealing, selectedLevel, submitting]);
 
-  const acceptDraftSelection = useCallback(() => {
-    if (selectedLevel === undefined || draftSelection === null || submitting) {
-      return;
-    }
-    void submitSelectedGuess(draftSelection);
-  }, [draftSelection, selectedLevel, submitSelectedGuess, submitting]);
-
-  const acceptPendingSelection = useCallback(() => {
+  const useDraftSelection = useCallback(() => {
     if (selectedLevel === undefined || draftSelection === null) {
       return;
     }
@@ -914,14 +912,6 @@ export function MapGame() {
   const dismissSelectionNotice = useCallback(() => {
     setSelectionNotice("");
   }, []);
-
-  function submitGuess() {
-    if (draftSelection !== null) {
-      acceptPendingSelection();
-      return;
-    }
-    void submitSelectedGuess(pendingSelection);
-  }
 
   if (loading) {
     return (
@@ -1103,7 +1093,7 @@ export function MapGame() {
             snapLoading={snapLoading}
             submitting={submitting}
             onMapPick={pickPointForSelected}
-            onAcceptDraft={acceptDraftSelection}
+            onUseDraft={useDraftSelection}
             onRejectDraft={rejectDraftSelection}
             onCycleDraft={cycleDraftSelection}
             onDismissSelectionNotice={dismissSelectionNotice}
@@ -1132,7 +1122,7 @@ export function MapGame() {
               <button
                 ref={lockButtonRef}
                 type="button"
-                onClick={() => void submitGuess()}
+                onClick={() => void submitSelectedGuess(pendingSelection)}
                 disabled={pendingPoint === undefined || draftSelection !== null || snapLoading || submitting || revealing}
                 className={[
                   "inline-flex min-h-12 min-w-[8.5rem] items-center justify-center gap-2 rounded-lg px-4 text-sm font-black transition saints-focus",

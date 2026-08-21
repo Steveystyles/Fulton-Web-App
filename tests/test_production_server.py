@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -1376,6 +1376,162 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(server.wordle_score("lost", 6), 0)
         self.assertEqual(server.wordle_score("lost", 3, difficulty=20), 0)
 
+    def test_wordle_guess_rejects_stale_game_date_after_midnight(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-23T22:59:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+
+                with patch("server.today_game_date", return_value="2026-06-23"):
+                    old_game = server.ensure_daily_game(conn)
+                    old_state = server.serialize_wordle_state(conn, user_id, old_game)
+
+                with patch("server.today_game_date", return_value="2026-06-24"):
+                    payload, status = server.submit_wordle_guess(
+                        conn,
+                        user_id,
+                        "raise",
+                        old_state["result"]["attemptsUsed"],
+                        old_state["game"]["date"],
+                    )
+
+                new_day_attempts = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM wordle_guesses
+                    INNER JOIN wordle_results ON wordle_results.id = wordle_guesses.result_id
+                    INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+                    WHERE daily_wordle_games.game_date = '2026-06-24'
+                    """
+                ).fetchone()[0]
+                new_day_results = conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM wordle_results
+                    INNER JOIN daily_wordle_games ON daily_wordle_games.id = wordle_results.game_id
+                    WHERE daily_wordle_games.game_date = '2026-06-24'
+                    """
+                ).fetchone()[0]
+
+            self.assertEqual(status, HTTPStatus.CONFLICT)
+            self.assertIn("day changed", payload["error"])
+            self.assertEqual(new_day_attempts, 0)
+            self.assertEqual(new_day_results, 0)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_guess_requires_canonical_expected_game_date(self) -> None:
+        import server
+
+        for expected_game_date in (None, "", "2026-6-24", "2026-02-30"):
+            with self.subTest(expected_game_date=expected_game_date):
+                payload, status = server.submit_wordle_guess(  # type: ignore[arg-type]
+                    None,
+                    1,
+                    "raise",
+                    0,
+                    expected_game_date,
+                )
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("expectedGameDate", payload["error"])
+
+    def test_wordle_guess_date_contract_preserves_retry_idempotence(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-24T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+
+                with patch("server.today_game_date", return_value="2026-06-24"):
+                    first, first_status = server.submit_wordle_guess(
+                        conn,
+                        user_id,
+                        "raise",
+                        0,
+                        "2026-06-24",
+                    )
+                    repeated, repeated_status = server.submit_wordle_guess(
+                        conn,
+                        user_id,
+                        "raise",
+                        0,
+                        "2026-06-24",
+                    )
+
+                guess_count = conn.execute("SELECT COUNT(*) FROM wordle_guesses").fetchone()[0]
+
+            self.assertEqual(first_status, HTTPStatus.OK)
+            self.assertEqual(repeated_status, HTTPStatus.OK)
+            self.assertEqual(first["result"]["attemptsUsed"], 1)
+            self.assertEqual(repeated["result"]["attemptsUsed"], 1)
+            self.assertEqual(guess_count, 1)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_wordle_guess_handler_wires_expected_game_date(self) -> None:
+        import server
+
+        responses: list[tuple[HTTPStatus, dict[str, object]]] = []
+        conn = object()
+
+        class DummyHandler:
+            def read_json(self) -> dict[str, object]:
+                return {
+                    "guess": "raise",
+                    "expectedAttemptsUsed": 2,
+                    "expectedGameDate": "2026-06-24",
+                }
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                responses.append((status, payload))
+
+        with patch.object(
+            server,
+            "submit_wordle_guess",
+            return_value=({"ok": True}, HTTPStatus.OK),
+        ) as submit:
+            server.FultonsHandler.handle_wordle_guess(  # type: ignore[arg-type]
+                DummyHandler(),
+                conn,
+                {"id": 7},
+            )
+
+        submit.assert_called_once_with(conn, 7, "raise", 2, "2026-06-24")
+        self.assertEqual(responses, [(HTTPStatus.OK, {"ok": True})])
+
     def test_wordle_assignment_uses_streak_based_difficulty_pool(self) -> None:
         import server
         import wordle_game
@@ -2201,13 +2357,14 @@ class ProductionServerHardeningTests(unittest.TestCase):
                         allow_reverse_geocode=False,
                     )
                     self.assertEqual(selection_status, HTTPStatus.OK)
-                    result, status = daily_map_game.submit_guess(
-                        conn,
-                        user_id=user_id,
-                        level_id=level_id,
-                        selection_id=selection["selectionId"],
-                        today="2026-08-11",
-                    )
+                    with patch("daily_map_game.utc_now", return_value=now):
+                        result, status = daily_map_game.submit_guess(
+                            conn,
+                            user_id=user_id,
+                            level_id=level_id,
+                            selection_id=selection["selectionId"],
+                            today="2026-08-11",
+                        )
                     self.assertEqual(status, HTTPStatus.CREATED)
                     self.assertEqual(result["result"]["score"], 10)
 
@@ -2299,6 +2456,204 @@ class ProductionServerHardeningTests(unittest.TestCase):
             self.assertEqual(player["mapPoints"], 10)
             self.assertEqual(player["weeklyMapPoints"], 10)
             self.assertEqual(player["weeklyPoints"], 10)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_daily_map_weekly_points_use_london_midnight_across_bst_end(self) -> None:
+        import server
+
+        class LondonBstEnd2026(tzinfo):
+            """Minimal London zone for the explicit 2026 BST-end boundary under test."""
+
+            transition = datetime(2026, 10, 25, 2)
+
+            def utcoffset(self, value: datetime | None) -> timedelta:
+                if value is not None and value.replace(tzinfo=None) < self.transition:
+                    return timedelta(hours=1)
+                return timedelta(0)
+
+            def dst(self, value: datetime | None) -> timedelta:
+                return self.utcoffset(value)
+
+            def tzname(self, value: datetime | None) -> str:
+                return "BST" if self.dst(value) else "GMT"
+
+        london_timezone = LondonBstEnd2026()
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-10-24T23:30:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    place_id = conn.execute(
+                        "SELECT id FROM map_place_pool ORDER BY id LIMIT 1"
+                    ).fetchone()["id"]
+                    puzzle_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_puzzles (
+                            puzzle_date, status, generated_at, published_at
+                        ) VALUES ('2026-10-25', 'published', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    level_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_levels (
+                            puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+                        ) VALUES (?, 'easy', ?, 10, 1.0, ?)
+                        """,
+                        (puzzle_id, place_id, now),
+                    ).lastrowid
+                    conn.execute(
+                        """
+                        INSERT INTO daily_map_guesses (
+                            user_id, level_id, guessed_lat, guessed_lng, selected_name,
+                            revealed_hint_count, distance_m, score, band, completed_at,
+                            created_at, updated_at
+                        ) VALUES (?, ?, 0, 0, NULL, 0, 0, 10, 'Solved', ?, ?, ?)
+                        """,
+                        (user_id, level_id, now, now, now),
+                    )
+
+                with (
+                    patch.object(server, "SERVER_TZ", london_timezone),
+                    patch("server.today_game_date", return_value="2026-10-31"),
+                ):
+                    bounds = server.game_date_period_utc_bounds(
+                        "2026-10-25",
+                        "2026-10-31",
+                    )
+                    leaderboard = server.leaderboard_payload(conn)
+
+            self.assertEqual(
+                bounds,
+                (
+                    "2026-10-24T23:00:00+00:00",
+                    "2026-11-01T00:00:00+00:00",
+                ),
+            )
+            self.assertEqual(leaderboard["summary"]["periodStart"], "2026-10-25")
+            self.assertEqual(leaderboard["players"][0]["weeklyMapPoints"], 10)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+    def test_leaderboard_weekly_points_exclude_future_dates_for_all_games(self) -> None:
+        import server
+
+        london_timezone = timezone(timedelta(hours=1), "BST")
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+
+            with closing(server.connect_db()) as conn:
+                now = "2026-06-02T12:00:00+00:00"
+                with conn:
+                    user_id = conn.execute(
+                        """
+                        INSERT INTO users (username, password_hash, role, created_at, updated_at)
+                        VALUES ('dad', 'hash', 'user', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+
+                    for game_date in ("2026-06-02", "2026-06-03"):
+                        game_id = conn.execute(
+                            """
+                            INSERT INTO daily_wordle_games (
+                                game_date, secret_word, cycle, created_at
+                            ) VALUES (?, 'raise', 1, ?)
+                            """,
+                            (game_date, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO wordle_results (
+                                user_id, game_id, status, attempts_used, score,
+                                completed_at, created_at, updated_at
+                            ) VALUES (?, ?, 'won', 3, 4, ?, ?, ?)
+                            """,
+                            (user_id, game_id, now, now, now),
+                        )
+                        conn.execute(
+                            """
+                            INSERT INTO daily_quiz_results (
+                                user_id, game_date, category, answers_json, score, max_score,
+                                correct_count, bonus_points, completed_at, created_at, updated_at
+                            ) VALUES (?, ?, 'football', '[]', 6, 12, 2, 0, ?, ?, ?)
+                            """,
+                            (user_id, game_date, now, now, now),
+                        )
+
+                    place_id = conn.execute(
+                        "SELECT id FROM map_place_pool ORDER BY id LIMIT 1"
+                    ).fetchone()["id"]
+                    puzzle_id = conn.execute(
+                        """
+                        INSERT INTO daily_map_puzzles (
+                            puzzle_date, status, generated_at, published_at
+                        ) VALUES ('2026-06-02', 'published', ?, ?)
+                        """,
+                        (now, now),
+                    ).lastrowid
+                    for level_slug, completed_at in (
+                        ("easy", "2026-06-02T12:00:00+00:00"),
+                        ("medium", "2026-06-02T23:00:00+00:00"),
+                    ):
+                        level_id = conn.execute(
+                            """
+                            INSERT INTO daily_map_levels (
+                                puzzle_id, level_slug, place_id, max_points,
+                                lambda_km, created_at
+                            ) VALUES (?, ?, ?, 10, 1.0, ?)
+                            """,
+                            (puzzle_id, level_slug, place_id, now),
+                        ).lastrowid
+                        conn.execute(
+                            """
+                            INSERT INTO daily_map_guesses (
+                                user_id, level_id, guessed_lat, guessed_lng, selected_name,
+                                revealed_hint_count, distance_m, score, band, completed_at,
+                                created_at, updated_at
+                            ) VALUES (?, ?, 0, 0, NULL, 0, 0, 10, 'Solved', ?, ?, ?)
+                            """,
+                            (user_id, level_id, completed_at, completed_at, completed_at),
+                        )
+
+                with (
+                    patch.object(server, "SERVER_TZ", london_timezone),
+                    patch("server.today_game_date", return_value="2026-06-02"),
+                ):
+                    leaderboard = server.leaderboard_payload(conn)
+
+            player = leaderboard["players"][0]
+            self.assertEqual(player["weeklyWordlePoints"], 4)
+            self.assertEqual(player["weeklyQuizPoints"], 6)
+            self.assertEqual(player["weeklyMapPoints"], 10)
+            self.assertEqual(player["weeklyPoints"], 20)
+            self.assertEqual(player["wordlePoints"], 8)
+            self.assertEqual(player["quizPoints"], 12)
+            self.assertEqual(player["mapPoints"], 20)
+            self.assertEqual(player["totalPoints"], 40)
         finally:
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path

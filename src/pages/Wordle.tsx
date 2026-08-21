@@ -59,35 +59,6 @@ const keyboardColors: Record<FeedbackColor, string> = {
   grey: "wordle-key--grey",
 };
 
-const letterScores: Record<string, number> = {
-  a: 1,
-  e: 1,
-  i: 1,
-  o: 1,
-  u: 1,
-  l: 1,
-  n: 1,
-  s: 1,
-  t: 1,
-  r: 1,
-  d: 2,
-  g: 2,
-  b: 3,
-  c: 3,
-  m: 3,
-  p: 3,
-  f: 4,
-  h: 4,
-  v: 4,
-  w: 4,
-  y: 4,
-  k: 5,
-  j: 8,
-  x: 8,
-  q: 10,
-  z: 10,
-};
-
 function difficultyBadgeClasses(level: number) {
   if (level <= 5) {
     return "border border-emerald-200 bg-emerald-50 text-emerald-800";
@@ -157,10 +128,6 @@ function wait(ms: number) {
 
 function prefersReducedMotion() {
   return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-}
-
-function getLetterScore(letter: string) {
-  return letterScores[letter.toLowerCase()] ?? 1;
 }
 
 function buildKeyboardState(guesses: WordleGuess[]) {
@@ -300,6 +267,49 @@ function DictionaryDefinitionCard({
         </p>
       )}
     </article>
+  );
+}
+
+function SavedWordleStats({ state }: { state: WordleState }) {
+  const scoreLabel = state.result.score > 0 ? `+${state.result.score}` : String(state.result.score);
+  const playedLabel = state.stats.played === 1 ? "game" : "games";
+
+  const stats = [
+    { label: "Today", value: `${scoreLabel} pts` },
+    { label: "All-time", value: `${state.stats.points} pts` },
+    { label: "Solve streak", value: state.stats.currentSolveStreak },
+    { label: "Best streak", value: state.stats.bestSolveStreak },
+  ];
+
+  return (
+    <section
+      className="mt-4 rounded-lg border border-slate-200 bg-white p-3 shadow-sm"
+      aria-label="Saved Wordle score"
+    >
+      <div className="flex items-center gap-2.5">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-saints-redSoft text-saints-red">
+          <Trophy aria-hidden="true" className="h-4 w-4" strokeWidth={2.5} />
+        </span>
+        <div className="min-w-0">
+          <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
+            Score saved
+          </p>
+          <p className="mt-0.5 text-sm font-bold text-slate-600">
+            {state.stats.wins} wins from {state.stats.played} {playedLabel}
+          </p>
+        </div>
+      </div>
+      <dl className="mt-3 grid grid-cols-2 gap-2">
+        {stats.map((stat) => (
+          <div key={stat.label} className="rounded-lg bg-slate-50 px-3 py-2 text-center ring-1 ring-slate-200">
+            <dt className="text-[0.62rem] font-black uppercase tracking-normal text-slate-500">
+              {stat.label}
+            </dt>
+            <dd className="mt-1 text-xl font-black leading-none text-slate-950">{stat.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 
@@ -744,7 +754,11 @@ export function Wordle() {
     setSubmitting(true);
 
     try {
-      const response = await api.submitWordleGuess(guess);
+      const response = await api.submitWordleGuess({
+        guess,
+        expectedAttemptsUsed: state.result.attemptsUsed,
+        expectedGameDate: state.game.date,
+      });
       setState(response);
       setGuess("");
       await runRevealAnimation(response, previousKeyboardState);
@@ -794,11 +808,11 @@ export function Wordle() {
 
     if (state.result.status === "won") {
       const guessLabel = state.result.attemptsUsed === 1 ? "guess" : "guesses";
-      return `Solved in ${state.result.attemptsUsed} ${guessLabel}`;
+      return `Solved in ${state.result.attemptsUsed} ${guessLabel} · ${state.result.score} points`;
     }
 
     if (state.result.status === "lost") {
-      return `Answer: ${state.result.answer?.toUpperCase() ?? "Unavailable"}`;
+      return `Answer: ${state.result.answer?.toUpperCase() ?? "Unavailable"} · ${state.result.score} points`;
     }
 
     return "";
@@ -1103,7 +1117,6 @@ export function Wordle() {
                       return (
                         <div
                           key={letterIndex}
-                          data-score={letter ? getLetterScore(letter) : undefined}
                           className={[
                             "wordle-tile",
                             tileClass,
@@ -1213,6 +1226,8 @@ export function Wordle() {
           ) : null}
         </form>
 
+        {isComplete && state ? <SavedWordleStats state={state} /> : null}
+
         {isComplete ? (
           <section
             className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3"
@@ -1276,17 +1291,25 @@ export function Wordle() {
                   Congratulations
                 </h2>
                 <p id="wordle-win-description" className="sr-only">
-                  {winSummaryText}. Next level {nextLevel}.
+                  {winSummaryText}. {state?.result.score ?? 0} points earned. Next level {nextLevel}.
                 </p>
               </div>
 
-              <dl className="mt-3 grid grid-cols-2 gap-2">
+              <dl className="mt-3 grid grid-cols-3 gap-2">
                 <div className="rounded-lg bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200">
                   <dt className="text-[0.65rem] font-black uppercase tracking-normal text-slate-500">
                     Solved
                   </dt>
                   <dd className="mt-1 whitespace-nowrap text-base font-black leading-tight text-slate-950">
                     {state?.result.attemptsUsed} {winGuessLabel}
+                  </dd>
+                </div>
+                <div className="rounded-lg bg-emerald-50 px-2.5 py-2 ring-1 ring-emerald-200">
+                  <dt className="text-[0.65rem] font-black uppercase tracking-normal text-emerald-700">
+                    Points
+                  </dt>
+                  <dd className="mt-1 text-lg font-black leading-tight text-slate-950">
+                    +{state?.result.score ?? 0}
                   </dd>
                 </div>
                 <div className="rounded-lg bg-saints-redSoft px-2.5 py-2 ring-1 ring-red-200">
@@ -1358,17 +1381,25 @@ export function Wordle() {
                   The word was {answerText}
                 </h2>
                 <p id="wordle-loss-description" className="sr-only">
-                  {lossSummaryText}
+                  {lossSummaryText} No points earned.
                 </p>
               </div>
 
-              <dl className="mt-3 grid grid-cols-2 gap-2">
+              <dl className="mt-3 grid grid-cols-3 gap-2">
                 <div className="rounded-lg bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200">
                   <dt className="text-[0.65rem] font-black uppercase tracking-normal text-slate-500">
                     Guesses
                   </dt>
                   <dd className="mt-1 whitespace-nowrap text-base font-black leading-tight text-slate-950">
                     {state?.result.attemptsUsed} {lossGuessLabel}
+                  </dd>
+                </div>
+                <div className="rounded-lg bg-slate-50 px-2.5 py-2 ring-1 ring-slate-200">
+                  <dt className="text-[0.65rem] font-black uppercase tracking-normal text-slate-500">
+                    Points
+                  </dt>
+                  <dd className="mt-1 text-lg font-black leading-tight text-slate-950">
+                    {state?.result.score ?? 0}
                   </dd>
                 </div>
                 <div className="rounded-lg bg-saints-redSoft px-2.5 py-2 ring-1 ring-red-200">

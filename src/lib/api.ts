@@ -703,10 +703,14 @@ export const api = {
     return request<{ valid: boolean }>(`/api/wordle/validate/${guess}`);
   },
 
-  submitWordleGuess(guess: string) {
+  submitWordleGuess(payload: {
+    guess: string;
+    expectedAttemptsUsed: number;
+    expectedGameDate: string;
+  }) {
     return request<WordleState>("/api/wordle/guess", {
       method: "POST",
-      body: jsonBody({ guess }),
+      body: jsonBody({ ...payload }),
     });
   },
 

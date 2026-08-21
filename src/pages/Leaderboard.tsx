@@ -11,13 +11,14 @@ import {
   LoaderCircle,
   MapPinned,
   Medal,
+  RefreshCw,
   Star,
   TrendingUp,
   Trophy,
   X,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Card } from "../components/Card";
 import { useAuth } from "../context/AuthContext";
@@ -41,6 +42,10 @@ function shortDate(value: string) {
 function quizAccuracy(player: LeaderboardPlayer) {
   const answered = player.quizPlayed * 3;
   return answered > 0 ? `${Math.round((player.quizCorrect / answered) * 100)}%` : "0%";
+}
+
+function rankLabel(player: LeaderboardPlayer) {
+  return player.weeklyPoints > 0 ? `#${player.rank}` : "—";
 }
 
 const QUIZ_JOURNEY = [
@@ -115,34 +120,52 @@ export function Leaderboard() {
   const [board, setBoard] = useState<LeaderboardResponse | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [selectedPlayer, setSelectedPlayer] = useState<LeaderboardPlayer | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedPlayerId, setSelectedPlayerId] = useState<number | null>(null);
+  const refreshInFlightRef = useRef(false);
+
+  const loadScores = useCallback(async (initial = false) => {
+    if (refreshInFlightRef.current) {
+      return;
+    }
+    refreshInFlightRef.current = true;
+    if (initial) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
+    setError("");
+    try {
+      const response = await api.leaderboard();
+      setBoard(response);
+    } catch (caughtError) {
+      setError(caughtError instanceof Error ? caughtError.message : "Scores failed to load.");
+    } finally {
+      refreshInFlightRef.current = false;
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let active = true;
+    void loadScores(true);
+  }, [loadScores]);
 
-    async function loadScores() {
-      try {
-        const response = await api.leaderboard();
-        if (active) {
-          setBoard(response);
-          setError("");
-        }
-      } catch (caughtError) {
-        if (active) {
-          setError(caughtError instanceof Error ? caughtError.message : "Scores failed to load.");
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
+  const players = useMemo(() => {
+    let previousPoints: number | null = null;
+    let sharedRank = 0;
+    return (board?.players ?? []).map((player, index) => {
+      if (previousPoints === null || player.weeklyPoints !== previousPoints) {
+        sharedRank = index + 1;
+        previousPoints = player.weeklyPoints;
       }
-    }
-
-    void loadScores();
-    return () => {
-      active = false;
-    };
-  }, []);
+      return player.rank === sharedRank ? player : { ...player, rank: sharedRank };
+    });
+  }, [board]);
+  const selectedPlayer = useMemo(
+    () => players.find((player) => player.id === selectedPlayerId) ?? null,
+    [players, selectedPlayerId],
+  );
 
   useEffect(() => {
     if (selectedPlayer === null) {
@@ -151,7 +174,7 @@ export function Leaderboard() {
 
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setSelectedPlayer(null);
+        setSelectedPlayerId(null);
       }
     }
 
@@ -159,7 +182,6 @@ export function Leaderboard() {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [selectedPlayer]);
 
-  const players = board?.players ?? [];
   const currentPlayer = useMemo(
     () => players.find((player) => player.id === user?.id) ?? null,
     [players, user?.id],
@@ -171,19 +193,26 @@ export function Leaderboard() {
 
   return (
     <section className="page-fade space-y-3 pb-2" aria-label="Scores">
-      {loading ? (
+      {error && board !== null ? (
+        <ScoresError
+          message={error}
+          onRetry={() => void loadScores()}
+          retrying={refreshing}
+        />
+      ) : null}
+      {loading && board === null ? (
         <Card>
           <div className="flex min-h-28 items-center justify-center gap-2 text-sm font-black text-slate-500">
             <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
             Loading scores
           </div>
         </Card>
-      ) : error ? (
-        <Card>
-          <p className="rounded-2xl bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
-            {error}
-          </p>
-        </Card>
+      ) : error && board === null ? (
+        <ScoresError
+          message={error}
+          onRetry={() => void loadScores(true)}
+          retrying={loading}
+        />
       ) : players.length === 0 ? (
         <Card>
           <p className="text-sm font-semibold leading-relaxed text-slate-600">
@@ -197,20 +226,34 @@ export function Leaderboard() {
           ) : null}
 
           <Card className="p-3">
-            <div className="mb-3 flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-black text-slate-950">7-day leaderboard</p>
+            <div className="mb-3 flex flex-col gap-3 min-[430px]:flex-row min-[430px]:items-start min-[430px]:justify-between">
+              <div className="min-w-0">
+                <p className="text-sm font-black text-slate-950">Rolling 7-day leaderboard</p>
                 {board ? (
-                  <p className="mt-0.5 flex items-center gap-1 text-xs font-bold text-slate-500">
-                    <CalendarDays aria-hidden="true" className="h-3.5 w-3.5" />
-                    {shortDate(board.summary.periodStart)} - {shortDate(board.summary.periodEnd)}
+                  <p className="mt-0.5 flex items-start gap-1 text-xs font-bold leading-snug text-slate-500">
+                    <CalendarDays aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {shortDate(board.summary.periodStart)} - {shortDate(board.summary.periodEnd)} · tied totals share a rank
                   </p>
                 ) : null}
               </div>
               {board ? (
-                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
-                  {board.summary.playerCount} players
-                </span>
+                <div className="flex shrink-0 items-center gap-2 self-end min-[430px]:self-auto">
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
+                    {board.summary.playerCount} players
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void loadScores()}
+                    disabled={refreshing}
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-black text-slate-700 transition hover:border-saints-red/40 hover:text-saints-red saints-focus disabled:cursor-wait disabled:text-slate-400"
+                  >
+                    <RefreshCw
+                      aria-hidden="true"
+                      className={["h-3.5 w-3.5", refreshing ? "animate-spin" : ""].join(" ")}
+                    />
+                    {refreshing ? "Refreshing" : "Refresh"}
+                  </button>
+                </div>
               ) : null}
             </div>
 
@@ -219,7 +262,7 @@ export function Leaderboard() {
                 <thead className="bg-slate-50 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
                   <tr>
                     <th className="px-3 py-2">Player</th>
-                    <th className="px-2 py-2 text-right">This week</th>
+                    <th className="px-2 py-2 text-right">7-day pts</th>
                     <th className="px-3 py-2 text-right">Level</th>
                   </tr>
                 </thead>
@@ -229,7 +272,7 @@ export function Leaderboard() {
                       key={player.id}
                       player={player}
                       isCurrentUser={player.id === user?.id}
-                      onSelect={() => setSelectedPlayer(player)}
+                      onSelect={() => setSelectedPlayerId(player.id)}
                     />
                   ))}
                 </tbody>
@@ -240,8 +283,38 @@ export function Leaderboard() {
         </>
       )}
 
-      <PlayerDetailDialog player={selectedPlayer} onClose={() => setSelectedPlayer(null)} />
+      <PlayerDetailDialog player={selectedPlayer} onClose={() => setSelectedPlayerId(null)} />
     </section>
+  );
+}
+
+function ScoresError({
+  message,
+  onRetry,
+  retrying,
+}: {
+  message: string;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
+  return (
+    <Card>
+      <div className="flex flex-col gap-3 rounded-2xl bg-red-50 px-3 py-3 min-[380px]:flex-row min-[380px]:items-center min-[380px]:justify-between">
+        <p className="text-sm font-bold text-saints-red">{message}</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          disabled={retrying}
+          className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-saints-red px-3 text-sm font-black text-white transition hover:bg-saints-redDark saints-focus disabled:cursor-wait disabled:bg-red-300"
+        >
+          <RefreshCw
+            aria-hidden="true"
+            className={["h-4 w-4", retrying ? "animate-spin" : ""].join(" ")}
+          />
+          {retrying ? "Trying again" : "Try again"}
+        </button>
+      </div>
+    </Card>
   );
 }
 
@@ -260,7 +333,7 @@ function CurrentPlayerCard({
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
               <Medal aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-              7-day score
+              Rolling 7-day score
             </p>
             <h1 className="mt-1 truncate text-xl font-black leading-tight">{player.username}</h1>
           </div>
@@ -268,7 +341,7 @@ function CurrentPlayerCard({
             <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
               Rank
             </p>
-            <p className="text-xl font-black leading-none">#{player.rank}</p>
+            <p className="text-xl font-black leading-none">{rankLabel(player)}</p>
           </div>
         </div>
 
@@ -276,7 +349,7 @@ function CurrentPlayerCard({
           <div className="min-w-0">
             <p className="text-4xl font-black leading-none">{player.weeklyPoints}</p>
             <p className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-white/60">
-              points this week
+              points in the last 7 days
             </p>
           </div>
           <div className="grid shrink-0 grid-cols-2 gap-1.5 text-center">
@@ -305,7 +378,7 @@ function CurrentPlayerCard({
             />
           </div>
           <div className="mt-1 flex items-center justify-between gap-2 text-[0.68rem] font-black uppercase tracking-normal text-slate-500">
-            <span>Weekly pace</span>
+            <span>Rolling 7-day pace</span>
             <span className="whitespace-nowrap">{player.totalPoints} all-time pts</span>
           </div>
         </div>
@@ -334,8 +407,8 @@ function CurrentPlayerCard({
           />
           <CompactScoreMetric
             icon={TrendingUp}
-            label="Total"
-            value={player.totalPoints}
+            label="7-day total"
+            value={player.weeklyPoints}
           />
         </div>
       </div>
@@ -369,7 +442,7 @@ function ScoreRow({
       <td className="min-w-0 px-3 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-saints-black text-sm font-black text-white">
-            {player.rank}
+            {player.weeklyPoints > 0 ? player.rank : "—"}
           </span>
           <div className="min-w-0">
             <p className="truncate text-sm font-black text-slate-950">{player.username}</p>
@@ -402,22 +475,28 @@ function ContributionBar({
   quizPoints: number;
   wordlePoints: number;
 }) {
-  const scoredPoints = Math.max(1, quizPoints + wordlePoints + mapPoints);
+  const scoredPoints = quizPoints + wordlePoints + mapPoints;
+  const segments = [
+    { className: "bg-saints-black", label: "Wordle", points: wordlePoints },
+    { className: "bg-saints-red", label: "Quiz", points: quizPoints },
+    { className: "bg-emerald-500", label: "Map", points: mapPoints },
+  ];
   return (
     <div>
-      <div className="h-3 overflow-hidden rounded-full bg-slate-100" aria-hidden="true">
-        <div
-          className="h-full bg-saints-black"
-          style={{ width: percent(wordlePoints, scoredPoints), float: "left" }}
-        />
-        <div
-          className="h-full bg-saints-red"
-          style={{ width: percent(quizPoints, scoredPoints), float: "left" }}
-        />
-        <div
-          className="h-full bg-emerald-500"
-          style={{ width: percent(mapPoints, scoredPoints), float: "left" }}
-        />
+      <div
+        className="flex h-3 overflow-hidden rounded-full bg-slate-100"
+        aria-label={`Rolling 7-day contribution: Wordle ${wordlePoints}, Quiz ${quizPoints}, Map ${mapPoints}`}
+      >
+        {scoredPoints > 0
+          ? segments.map((segment) => (
+              <span
+                key={segment.label}
+                className={["h-full min-w-0", segment.className].join(" ")}
+                style={{ flexBasis: 0, flexGrow: segment.points }}
+                title={`${segment.label}: ${segment.points} points`}
+              />
+            ))
+          : null}
       </div>
       <div className="mt-1 grid grid-cols-3 gap-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
         <span>Wordle {wordlePoints}</span>
@@ -522,8 +601,8 @@ function PlayerDetailDialog({
         </div>
 
         <div className="mt-4 grid grid-cols-3 gap-3">
-          <StatFigure label="Rank" value={`#${player.rank}`} />
-          <StatFigure label="This week" value={player.weeklyPoints} />
+          <StatFigure label="7-day rank" value={rankLabel(player)} />
+          <StatFigure label="Last 7 days" value={player.weeklyPoints} />
           <StatFigure label="Level" value={player.wordleLevel} />
         </div>
 
@@ -566,9 +645,9 @@ function PlayerDetailDialog({
             />
             <DetailMetricRow
               icon={TrendingUp}
-              label="This week's level bonus"
+              label="7-day level bonus"
               value={`+${player.weeklyWordleDifficultyBonus} pts`}
-              detail="Included in the Wordle total above"
+              detail="Included in the rolling 7-day Wordle total"
             />
           </div>
         </div>

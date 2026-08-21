@@ -355,6 +355,22 @@ def today_game_date() -> str:
     return datetime.now(SERVER_TZ).date().isoformat()
 
 
+def game_date_period_utc_bounds(period_start: str, period_end: str) -> tuple[str, str]:
+    """Return UTC instants bounding inclusive local game dates."""
+    start_date = date.fromisoformat(period_start)
+    end_exclusive_date = date.fromisoformat(period_end) + timedelta(days=1)
+    start_local = datetime.combine(start_date, datetime.min.time(), tzinfo=SERVER_TZ)
+    end_exclusive_local = datetime.combine(
+        end_exclusive_date,
+        datetime.min.time(),
+        tzinfo=SERVER_TZ,
+    )
+    return (
+        start_local.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+        end_exclusive_local.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+    )
+
+
 def safe_log(message: str) -> None:
     try:
         print(message, flush=True)
@@ -2132,6 +2148,7 @@ def submit_wordle_guess(
     user_id: int,
     guess: str,
     expected_attempts_used: Any,
+    expected_game_date: Any,
 ) -> tuple[dict[str, Any], int]:
     """Apply one idempotent, compare-and-swap Wordle guess."""
     if type(expected_attempts_used) is not int or not (
@@ -2142,8 +2159,36 @@ def submit_wordle_guess(
             HTTPStatus.BAD_REQUEST,
         )
 
+    if not isinstance(expected_game_date, str):
+        return (
+            {"error": "expectedGameDate must be a date in YYYY-MM-DD format."},
+            HTTPStatus.BAD_REQUEST,
+        )
+    try:
+        normalized_expected_game_date = date.fromisoformat(expected_game_date).isoformat()
+    except ValueError:
+        return (
+            {"error": "expectedGameDate must be a date in YYYY-MM-DD format."},
+            HTTPStatus.BAD_REQUEST,
+        )
+    if normalized_expected_game_date != expected_game_date:
+        return (
+            {"error": "expectedGameDate must be a date in YYYY-MM-DD format."},
+            HTTPStatus.BAD_REQUEST,
+        )
+
     with sqlite_immediate_transaction(conn):
         game = ensure_daily_game(conn)
+        if game["game_date"] != expected_game_date:
+            return (
+                {
+                    "error": (
+                        "The Wordle day changed before this guess was saved. "
+                        "Refresh the game and try again."
+                    )
+                },
+                HTTPStatus.CONFLICT,
+            )
         assignment = ensure_wordle_assignment(conn, user_id, game)
         result = get_or_create_wordle_result(conn, user_id, game["id"])
 
@@ -2794,6 +2839,10 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
     period_start = (
         datetime.strptime(period_end, "%Y-%m-%d").date() - timedelta(days=6)
     ).isoformat()
+    map_period_start_utc, map_period_end_exclusive_utc = game_date_period_utc_bounds(
+        period_start,
+        period_end,
+    )
     rows = conn.execute(
         """
         WITH wordle_scored_results AS (
@@ -2830,7 +2879,7 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 SUM(score) AS points,
                 SUM(difficulty_bonus) AS difficulty_bonus
             FROM wordle_scored_results
-            WHERE game_date >= ?
+            WHERE game_date >= ? AND game_date <= ?
             GROUP BY user_id
         ),
         quiz_scores AS (
@@ -2848,7 +2897,7 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 user_id,
                 SUM(score) AS points
             FROM daily_quiz_results
-            WHERE game_date >= ?
+            WHERE game_date >= ? AND game_date <= ?
             GROUP BY user_id
         ),
         map_scores AS (
@@ -2868,7 +2917,8 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 ON daily_map_levels.id = daily_map_guesses.level_id
             INNER JOIN daily_map_puzzles
                 ON daily_map_puzzles.id = daily_map_levels.puzzle_id
-            WHERE substr(daily_map_guesses.completed_at, 1, 10) >= ?
+            WHERE julianday(daily_map_guesses.completed_at) >= julianday(?)
+                AND julianday(daily_map_guesses.completed_at) < julianday(?)
             GROUP BY daily_map_guesses.user_id
         )
         SELECT
@@ -2909,7 +2959,15 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             COALESCE(wordle_scores.wins, 0) DESC,
             LOWER(users.username)
         """,
-        (WORDLE_DIFFICULTY_BONUS_PER_LEVEL, period_start, period_start, period_start),
+        (
+            WORDLE_DIFFICULTY_BONUS_PER_LEVEL,
+            period_start,
+            period_end,
+            period_start,
+            period_end,
+            map_period_start_utc,
+            map_period_end_exclusive_utc,
+        ),
     ).fetchall()
 
     outcomes_by_user = player_wordle_outcomes(conn)
@@ -5448,6 +5506,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             int(user["id"]),
             guess,
             payload.get("expectedAttemptsUsed"),
+            payload.get("expectedGameDate"),
         )
         self.send_json(status, result_payload)
 

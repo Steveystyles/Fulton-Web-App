@@ -1,4 +1,4 @@
-import { ArrowRight, Check, CircleAlert, LoaderCircle, Sparkles } from "lucide-react";
+import { ArrowRight, Check, CircleAlert, LoaderCircle, RotateCcw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, type DailyQuizQuestion, type DailyQuizResult, type QuizDifficulty } from "../lib/api";
 import { Card } from "./Card";
@@ -93,6 +93,7 @@ export function DailyQuiz({
   const [quizState, setQuizState] = useState<StoredQuizState>(emptyQuizState);
   const [savedResult, setSavedResult] = useState<DailyQuizResult | null>(null);
   const [scoreError, setScoreError] = useState("");
+  const [scoreRetryVersion, setScoreRetryVersion] = useState(0);
 
   useEffect(() => {
     setQuizState(key ? readStoredState(key, questions) : emptyQuizState);
@@ -123,6 +124,7 @@ export function DailyQuiz({
       return;
     }
 
+    setScoreError("");
     void api
       .submitDailyQuizResult({
         date: quizDate,
@@ -146,7 +148,7 @@ export function DailyQuiz({
     return () => {
       active = false;
     };
-  }, [category, isComplete, questions, quizDate, quizState.answers, savedResult]);
+  }, [category, isComplete, questions, quizDate, quizState.answers, savedResult, scoreRetryVersion]);
 
   function chooseAnswer(choiceId: string) {
     if (!currentQuestion || currentChoiceId) {
@@ -164,6 +166,11 @@ export function DailyQuiz({
       ...current,
       currentIndex: Math.min(current.currentIndex + 1, questions.length),
     }));
+  }
+
+  function retryScoreSave() {
+    setScoreError("");
+    setScoreRetryVersion((current) => current + 1);
   }
 
   if (loading) {
@@ -227,9 +234,17 @@ export function DailyQuiz({
             </p>
           ) : null}
           {scoreError ? (
-            <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
-              {scoreError}
-            </p>
+            <div className="mt-3 rounded-lg bg-red-50 px-3 py-3 text-saints-red">
+              <p className="text-sm font-bold">{scoreError}</p>
+              <button
+                type="button"
+                onClick={retryScoreSave}
+                className="mt-3 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-saints-red px-4 text-sm font-black text-white transition hover:bg-saints-redDark focus:outline-none focus:ring-4 focus:ring-saints-red/20"
+              >
+                <RotateCcw aria-hidden="true" className="h-4 w-4" />
+                Retry saving score
+              </button>
+            </div>
           ) : null}
           {savedResult?.adjudications.length ? (
             <div className="mt-5 space-y-3 text-left">
