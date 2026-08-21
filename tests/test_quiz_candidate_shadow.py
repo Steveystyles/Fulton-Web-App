@@ -149,6 +149,7 @@ class QuizCandidateShadowTests(unittest.TestCase):
             config_stub = SimpleNamespace(
                 answer_embargo_days=45,
                 question_similarity_days=180,
+                candidate_max_calls_per_quiz=30,
             )
             with (
                 patch.object(shadow.daily_quiz.QuizConfig, "from_env", return_value=object()),
@@ -165,6 +166,70 @@ class QuizCandidateShadowTests(unittest.TestCase):
         self.assertEqual(report["run_status"], "paused_provider_quota")
         self.assertTrue(report["resumable"])
         self.assertEqual(report["results"][1]["status"], "pending")
+
+    def test_shadow_run_stops_before_provider_call_when_budget_is_already_spent(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source_db = root / "source.db"
+            source_conn = sqlite3.connect(source_db)
+            source_conn.row_factory = sqlite3.Row
+            daily_quiz.initialize_database(source_conn)
+            quiz_set = daily_quiz.get_or_create_quiz_set(source_conn, "2026-08-20")
+            source_conn.execute(
+                "UPDATE daily_quiz_sets SET pipeline_version='candidate-v1' WHERE id=?",
+                (quiz_set["id"],),
+            )
+            for batch_number in range(1, 31):
+                daily_quiz.insert_candidate(
+                    source_conn,
+                    quiz_set_id=int(quiz_set["id"]),
+                    quiz_date="2026-08-20",
+                    subject="football",
+                    difficulty="easy",
+                    batch_number=batch_number,
+                    candidate_index=1,
+                    provider="test",
+                    generation_mode="normal",
+                    candidate={
+                        "answer": f"Answer {batch_number}",
+                        "hook": f"Documented candidate hook {batch_number} for the budget test.",
+                        "topic_lane": "famous incidents and matches",
+                        "era": "",
+                        "region": "",
+                        "tags": ["test", f"batch-{batch_number}"],
+                        "evidence_query": f"Answer {batch_number} documented event",
+                    },
+                    status="rejected",
+                    rejection_stage="local",
+                    failure_reason="Rejected fixture.",
+                )
+            source_conn.close()
+            args = SimpleNamespace(
+                db=source_db,
+                output_dir=root / "output",
+                start_date="2026-08-20",
+                days=1,
+                max_rounds=2,
+                retry_delay_seconds=0,
+                resume=False,
+            )
+            config_stub = SimpleNamespace(
+                answer_embargo_days=45,
+                question_similarity_days=180,
+                candidate_max_calls_per_quiz=30,
+            )
+            with (
+                patch.object(shadow.daily_quiz.QuizConfig, "from_env", return_value=object()),
+                patch.object(shadow, "replace", return_value=config_stub),
+                patch.object(shadow.daily_quiz, "generate_daily_quiz") as generate,
+            ):
+                report = shadow.evaluate(args)
+
+        generate.assert_not_called()
+        self.assertEqual(report["run_status"], "failed_call_budget")
+        self.assertEqual(report["results"][0]["generation_calls"], 30)
 
 
 if __name__ == "__main__":

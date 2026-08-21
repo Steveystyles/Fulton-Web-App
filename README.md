@@ -158,7 +158,9 @@ python tools/evaluate_quiz_candidate_pipeline.py --start-date 2026-08-14
 It copies quiz history into `data/qa/quiz-candidate-shadow/shadow.db`, generates
 seven unpublished comparison dates, writes automated metrics to `report.json`,
 and exports a 12-question human review sample. Production activation remains
-controlled by `QUIZ_CANDIDATE_PIPELINE_ENABLED`, which defaults to `0`.
+controlled by `QUIZ_CANDIDATE_PIPELINE_ENABLED`, which defaults to `0`. The
+pipeline enforces `QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ` (default `30`) before
+making each discovery or composition request.
 
 Run the safe fixture evaluator to confirm the held-out eval file is structurally valid:
 

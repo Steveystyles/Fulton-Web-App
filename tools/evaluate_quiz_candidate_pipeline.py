@@ -80,21 +80,7 @@ def shadow_dates(start_date: str, count: int) -> list[str]:
 
 
 def generation_call_count(conn: sqlite3.Connection, quiz_date: str) -> int:
-    batches = conn.execute(
-        """
-        SELECT COUNT(DISTINCT subject || '/' || difficulty || '/' || batch_number)
-        FROM daily_quiz_candidates WHERE quiz_date = ?
-        """,
-        (quiz_date,),
-    ).fetchone()[0]
-    compositions = conn.execute(
-        """
-        SELECT COUNT(*) FROM daily_quiz_attempts
-        WHERE quiz_date = ? AND candidate_id IS NOT NULL
-        """,
-        (quiz_date,),
-    ).fetchone()[0]
-    return int(batches or 0) + int(compositions or 0)
+    return daily_quiz.candidate_generation_call_count(conn, quiz_date)
 
 
 def answer_collisions(conn: sqlite3.Connection, quiz_date: str, embargo_days: int) -> int:
@@ -223,6 +209,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         answer_embargo_days=45,
         recovery_answer_embargo_days=30,
         question_similarity_days=180,
+        candidate_max_calls_per_quiz=30,
     )
     daily_quiz.initialize_database(conn)
     target_dates = shadow_dates(args.start_date, args.days)
@@ -239,7 +226,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             started = time.monotonic()
             result: dict[str, Any] = {}
             quota_exhausted = False
+            call_budget_exhausted = False
             for round_number in range(1, args.max_rounds + 1):
+                if generation_call_count(conn, quiz_date) >= config.candidate_max_calls_per_quiz:
+                    call_budget_exhausted = True
+                    break
                 round_messages: list[str] = []
 
                 def shadow_log(message: str, day: str = quiz_date) -> None:
@@ -259,6 +250,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 if provider_capacity_exhausted(round_messages):
                     quota_exhausted = True
                     break
+                if generation_call_count(conn, quiz_date) >= config.candidate_max_calls_per_quiz:
+                    call_budget_exhausted = True
+                    break
                 if round_number < args.max_rounds:
                     time.sleep(args.retry_delay_seconds)
             elapsed_by_date[quiz_date] = round(
@@ -273,9 +267,12 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                     pause_reason = (
                         "All configured AI providers exhausted their current free-tier capacity."
                     )
-                elif generation_call_count(conn, quiz_date) >= 30:
+                elif call_budget_exhausted:
                     run_status = "failed_call_budget"
-                    pause_reason = "The current date reached the 30-call rollout ceiling."
+                    pause_reason = (
+                        "The current date reached the configured discovery/composition "
+                        "call ceiling."
+                    )
                 else:
                     run_status = "incomplete_quality_gate"
                     pause_reason = "The current date did not publish within the configured rounds."
@@ -325,7 +322,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         and item["verified_questions"] == 6
         and item["answer_collisions"] == 0
         and item["question_collisions"] == 0
-        and item["generation_calls"] <= 30
+        and item["generation_calls"] <= config.candidate_max_calls_per_quiz
         and item["elapsed_seconds"] <= 7200
         for item in results
     ) and bool(elapsed) and statistics.median(elapsed) <= 3600
@@ -344,7 +341,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "thresholds": {
             "quiz_count": args.days,
             "verified_questions_per_quiz": 6,
-            "max_generation_calls_per_quiz": 30,
+            "max_generation_calls_per_quiz": config.candidate_max_calls_per_quiz,
             "median_elapsed_seconds": 3600,
             "max_elapsed_seconds": 7200,
             "answer_collisions": 0,

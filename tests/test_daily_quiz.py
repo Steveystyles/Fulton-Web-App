@@ -567,6 +567,97 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(probe["evidence_query"], candidate["evidence_query"])
 
+    def test_candidate_feedback_summarizes_every_rejected_answer_in_run(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        for index in range(12):
+            daily_quiz.insert_candidate(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="hard",
+                batch_number=index + 1,
+                candidate_index=1,
+                provider="test",
+                generation_mode="normal",
+                candidate={
+                    "answer": f"Rejected Answer {index}",
+                    "hook": f"Documented rejected hook number {index} for this test run.",
+                    "topic_lane": "famous incidents and matches",
+                    "era": "",
+                    "region": "",
+                    "tags": ["test", f"rejected-{index}"],
+                    "evidence_query": f"Rejected Answer {index} documented event",
+                },
+                status="rejected",
+                rejection_stage="local",
+                failure_reason="Correct answer is inside the answer embargo window.",
+            )
+
+        feedback = daily_quiz.recent_candidate_rejection_feedback(
+            self.conn,
+            quiz_set_id=target["id"],
+            subject="football",
+            difficulty="hard",
+            limit=3,
+        )
+
+        self.assertEqual(len(feedback), 3)
+        summary = feedback[-1]
+        self.assertIn("Rejected Answer 0", summary)
+        self.assertIn("Rejected Answer 11", summary)
+
+    def test_candidate_call_budget_stops_new_calls_and_survives_retry(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=2,
+            candidate_max_calls_per_quiz=1,
+        )
+        logs: list[str] = []
+
+        first = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=logs.append,
+        )
+        second = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            provider=provider,
+            config=pipeline_config,
+            log=logs.append,
+        )
+
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(provider.discovery_calls, 1)
+        self.assertEqual(provider.composition_calls, 0)
+        self.assertEqual(
+            daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
+            1,
+        )
+        self.assertTrue(any("call budget exhausted (1/1)" in entry for entry in logs))
+
+        self.conn.execute(
+            "DELETE FROM daily_quiz_candidates WHERE quiz_set_id = ?", (target["id"],)
+        )
+        self.assertEqual(
+            daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
+            0,
+        )
+
     def test_candidate_pipeline_filters_embargoed_answer_before_composition(self) -> None:
         old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-18")
         old_question = valid_question("football", "easy")
@@ -698,6 +789,15 @@ class DailyQuizTests(unittest.TestCase):
             """
         ).fetchone()[0]
         self.assertEqual(rejected, 1)
+        self.assertEqual(provider.composition_calls, 1)
+        self.assertEqual(
+            daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
+            2,
+        )
+        recorded = self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_attempts WHERE candidate_id IS NOT NULL"
+        ).fetchone()[0]
+        self.assertEqual(recorded, 1)
 
     def test_candidate_pipeline_rotates_provider_after_bad_batch(self) -> None:
         target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")

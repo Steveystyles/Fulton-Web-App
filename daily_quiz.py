@@ -264,6 +264,7 @@ class QuizConfig:
     question_similarity_days: int = 180
     candidate_batch_size: int = 8
     candidate_batches_per_slot: int = 3
+    candidate_max_calls_per_quiz: int = 30
 
     @classmethod
     def from_env(cls) -> "QuizConfig":
@@ -382,6 +383,9 @@ class QuizConfig:
             ),
             candidate_batches_per_slot=env_int(
                 "QUIZ_CANDIDATE_BATCHES_PER_SLOT", 3, minimum=1, maximum=6
+            ),
+            candidate_max_calls_per_quiz=env_int(
+                "QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ", 30, minimum=1, maximum=500
             ),
         )
 
@@ -2510,6 +2514,29 @@ def candidate_rows_for_slot(
     ).fetchall()
 
 
+def candidate_generation_call_count(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+) -> int:
+    batches = conn.execute(
+        """
+        SELECT COUNT(DISTINCT subject || '/' || difficulty || '/' || batch_number)
+        FROM daily_quiz_candidates WHERE quiz_date = ?
+        """,
+        (quiz_date,),
+    ).fetchone()[0]
+    compositions = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM daily_quiz_attempts AS attempt
+        JOIN daily_quiz_candidates AS candidate ON candidate.id = attempt.candidate_id
+        WHERE attempt.quiz_date = ? AND candidate.quiz_date = ?
+        """,
+        (quiz_date, quiz_date),
+    ).fetchone()[0]
+    return int(batches or 0) + int(compositions or 0)
+
+
 def next_candidate_batch_number(
     conn: sqlite3.Connection,
     *,
@@ -2626,6 +2653,61 @@ def candidate_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def candidate_attempt_payload(
+    row: sqlite3.Row,
+    *,
+    generation_mode: str,
+    generated: Any,
+) -> dict[str, Any]:
+    payload = dict(generated) if isinstance(generated, dict) else {"generated": generated}
+    payload["_candidate_id"] = int(row["id"])
+    payload["_pipeline"] = {
+        "version": "candidate-v1",
+        "mode": generation_mode,
+        "lane": str(row["topic_lane"]),
+        "batch": int(row["batch_number"]),
+    }
+    return payload
+
+
+def record_candidate_batch_failure(
+    conn: sqlite3.Connection,
+    *,
+    quiz_set_id: int,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
+    batch_number: int,
+    provider: str,
+    generation_mode: str,
+    topic_lane: str,
+    reason: str,
+) -> None:
+    insert_candidate(
+        conn,
+        quiz_set_id=quiz_set_id,
+        quiz_date=quiz_date,
+        subject=subject,
+        difficulty=difficulty,
+        batch_number=batch_number,
+        candidate_index=0,
+        provider=provider,
+        generation_mode=generation_mode,
+        candidate={
+            "answer": "",
+            "hook": "",
+            "topic_lane": topic_lane,
+            "era": "",
+            "region": "",
+            "tags": [],
+            "evidence_query": "",
+        },
+        status="rejected",
+        rejection_stage="discovery",
+        failure_reason=reason,
+    )
+
+
 def recent_candidate_rejection_feedback(
     conn: sqlite3.Connection,
     *,
@@ -2634,6 +2716,29 @@ def recent_candidate_rejection_feedback(
     difficulty: str,
     limit: int = 8,
 ) -> list[str]:
+    if limit <= 0:
+        return []
+    answer_rows = conn.execute(
+        """
+        SELECT answer, normalized_answer
+        FROM daily_quiz_candidates
+        WHERE quiz_set_id = ? AND subject = ? AND difficulty = ?
+          AND status = 'rejected' AND normalized_answer <> ''
+        ORDER BY id
+        """,
+        (quiz_set_id, subject, difficulty),
+    ).fetchall()
+    rejected_answers: list[str] = []
+    seen_answers: set[str] = set()
+    for row in answer_rows:
+        key = str(row["normalized_answer"] or "").strip()
+        answer = str(row["answer"] or "").strip()
+        if not key or not answer or key in seen_answers:
+            continue
+        seen_answers.add(key)
+        rejected_answers.append(answer)
+
+    detail_limit = max(0, limit - int(bool(rejected_answers)))
     rows = conn.execute(
         """
         SELECT answer, rejection_stage, failure_reason
@@ -2643,7 +2748,7 @@ def recent_candidate_rejection_feedback(
         ORDER BY id DESC
         LIMIT ?
         """,
-        (quiz_set_id, subject, difficulty, limit),
+        (quiz_set_id, subject, difficulty, detail_limit),
     ).fetchall()
     feedback: list[str] = []
     for row in reversed(rows):
@@ -2659,6 +2764,11 @@ def recent_candidate_rejection_feedback(
             )
         else:
             feedback.append(f"Correct this prior {stage} failure: {reason}")
+    if rejected_answers:
+        feedback.append(
+            "Do not propose any answer already rejected in this run: "
+            + json.dumps(rejected_answers, ensure_ascii=True)
+        )
     return merge_feedback_entries(feedback, limit=limit)
 
 
@@ -2904,6 +3014,38 @@ def save_attempt(
         ),
     )
     commit_if_needed(conn)
+
+
+def save_candidate_composition_failure(
+    conn: sqlite3.Connection,
+    *,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
+    provider: QuizAIProvider,
+    row: sqlite3.Row,
+    generation_mode: str,
+    generated: Any,
+    evidence: list[dict[str, Any]],
+    reason: str,
+) -> None:
+    save_attempt(
+        conn,
+        quiz_date=quiz_date,
+        subject=subject,
+        difficulty=difficulty,
+        attempt_number=candidate_generation_call_count(conn, quiz_date) + 1,
+        provider=candidate_provider_identity(effective_provider(provider)),
+        generated=candidate_attempt_payload(
+            row,
+            generation_mode=generation_mode,
+            generated=generated,
+        ),
+        critic=None,
+        evidence=evidence,
+        passed=False,
+        failure_reason=reason,
+    )
 
 
 def save_question(
@@ -3165,6 +3307,20 @@ def generate_slot_two_stage(
         if recovery_mode
         else config.answer_embargo_days
     )
+
+    def call_budget_exhausted(action: str) -> bool:
+        call_count = candidate_generation_call_count(conn, quiz_date)
+        if call_count < config.candidate_max_calls_per_quiz:
+            return False
+        log(
+            f"Deferred {subject} / {difficulty}; candidate call budget exhausted "
+            f"({call_count}/{config.candidate_max_calls_per_quiz}) before {action}."
+        )
+        return True
+
+    if call_budget_exhausted("slot generation"):
+        return None
+
     accepted_recent = recent_questions(
         conn,
         subject=subject,
@@ -3254,6 +3410,8 @@ def generate_slot_two_stage(
         verifier = quality_role_provider(stages, stage_index + 2)
         composition_failures = 0
         for row in sorted(rows, key=lambda item: (-float(item["score"]), int(item["id"])))[:3]:
+            if call_budget_exhausted("candidate composition"):
+                return None
             candidate = candidate_from_row(row)
             probe = candidate_evidence_probe(
                 candidate, subject=subject, difficulty=difficulty
@@ -3313,6 +3471,18 @@ def generate_slot_two_stage(
                 )
             except Exception as error:
                 reason = f"Candidate composition failed: {error}"
+                save_candidate_composition_failure(
+                    conn,
+                    quiz_date=quiz_date,
+                    subject=subject,
+                    difficulty=difficulty,
+                    provider=composer,
+                    row=row,
+                    generation_mode=generation_mode,
+                    generated={"error": str(error)},
+                    evidence=evidence,
+                    reason=reason,
+                )
                 if is_transient_provider_failure(reason):
                     log(f"Deferred {subject} / {difficulty}: {reason}")
                     return None
@@ -3328,10 +3498,27 @@ def generate_slot_two_stage(
                 if composition_failures >= 2:
                     break
                 continue
+            question = candidate_attempt_payload(
+                row,
+                generation_mode=generation_mode,
+                generated=question,
+            )
             if normalize_answer(question.get("correct_answer")) != normalize_answer(
                 candidate["answer"]
             ):
                 reason = "Composer changed the approved candidate answer."
+                save_candidate_composition_failure(
+                    conn,
+                    quiz_date=quiz_date,
+                    subject=subject,
+                    difficulty=difficulty,
+                    provider=composer,
+                    row=row,
+                    generation_mode=generation_mode,
+                    generated=question,
+                    evidence=evidence,
+                    reason=reason,
+                )
                 update_candidate(
                     conn,
                     int(row["id"]),
@@ -3351,6 +3538,18 @@ def generate_slot_two_stage(
                 if previous
             ):
                 reason = "Composed question duplicates or closely matches the 180-day history."
+                save_candidate_composition_failure(
+                    conn,
+                    quiz_date=quiz_date,
+                    subject=subject,
+                    difficulty=difficulty,
+                    provider=composer,
+                    row=row,
+                    generation_mode=generation_mode,
+                    generated=question,
+                    evidence=evidence,
+                    reason=reason,
+                )
                 update_candidate(
                     conn,
                     int(row["id"]),
@@ -3363,13 +3562,6 @@ def generate_slot_two_stage(
                 if composition_failures >= 2:
                     break
                 continue
-            question["_candidate_id"] = int(row["id"])
-            question["_pipeline"] = {
-                "version": "candidate-v1",
-                "mode": generation_mode,
-                "lane": candidate["topic_lane"],
-                "batch": int(row["batch_number"]),
-            }
             wrapped = ComposedQuestionProvider(
                 question=question,
                 composer=composer,
@@ -3438,6 +3630,8 @@ def generate_slot_two_stage(
             return result
 
     for _ in range(config.candidate_batches_per_slot):
+        if call_budget_exhausted("candidate discovery"):
+            return None
         batch_number = next_candidate_batch_number(
             conn,
             quiz_set_id=quiz_set_id,
@@ -3479,6 +3673,18 @@ def generate_slot_two_stage(
             )
         except Exception as error:
             reason = f"Candidate discovery failed: {error}"
+            record_candidate_batch_failure(
+                conn,
+                quiz_set_id=quiz_set_id,
+                quiz_date=quiz_date,
+                subject=subject,
+                difficulty=difficulty,
+                batch_number=batch_number,
+                provider=candidate_provider_identity(effective_provider(discovery_provider)),
+                generation_mode=generation_mode,
+                topic_lane=lane,
+                reason=reason,
+            )
             if is_transient_provider_failure(reason):
                 log(f"Deferred {subject} / {difficulty}: {reason}")
                 return None
@@ -3489,13 +3695,39 @@ def generate_slot_two_stage(
         )
         raw_candidates = payload.get("candidates") if isinstance(payload, dict) else None
         if not isinstance(raw_candidates, list):
-            feedback.append("Candidate discovery returned no candidates array.")
+            reason = "Candidate discovery returned no candidates array."
+            record_candidate_batch_failure(
+                conn,
+                quiz_set_id=quiz_set_id,
+                quiz_date=quiz_date,
+                subject=subject,
+                difficulty=difficulty,
+                batch_number=batch_number,
+                provider=discovery_provider_label,
+                generation_mode=generation_mode,
+                topic_lane=lane,
+                reason=reason,
+            )
+            feedback.append(reason)
             continue
         if len(raw_candidates) != config.candidate_batch_size:
-            feedback.append(
+            reason = (
                 f"Candidate discovery returned {len(raw_candidates)} ideas; "
                 f"exactly {config.candidate_batch_size} are required."
             )
+            record_candidate_batch_failure(
+                conn,
+                quiz_set_id=quiz_set_id,
+                quiz_date=quiz_date,
+                subject=subject,
+                difficulty=difficulty,
+                batch_number=batch_number,
+                provider=discovery_provider_label,
+                generation_mode=generation_mode,
+                topic_lane=lane,
+                reason=reason,
+            )
+            feedback.append(reason)
             continue
         inserted: list[sqlite3.Row] = []
         for candidate_index, raw_candidate in enumerate(raw_candidates[: config.candidate_batch_size], 1):
@@ -4533,6 +4765,7 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
             "candidate_count": 0,
             "filtered_candidates": 0,
             "candidate_providers": [],
+            "candidate_generation_calls": 0,
             "generation_elapsed_seconds": None,
         }
     accepted = conn.execute(
@@ -4600,6 +4833,7 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
         "candidate_count": int(candidate_metrics["candidate_count"] or 0),
         "filtered_candidates": int(candidate_metrics["filtered_count"] or 0),
         "candidate_providers": providers,
+        "candidate_generation_calls": candidate_generation_call_count(conn, quiz_date),
         "generation_elapsed_seconds": elapsed_seconds,
     }
 
