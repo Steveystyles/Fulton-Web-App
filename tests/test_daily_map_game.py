@@ -339,7 +339,30 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected["canonical_name"], "Wembley Stadium")
 
-    def test_daily_selection_rotates_to_least_recent_reviewed_place(self) -> None:
+    def test_daily_selection_can_broaden_type_without_reusing_a_stadium(self) -> None:
+        install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
+        for puzzle_date, place_name in (
+            ("2026-08-01", "Camp Nou"),
+            ("2026-08-02", "Stade de France"),
+            ("2026-08-03", "Wembley Stadium"),
+            ("2026-08-04", "Estádio do Dragão"),
+            ("2026-08-05", "Estadio Azteca"),
+            ("2026-08-06", "Stadio Olimpico"),
+        ):
+            self.publish_named_level(place_name, puzzle_date=puzzle_date)
+
+        stadium = daily_map_game.select_daily_place(
+            self.conn,
+            "2026-08-07",
+            required_place_type="stadium",
+        )
+        any_place = daily_map_game.select_daily_place(self.conn, "2026-08-07")
+
+        self.assertIsNone(stadium)
+        self.assertIsNotNone(any_place)
+        self.assertNotEqual(any_place["place_type"], "stadium")
+
+    def test_daily_selection_does_not_reuse_a_recent_reviewed_place(self) -> None:
         install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
         for puzzle_date, place_name in (
             ("2026-08-01", "Terracotta Army"),
@@ -347,13 +370,15 @@ class DailyMapGameTests(unittest.TestCase):
             ("2026-08-03", "Wembley Stadium"),
             ("2026-08-04", "Stade de France"),
             ("2026-08-05", "Camp Nou"),
+            ("2026-08-06", "Estádio do Dragão"),
+            ("2026-08-07", "Estadio Azteca"),
+            ("2026-08-08", "Stadio Olimpico"),
         ):
             self.publish_named_level(place_name, puzzle_date=puzzle_date)
 
-        selected = daily_map_game.select_daily_place(self.conn, "2026-08-06")
+        selected = daily_map_game.select_daily_place(self.conn, "2026-08-09")
 
-        self.assertIsNotNone(selected)
-        self.assertEqual(selected["canonical_name"], "Terracotta Army")
+        self.assertIsNone(selected)
 
     def test_qa_generation_rejects_legacy_place_not_reviewed_under_current_profile(self) -> None:
         with patch.object(
