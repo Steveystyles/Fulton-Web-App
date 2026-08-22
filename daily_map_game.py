@@ -1505,33 +1505,6 @@ def recent_cutoff(puzzle_date: str) -> str:
     return (current - timedelta(days=RECENT_USE_DAYS)).isoformat()
 
 
-def least_recently_used_rows(
-    conn: sqlite3.Connection,
-    rows: list[sqlite3.Row],
-    *,
-    puzzle_date: str,
-) -> list[sqlite3.Row]:
-    if len(rows) <= 1:
-        return rows
-    last_used: dict[int, str] = {}
-    for row in rows:
-        used = conn.execute(
-            """
-            SELECT MAX(daily_map_puzzles.puzzle_date)
-            FROM daily_map_levels
-            INNER JOIN daily_map_puzzles
-                ON daily_map_puzzles.id = daily_map_levels.puzzle_id
-            WHERE daily_map_levels.place_id = ?
-              AND daily_map_puzzles.status = 'published'
-              AND daily_map_puzzles.puzzle_date < ?
-            """,
-            (row["id"], puzzle_date),
-        ).fetchone()[0]
-        last_used[int(row["id"])] = str(used or "")
-    oldest = min(last_used.values())
-    return [row for row in rows if last_used[int(row["id"])] == oldest]
-
-
 def select_daily_place(
     conn: sqlite3.Connection,
     puzzle_date: str,
@@ -1567,30 +1540,7 @@ def select_daily_place(
         ),
     ).fetchall()
     rows = [row for row in rows if row_has_playable_map_guidance(row)]
-    row = best_quality_place(rows, puzzle_date=puzzle_date)
-    if row is not None:
-        return row
-    rows = conn.execute(
-        """
-        SELECT *
-        FROM map_place_pool
-        WHERE active = 1
-          AND clue_text <> ''
-          AND reveal_text <> ''
-          AND (? = '' OR LOWER(place_type) = ?)
-        ORDER BY COALESCE(validation_grade, 0) DESC, id
-        """,
-        (normalized_place_type, normalized_place_type),
-    ).fetchall()
-    quality_rows = [
-        row
-        for row in rows
-        if row_passes_map_clue_quality(row) and row_has_playable_map_guidance(row)
-    ]
-    return best_quality_place(
-        least_recently_used_rows(conn, quality_rows, puzzle_date=puzzle_date),
-        puzzle_date=puzzle_date,
-    )
+    return best_quality_place(rows, puzzle_date=puzzle_date)
 
 
 def map_learning_profile_hash(path: str = DEFAULT_MAP_LEARNING_PROFILE_PATH) -> str:

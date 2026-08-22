@@ -22,31 +22,29 @@ class MapReviewedFallbackTests(unittest.TestCase):
         self.conn.close()
 
     def test_reviewed_fallback_package_installs_quality_gated_places(self) -> None:
+        entries = install_map_reviewed_fallbacks.load_package(PACKAGE_PATH)
+        expected_names = {entry["place"]["canonical_name"] for entry in entries}
         result = install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
 
-        self.assertEqual(len(result["added"]), 5)
+        self.assertEqual(set(result["added"]), expected_names)
         rows = self.conn.execute(
-            "SELECT * FROM map_place_pool WHERE canonical_name IN (?, ?, ?, ?, ?)",
-            (
-                "Terracotta Army",
-                "Canterbury Cathedral",
-                "Wembley Stadium",
-                "Stade de France",
-                "Camp Nou",
-            ),
+            f"SELECT * FROM map_place_pool WHERE canonical_name IN "
+            f"({', '.join('?' for _ in expected_names)})",
+            tuple(expected_names),
         ).fetchall()
-        self.assertEqual(len(rows), 5)
+        self.assertEqual(len(rows), len(expected_names))
         self.assertTrue(all(daily_map_game.row_passes_map_clue_quality(row) for row in rows))
         self.assertTrue(all(daily_map_game.row_has_playable_map_guidance(row) for row in rows))
 
     def test_reviewed_fallback_install_is_idempotent(self) -> None:
+        expected_count = len(install_map_reviewed_fallbacks.load_package(PACKAGE_PATH))
         install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
 
         result = install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
 
         self.assertEqual(result["added"], [])
         self.assertEqual(result["updated"], [])
-        self.assertEqual(len(result["existing"]), 5)
+        self.assertEqual(len(result["existing"]), expected_count)
 
     def test_reviewed_fallback_install_repairs_existing_guidance(self) -> None:
         install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
