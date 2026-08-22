@@ -56,6 +56,39 @@ def rewrite_manifest(backup_dir: Path, payload: object) -> None:
 
 
 class BackupManagerTests(unittest.TestCase):
+    def test_wal_mode_backup_verification_does_not_create_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            database = data_dir / "fultons.db"
+            connection = sqlite3.connect(database)
+            try:
+                self.assertEqual(
+                    connection.execute("PRAGMA journal_mode = WAL").fetchone()[0],
+                    "wal",
+                )
+                connection.execute(
+                    "CREATE TABLE items (id INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+                )
+                connection.execute("INSERT INTO items(value) VALUES ('committed in WAL')")
+                connection.commit()
+
+                created = backup_manager.create_backup(data_dir, root / "backups")
+            finally:
+                connection.close()
+
+            manifest = backup_manager.verify_backup(created)
+            self.assertEqual(
+                {item.name for item in created.iterdir()},
+                {
+                    "fultons.db",
+                    backup_manager.MANIFEST_NAME,
+                    backup_manager.MANIFEST_CHECKSUM_NAME,
+                },
+            )
+            self.assertEqual(manifest["database"], "fultons.db")
+
     def test_create_uses_online_sqlite_backup_and_excludes_secrets_and_churn(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

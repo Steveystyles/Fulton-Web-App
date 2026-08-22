@@ -157,8 +157,9 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _readonly_sqlite_uri(path: Path) -> str:
-    return f"{path.resolve(strict=True).as_uri()}?mode=ro"
+def _readonly_sqlite_uri(path: Path, *, immutable: bool = False) -> str:
+    immutable_query = "&immutable=1" if immutable else ""
+    return f"{path.resolve(strict=True).as_uri()}?mode=ro{immutable_query}"
 
 
 def _write_private(path: Path, data: str) -> None:
@@ -549,7 +550,13 @@ def verify_backup(backup_dir: Path) -> dict[str, Any]:
         if _sha256(artifact_path) != checksum:
             raise BackupError(f"Backup artifact checksum mismatch: {relative.name}")
         if kind == "sqlite-online-backup":
-            connection = sqlite3.connect(_readonly_sqlite_uri(artifact_path), uri=True)
+            # The artifact is complete and will never change during verification.
+            # Immutable mode prevents a WAL-mode database header from creating
+            # unmanifested -wal/-shm files in the sealed backup directory.
+            connection = sqlite3.connect(
+                _readonly_sqlite_uri(artifact_path, immutable=True),
+                uri=True,
+            )
             try:
                 quick_check = connection.execute("PRAGMA quick_check").fetchone()[0]
                 actual_page_count = int(connection.execute("PRAGMA page_count").fetchone()[0])
