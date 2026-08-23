@@ -2508,6 +2508,8 @@ def validate_candidate(
         return None, "Candidate answer length is invalid."
     if not 35 <= len(hook) <= 420:
         return None, "Candidate hook length is invalid."
+    if hook.rstrip().endswith("?"):
+        return None, "Candidate hook must be a factual statement, not a quiz question."
     if not lane:
         return None, "Candidate topic lane is blank."
     if not isinstance(tags, list) or len(tags) < 2:
@@ -2871,17 +2873,25 @@ def saturated_topic_feedback(
     *,
     limit: int = 24,
 ) -> list[str]:
-    saturated = [
-        tag
-        for tag, count in recent_topic_counts(questions).most_common()
-        if count >= 5
-    ][:limit]
+    saturated = saturated_topic_tags(questions, limit=limit)
     if not saturated:
         return []
     return [
         "Avoid these recently saturated topic tags and close variants in this slot: "
         + json.dumps(saturated, ensure_ascii=True)
     ]
+
+
+def saturated_topic_tags(
+    questions: list[dict[str, Any]],
+    *,
+    limit: int = 24,
+) -> list[str]:
+    return [
+        tag
+        for tag, count in recent_topic_counts(questions).most_common()
+        if count >= 5
+    ][:limit]
 
 
 def candidate_evidence_probe(
@@ -2995,6 +3005,7 @@ def choose_topic_lane(
     difficulty: str,
     batch_number: int,
     profile_path: str,
+    recent_questions_for_topics: list[dict[str, Any]] | None = None,
 ) -> str:
     lanes = QUIZ_TOPIC_LANES[subject]
     counts = Counter(
@@ -3011,9 +3022,18 @@ def choose_topic_lane(
     weights = learning_candidate_lane_weights(
         profile_path, subject=subject, difficulty=difficulty
     )
+    saturated = saturated_topic_tags(recent_questions_for_topics or [])
+
+    def saturation_penalty(lane: str) -> int:
+        lane_key = normalize_text(lane)
+        return int(
+            any(tag in lane_key or lane_key in tag for tag in saturated if tag)
+        )
+
     ranked = sorted(
         lanes,
         key=lambda lane: (
+            saturation_penalty(lane),
             counts[normalize_text(lane)] - weights.get(normalize_text(lane), 0.5),
             lane,
         ),
@@ -3480,6 +3500,23 @@ def generate_slot_two_stage(
         difficulty=difficulty,
     )
 
+    def rows_still_available(rows: list[sqlite3.Row]) -> bool:
+        row_ids = [int(row["id"]) for row in rows]
+        if not row_ids:
+            return False
+        placeholders = ",".join("?" for _ in row_ids)
+        return (
+            conn.execute(
+                f"""
+                SELECT 1 FROM daily_quiz_candidates
+                WHERE id IN ({placeholders}) AND status IN ('eligible', 'verified')
+                LIMIT 1
+                """,
+                row_ids,
+            ).fetchone()
+            is not None
+        )
+
     def evaluate_rows(rows: list[sqlite3.Row], stage_index: int) -> bool | None:
         composer = quality_role_provider(stages, stage_index)
         critic = quality_role_provider(stages, stage_index + 1)
@@ -3730,6 +3767,12 @@ def generate_slot_two_stage(
         )
         if result is not False:
             return result
+        if rows_still_available(resumable):
+            log(
+                f"Deferred {subject} / {difficulty}; persisted candidates remain "
+                "for the next retry before another discovery batch."
+            )
+            return None
 
     for _ in range(config.candidate_batches_per_slot):
         if call_budget_exhausted("candidate discovery and composition", required_calls=2):
@@ -3749,6 +3792,7 @@ def generate_slot_two_stage(
             difficulty=difficulty,
             batch_number=batch_number,
             profile_path=config.learning_profile_path,
+            recent_questions_for_topics=topic_recent,
         )
         log(
             f"Discovering {subject} / {difficulty} candidate batch {batch_number} "
@@ -3910,6 +3954,12 @@ def generate_slot_two_stage(
         result = evaluate_rows_with_provider_switch(inserted, stage_index)
         if result is not False:
             return result
+        if rows_still_available(inserted):
+            log(
+                f"Deferred {subject} / {difficulty}; persisted candidates remain "
+                "for the next retry before another discovery batch."
+            )
+            return None
     log(
         f"Deferred {subject} / {difficulty}; candidate batches were exhausted without an accepted question."
     )

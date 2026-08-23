@@ -637,6 +637,126 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIn("european cup", feedback[0])
         self.assertNotIn("stadiums", feedback[0])
 
+    def test_candidate_lane_rotation_skips_a_saturated_lane(self) -> None:
+        recent = [{"tags": ["rules"]} for _ in range(5)]
+
+        lane = daily_quiz.choose_topic_lane(
+            self.conn,
+            subject="football",
+            difficulty="medium",
+            batch_number=2,
+            profile_path="",
+            recent_questions_for_topics=recent,
+        )
+
+        self.assertNotEqual(lane, "competitions and rules")
+
+    def test_candidate_hook_must_be_a_factual_statement(self) -> None:
+        candidate = {
+            "answer": "Example Answer",
+            "hook": "Which answer was connected to this documented public milestone?",
+            "topic_lane": "world history incidents",
+            "era": "twentieth century",
+            "region": "Europe",
+            "tags": ["documented event", "public milestone"],
+            "evidence_query": "Example Answer documented public milestone",
+        }
+
+        validated, reason = daily_quiz.validate_candidate(
+            candidate,
+            topic_lane="world history incidents",
+        )
+
+        self.assertIsNone(validated)
+        self.assertIn("factual statement", reason)
+
+    def test_candidate_pipeline_drains_persisted_batch_before_discovery(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        for index in range(5):
+            answer = f"Persisted Answer {index}"
+            daily_quiz.insert_candidate(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="medium",
+                batch_number=1,
+                candidate_index=index + 1,
+                provider="seed",
+                generation_mode="normal",
+                candidate={
+                    "answer": answer,
+                    "hook": (
+                        f"A distinct documented incident number {index} connects {answer} "
+                        "to a memorable competition milestone."
+                    ),
+                    "topic_lane": "famous incidents and matches",
+                    "era": "twentieth century",
+                    "region": "Europe",
+                    "tags": ["documented incident", f"milestone-{index}"],
+                    "evidence_query": f"{answer} documented competition milestone {index}",
+                },
+                status="eligible",
+                score=10 - index,
+            )
+        provider = CandidateProvider()
+        unsupported = [
+            {
+                "title": "Unrelated source",
+                "source_name": "example.edu",
+                "source_url": "https://example.edu/unrelated",
+                "tier": "primary",
+                "snippet": "This source concerns an unrelated subject.",
+                "excerpt": "No proposed answer or hook is discussed.",
+                "query": "unrelated",
+            }
+        ]
+        evidence_calls = 0
+
+        def evidence_for_probe(
+            probe: dict[str, object], *, config: daily_quiz.QuizConfig
+        ) -> list[dict[str, str]]:
+            nonlocal evidence_calls
+            evidence_calls += 1
+            if evidence_calls <= 3:
+                return unsupported
+            return supporting_evidence(probe)
+
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=8,
+            candidate_batches_per_slot=3,
+        )
+        with patch(
+            "daily_quiz.configured_question_evidence", side_effect=evidence_for_probe
+        ):
+            first = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="medium",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+            second = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="medium",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+
+        self.assertIsNone(first)
+        self.assertTrue(second)
+        self.assertEqual(provider.discovery_calls, 0)
+        self.assertEqual(provider.composition_calls, 1)
+
     def test_candidate_feedback_summarizes_every_rejected_answer_in_run(self) -> None:
         target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
         for index in range(12):

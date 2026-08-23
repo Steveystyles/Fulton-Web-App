@@ -40,6 +40,37 @@ PRIMARY_SOURCE_HOSTS = (
     "si.edu",
 )
 
+GOVERNMENT_SOURCE_SUFFIXES = (
+    ".gov",
+    ".gov.uk",
+    ".gov.au",
+    ".gov.br",
+    ".gov.in",
+    ".gov.nz",
+    ".gov.sg",
+    ".gov.za",
+    ".govt.nz",
+    ".gc.ca",
+    ".go.jp",
+    ".go.kr",
+    ".gob.mx",
+    ".gouv.fr",
+    ".bund.de",
+    ".admin.ch",
+    ".europa.eu",
+)
+
+ACADEMIC_SOURCE_SUFFIXES = (
+    ".edu",
+    ".edu.au",
+    ".edu.cn",
+    ".edu.sg",
+    ".ac.uk",
+    ".ac.jp",
+    ".ac.nz",
+    ".ac.za",
+)
+
 REPUTABLE_SOURCE_HOSTS = (
     "abc.net.au",
     "apnews.com",
@@ -419,7 +450,9 @@ def blocked_source(url: str) -> bool:
 def source_tier(url: str) -> str:
     host = source_host(url)
     if (
-        host.endswith((".gov", ".gov.uk", ".edu", ".ac.uk", ".museum"))
+        host.endswith(
+            (*GOVERNMENT_SOURCE_SUFFIXES, *ACADEMIC_SOURCE_SUFFIXES, ".museum")
+        )
         or any(host == item or host.endswith(f".{item}") for item in PRIMARY_SOURCE_HOSTS)
     ):
         return "primary"

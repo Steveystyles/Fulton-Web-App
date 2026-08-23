@@ -35,6 +35,21 @@ class QuizEvidenceTests(unittest.TestCase):
             "primary",
         )
 
+    def test_international_government_and_academic_hosts_are_primary_sources(self) -> None:
+        for url in (
+            "https://www.tajmahal.gov.in/history",
+            "https://www.kantei.go.jp/policy",
+            "https://www.education.gov.au/report",
+            "https://www.u-tokyo.ac.jp/research",
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(quiz_evidence.source_tier(url), "primary")
+
+        self.assertEqual(
+            quiz_evidence.source_tier("https://gov.in.example.com/claim"),
+            "other",
+        )
+
     def test_institution_words_in_untrusted_hostnames_do_not_grant_primary_rank(self) -> None:
         for host in (
             "fake-museum.example",
