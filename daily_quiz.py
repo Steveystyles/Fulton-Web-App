@@ -1398,6 +1398,35 @@ def verification_schema() -> dict[str, Any]:
 
 
 def subject_prompt_guidance(subject: str, difficulty: str) -> str:
+    if subject == "general_knowledge":
+        lines = [
+            "General-knowledge guidance:",
+            "- Prefer durable, verifiable facts with a memorable event, discovery, custom, consequence, or human story.",
+            "- Avoid bland definitions, textbook vocabulary tests, arbitrary measurements, and facts whose only appeal is obscurity.",
+            "- Reject disputed superlatives or records unless a reputable source explicitly defines and supports the scope.",
+        ]
+        if difficulty == "easy":
+            lines.extend(
+                [
+                    "- Easy questions should be familiar to a broad adult audience or readily inferable from the hook and choices.",
+                    "- The fact must still be worth retelling; do not use a routine capital, flag, definition, or basic school-trivia prompt.",
+                ]
+            )
+        elif difficulty == "medium":
+            lines.extend(
+                [
+                    "- Medium questions should reward an informed adult or allow a plausible deduction from a specific connection.",
+                    "- Avoid direct recall of a universally famous record-holder or term; include a less obvious but useful connection.",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "- Hard questions should be specialist but fair: the hook must be distinctive, documented, and interesting even when the answer is not known.",
+                    "- Avoid foundational textbook concepts presented as hard and avoid microscopic dates, terminology, or statistics with no story.",
+                ]
+            )
+        return "\n".join(lines)
     if subject != "football":
         return ""
     lines = [
@@ -1463,6 +1492,8 @@ Rules:
 - Each hook must be one specific, stable, memorable factual connection to its answer.
 - Prefer facts a player could enjoy retelling; avoid bland identity, nickname-only, current-form, or administrative trivia.
 - The hook must be sufficiently precise to support exactly one answer.
+- Propose only claims that a reputable source is likely to state explicitly; do not infer a record, uniqueness claim, motive, ritual, or causal link.
+- Treat the requested difficulty as a property of the hook itself, not wording to add later.
 - The evidence query must contain the exact answer text plus the central event, record, custom, discovery, or connection; copy the answer into it verbatim.
 - Do not write choices, explanations, or complete questions.
 - Produce genuinely different answers and hooks within the batch.
@@ -1508,8 +1539,10 @@ Evidence:
 Rules:
 - The correct_answer must be exactly {json.dumps(candidate['answer'])}; never replace or broaden it.
 - The question, explanation, and interesting_reason must use the approved hook and introduce no unsupported central claim.
+- Do not add a date, action, motive, superlative, ritual, or descriptive detail unless it appears explicitly in the supplied evidence.
 - Include exactly four plausible, distinct choices and include the exact correct answer once.
 - The question must end with a question mark and have exactly one defensible answer.
+- Keep the question at or below 200 characters so it remains inside the 220-character validation limit.
 - Match the requested difficulty without obscurity, ambiguity, or a giveaway distractor set.
 - Keep the explanation concise and make interesting_reason a specific supported fact.
 
@@ -2812,18 +2845,43 @@ def candidate_local_rejection(
         if previous
     ):
         return "Candidate hook duplicates or closely matches a previous hook."
-    topic_counts: Counter[str] = Counter()
-    for question in recent_questions_for_topics:
-        topic_counts.update(
-            normalize_text(tag)
-            for tag in question.get("tags", [])
-            if not is_generic_topic_tag(normalize_text(tag))
-        )
+    topic_counts = recent_topic_counts(recent_questions_for_topics)
     for tag in candidate["tags"]:
         normalized = normalize_text(tag)
         if not is_generic_topic_tag(normalized) and topic_counts[normalized] >= 5:
             return f"Topic tag {tag!r} has appeared too often recently."
     return None
+
+
+def recent_topic_counts(
+    questions: list[dict[str, Any]],
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for question in questions:
+        counts.update(
+            normalize_text(tag)
+            for tag in question.get("tags", [])
+            if not is_generic_topic_tag(normalize_text(tag))
+        )
+    return counts
+
+
+def saturated_topic_feedback(
+    questions: list[dict[str, Any]],
+    *,
+    limit: int = 24,
+) -> list[str]:
+    saturated = [
+        tag
+        for tag, count in recent_topic_counts(questions).most_common()
+        if count >= 5
+    ][:limit]
+    if not saturated:
+        return []
+    return [
+        "Avoid these recently saturated topic tags and close variants in this slot: "
+        + json.dumps(saturated, ensure_ascii=True)
+    ]
 
 
 def candidate_evidence_probe(
@@ -3397,6 +3455,7 @@ def generate_slot_two_stage(
             subject=subject,
             difficulty=difficulty,
         ),
+        saturated_topic_feedback(topic_recent),
     )
     stages = quality_provider_stages(provider)
     provider_weights = learning_candidate_provider_weights(

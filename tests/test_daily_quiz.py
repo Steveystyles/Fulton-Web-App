@@ -611,6 +611,32 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(probe["evidence_query"], candidate["evidence_query"])
 
+    def test_candidate_prompt_defines_general_knowledge_difficulty(self) -> None:
+        prompt = daily_quiz.candidate_discovery_prompt(
+            "general_knowledge",
+            "hard",
+            "scientific discoveries",
+            8,
+            [],
+            recovery_mode=False,
+        )
+
+        self.assertIn("Hard questions should be specialist but fair", prompt)
+        self.assertIn("foundational textbook concepts", prompt)
+        self.assertIn("reputable source is likely to state explicitly", prompt)
+
+    def test_candidate_feedback_identifies_saturated_topics(self) -> None:
+        recent = [
+            {"tags": ["European Cup", "football"]}
+            for _ in range(5)
+        ] + [{"tags": ["stadiums"]}]
+
+        feedback = daily_quiz.saturated_topic_feedback(recent)
+
+        self.assertEqual(len(feedback), 1)
+        self.assertIn("european cup", feedback[0])
+        self.assertNotIn("stadiums", feedback[0])
+
     def test_candidate_feedback_summarizes_every_rejected_answer_in_run(self) -> None:
         target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
         for index in range(12):
