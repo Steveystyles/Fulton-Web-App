@@ -1429,6 +1429,8 @@ def subject_prompt_guidance(subject: str, difficulty: str) -> str:
                 "- Hard football questions should be specialist but still fair and well documented.",
                 "- Prefer niche-but-verifiable history, tactics, or tournament trivia over microscopic dates or administrative trivia.",
                 "- Start from a documented event, incident, rule, tactical innovation, or explicitly published record; do not manufacture a statistical superlative to make a question hard.",
+                "- Avoid events from the latest three calendar years; they are recent-news recall rather than durable hard trivia.",
+                "- Avoid a bare 'who holds this record?' hook when the record is widely publicized; require a less obvious but still inferable documented connection.",
                 "- Do not use 'only', 'most', 'fewest', or similar uniqueness claims assembled from exclusions, cross-era format changes, or an inferred comparison of tournament records.",
             ]
         )
@@ -2775,6 +2777,9 @@ def recent_candidate_rejection_feedback(
 def candidate_local_rejection(
     candidate: dict[str, Any],
     *,
+    quiz_date: str,
+    subject: str,
+    difficulty: str,
     accepted_answer_keys: set[str],
     current_answer_keys: set[str],
     previous_hooks: list[str],
@@ -2784,6 +2789,17 @@ def candidate_local_rejection(
 ) -> str | None:
     answer_key = normalize_answer(candidate["answer"])
     hook_key = normalize_text(candidate["hook"])
+    if subject == "football" and difficulty == "hard":
+        quiz_year = int(valid_quiz_date(quiz_date)[:4])
+        hook_years = {
+            int(year)
+            for year in re.findall(r"\b(?:19[0-9]{2}|20[0-9]{2})\b", candidate["hook"])
+        }
+        if any(year >= quiz_year - 2 for year in hook_years):
+            return (
+                "Hard football hook relies on an event from the latest three "
+                "calendar years."
+            )
     if answer_key in current_answer_keys:
         return "Correct answer already appears in this quiz set."
     if answer_key in accepted_answer_keys:
@@ -3308,13 +3324,14 @@ def generate_slot_two_stage(
         else config.answer_embargo_days
     )
 
-    def call_budget_exhausted(action: str) -> bool:
+    def call_budget_exhausted(action: str, *, required_calls: int = 1) -> bool:
         call_count = candidate_generation_call_count(conn, quiz_date)
-        if call_count < config.candidate_max_calls_per_quiz:
+        if call_count + required_calls <= config.candidate_max_calls_per_quiz:
             return False
         log(
             f"Deferred {subject} / {difficulty}; candidate call budget exhausted "
-            f"({call_count}/{config.candidate_max_calls_per_quiz}) before {action}."
+            f"({call_count}/{config.candidate_max_calls_per_quiz}) before {action}; "
+            f"{required_calls} call(s) are required."
         )
         return True
 
@@ -3623,14 +3640,40 @@ def generate_slot_two_stage(
                 break
         return False
 
+    def evaluate_rows_with_provider_switch(
+        rows: list[sqlite3.Row], stage_index: int
+    ) -> bool | None:
+        pool = sorted(
+            rows, key=lambda item: (-float(item["score"]), int(item["id"]))
+        )[:3]
+        next_stage = stage_index
+        while pool:
+            result = evaluate_rows(pool, next_stage)
+            if result is not False:
+                return result
+            pool_ids = [int(row["id"]) for row in pool]
+            placeholders = ",".join("?" for _ in pool_ids)
+            pool = conn.execute(
+                f"""
+                SELECT * FROM daily_quiz_candidates
+                WHERE id IN ({placeholders}) AND status IN ('eligible', 'verified')
+                ORDER BY score DESC, id
+                """,
+                pool_ids,
+            ).fetchall()
+            next_stage += 1
+        return False
+
     resumable = [row for row in existing_rows if row["status"] in {"eligible", "verified"}]
     if resumable:
-        result = evaluate_rows(resumable, int(resumable[0]["batch_number"]) - 1)
+        result = evaluate_rows_with_provider_switch(
+            resumable, int(resumable[0]["batch_number"]) - 1
+        )
         if result is not False:
             return result
 
     for _ in range(config.candidate_batches_per_slot):
-        if call_budget_exhausted("candidate discovery"):
+        if call_budget_exhausted("candidate discovery and composition", required_calls=2):
             return None
         batch_number = next_candidate_batch_number(
             conn,
@@ -3760,6 +3803,9 @@ def generate_slot_two_stage(
                 continue
             rejection = candidate_local_rejection(
                 candidate,
+                quiz_date=quiz_date,
+                subject=subject,
+                difficulty=difficulty,
                 accepted_answer_keys=accepted_answer_keys,
                 current_answer_keys=current_answer_keys,
                 previous_hooks=previous_hooks,
@@ -3802,7 +3848,7 @@ def generate_slot_two_stage(
         if not inserted:
             feedback.append("The candidate batch contained no locally eligible ideas.")
             continue
-        result = evaluate_rows(inserted, stage_index)
+        result = evaluate_rows_with_provider_switch(inserted, stage_index)
         if result is not False:
             return result
     log(

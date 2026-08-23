@@ -392,6 +392,50 @@ class VerifierUnavailableCandidateProvider(CandidateProvider):
         raise RuntimeError("Gemini request failed with HTTP 429.")
 
 
+class RejectingCriticCandidateProvider(CandidateProvider):
+    def critique_question(self, **kwargs: object) -> dict[str, object]:
+        critic = super().critique_question(**kwargs)
+        critic["passed"] = False
+        critic["scores"] = {**critic["scores"], "difficulty_match": 4}
+        critic["failure_reasons"] = ["The candidate is too easy for hard difficulty."]
+        critic["feedback_to_generator"] = "Use a less obvious documented connection."
+        return critic
+
+
+class VariedCandidateProvider(CandidateProvider):
+    def discover_candidates(
+        self,
+        *,
+        subject: str,
+        difficulty: str,
+        topic_lane: str,
+        batch_size: int,
+        feedback: list[str],
+        **_: object,
+    ) -> dict[str, object]:
+        self.discovery_calls += 1
+        self.discovery_feedback_calls.append(list(feedback))
+        hooks = (
+            "A documented stadium ceremony linked {answer} to an unusual public milestone.",
+            "Archived tactical reports credit {answer} with a formation that changed later coaching.",
+            "A competition incident involving {answer} led administrators to rewrite a formal rule.",
+        )
+        return {
+            "candidates": [
+                {
+                    "answer": f"Distinct Answer {index}",
+                    "hook": hooks[index].format(answer=f"Distinct Answer {index}"),
+                    "topic_lane": topic_lane,
+                    "era": "twentieth century",
+                    "region": "Europe",
+                    "tags": [topic_lane, f"distinct-event-{index}"],
+                    "evidence_query": f"Distinct Answer {index} documented event",
+                }
+                for index in range(batch_size)
+            ]
+        }
+
+
 class DailyQuizTests(unittest.TestCase):
     def test_quiz_diagnostic_retention_prunes_age_and_row_overflow_only(self) -> None:
         conn = sqlite3.connect(":memory:")
@@ -642,13 +686,13 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIsNone(first)
         self.assertIsNone(second)
-        self.assertEqual(provider.discovery_calls, 1)
+        self.assertEqual(provider.discovery_calls, 0)
         self.assertEqual(provider.composition_calls, 0)
         self.assertEqual(
             daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
-            1,
+            0,
         )
-        self.assertTrue(any("call budget exhausted (1/1)" in entry for entry in logs))
+        self.assertTrue(any("2 call(s) are required" in entry for entry in logs))
 
         self.conn.execute(
             "DELETE FROM daily_quiz_candidates WHERE quiz_set_id = ?", (target["id"],)
@@ -657,6 +701,64 @@ class DailyQuizTests(unittest.TestCase):
             daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
             0,
         )
+
+    def test_candidate_pipeline_rejects_recent_hard_football_hook_locally(self) -> None:
+        candidate = {
+            "answer": "Recent Team",
+            "hook": "The national team recorded a widely reported first competitive win in 2024.",
+            "topic_lane": "documented records",
+            "era": "contemporary",
+            "region": "Europe",
+            "tags": ["international football", "documented record"],
+            "evidence_query": "Recent Team first competitive win 2024",
+        }
+
+        reason = daily_quiz.candidate_local_rejection(
+            candidate,
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="hard",
+            accepted_answer_keys=set(),
+            current_answer_keys=set(),
+            previous_hooks=[],
+            failed_answer_keys=set(),
+            failed_hooks=[],
+            recent_questions_for_topics=[],
+        )
+
+        self.assertIn("latest three calendar years", str(reason))
+
+    def test_candidate_pipeline_tries_third_candidate_after_provider_switch(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        composer = VariedCandidateProvider("composer")
+        rejecting_critic = RejectingCriticCandidateProvider("rejecting-critic")
+        recovered = CandidateProvider("recovered")
+        chain = daily_quiz.FallbackQuizProvider([composer, rejecting_critic, recovered])
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=3,
+            candidate_batches_per_slot=1,
+            candidate_max_calls_per_quiz=6,
+        )
+        logs: list[str] = []
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="hard",
+            provider=chain,
+            config=pipeline_config,
+            log=logs.append,
+        )
+
+        self.assertTrue(result, logs)
+        self.assertEqual(composer.composition_calls, 2)
+        self.assertEqual(rejecting_critic.critic_calls, 2)
+        self.assertEqual(rejecting_critic.composition_calls, 1)
+        self.assertEqual(recovered.critic_calls, 1)
 
     def test_candidate_pipeline_filters_embargoed_answer_before_composition(self) -> None:
         old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-18")

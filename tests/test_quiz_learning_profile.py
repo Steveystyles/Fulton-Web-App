@@ -38,6 +38,42 @@ class QuizLearningProfileTests(unittest.TestCase):
         self.assertEqual(profile["negative_reason_counts"]["review_failure"], 1)
         self.assertEqual(profile["negative_reason_counts"]["low_review_score"], 1)
 
+    def test_build_profile_adds_slot_specific_guidance_from_failed_attempts(self) -> None:
+        records = [
+            {
+                "feedback_to_generator": (
+                    "The question relies on very recent information and the difficulty "
+                    "is too low for a hard classification."
+                ),
+                "metadata": {
+                    "reason": "daily_quiz_attempt_failure",
+                    "subject": "football",
+                    "difficulty": "hard",
+                },
+            },
+            {
+                "feedback_to_generator": (
+                    "The claim is factually ambiguous and technically disputed because "
+                    "the appearances are not officially recognized."
+                ),
+                "metadata": {
+                    "reason": "daily_quiz_attempt_failure",
+                    "subject": "football",
+                    "difficulty": "hard",
+                },
+            },
+        ]
+
+        profile = builder.build_profile(records, source=Path("attempts.jsonl"))
+
+        hard_feedback = profile["feedback_by_slot"]["football/hard"]
+        self.assertTrue(any("recent-news recall" in item for item in hard_feedback))
+        self.assertTrue(any("disputed classifications" in item for item in hard_feedback))
+        self.assertEqual(
+            profile["slot_pattern_counts"]["football/hard"]["recent_news_not_durable"],
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

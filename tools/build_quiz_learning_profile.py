@@ -38,6 +38,35 @@ PATTERNS = (
         re.compile(r"needs? .*verification|answer appears wrong|incorrect", re.IGNORECASE),
         "Prefer questions with a clear verification source and one answer that exactly matches one of the choices.",
     ),
+    (
+        "recent_news_not_durable",
+        re.compile(
+            r"very recent information|current events?|latest season|recent news",
+            re.IGNORECASE,
+        ),
+        "Avoid recent-news recall and events from the latest three calendar years; use durable history whose significance is already established.",
+    ),
+    (
+        "disputed_or_ambiguous_fact",
+        re.compile(
+            r"factually ambiguous|technically disputed|misleading|not officially recognized",
+            re.IGNORECASE,
+        ),
+        "Avoid disputed classifications and trivia that changes under official versus unofficial definitions; choose a hook with one uncontested answer.",
+    ),
+    (
+        "hard_question_too_easy",
+        re.compile(
+            r"too easy for (?:a |the )?['\"]?hard|difficulty is too low for (?:a |the )?['\"]?hard",
+            re.IGNORECASE,
+        ),
+        "For hard questions, avoid famous one-line records and direct nickname recall; require a less obvious but fair documented connection.",
+    ),
+    (
+        "unsupported_embellishment",
+        re.compile(r"not supported by (?:the )?(?:provided )?evidence", re.IGNORECASE),
+        "Do not embellish a supported core fact with an unsupported cause, mechanism, superlative, or incidental detail.",
+    ),
 )
 
 POSITIVE_GUIDANCE = (
@@ -72,6 +101,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def build_profile(records: list[dict[str, Any]], *, source: Path) -> dict[str, Any]:
     pattern_counts: Counter[str] = Counter()
+    slot_pattern_counts: dict[str, Counter[str]] = {}
     reason_counts: Counter[str] = Counter()
     status_counts: Counter[str] = Counter()
 
@@ -85,6 +115,11 @@ def build_profile(records: list[dict[str, Any]], *, source: Path) -> dict[str, A
         for key, pattern, _guidance in PATTERNS:
             if pattern.search(feedback):
                 pattern_counts[key] += 1
+                subject = str(metadata.get("subject") or "").strip()
+                difficulty = str(metadata.get("difficulty") or "").strip()
+                if subject and difficulty:
+                    slot = f"{subject}/{difficulty}"
+                    slot_pattern_counts.setdefault(slot, Counter())[key] += 1
 
     feedback = list(POSITIVE_GUIDANCE)
     for key, _pattern, guidance in PATTERNS:
@@ -92,14 +127,25 @@ def build_profile(records: list[dict[str, Any]], *, source: Path) -> dict[str, A
         if count:
             feedback.append(f"{guidance} Seen in {count} reviewed negative examples.")
 
+    feedback_by_slot: dict[str, list[str]] = {"football/*": feedback[:8]}
+    guidance_by_key = {key: guidance for key, _pattern, guidance in PATTERNS}
+    for slot, counts in sorted(slot_pattern_counts.items()):
+        slot_feedback = [
+            f"{guidance_by_key[key]} Seen in {count} failed attempts for this slot."
+            for key, count in counts.most_common()
+        ]
+        if slot_feedback:
+            feedback_by_slot[slot] = slot_feedback[:8]
+
     return {
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source_negative_file": str(source),
         "negative_count": len(records),
-        "feedback_by_slot": {
-            "football/*": feedback[:8],
-        },
+        "feedback_by_slot": feedback_by_slot,
         "pattern_counts": dict(pattern_counts),
+        "slot_pattern_counts": {
+            slot: dict(counts) for slot, counts in sorted(slot_pattern_counts.items())
+        },
         "negative_reason_counts": dict(status_counts),
         "top_feedback": [
             {"feedback": text, "count": count}
