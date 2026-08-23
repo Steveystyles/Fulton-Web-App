@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import hashlib
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -1505,6 +1506,42 @@ def recent_cutoff(puzzle_date: str) -> str:
     return (current - timedelta(days=RECENT_USE_DAYS)).isoformat()
 
 
+def canonical_place_key(value: object | None) -> str:
+    decomposed = unicodedata.normalize("NFKD", str(value or "").casefold())
+    return "".join(
+        character
+        for character in decomposed
+        if character.isalnum() and not unicodedata.combining(character)
+    )
+
+
+def recent_place_identity_keys(
+    conn: sqlite3.Connection,
+    puzzle_date: str,
+) -> tuple[set[int], set[str]]:
+    rows = conn.execute(
+        """
+        SELECT DISTINCT map_place_pool.id, map_place_pool.canonical_name
+        FROM daily_map_levels
+        INNER JOIN daily_map_puzzles
+            ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+        INNER JOIN map_place_pool
+            ON map_place_pool.id = daily_map_levels.place_id
+        WHERE daily_map_puzzles.puzzle_date >= ?
+          AND daily_map_puzzles.puzzle_date <= ?
+        """,
+        (recent_cutoff(puzzle_date), puzzle_date),
+    ).fetchall()
+    return (
+        {int(row["id"]) for row in rows},
+        {
+            canonical_place_key(row["canonical_name"])
+            for row in rows
+            if canonical_place_key(row["canonical_name"])
+        },
+    )
+
+
 def select_daily_place(
     conn: sqlite3.Connection,
     puzzle_date: str,
@@ -1539,7 +1576,13 @@ def select_daily_place(
             puzzle_date,
         ),
     ).fetchall()
-    rows = [row for row in rows if row_has_playable_map_guidance(row)]
+    _, recent_names = recent_place_identity_keys(conn, puzzle_date)
+    rows = [
+        row
+        for row in rows
+        if row_has_playable_map_guidance(row)
+        and canonical_place_key(row["canonical_name"]) not in recent_names
+    ]
     return best_quality_place(rows, puzzle_date=puzzle_date)
 
 
@@ -1589,6 +1632,7 @@ def generate_daily_map_game(
     preferred_place_id: int | None = None,
     required_place_type: str | None = None,
     require_current_profile_for_qa: bool = True,
+    allow_recent_preferred_place: bool = False,
     log: Any | None = None,
 ) -> dict[str, Any]:
     puzzle_date = valid_game_date(puzzle_date)
@@ -1668,6 +1712,21 @@ def generate_daily_map_game(
         if log is not None:
             log(reason)
         return puzzle_status(conn, puzzle_date)
+
+    if preferred_place_id is not None and not allow_recent_preferred_place:
+        recent_ids, recent_names = recent_place_identity_keys(conn, puzzle_date)
+        if (
+            int(place["id"]) in recent_ids
+            or canonical_place_key(place["canonical_name"]) in recent_names
+        ):
+            reason = (
+                f"Requested map place {place['canonical_name']} was already used "
+                f"within the {RECENT_USE_DAYS}-day repeat embargo."
+            )
+            set_puzzle_status(conn, puzzle_date, "failed", failure_reason=reason)
+            if log is not None:
+                log(reason)
+            return puzzle_status(conn, puzzle_date)
 
     now = utc_now()
     difficulty = place["difficulty"]

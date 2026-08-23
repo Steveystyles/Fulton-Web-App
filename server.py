@@ -3924,6 +3924,7 @@ def generate_daily_map_game_for_date(
             puzzle_date=normalized_date,
             force=force,
             preferred_place_id=preferred_place_id,
+            allow_recent_preferred_place=preferred_place_id is not None,
             log=lambda message: safe_log(f"Daily map game: {message}"),
         )
 

@@ -359,7 +359,7 @@ def candidate_shortlist(
     excluded_names: set[str] | None = None,
     required_place_type: str | None = None,
 ) -> list[dict[str, Any]]:
-    excluded = recent_place_ids(conn, puzzle_date)
+    excluded, recent_names = daily_map_game.recent_place_identity_keys(conn, puzzle_date)
     explicitly_excluded_names = {
         str(name).strip().casefold()
         for name in (excluded_names or set())
@@ -392,7 +392,11 @@ def candidate_shortlist(
             continue
         if canonical_name in explicitly_excluded_names:
             continue
-        if int(row["id"]) in excluded or daily_map_game.place_is_explicitly_excluded(row):
+        if (
+            int(row["id"]) in excluded
+            or daily_map_game.canonical_place_key(row["canonical_name"]) in recent_names
+            or daily_map_game.place_is_explicitly_excluded(row)
+        ):
             continue
         if required_type and str(row["place_type"]).strip().casefold() != required_type:
             continue

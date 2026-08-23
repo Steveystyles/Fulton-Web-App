@@ -90,6 +90,24 @@ class DailyMapGameTests(unittest.TestCase):
         daily_map_game.set_puzzle_status(self.conn, puzzle_date, "published")
         return self.first_level(puzzle_date)
 
+    def duplicate_place(self, name: str, *, slug: str, canonical_name: str) -> int:
+        source = self.conn.execute(
+            "SELECT * FROM map_place_pool WHERE canonical_name = ?",
+            (name,),
+        ).fetchone()
+        self.assertIsNotNone(source)
+        values = dict(source)
+        values.pop("id")
+        values["slug"] = slug
+        values["canonical_name"] = canonical_name
+        columns = list(values)
+        placeholders = ", ".join("?" for _ in columns)
+        cursor = self.conn.execute(
+            f"INSERT INTO map_place_pool ({', '.join(columns)}) VALUES ({placeholders})",
+            [values[column] for column in columns],
+        )
+        return int(cursor.lastrowid)
+
     def snap_selection(
         self,
         level: sqlite3.Row,
@@ -379,6 +397,45 @@ class DailyMapGameTests(unittest.TestCase):
         selected = daily_map_game.select_daily_place(self.conn, "2026-08-09")
 
         self.assertIsNone(selected)
+
+    def test_daily_selection_blocks_duplicate_canonical_place_name(self) -> None:
+        install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
+        duplicate_id = self.duplicate_place(
+            "Estádio do Dragão",
+            slug="duplicate-dragao",
+            canonical_name="Estadio do Dragao",
+        )
+        self.publish_named_level("Estádio do Dragão", puzzle_date="2026-08-01")
+
+        selected = daily_map_game.select_daily_place(
+            self.conn,
+            "2026-08-02",
+            required_place_type="stadium",
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertNotEqual(int(selected["id"]), duplicate_id)
+
+    def test_preferred_place_publication_enforces_repeat_embargo(self) -> None:
+        install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
+        place_id = int(
+            self.conn.execute(
+                "SELECT id FROM map_place_pool WHERE canonical_name = ?",
+                ("Estádio do Dragão",),
+            ).fetchone()["id"]
+        )
+        self.publish_named_level("Estádio do Dragão", puzzle_date="2026-08-01")
+
+        result = daily_map_game.generate_daily_map_game(
+            self.conn,
+            puzzle_date="2026-08-02",
+            force=True,
+            preferred_place_id=place_id,
+            require_current_profile_for_qa=False,
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("repeat embargo", result["failureReason"])
 
     def test_qa_generation_rejects_legacy_place_not_reviewed_under_current_profile(self) -> None:
         with patch.object(
