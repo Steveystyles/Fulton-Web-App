@@ -175,6 +175,24 @@ class QuizEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence[1]["tier"], "reputable")
         self.assertTrue(quiz_evidence.precheck_question_evidence(question, evidence)["passed"])
 
+    def test_wikipedia_oversized_response_becomes_a_skippable_search_failure(self) -> None:
+        with (
+            patch(
+                "quiz_evidence.fetch_text",
+                side_effect=quiz_evidence.ResponseTooLarge(
+                    "Upstream response exceeds the allowed size."
+                ),
+            ),
+            self.assertRaisesRegex(
+                quiz_evidence.EvidenceSearchUnavailable,
+                "response exceeds the allowed size",
+            ),
+        ):
+            quiz_evidence.wikipedia_api_payload(
+                {"action": "parse", "page": "Oversized article"},
+                timeout_sec=5,
+            )
+
     def test_interesting_reason_claims_are_included_in_the_risk_profile(self) -> None:
         question = {
             "question": "Which national team moved from Oceania to Asia?",

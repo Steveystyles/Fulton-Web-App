@@ -996,6 +996,74 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(provider.composition_calls, 0)
         self.assertEqual(provider.critic_calls, 0)
 
+    def test_candidate_pipeline_rejects_oversized_evidence_candidate(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        provider = DiscoveryUnavailableCandidateProvider("unavailable")
+        candidate = {
+            "answer": "Oversized Evidence Answer",
+            "hook": (
+                "A documented incident identifies this answer through a specific "
+                "and memorable historical event."
+            ),
+            "topic_lane": "famous incidents and matches",
+            "era": "twentieth century",
+            "region": "Europe",
+            "tags": ["documented incident", "historical event"],
+            "evidence_query": "Oversized Evidence Answer documented incident",
+        }
+        daily_quiz.insert_candidate(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="hard",
+            batch_number=1,
+            candidate_index=1,
+            provider="seed",
+            generation_mode="normal",
+            candidate=candidate,
+            status="eligible",
+            score=10,
+        )
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batches_per_slot=1,
+        )
+        oversized = daily_quiz.EvidenceSearchUnavailable(
+            "Wikimedia evidence search failed: "
+            "Upstream response exceeds the allowed size."
+        )
+
+        with patch(
+            "daily_quiz.configured_question_evidence",
+            side_effect=oversized,
+        ) as evidence_search:
+            result = daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=target["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="hard",
+                provider=provider,
+                config=pipeline_config,
+                log=lambda _: None,
+            )
+
+        self.assertIsNone(result)
+        candidate_row = self.conn.execute(
+            """
+            SELECT status, rejection_stage, failure_reason
+            FROM daily_quiz_candidates WHERE id = (
+                SELECT MIN(id) FROM daily_quiz_candidates
+            )
+            """
+        ).fetchone()
+        self.assertEqual(candidate_row["status"], "rejected")
+        self.assertEqual(candidate_row["rejection_stage"], "evidence")
+        self.assertIn("response exceeds the allowed size", candidate_row["failure_reason"])
+        self.assertEqual(evidence_search.call_count, 1)
+
     def test_candidate_pipeline_rejects_final_question_from_180_day_history(self) -> None:
         old_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-04-20")
         old_question = valid_question("football", "easy")
@@ -2227,6 +2295,47 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(payload["accepted_questions"], 0)
         self.assertTrue(payload["last_failure_transient"])
         self.assertIn("Evidence search unavailable", payload["last_failure_reason"])
+
+    def test_generation_continues_after_oversized_evidence_response(self) -> None:
+        evidence_calls = 0
+
+        def evidence_with_first_response_oversized(
+            question: dict[str, object], **_: object
+        ) -> list[dict[str, str]]:
+            nonlocal evidence_calls
+            evidence_calls += 1
+            if evidence_calls == 1:
+                raise daily_quiz.EvidenceSearchUnavailable(
+                    "Wikimedia evidence search failed: "
+                    "Upstream response exceeds the allowed size."
+                )
+            return supporting_evidence(question)
+
+        with patch(
+            "daily_quiz.collect_question_evidence",
+            side_effect=evidence_with_first_response_oversized,
+        ):
+            payload = daily_quiz.generate_daily_quiz(
+                self.conn,
+                quiz_date="2026-06-09",
+                config=config(max_attempts=2),
+                provider=PassingProvider("gemini"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(payload["status"], "published")
+        self.assertEqual(
+            daily_quiz.quiz_status(self.conn, "2026-06-09")["accepted_questions"],
+            6,
+        )
+        first_failure = self.conn.execute(
+            """
+            SELECT failure_reason FROM daily_quiz_attempts
+            WHERE quiz_date = ? AND passed = 0 ORDER BY id LIMIT 1
+            """,
+            ("2026-06-09",),
+        ).fetchone()
+        self.assertIn("response exceeds the allowed size", first_failure["failure_reason"])
 
     def test_generation_uses_wikipedia_when_openrouter_search_is_capped(self) -> None:
         evidence_config = daily_quiz.QuizConfig(

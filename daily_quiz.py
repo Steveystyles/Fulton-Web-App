@@ -3330,6 +3330,18 @@ def is_transient_provider_failure(reason: str) -> bool:
     )
 
 
+def is_deterministic_evidence_failure(reason: str) -> bool:
+    normalized = str(reason or "").casefold()
+    return any(
+        token in normalized
+        for token in (
+            "response exceeds the allowed size",
+            "compressed responses are not accepted",
+            "content-length is invalid",
+        )
+    )
+
+
 class ComposedQuestionProvider:
     def __init__(
         self,
@@ -3533,7 +3545,10 @@ def generate_slot_two_stage(
                 evidence = configured_question_evidence(probe, config=config)
             except Exception as error:
                 reason = f"Candidate evidence search unavailable: {error}"
-                if is_transient_provider_failure(reason):
+                if (
+                    is_transient_provider_failure(reason)
+                    and not is_deterministic_evidence_failure(reason)
+                ):
                     log(f"Deferred {subject} / {difficulty}: {reason}")
                     return None
                 update_candidate(
@@ -4217,9 +4232,20 @@ def generate_slot(
                     passed=False,
                     failure_reason=reason,
                 )
-                saw_transient_provider_failure = True
-                log(f"Deferred {subject} / {difficulty} attempt {attempt_number}: {reason}")
-                return None
+                if not is_deterministic_evidence_failure(reason):
+                    saw_transient_provider_failure = True
+                    log(
+                        f"Deferred {subject} / {difficulty} attempt "
+                        f"{attempt_number}: {reason}"
+                    )
+                    return None
+                saw_non_transient_failure = True
+                feedback.append(reason)
+                log(
+                    f"Rejected {subject} / {difficulty} attempt "
+                    f"{attempt_number}: {reason}"
+                )
+                continue
             except Exception as error:
                 reason = f"Evidence search unavailable: {error}"
                 save_attempt(
@@ -4236,9 +4262,20 @@ def generate_slot(
                     passed=False,
                     failure_reason=reason,
                 )
-                saw_transient_provider_failure = True
-                log(f"Deferred {subject} / {difficulty} attempt {attempt_number}: {reason}")
-                return None
+                if not is_deterministic_evidence_failure(reason):
+                    saw_transient_provider_failure = True
+                    log(
+                        f"Deferred {subject} / {difficulty} attempt "
+                        f"{attempt_number}: {reason}"
+                    )
+                    return None
+                saw_non_transient_failure = True
+                feedback.append(reason)
+                log(
+                    f"Rejected {subject} / {difficulty} attempt "
+                    f"{attempt_number}: {reason}"
+                )
+                continue
 
             precheck = precheck_question_evidence(validation.question, evidence)
             if not precheck.get("passed"):

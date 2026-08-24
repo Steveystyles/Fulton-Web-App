@@ -798,7 +798,13 @@ def wikipedia_api_payload(params: dict[str, Any], *, timeout_sec: int) -> dict[s
     url = f"{WIKIPEDIA_API_URL}?{urlencode(params)}"
     try:
         payload = json.loads(fetch_text(url, timeout_sec=timeout_sec))
-    except (TimeoutError, URLError, OSError, json.JSONDecodeError) as error:
+    except (
+        TimeoutError,
+        URLError,
+        OSError,
+        ResponseTooLarge,
+        json.JSONDecodeError,
+    ) as error:
         raise EvidenceSearchUnavailable(f"Wikimedia evidence search failed: {error}") from error
     if not isinstance(payload, dict):
         raise EvidenceSearchUnavailable("Wikimedia evidence search returned an invalid response.")
