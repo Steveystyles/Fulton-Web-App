@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -22,6 +23,9 @@ POWER_RECOVERY_SCRIPT = DEPLOY_DIR / "check-and-fix-after-power-outage.ps1"
 SET_GEMINI_SCRIPT = DEPLOY_DIR / "set-gemini-key.ps1"
 PROMO_COMPOSE_FILE = DEPLOY_DIR / "promo-test" / "compose.yaml"
 BUILD_WORKFLOW = PROJECT_DIR / ".github" / "workflows" / "build.yml"
+BANDIT_CONFIG = PROJECT_DIR / "bandit.yaml"
+BANDIT_BASELINE = PROJECT_DIR / "bandit-baseline.json"
+SAST_REQUIREMENTS = PROJECT_DIR / "requirements-sast.txt"
 
 SPEC = importlib.util.spec_from_file_location("backup_manager", DEPLOY_DIR / "backup_manager.py")
 assert SPEC is not None and SPEC.loader is not None
@@ -534,6 +538,7 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn('python-version: "3.12"', workflow)
         self.assertIn("gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7", workflow)
         self.assertNotIn("github/codeql-action", workflow)
+        self.assertIn("--require-hashes --only-binary=:all: -r requirements-sast.txt", workflow)
         self.assertIn("sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac", workflow)
         self.assertEqual(workflow.count("upload-artifact: false"), 2)
         smoke = workflow.index("Smoke-test the exact release digest")
@@ -545,6 +550,56 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("IMAGE_REF: ${{ steps.image.outputs.ref }}", smoke_block)
         self.assertIn("docker run -d", smoke_block)
         self.assertIn("/api/health", smoke_block)
+
+    def test_release_requires_fail_closed_python_sast(self) -> None:
+        workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+        sast_start = workflow.index("  sast:\n")
+        release_start = workflow.index("  release-image:\n")
+        sast_block = workflow[sast_start:release_start]
+        release_block = workflow[release_start:]
+
+        self.assertIn("requirements-sast.txt", sast_block)
+        self.assertIn("--require-hashes", sast_block)
+        self.assertIn("--only-binary=:all:", sast_block)
+        self.assertIn("-r . -c bandit.yaml", sast_block)
+        self.assertIn("--severity-level medium", sast_block)
+        self.assertIn("--confidence-level medium", sast_block)
+        self.assertIn("--baseline bandit-baseline.json", sast_block)
+        self.assertNotIn("continue-on-error", sast_block)
+        needs_block = release_block[release_block.index("    needs:\n") : release_block.index("    runs-on:")]
+        self.assertIn("      - sast\n", needs_block)
+
+    def test_sast_baseline_is_reviewed_and_cross_platform(self) -> None:
+        self.assertTrue(BANDIT_CONFIG.is_file())
+        requirements = SAST_REQUIREMENTS.read_text(encoding="utf-8")
+        self.assertIn("bandit==1.9.4", requirements)
+        self.assertEqual(requirements.count("--hash=sha256:"), 8)
+        baseline = json.loads(BANDIT_BASELINE.read_text(encoding="utf-8"))
+        results = baseline["results"]
+
+        self.assertEqual({result["issue_severity"] for result in results}, {"MEDIUM"})
+        self.assertEqual(
+            {result["test_id"] for result in results},
+            {"B108", "B310", "B314", "B608"},
+        )
+        normalized_findings = {
+            (
+                result["filename"].replace("\\", "/"),
+                result["test_id"],
+                result["issue_text"],
+                result["line_number"],
+            )
+            for result in results
+        }
+        self.assertEqual(len(normalized_findings), 41)
+        self.assertEqual(len(results), len(normalized_findings) * 2)
+
+    def test_workflow_actions_use_full_commit_pins(self) -> None:
+        workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+        references = re.findall(r"^\s*uses:\s+[^\s@]+@([^\s#]+)", workflow, re.MULTILINE)
+        self.assertGreater(len(references), 0)
+        for reference in references:
+            self.assertRegex(reference, r"^[0-9a-f]{40}$")
 
 
 if __name__ == "__main__":
