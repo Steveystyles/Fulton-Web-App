@@ -571,7 +571,18 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("-r . -c bandit.yaml", sast_block)
         self.assertIn("--severity-level medium", sast_block)
         self.assertIn("--confidence-level medium", sast_block)
+        self.assertIn('--format json --output "$report"', sast_block)
+        bandit_command = sast_block[
+            sast_block.index("python -m bandit") : sast_block.index("bandit_status=$?")
+        ]
+        self.assertNotIn("--baseline", bandit_command)
+        self.assertIn("bandit_status=$?", sast_block)
+        self.assertIn('"$bandit_status" -ne 0', sast_block)
+        self.assertIn('"$bandit_status" -ne 1', sast_block)
+        self.assertIn('[[ ! -s "$report" ]]', sast_block)
+        self.assertIn("python tools/check_bandit_baseline.py", sast_block)
         self.assertIn("--baseline bandit-baseline.json", sast_block)
+        self.assertIn('--current "$report"', sast_block)
         self.assertNotIn("continue-on-error", sast_block)
         needs_block = release_block[release_block.index("    needs:\n") : release_block.index("    runs-on:")]
         self.assertIn("      - sast\n", needs_block)
@@ -582,24 +593,69 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("bandit==1.9.4", requirements)
         self.assertEqual(requirements.count("--hash=sha256:"), 8)
         baseline = json.loads(BANDIT_BASELINE.read_text(encoding="utf-8"))
-        results = baseline["results"]
+        self.assertEqual(baseline["schema_version"], 1)
+        self.assertEqual(baseline["bandit_version"], "1.9.4")
+        scanned_files = baseline["scanned_files"]
+        findings = baseline["findings"]
 
-        self.assertEqual({result["issue_severity"] for result in results}, {"MEDIUM"})
+        self.assertEqual(scanned_files, sorted(set(scanned_files)))
+        excluded_directories = {
+            ".codex-logs",
+            ".git",
+            ".venv",
+            "__pycache__",
+            "dist",
+            "node_modules",
+            "tests",
+        }
+        production_python_files: set[str] = set()
+        for root, directories, filenames in os.walk(PROJECT_DIR):
+            directories[:] = [
+                name for name in directories if name not in excluded_directories
+            ]
+            root_path = Path(root)
+            for filename in filenames:
+                if filename.endswith(".py"):
+                    production_python_files.add(
+                        (root_path / filename).relative_to(PROJECT_DIR).as_posix()
+                    )
+        self.assertEqual(set(scanned_files), production_python_files)
+
+        self.assertEqual(len(findings), 41)
+        self.assertEqual({result["issue_severity"] for result in findings}, {"MEDIUM"})
         self.assertEqual(
-            {result["test_id"] for result in results},
+            {result["test_id"] for result in findings},
             {"B108", "B310", "B314", "B608"},
         )
-        normalized_findings = {
+        self.assertEqual(
+            {
+                level: sum(
+                    result["issue_confidence"] == level for result in findings
+                )
+                for level in {"HIGH", "MEDIUM"}
+            },
+            {"HIGH": 17, "MEDIUM": 24},
+        )
+        exact_sites = {
             (
-                result["filename"].replace("\\", "/"),
+                result["filename"],
                 result["test_id"],
-                result["issue_text"],
                 result["line_number"],
+                tuple(result["line_range"]),
+                result["col_offset"],
+                result["end_col_offset"],
+                result["code_sha256"],
             )
-            for result in results
+            for result in findings
         }
-        self.assertEqual(len(normalized_findings), 41)
-        self.assertEqual(len(results), len(normalized_findings) * 2)
+        self.assertEqual(len(exact_sites), len(findings))
+        self.assertTrue(
+            {finding["filename"] for finding in findings}.issubset(scanned_files)
+        )
+        for finding in findings:
+            self.assertNotIn("\\", finding["filename"])
+            self.assertFalse(finding["filename"].startswith("./"))
+            self.assertRegex(finding["code_sha256"], r"^[0-9a-f]{64}$")
 
     def test_workflow_actions_use_full_commit_pins(self) -> None:
         workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")

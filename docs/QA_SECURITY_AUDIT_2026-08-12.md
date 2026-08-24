@@ -51,7 +51,7 @@ deliberately excluded.
 | Map startup and performance | Starter rows no longer overwrite reviewed data during recurring initialization, geocoder activity is cached/rate-limited/concurrency-limited, and map snapping uses an indexed geographic prefilter before distance calculation. | Profile representative production data and monitor upstream geocoder policy/rate behavior. |
 | Auditability | Durable audit events cover authentication and sensitive administrative/content actions, with configurable age and row retention. | Define who reviews/export alerts, protect logs from ordinary users, and test retention. |
 | Retired facts/history feature | The unreachable UI and runtime provider/cache code are removed. Legacy API paths return `410 Gone` for a compatibility release; they are not retained as an active backend feature. | Review access logs before removing compatibility routes/tables in a separate backed-up migration. |
-| Supply chain and deployment | Actions are commit-pinned; CI builds/tests/audits/scans, gates new medium-or-higher Python SAST findings against a reviewed baseline, produces SBOM evidence, publishes a full-SHA GHCR image, scans the exact digest, and signs it with GitHub OIDC. The updater verifies signature, digest, OCI source/revision, database backup, optional off-host proof, health, and rollback. | Reduce the reviewed SAST baseline over time, add equivalent TypeScript semantic analysis when a deterministic supported gate is available, merge to `main`, pass required CI, resolve GHCR access, and deploy only the resulting signed digest. |
+| Supply chain and deployment | Actions are commit-pinned; CI builds/tests/audits/scans, gates medium-or-higher Python SAST findings against an exact-site reviewed allowlist, produces SBOM evidence, publishes a full-SHA GHCR image, scans the exact digest, and signs it with GitHub OIDC. The updater verifies signature, digest, OCI source/revision, database backup, optional off-host proof, health, and rollback. | Reduce the reviewed SAST allowlist over time, add equivalent TypeScript semantic analysis when a deterministic supported gate is available, merge to `main`, pass required CI, resolve GHCR access, and deploy only the resulting signed digest. |
 | Frontend and repository cleanup | Large routes are lazy-loaded; verified dead/duplicated facts UI, legacy production wrapper, duplicate assets, and reproducible generated artifacts were removed or consolidated. The final local bundle passes. | Human review and CI repeat before merge. |
 | Linked Remotion worktree | The promo branch is pushed as a render-only Remotion project: inherited server, application UI, deploy code, Python tests, word lists, and unused web dependencies/assets are removed. Its isolated CI checks pass. | Keep it standalone or move it to a separate repository; do not merge its deliberate application deletions into `main`. |
 
@@ -135,19 +135,37 @@ in the remediated local tree:
 ## SAST baseline policy
 
 Bandit 1.9.4 scans production Python on every CI run. Image publication depends
-on that job, so a scanner error or any new medium-or-higher, medium-confidence
-finding stops the release. The reviewed baseline represents 41 logical findings:
-23 parameterized/fixed-fragment SQL heuristics (`B608`), 11 bounded fixed or
-operator-configured URL calls (`B310`), six bounded XML parse sites (`B314`),
-and one forbidden-root denylist literal (`B108`). The JSON stores both Windows
-and POSIX filename forms, so its 82 records are two path representations of the
-same 41 findings. No high-severity finding is baselined.
+on that job. CI accepts only Bandit's documented finding/no-finding statuses,
+requires a non-empty error-free JSON report, and then runs the repository's
+dependency-free comparator. A scanner error, malformed input, or unreviewed
+medium-or-higher, medium-confidence finding stops the release.
 
-Do not add broad test skips. A baseline change requires source review and an
-explicit rationale; prefer removing entries as XML handling and outbound HTTP
-are further consolidated. Bandit covers Python only. TypeScript still relies on
-type checking, tests, dependency audit, CSP/runtime controls, and manual review
-until an equivalently deterministic semantic gate is adopted.
+The canonical allowlist contains 41 exact sites: 23 parameterized/fixed-fragment
+SQL heuristics (`B608`), 11 bounded fixed or operator-configured URL calls
+(`B310`), six bounded XML parse sites (`B314`), and one forbidden-root denylist
+literal (`B108`). All 41 are medium severity; 17 are high confidence and 24 are
+medium confidence. No high-severity finding is allowed.
+
+Each reviewed identity includes its normalized repository-relative path, rule,
+severity/confidence, CWE, issue text, exact line/range/columns, and a SHA-256 of
+newline-normalized code context. Path separators are normalized across Windows
+and Linux without duplicating records. Resolved sites may disappear. New,
+shifted, code-changed, or duplicate current occurrences fail, as do missing,
+malformed, or duplicate allowlist records. CI does not use Bandit's permissive
+`--baseline` matching.
+
+The allowlist also records the canonical production Python file set. Every
+required path must remain present in Bandit's normalized per-file metrics;
+additional scanned files are allowed. A regression test keeps that manifest in
+sync with the production Python tree, so an empty report or broadened scanner
+exclusion cannot be mistaken for wholesale remediation.
+
+Do not add broad test skips. An allowlist change requires an exact Bandit 1.9.4
+scan of the reviewed source, site-by-site source review, and an explicit
+rationale. Prefer removing entries as XML handling and outbound HTTP are further
+consolidated. Bandit covers Python only. TypeScript still relies on type checking,
+tests, dependency audit, CSP/runtime controls, and manual review until an
+equivalently deterministic semantic gate is adopted.
 
 ## Verification policy
 
@@ -164,8 +182,19 @@ npm ci
 npm audit --audit-level=high
 npm run build
 npm run test:server
+report="$(mktemp)"
+set +e
 python -m bandit -r . -c bandit.yaml --severity-level medium \
-  --confidence-level medium --baseline bandit-baseline.json
+  --confidence-level medium --format json --output "$report"
+bandit_status=$?
+set -e
+if [ "$bandit_status" -ne 0 ] && [ "$bandit_status" -ne 1 ]; then
+  exit "$bandit_status"
+fi
+test -s "$report"
+python tools/check_bandit_baseline.py \
+  --baseline bandit-baseline.json --current "$report"
+rm -f "$report"
 git diff --check
 ```
 

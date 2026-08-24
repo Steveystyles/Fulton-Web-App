@@ -106,11 +106,35 @@ jobs:
           python -m pip install --disable-pip-version-check
           --require-hashes --only-binary=:all: -r requirements-sast.txt
 
-      - name: Reject new medium-or-higher Python security findings
-        run: >-
-          python -m bandit -r . -c bandit.yaml
-          --severity-level medium --confidence-level medium
-          --baseline bandit-baseline.json
+      - name: Reject unreviewed medium-or-higher Python security findings
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          report="$(mktemp)"
+          cleanup() {
+            rm -f "$report"
+          }
+          trap cleanup EXIT
+
+          set +e
+          python -m bandit -r . -c bandit.yaml \
+            --severity-level medium --confidence-level medium \
+            --format json --output "$report"
+          bandit_status=$?
+          set -e
+
+          if [[ "$bandit_status" -ne 0 && "$bandit_status" -ne 1 ]]; then
+            echo "Bandit failed with unexpected status $bandit_status." >&2
+            exit "$bandit_status"
+          fi
+          if [[ ! -s "$report" ]]; then
+            echo "Bandit did not produce a non-empty JSON report." >&2
+            exit 1
+          fi
+
+          python tools/check_bandit_baseline.py \
+            --baseline bandit-baseline.json \
+            --current "$report"
 
   release-image:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
