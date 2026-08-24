@@ -534,6 +534,8 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertNotIn("beta/daily-map-game", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn('cron: "23 4 * * 1"', workflow)
+        self.assertIn("actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09", workflow)
+        self.assertIn("actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444", workflow)
         self.assertIn("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", workflow)
         self.assertIn('python-version: "3.12"', workflow)
         self.assertIn("gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7", workflow)
