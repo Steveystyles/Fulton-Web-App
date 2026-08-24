@@ -568,12 +568,15 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("requirements-sast.txt", sast_block)
         self.assertIn("--require-hashes", sast_block)
         self.assertIn("--only-binary=:all:", sast_block)
+        self.assertIn("python -P -m bandit", sast_block)
+        self.assertNotIn("python -m bandit", sast_block)
         self.assertIn("-r . -c bandit.yaml", sast_block)
+        self.assertIn("--ignore-nosec", sast_block)
         self.assertIn("--severity-level medium", sast_block)
         self.assertIn("--confidence-level medium", sast_block)
         self.assertIn('--format json --output "$report"', sast_block)
         bandit_command = sast_block[
-            sast_block.index("python -m bandit") : sast_block.index("bandit_status=$?")
+            sast_block.index("python -P -m bandit") : sast_block.index("bandit_status=$?")
         ]
         self.assertNotIn("--baseline", bandit_command)
         self.assertIn("bandit_status=$?", sast_block)

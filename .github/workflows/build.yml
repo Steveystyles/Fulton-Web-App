@@ -117,7 +117,7 @@ jobs:
           trap cleanup EXIT
 
           set +e
-          python -m bandit -r . -c bandit.yaml \
+          python -P -m bandit -r . -c bandit.yaml --ignore-nosec \
             --severity-level medium --confidence-level medium \
             --format json --output "$report"
           bandit_status=$?

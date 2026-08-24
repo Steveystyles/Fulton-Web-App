@@ -140,6 +140,11 @@ requires a non-empty error-free JSON report, and then runs the repository's
 dependency-free comparator. A scanner error, malformed input, or unreviewed
 medium-or-higher, medium-confidence finding stops the release.
 
+The workflow runs Python in safe-path mode so a checkout-local `bandit` module
+cannot shadow the hash-pinned scanner. It also uses `--ignore-nosec`, which makes
+Bandit report inline-suppressed findings to the centralized exact-site allowlist;
+source-level `# nosec` comments therefore cannot bypass review.
+
 The canonical allowlist contains 41 exact sites: 23 parameterized/fixed-fragment
 SQL heuristics (`B608`), 11 bounded fixed or operator-configured URL calls
 (`B310`), six bounded XML parse sites (`B314`), and one forbidden-root denylist
@@ -184,7 +189,8 @@ npm run build
 npm run test:server
 report="$(mktemp)"
 set +e
-python -m bandit -r . -c bandit.yaml --severity-level medium \
+python -P -m bandit -r . -c bandit.yaml --ignore-nosec \
+  --severity-level medium \
   --confidence-level medium --format json --output "$report"
 bandit_status=$?
 set -e
