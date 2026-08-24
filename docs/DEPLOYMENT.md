@@ -37,13 +37,14 @@ Install Docker Engine with the Compose plugin, Git, Python 3, `flock`, and
 [Cosign](https://docs.sigstore.dev/cosign/system_config/installation/). Keep
 them current through the host's normal package/update process.
 
-When Cosign is installed for the deployment user in `~/.local/bin`, make that
-directory explicit for every noninteractive updater invocation; SSH commands
-and schedulers do not reliably load the user's profile:
+The updater resolves Cosign from the deployment user's `~/.local/bin` and the
+two standard system locations without relying on `PATH`, and rejects symlinks.
+For manual Cosign commands in SSH or scheduler shells, make the user-local
+directory explicit because those shells do not reliably load the user's profile:
 
 ```bash
 env PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
-  bash deploy/homeserver-update.sh <40-character-main-commit>
+  cosign version
 ```
 
 The following paths are neutral examples, not a description of any live host.
