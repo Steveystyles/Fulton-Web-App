@@ -5,15 +5,15 @@ operator-controlled Traefik proxy. Production uses the image built, scanned,
 signed, and published by CI. Deployments select that image by full registry
 digest and are performed by `deploy/homeserver-update.sh`.
 
-> This is an operator runbook, not a deployment record. The QA remediation in
-> the current working tree has not been deployed to production.
+> This is an operator runbook, not a deployment record. Never infer live state
+> from this file; verify the exact running digest and revision before rollout.
 
 ## Release invariants
 
 A production rollout is allowed only when all of these conditions are true:
 
 - The reviewed commit is merged to `main`, is identified by its full
-  40-character SHA, and its required CI jobs pass.
+  40-character SHA, and its build, secret-scan, and Python SAST jobs pass.
 - CI publishes `ghcr.io/steveystyles/fulton-web-app@sha256:<digest>` and the
   digest is copied from the CI release evidence. A tag alone is not a release
   identifier.
@@ -36,6 +36,16 @@ unsigned image, mutable-tag, or local-build exception for initial rollout.
 Install Docker Engine with the Compose plugin, Git, Python 3, `flock`, and
 [Cosign](https://docs.sigstore.dev/cosign/system_config/installation/). Keep
 them current through the host's normal package/update process.
+
+The updater resolves Cosign from the deployment user's `~/.local/bin` and the
+two standard system locations without relying on `PATH`, and rejects symlinks.
+For manual Cosign commands in SSH or scheduler shells, make the user-local
+directory explicit because those shells do not reliably load the user's profile:
+
+```bash
+env PATH="$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  cosign version
+```
 
 The following paths are neutral examples, not a description of any live host.
 Choose private paths appropriate to the target system and use them consistently:

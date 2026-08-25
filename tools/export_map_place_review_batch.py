@@ -229,7 +229,8 @@ def write_review_page(path: Path, rows: list[dict[str, Any]]) -> None:
     template = template_path.read_text(encoding="utf-8")
     places_json = json.dumps(places, ensure_ascii=False)
     batch_id = hashlib.sha1(
-        (places_json + "|complete_ladder_gold_profile_v1").encode("utf-8")
+        (places_json + "|complete_ladder_gold_profile_v1").encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:12]
     start = template.index("const places = ")
     end = template.index(";\nconst storageKey", start)

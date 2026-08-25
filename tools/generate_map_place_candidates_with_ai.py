@@ -612,7 +612,7 @@ def candidate_row_id(candidate: dict[str, Any]) -> str:
         sort_keys=True,
         ensure_ascii=True,
     )
-    return hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha1(basis.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
 def parse_coordinate(value: object, *, field: str) -> float:

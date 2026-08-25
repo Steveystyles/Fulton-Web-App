@@ -2,23 +2,22 @@
 
 Original audit date: 2026-08-12
 
-Status refreshed: 2026-08-16
+Status refreshed: 2026-08-24
 
 ## Current verdict
 
 The earlier audit identified critical game-integrity, local-operations, data,
-authentication, outbound-request, and deployment weaknesses. The current local
-working tree contains remediations for those findings and targeted regression
-coverage. The old P0 descriptions are therefore not an accurate description of
-the current source.
+authentication, outbound-request, and deployment weaknesses. Those remediations
+and their targeted regression coverage have since reached `main`; the old P0
+descriptions are therefore not an accurate description of the current source.
 
 This is not a production closure statement:
 
-- Production was not modified, restarted, cleaned, or deployed during this
-  remediation pass.
-- The local remediation commit is still unreleased. Final merge review,
-  required CI, a signed image digest, backup gates, and an operator-controlled
-  rollout remain mandatory.
+- A signed production digest and its running revision were verified during the
+  follow-up, but this document deliberately does not act as a live deployment
+  inventory. Re-verify the runtime before every rollout.
+- The SAST gate described below is a new review-branch change. It remains
+  unreleased until its PR passes CI and is approved and merged.
 - No secret values, personal usernames, workstation paths, live host paths, or
   exploit reproduction details are intentionally recorded here. Credential and
   host-history follow-up belongs in a private operator record.
@@ -52,24 +51,22 @@ deliberately excluded.
 | Map startup and performance | Starter rows no longer overwrite reviewed data during recurring initialization, geocoder activity is cached/rate-limited/concurrency-limited, and map snapping uses an indexed geographic prefilter before distance calculation. | Profile representative production data and monitor upstream geocoder policy/rate behavior. |
 | Auditability | Durable audit events cover authentication and sensitive administrative/content actions, with configurable age and row retention. | Define who reviews/export alerts, protect logs from ordinary users, and test retention. |
 | Retired facts/history feature | The unreachable UI and runtime provider/cache code are removed. Legacy API paths return `410 Gone` for a compatibility release; they are not retained as an active backend feature. | Review access logs before removing compatibility routes/tables in a separate backed-up migration. |
-| Supply chain and deployment | Actions are commit-pinned; CI builds/tests/audits/scans, produces SBOM evidence, publishes a full-SHA GHCR image, scans the exact digest, and signs it with GitHub OIDC. The updater verifies signature, digest, OCI source/revision, database backup, optional off-host proof, health, and rollback. | Merge to `main`, pass required CI, resolve GHCR access, and deploy only the resulting signed digest. |
+| Supply chain and deployment | Actions are commit-pinned; CI builds/tests/audits/scans, gates medium-or-higher Python SAST findings against an exact-site reviewed allowlist, produces SBOM evidence, publishes a full-SHA GHCR image, scans the exact digest, and signs it with GitHub OIDC. The updater verifies signature, digest, OCI source/revision, database backup, optional off-host proof, health, and rollback. | Reduce the reviewed SAST allowlist over time, add equivalent TypeScript semantic analysis when a deterministic supported gate is available, merge to `main`, pass required CI, resolve GHCR access, and deploy only the resulting signed digest. |
 | Frontend and repository cleanup | Large routes are lazy-loaded; verified dead/duplicated facts UI, legacy production wrapper, duplicate assets, and reproducible generated artifacts were removed or consolidated. The final local bundle passes. | Human review and CI repeat before merge. |
-| Linked Remotion worktree | The promo branch is locally converted and committed as a render-only Remotion project: inherited server, application UI, deploy code, Python tests, word lists, and unused web dependencies/assets are removed. Its type-check, composition tests, dependency audit, locked install, and real still render pass. | Push/review that branch independently; it is not an application deployment input. |
+| Linked Remotion worktree | The promo branch is pushed as a render-only Remotion project: inherited server, application UI, deploy code, Python tests, word lists, and unused web dependencies/assets are removed. Its isolated CI checks pass. | Keep it standalone or move it to a separate repository; do not merge its deliberate application deletions into `main`. |
 
 ## Release blockers
 
-These are operational release gates, even though the earlier P0 code paths have
-local remediations:
+These are the remaining operational and governance gates:
 
-1. Review the two clean local commits, push/open review branches, merge only the
-   approved changes to `main`, and require all CI jobs on the exact release SHA.
-2. Confirm the GHCR package is public or authenticate the deployment host with a
-   least-privilege `read:packages` credential. A private package without host
-   authentication cannot be deployed.
-3. Obtain the full `sha256` reference from CI release evidence and verify its
-   Cosign identity/issuer and OCI source/revision. Initial deployment is also
-   signed-digest-only; do not substitute a tag or local build.
-4. Verify the trusted-proxy CIDR against the actual Docker `proxy` network. The
+1. Review the SAST change through a PR and require its build, secret, and SAST
+   jobs before merging. The private repository plan does not currently enforce
+   branch protection, so this remains a human governance control.
+2. Add equivalent deterministic TypeScript semantic analysis when a supported
+   fail-closed option is available; Bandit covers Python only.
+3. Keep GHCR read access, Cosign, and the exact signed-digest/OCI-label checks
+   working on the deployment host; do not substitute a tag or local build.
+4. Re-verify the trusted-proxy CIDR against the actual Docker `proxy` network. The
    current logic assumes one operator-controlled Traefik hop, sanitized
    forwarding headers, and no direct untrusted access to the app container. If
    that topology differs, review the client-IP logic and Compose configuration
@@ -80,8 +77,8 @@ local remediations:
 6. Complete credential rotation and host-history sanitation as a private
    operator task wherever confidentiality cannot be proved. Do not copy secret
    values or sensitive command history into issues, commits, or this report.
-7. Run the deployment and post-release smoke checks deliberately. Production is
-   currently untouched by this remediation work.
+7. Run every deployment and post-release smoke check deliberately; a previously
+   verified runtime is not evidence for the next release.
 
 See the [production deployment runbook](DEPLOYMENT.md) for the exact gates.
 
@@ -135,6 +132,46 @@ in the remediated local tree:
 - Re-run dependency, SAST, secret, image, and SBOM gates on every release rather
   than treating this point-in-time audit as permanent assurance.
 
+## SAST baseline policy
+
+Bandit 1.9.4 scans production Python on every CI run. Image publication depends
+on that job. CI accepts only Bandit's documented finding/no-finding statuses,
+requires a non-empty error-free JSON report, and then runs the repository's
+dependency-free comparator. A scanner error, malformed input, or unreviewed
+medium-or-higher, medium-confidence finding stops the release.
+
+The workflow runs Python in safe-path mode so a checkout-local `bandit` module
+cannot shadow the hash-pinned scanner. It also uses `--ignore-nosec`, which makes
+Bandit report inline-suppressed findings to the centralized exact-site allowlist;
+source-level `# nosec` comments therefore cannot bypass review.
+
+The canonical allowlist contains 41 exact sites: 23 parameterized/fixed-fragment
+SQL heuristics (`B608`), 11 bounded fixed or operator-configured URL calls
+(`B310`), six bounded XML parse sites (`B314`), and one forbidden-root denylist
+literal (`B108`). All 41 are medium severity; 17 are high confidence and 24 are
+medium confidence. No high-severity finding is allowed.
+
+Each reviewed identity includes its normalized repository-relative path, rule,
+severity/confidence, CWE, issue text, exact line/range/columns, and a SHA-256 of
+newline-normalized code context. Path separators are normalized across Windows
+and Linux without duplicating records. Resolved sites may disappear. New,
+shifted, code-changed, or duplicate current occurrences fail, as do missing,
+malformed, or duplicate allowlist records. CI does not use Bandit's permissive
+`--baseline` matching.
+
+The allowlist also records the canonical production Python file set. Every
+required path must remain present in Bandit's normalized per-file metrics;
+additional scanned files are allowed. A regression test keeps that manifest in
+sync with the production Python tree, so an empty report or broadened scanner
+exclusion cannot be mistaken for wholesale remediation.
+
+Do not add broad test skips. An allowlist change requires an exact Bandit 1.9.4
+scan of the reviewed source, site-by-site source review, and an explicit
+rationale. Prefer removing entries as XML handling and outbound HTTP are further
+consolidated. Bandit covers Python only. TypeScript still relies on type checking,
+tests, dependency audit, CSP/runtime controls, and manual review until an
+equivalently deterministic semantic gate is adopted.
+
 ## Verification policy
 
 The full local server suite, focused security/quiz/map/deployment regressions,
@@ -150,11 +187,25 @@ npm ci
 npm audit --audit-level=high
 npm run build
 npm run test:server
+report="$(mktemp)"
+set +e
+python -P -m bandit -r . -c bandit.yaml --ignore-nosec \
+  --severity-level medium \
+  --confidence-level medium --format json --output "$report"
+bandit_status=$?
+set -e
+if [ "$bandit_status" -ne 0 ] && [ "$bandit_status" -ne 1 ]; then
+  exit "$bandit_status"
+fi
+test -s "$report"
+python tools/check_bandit_baseline.py \
+  --baseline bandit-baseline.json --current "$report"
+rm -f "$report"
 git diff --check
 ```
 
-CI must additionally complete its secret scan, container vulnerability scan,
-SBOM generation, exact-digest scan, signing, and signature
+CI must additionally complete its fail-closed Python SAST and secret scans,
+container vulnerability scan, SBOM generation, exact-digest scan, signing, and signature
 verification. On the deployment host, validate `docker compose config`, Cosign,
 the running digest/revision, `/api/health`, login/session behavior, quiz/map
 submission, backup verification, and rollback readiness.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -22,6 +23,9 @@ POWER_RECOVERY_SCRIPT = DEPLOY_DIR / "check-and-fix-after-power-outage.ps1"
 SET_GEMINI_SCRIPT = DEPLOY_DIR / "set-gemini-key.ps1"
 PROMO_COMPOSE_FILE = DEPLOY_DIR / "promo-test" / "compose.yaml"
 BUILD_WORKFLOW = PROJECT_DIR / ".github" / "workflows" / "build.yml"
+BANDIT_CONFIG = PROJECT_DIR / "bandit.yaml"
+BANDIT_BASELINE = PROJECT_DIR / "bandit-baseline.json"
+SAST_REQUIREMENTS = PROJECT_DIR / "requirements-sast.txt"
 
 SPEC = importlib.util.spec_from_file_location("backup_manager", DEPLOY_DIR / "backup_manager.py")
 assert SPEC is not None and SPEC.loader is not None
@@ -405,8 +409,12 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("@sha256:<64 hex>", self.script)
         self.assertIn("docker pull", self.script)
         self.assertIn("ghcr.io/steveystyles/fulton-web-app", self.script)
-        self.assertIn("command -v cosign", self.script)
-        self.assertIn("cosign verify", self.script)
+        self.assertIn("resolve_cosign_binary", self.script)
+        self.assertIn('"${HOME}/.local/bin/cosign"', self.script)
+        self.assertIn('"/usr/local/bin/cosign"', self.script)
+        self.assertIn('"/usr/bin/cosign"', self.script)
+        self.assertIn('"${COSIGN_BIN}" verify', self.script)
+        self.assertIn('[ -L "${candidate}" ]', self.script)
         self.assertIn("https://token.actions.githubusercontent.com", self.script)
         self.assertIn("build\\.yml@refs/heads/main", self.script)
         self.assertIn("FULTONS_ALLOW_LOCAL_BUILD_DEV_OVERRIDE", self.script)
@@ -530,10 +538,14 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertNotIn("beta/daily-map-game", workflow)
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn('cron: "23 4 * * 1"', workflow)
+        self.assertIn("actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09", workflow)
+        self.assertIn("actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444", workflow)
         self.assertIn("actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1", workflow)
         self.assertIn('python-version: "3.12"', workflow)
-        self.assertIn("gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7", workflow)
+        self.assertIn("gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1", workflow)
+        self.assertIn("actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4", workflow)
         self.assertNotIn("github/codeql-action", workflow)
+        self.assertIn("--require-hashes --only-binary=:all: -r requirements-sast.txt", workflow)
         self.assertIn("sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac", workflow)
         self.assertEqual(workflow.count("upload-artifact: false"), 2)
         smoke = workflow.index("Smoke-test the exact release digest")
@@ -545,6 +557,115 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("IMAGE_REF: ${{ steps.image.outputs.ref }}", smoke_block)
         self.assertIn("docker run -d", smoke_block)
         self.assertIn("/api/health", smoke_block)
+
+    def test_release_requires_fail_closed_python_sast(self) -> None:
+        workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+        sast_start = workflow.index("  sast:\n")
+        release_start = workflow.index("  release-image:\n")
+        sast_block = workflow[sast_start:release_start]
+        release_block = workflow[release_start:]
+
+        self.assertIn("requirements-sast.txt", sast_block)
+        self.assertIn("--require-hashes", sast_block)
+        self.assertIn("--only-binary=:all:", sast_block)
+        self.assertIn("python -P -m bandit", sast_block)
+        self.assertNotIn("python -m bandit", sast_block)
+        self.assertIn("-r . -c bandit.yaml", sast_block)
+        self.assertIn("--ignore-nosec", sast_block)
+        self.assertIn("--severity-level medium", sast_block)
+        self.assertIn("--confidence-level medium", sast_block)
+        self.assertIn('--format json --output "$report"', sast_block)
+        bandit_command = sast_block[
+            sast_block.index("python -P -m bandit") : sast_block.index("bandit_status=$?")
+        ]
+        self.assertNotIn("--baseline", bandit_command)
+        self.assertIn("bandit_status=$?", sast_block)
+        self.assertIn('"$bandit_status" -ne 0', sast_block)
+        self.assertIn('"$bandit_status" -ne 1', sast_block)
+        self.assertIn('[[ ! -s "$report" ]]', sast_block)
+        self.assertIn("python tools/check_bandit_baseline.py", sast_block)
+        self.assertIn("--baseline bandit-baseline.json", sast_block)
+        self.assertIn('--current "$report"', sast_block)
+        self.assertNotIn("continue-on-error", sast_block)
+        needs_block = release_block[release_block.index("    needs:\n") : release_block.index("    runs-on:")]
+        self.assertIn("      - sast\n", needs_block)
+
+    def test_sast_baseline_is_reviewed_and_cross_platform(self) -> None:
+        self.assertTrue(BANDIT_CONFIG.is_file())
+        requirements = SAST_REQUIREMENTS.read_text(encoding="utf-8")
+        self.assertIn("bandit==1.9.4", requirements)
+        self.assertEqual(requirements.count("--hash=sha256:"), 8)
+        baseline = json.loads(BANDIT_BASELINE.read_text(encoding="utf-8"))
+        self.assertEqual(baseline["schema_version"], 1)
+        self.assertEqual(baseline["bandit_version"], "1.9.4")
+        scanned_files = baseline["scanned_files"]
+        findings = baseline["findings"]
+
+        self.assertEqual(scanned_files, sorted(set(scanned_files)))
+        excluded_directories = {
+            ".codex-logs",
+            ".git",
+            ".venv",
+            "__pycache__",
+            "dist",
+            "node_modules",
+            "tests",
+        }
+        production_python_files: set[str] = set()
+        for root, directories, filenames in os.walk(PROJECT_DIR):
+            directories[:] = [
+                name for name in directories if name not in excluded_directories
+            ]
+            root_path = Path(root)
+            for filename in filenames:
+                if filename.endswith(".py"):
+                    production_python_files.add(
+                        (root_path / filename).relative_to(PROJECT_DIR).as_posix()
+                    )
+        self.assertEqual(set(scanned_files), production_python_files)
+
+        self.assertEqual(len(findings), 41)
+        self.assertEqual({result["issue_severity"] for result in findings}, {"MEDIUM"})
+        self.assertEqual(
+            {result["test_id"] for result in findings},
+            {"B108", "B310", "B314", "B608"},
+        )
+        self.assertEqual(
+            {
+                level: sum(
+                    result["issue_confidence"] == level for result in findings
+                )
+                for level in {"HIGH", "MEDIUM"}
+            },
+            {"HIGH": 17, "MEDIUM": 24},
+        )
+        exact_sites = {
+            (
+                result["filename"],
+                result["test_id"],
+                result["line_number"],
+                tuple(result["line_range"]),
+                result["col_offset"],
+                result["end_col_offset"],
+                result["code_sha256"],
+            )
+            for result in findings
+        }
+        self.assertEqual(len(exact_sites), len(findings))
+        self.assertTrue(
+            {finding["filename"] for finding in findings}.issubset(scanned_files)
+        )
+        for finding in findings:
+            self.assertNotIn("\\", finding["filename"])
+            self.assertFalse(finding["filename"].startswith("./"))
+            self.assertRegex(finding["code_sha256"], r"^[0-9a-f]{64}$")
+
+    def test_workflow_actions_use_full_commit_pins(self) -> None:
+        workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+        references = re.findall(r"^\s*uses:\s+[^\s@]+@([^\s#]+)", workflow, re.MULTILINE)
+        self.assertGreater(len(references), 0)
+        for reference in references:
+            self.assertRegex(reference, r"^[0-9a-f]{40}$")
 
 
 if __name__ == "__main__":

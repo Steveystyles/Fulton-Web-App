@@ -79,6 +79,7 @@ PREVIOUS_COMPOSE_FILE=""
 PREVIOUS_COMPOSE_ENV_FILE=""
 BOOTSTRAP_MODE=0
 BOOTSTRAP_STAGE=""
+COSIGN_BIN=""
 
 log() {
   printf '[fultons-deploy] %s\n' "$*"
@@ -87,6 +88,25 @@ log() {
 fail() {
   log "ERROR: $*"
   return 1
+}
+
+resolve_cosign_binary() {
+  local candidate
+  for candidate in \
+    "${HOME}/.local/bin/cosign" \
+    "/usr/local/bin/cosign" \
+    "/usr/bin/cosign"; do
+    if [ ! -e "${candidate}" ]; then
+      continue
+    fi
+    if [ -L "${candidate}" ] || [ ! -f "${candidate}" ] || [ ! -x "${candidate}" ]; then
+      fail "Cosign at ${candidate} must be an executable regular, non-symlink file."
+      return 1
+    fi
+    COSIGN_BIN="${candidate}"
+    return 0
+  done
+  fail "Cosign is required at ~/.local/bin/cosign, /usr/local/bin/cosign, or /usr/bin/cosign."
 }
 
 require_boolean() {
@@ -528,10 +548,9 @@ else
   if [ "${image_repository}" != "${CANONICAL_IMAGE_REPOSITORY}" ]; then
     fail "FULTONS_DEPLOY_IMAGE must use canonical repository ${CANONICAL_IMAGE_REPOSITORY}."
   fi
-  command -v cosign >/dev/null 2>&1 || fail \
-    "cosign is required to verify the signed production image."
+  resolve_cosign_binary
   log "Verifying keyless GitHub Actions signature for immutable image"
-  cosign verify \
+  "${COSIGN_BIN}" verify \
     --certificate-identity-regexp "${COSIGN_CERTIFICATE_IDENTITY_REGEXP}" \
     --certificate-oidc-issuer "${COSIGN_CERTIFICATE_OIDC_ISSUER}" \
     "${DEPLOY_IMAGE}" >/dev/null
