@@ -89,6 +89,71 @@ class QuizCandidateShadowTests(unittest.TestCase):
             },
         )
 
+    def test_shadow_reset_removes_copied_target_without_erasing_history(self) -> None:
+        self.add_quiz("2026-08-19")
+        self.add_quiz("2026-08-20")
+        target = self.conn.execute(
+            "SELECT id FROM daily_quiz_sets WHERE quiz_date='2026-08-20'"
+        ).fetchone()
+        self.conn.execute(
+            "UPDATE daily_quiz_sets SET pipeline_version='legacy' WHERE id=?",
+            (target["id"],),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO daily_quiz_attempts (
+                quiz_date, subject, difficulty, attempt_number, provider,
+                generated_json, passed, created_at
+            ) VALUES ('2026-08-20', 'football', 'easy', 1, 'legacy', '{}', 0, 'now')
+            """
+        )
+        daily_quiz.insert_candidate(
+            self.conn,
+            quiz_set_id=int(target["id"]),
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="easy",
+            batch_number=1,
+            candidate_index=1,
+            provider="legacy",
+            generation_mode="normal",
+            candidate={
+                "answer": "Copied Answer",
+                "hook": "A copied candidate that must not enter the shadow run.",
+                "topic_lane": "famous incidents and matches",
+                "era": "",
+                "region": "",
+                "tags": ["copied"],
+                "evidence_query": "Copied Answer candidate",
+            },
+            status="eligible",
+        )
+
+        shadow.reset_shadow_target_dates(self.conn, ["2026-08-20"])
+
+        self.assertIsNotNone(
+            self.conn.execute(
+                "SELECT 1 FROM daily_quiz_sets WHERE quiz_date='2026-08-19'"
+            ).fetchone()
+        )
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT 1 FROM daily_quiz_sets WHERE quiz_date='2026-08-20'"
+            ).fetchone()
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_attempts WHERE quiz_date='2026-08-20'"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_candidates WHERE quiz_date='2026-08-20'"
+            ).fetchone()[0],
+            0,
+        )
+
     def test_provider_capacity_detection_requires_chain_quota_failure(self) -> None:
         self.assertTrue(
             shadow.provider_capacity_exhausted(
@@ -172,7 +237,9 @@ class QuizCandidateShadowTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            source_db = root / "source.db"
+            output_dir = root / "output"
+            output_dir.mkdir()
+            source_db = output_dir / "shadow.db"
             source_conn = sqlite3.connect(source_db)
             source_conn.row_factory = sqlite3.Row
             daily_quiz.initialize_database(source_conn)
@@ -208,12 +275,12 @@ class QuizCandidateShadowTests(unittest.TestCase):
             source_conn.close()
             args = SimpleNamespace(
                 db=source_db,
-                output_dir=root / "output",
+                output_dir=output_dir,
                 start_date="2026-08-20",
                 days=1,
                 max_rounds=2,
                 retry_delay_seconds=0,
-                resume=False,
+                resume=True,
             )
             config_stub = SimpleNamespace(
                 answer_embargo_days=45,

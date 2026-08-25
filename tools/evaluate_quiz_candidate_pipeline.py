@@ -79,6 +79,37 @@ def shadow_dates(start_date: str, count: int) -> list[str]:
     return [(start + timedelta(days=offset)).isoformat() for offset in range(count)]
 
 
+def reset_shadow_target_dates(
+    conn: sqlite3.Connection,
+    quiz_dates: list[str],
+) -> None:
+    if not quiz_dates:
+        return
+    with conn:
+        for quiz_date in quiz_dates:
+            conn.execute(
+                "DELETE FROM daily_quiz_attempts WHERE quiz_date = ?",
+                (quiz_date,),
+            )
+            conn.execute(
+                "DELETE FROM daily_quiz_candidates WHERE quiz_date = ?",
+                (quiz_date,),
+            )
+            conn.execute(
+                """
+                DELETE FROM daily_quiz_questions
+                WHERE quiz_set_id IN (
+                    SELECT id FROM daily_quiz_sets WHERE quiz_date = ?
+                )
+                """,
+                (quiz_date,),
+            )
+            conn.execute(
+                "DELETE FROM daily_quiz_sets WHERE quiz_date = ?",
+                (quiz_date,),
+            )
+
+
 def generation_call_count(conn: sqlite3.Connection, quiz_date: str) -> int:
     return daily_quiz.candidate_generation_call_count(conn, quiz_date)
 
@@ -193,6 +224,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     shadow_db = output_dir / "shadow.db"
     state_path = output_dir / STATE_FILENAME
+    target_dates = shadow_dates(args.start_date, args.days)
     if args.resume:
         if not shadow_db.exists():
             raise FileNotFoundError(f"Cannot resume; shadow database is missing: {shadow_db}")
@@ -212,7 +244,8 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         candidate_max_calls_per_quiz=30,
     )
     daily_quiz.initialize_database(conn)
-    target_dates = shadow_dates(args.start_date, args.days)
+    if not args.resume:
+        reset_shadow_target_dates(conn, target_dates)
     run_status = "complete"
     pause_reason: str | None = None
     try:

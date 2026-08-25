@@ -731,17 +731,7 @@ class DailyQuizTests(unittest.TestCase):
         with patch(
             "daily_quiz.configured_question_evidence", side_effect=evidence_for_probe
         ):
-            first = daily_quiz.generate_slot(
-                self.conn,
-                quiz_set_id=target["id"],
-                quiz_date="2026-08-20",
-                subject="football",
-                difficulty="medium",
-                provider=provider,
-                config=pipeline_config,
-                log=lambda _: None,
-            )
-            second = daily_quiz.generate_slot(
+            result = daily_quiz.generate_slot(
                 self.conn,
                 quiz_set_id=target["id"],
                 quiz_date="2026-08-20",
@@ -752,10 +742,10 @@ class DailyQuizTests(unittest.TestCase):
                 log=lambda _: None,
             )
 
-        self.assertIsNone(first)
-        self.assertTrue(second)
+        self.assertTrue(result)
         self.assertEqual(provider.discovery_calls, 0)
         self.assertEqual(provider.composition_calls, 1)
+        self.assertEqual(evidence_calls, 4)
 
     def test_candidate_feedback_summarizes_every_rejected_answer_in_run(self) -> None:
         target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")

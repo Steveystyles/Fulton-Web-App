@@ -3512,23 +3512,6 @@ def generate_slot_two_stage(
         difficulty=difficulty,
     )
 
-    def rows_still_available(rows: list[sqlite3.Row]) -> bool:
-        row_ids = [int(row["id"]) for row in rows]
-        if not row_ids:
-            return False
-        placeholders = ",".join("?" for _ in row_ids)
-        return (
-            conn.execute(
-                f"""
-                SELECT 1 FROM daily_quiz_candidates
-                WHERE id IN ({placeholders}) AND status IN ('eligible', 'verified')
-                LIMIT 1
-                """,
-                row_ids,
-            ).fetchone()
-            is not None
-        )
-
     def evaluate_rows(rows: list[sqlite3.Row], stage_index: int) -> bool | None:
         composer = quality_role_provider(stages, stage_index)
         critic = quality_role_provider(stages, stage_index + 1)
@@ -3754,26 +3737,60 @@ def generate_slot_two_stage(
     def evaluate_rows_with_provider_switch(
         rows: list[sqlite3.Row], stage_index: int
     ) -> bool | None:
-        pool = sorted(
-            rows, key=lambda item: (-float(item["score"]), int(item["id"]))
-        )[:3]
+        row_ids = [int(row["id"]) for row in rows]
+        if not row_ids:
+            return False
+
+        def available_rows(candidate_ids: list[int]) -> list[sqlite3.Row]:
+            available = []
+            for candidate_id in candidate_ids:
+                row = conn.execute(
+                    """
+                    SELECT * FROM daily_quiz_candidates
+                    WHERE id = ? AND status IN ('eligible', 'verified')
+                    """,
+                    (candidate_id,),
+                ).fetchone()
+                if row is not None:
+                    available.append(row)
+            return sorted(
+                available,
+                key=lambda item: (-float(item["score"]), int(item["id"])),
+            )
+
         next_stage = stage_index
-        while pool:
+        while True:
+            pool = available_rows(row_ids)[:3]
+            if not pool:
+                return False
+            before = {
+                int(row["id"]): (row["status"], row["failure_reason"])
+                for row in pool
+            }
             result = evaluate_rows(pool, next_stage)
             if result is not False:
                 return result
             pool_ids = [int(row["id"]) for row in pool]
-            placeholders = ",".join("?" for _ in pool_ids)
-            pool = conn.execute(
-                f"""
-                SELECT * FROM daily_quiz_candidates
-                WHERE id IN ({placeholders}) AND status IN ('eligible', 'verified')
-                ORDER BY score DESC, id
-                """,
-                pool_ids,
-            ).fetchall()
+            remaining_pool = available_rows(pool_ids)
+            if remaining_pool and all(
+                before.get(int(row["id"]))
+                == (row["status"], row["failure_reason"])
+                for row in remaining_pool
+            ) and len(remaining_pool) == len(pool):
+                reason = "Candidate evaluation made no deterministic progress."
+                for row in remaining_pool:
+                    update_candidate(
+                        conn,
+                        int(row["id"]),
+                        status="rejected",
+                        rejection_stage="pipeline",
+                        failure_reason=reason,
+                    )
+                log(
+                    f"Rejected {len(remaining_pool)} stalled {subject} / {difficulty} "
+                    "candidate(s) before continuing."
+                )
             next_stage += 1
-        return False
 
     resumable = [row for row in existing_rows if row["status"] in {"eligible", "verified"}]
     if resumable:
@@ -3782,12 +3799,6 @@ def generate_slot_two_stage(
         )
         if result is not False:
             return result
-        if rows_still_available(resumable):
-            log(
-                f"Deferred {subject} / {difficulty}; persisted candidates remain "
-                "for the next retry before another discovery batch."
-            )
-            return None
 
     for _ in range(config.candidate_batches_per_slot):
         if call_budget_exhausted("candidate discovery and composition", required_calls=2):
@@ -3969,12 +3980,6 @@ def generate_slot_two_stage(
         result = evaluate_rows_with_provider_switch(inserted, stage_index)
         if result is not False:
             return result
-        if rows_still_available(inserted):
-            log(
-                f"Deferred {subject} / {difficulty}; persisted candidates remain "
-                "for the next retry before another discovery batch."
-            )
-            return None
     log(
         f"Deferred {subject} / {difficulty}; candidate batches were exhausted without an accepted question."
     )
