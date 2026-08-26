@@ -2287,6 +2287,38 @@ class DailyQuizTests(unittest.TestCase):
         }
         self.assertEqual(providers, {"openrouter"})
 
+    def test_provider_chain_uses_next_critic_after_invalid_payload(self) -> None:
+        invalid = InvalidCriticProvider("invalid-critic")
+        fallback = PassingProvider("valid-critic")
+        provider = daily_quiz.FallbackQuizProvider([invalid, fallback])
+
+        payload = provider.critique_question(
+            subject="general_knowledge",
+            difficulty="easy",
+            question=valid_question(),
+            recent_questions=[],
+        )
+
+        self.assertTrue(payload["passed"])
+        self.assertEqual(provider.last_provider_name, "valid-critic")
+
+    def test_provider_chain_uses_next_verifier_after_invalid_payload(self) -> None:
+        invalid = InvalidVerifierProvider("invalid-verifier")
+        fallback = PassingProvider("valid-verifier")
+        provider = daily_quiz.FallbackQuizProvider([invalid, fallback])
+        evidence = supporting_evidence(valid_question())
+
+        payload = provider.verify_question(
+            subject="general_knowledge",
+            difficulty="easy",
+            question=valid_question(),
+            evidence=evidence,
+            risk_profile={},
+        )
+
+        self.assertTrue(payload["passed"])
+        self.assertEqual(provider.last_provider_name, "valid-verifier")
+
     def test_generation_defers_when_critic_is_unavailable(self) -> None:
         payload = daily_quiz.generate_daily_quiz(
             self.conn,

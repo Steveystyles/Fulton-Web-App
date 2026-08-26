@@ -1149,6 +1149,29 @@ class FallbackQuizProvider:
                 continue
         raise RuntimeError(f"All AI providers failed for {method_name}: {' | '.join(errors)}")
 
+    def _call_validated(
+        self,
+        method_name: str,
+        validator: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        errors: list[str] = []
+        for provider in self.providers:
+            self.last_provider = provider
+            self.last_provider_name = provider.name
+            try:
+                payload = getattr(provider, method_name)(**kwargs)
+            except Exception as error:
+                errors.append(f"{provider.name}: {error}")
+                continue
+            validation = validator(payload)
+            if validation.passed:
+                return payload
+            errors.append(f"{provider.name}: invalid payload: {validation.reason}")
+        raise RuntimeError(
+            f"All AI providers failed for {method_name}: {' | '.join(errors)}"
+        )
+
     def generate_question(
         self,
         *,
@@ -1173,8 +1196,9 @@ class FallbackQuizProvider:
         question: dict[str, Any],
         recent_questions: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        return self._call(
+        return self._call_validated(
             "critique_question",
+            validate_critic,
             subject=subject,
             difficulty=difficulty,
             question=question,
@@ -1196,8 +1220,9 @@ class FallbackQuizProvider:
         evidence: list[dict[str, Any]],
         risk_profile: dict[str, Any],
     ) -> dict[str, Any]:
-        return self._call(
+        return self._call_validated(
             "verify_question",
+            lambda payload: validate_verification(payload, evidence),
             subject=subject,
             difficulty=difficulty,
             question=question,
