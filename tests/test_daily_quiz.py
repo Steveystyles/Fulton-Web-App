@@ -838,6 +838,60 @@ class DailyQuizTests(unittest.TestCase):
             0,
         )
 
+    def test_candidate_pipeline_can_resume_above_previous_thirty_call_limit(self) -> None:
+        target = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        for batch_number in range(1, 31):
+            daily_quiz.insert_candidate(
+                self.conn,
+                quiz_set_id=int(target["id"]),
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="hard",
+                batch_number=batch_number,
+                candidate_index=1,
+                provider="spent-budget-fixture",
+                generation_mode="normal",
+                candidate={
+                    "answer": f"Spent Answer {batch_number}",
+                    "hook": f"Documented spent hook {batch_number} for the resume test.",
+                    "topic_lane": "club stories",
+                    "era": "",
+                    "region": "",
+                    "tags": ["spent fixture", f"spent-{batch_number}"],
+                    "evidence_query": f"Spent Answer {batch_number} documented event",
+                },
+                status="rejected",
+                rejection_stage="local",
+                failure_reason="Rejected fixture.",
+            )
+        provider = CandidateProvider()
+        pipeline_config = replace(
+            config(),
+            candidate_pipeline_enabled=True,
+            candidate_batch_size=2,
+            candidate_batches_per_slot=1,
+            candidate_max_calls_per_quiz=42,
+        )
+
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=target["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="hard",
+            provider=provider,
+            config=pipeline_config,
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(provider.discovery_calls, 1)
+        self.assertEqual(provider.composition_calls, 1)
+        self.assertEqual(
+            daily_quiz.candidate_generation_call_count(self.conn, "2026-08-20"),
+            32,
+        )
+
     def test_candidate_pipeline_rejects_recent_hard_football_hook_locally(self) -> None:
         candidate = {
             "answer": "Recent Team",

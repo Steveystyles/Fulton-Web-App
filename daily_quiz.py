@@ -264,7 +264,7 @@ class QuizConfig:
     question_similarity_days: int = 180
     candidate_batch_size: int = 8
     candidate_batches_per_slot: int = 3
-    candidate_max_calls_per_quiz: int = 30
+    candidate_max_calls_per_quiz: int = 42
 
     @classmethod
     def from_env(cls) -> "QuizConfig":
@@ -385,7 +385,7 @@ class QuizConfig:
                 "QUIZ_CANDIDATE_BATCHES_PER_SLOT", 3, minimum=1, maximum=6
             ),
             candidate_max_calls_per_quiz=env_int(
-                "QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ", 30, minimum=1, maximum=500
+                "QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ", 42, minimum=1, maximum=500
             ),
         )
 

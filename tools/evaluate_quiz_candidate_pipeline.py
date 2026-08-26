@@ -241,7 +241,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         answer_embargo_days=45,
         recovery_answer_embargo_days=30,
         question_similarity_days=180,
-        candidate_max_calls_per_quiz=30,
+        candidate_max_calls_per_quiz=42,
     )
     daily_quiz.initialize_database(conn)
     if not args.resume:
