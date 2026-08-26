@@ -86,6 +86,7 @@ Production defaults are intentionally stricter than local development:
 - User accounts, sessions, daily Wordle games, guesses, and results are stored in `data/fultons.db` locally or `/app/data/fultons.db` inside the container.
 - Daily quiz state is stored in the SQLite database tables `daily_quiz_sets`, `daily_quiz_questions`, and `daily_quiz_attempts`. Unfinished AI-generated quizzes stay in `generating` and retry missing slots rather than falling back to local bank content.
 - Daily map game state is stored in `map_place_pool`, `daily_map_puzzles`, `daily_map_levels`, and `daily_map_guesses`.
+- Map selection blocks place types used in the previous three rounds by default; configure this with `FULTONS_DAILY_MAP_PLACE_TYPE_COOLDOWN_DAYS`. Explicit launch sequences can override the cooldown without weakening clue or evidence checks.
 - The Wordle implementation and word data live under `games/wordle/`. The root `wordle_game.py` file is a compatibility import for older scripts/tests. The local used-word tracker is stored at `games/wordle/used_words.txt`.
 - The former facts/history feature is retired. Its UI and runtime implementation
   have been removed, and its old API paths return `410 Gone` for a compatibility

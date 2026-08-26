@@ -380,6 +380,32 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertIsNotNone(any_place)
         self.assertNotEqual(any_place["place_type"], "stadium")
 
+    def test_daily_selection_cools_down_recent_place_types(self) -> None:
+        install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
+        self.publish_named_level("Wembley Stadium", puzzle_date="2026-08-06")
+
+        selected = daily_map_game.select_daily_place(self.conn, "2026-08-07")
+
+        self.assertIsNotNone(selected)
+        self.assertNotEqual(selected["place_type"], "stadium")
+        self.assertIn(
+            "stadium",
+            daily_map_game.recent_place_type_keys(self.conn, "2026-08-07"),
+        )
+
+    def test_required_launch_type_overrides_place_type_cooldown(self) -> None:
+        install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
+        self.publish_named_level("Wembley Stadium", puzzle_date="2026-08-06")
+
+        selected = daily_map_game.select_daily_place(
+            self.conn,
+            "2026-08-07",
+            required_place_type="stadium",
+        )
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["place_type"], "stadium")
+
     def test_daily_selection_does_not_reuse_a_recent_reviewed_place(self) -> None:
         install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
         for puzzle_date, place_name in (

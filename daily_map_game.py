@@ -114,6 +114,12 @@ REVERSE_GEOCODE_GATE = threading.BoundedSemaphore(REVERSE_GEOCODE_MAX_CONCURRENT
 REVERSE_GEOCODE_NEXT_REQUEST_AT = 0.0
 
 RECENT_USE_DAYS = 30
+PLACE_TYPE_COOLDOWN_DAYS = env_int(
+    "FULTONS_DAILY_MAP_PLACE_TYPE_COOLDOWN_DAYS",
+    3,
+    minimum=1,
+    maximum=14,
+)
 
 MAP_CLUE_REQUIRED_FIELDS = ("hard", "medium", "easy", "reveal")
 MAP_CLUE_OPTIONAL_FIELDS = ("medium_map_anchor",)
@@ -1542,6 +1548,35 @@ def recent_place_identity_keys(
     )
 
 
+def recent_place_type_keys(
+    conn: sqlite3.Connection,
+    puzzle_date: str,
+    *,
+    history_days: int = PLACE_TYPE_COOLDOWN_DAYS,
+) -> set[str]:
+    target_date = datetime.strptime(valid_game_date(puzzle_date), "%Y-%m-%d").date()
+    cutoff = (target_date - timedelta(days=max(1, history_days))).isoformat()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT LOWER(TRIM(map_place_pool.place_type)) AS place_type
+        FROM daily_map_levels
+        INNER JOIN daily_map_puzzles
+            ON daily_map_puzzles.id = daily_map_levels.puzzle_id
+        INNER JOIN map_place_pool
+            ON map_place_pool.id = daily_map_levels.place_id
+        WHERE daily_map_puzzles.puzzle_date >= ?
+          AND daily_map_puzzles.puzzle_date < ?
+          AND daily_map_puzzles.status = 'published'
+        """,
+        (cutoff, target_date.isoformat()),
+    ).fetchall()
+    return {
+        str(row["place_type"] or "").strip().casefold()
+        for row in rows
+        if str(row["place_type"] or "").strip()
+    }
+
+
 def select_daily_place(
     conn: sqlite3.Connection,
     puzzle_date: str,
@@ -1577,11 +1612,18 @@ def select_daily_place(
         ),
     ).fetchall()
     _, recent_names = recent_place_identity_keys(conn, puzzle_date)
+    recent_place_types = (
+        set()
+        if normalized_place_type
+        else recent_place_type_keys(conn, puzzle_date)
+    )
     rows = [
         row
         for row in rows
         if row_has_playable_map_guidance(row)
         and canonical_place_key(row["canonical_name"]) not in recent_names
+        and str(row["place_type"] or "").strip().casefold()
+        not in recent_place_types
     ]
     return best_quality_place(rows, puzzle_date=puzzle_date)
 

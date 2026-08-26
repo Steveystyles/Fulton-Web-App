@@ -205,6 +205,67 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(result["candidate_names"], ["final stadium"])
         self.assertEqual(result["wrong_type_count"], 1)
 
+    def test_discovery_rejects_place_types_from_recent_rounds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            db_path = Path(temporary_directory) / "map.db"
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+            place_id = int(
+                conn.execute(
+                    "SELECT id FROM map_place_pool WHERE canonical_name = 'London'"
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "UPDATE map_place_pool SET place_type = 'stadium' WHERE id = ?",
+                (place_id,),
+            )
+            puzzle_id = conn.execute(
+                "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-08-19', 'published')"
+            ).lastrowid
+            conn.execute(
+                """
+                INSERT INTO daily_map_levels (
+                    puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+                ) VALUES (?, 'hard', ?, 10, 80, '2026-08-19')
+                """,
+                (puzzle_id, place_id),
+            )
+            conn.commit()
+            conn.close()
+            discovery = {
+                "accepted": [
+                    {"canonical_name": "Another Stadium", "place_type": "stadium"},
+                    {"canonical_name": "Famous Palace", "place_type": "palace"},
+                ],
+                "attempts": [],
+                "rejected": [],
+            }
+            with patch(
+                "tools.generate_map_place_candidates_with_ai.generate_review_batch",
+                return_value=discovery,
+            ) as generate_batch, patch(
+                "tools.generate_map_place_candidates_with_ai.insert_draft_rows",
+                return_value=1,
+            ) as insert_rows:
+                result = generate_ai_daily_map_round.discover_uncurated_candidates(
+                    db_path=db_path,
+                    provider=FakeProvider("palace"),
+                    puzzle_date="2026-08-20",
+                    count=4,
+                    max_attempts=2,
+                )
+
+        self.assertIn(
+            "previous three rounds: stadium",
+            generate_batch.call_args.kwargs["focus"],
+        )
+        self.assertEqual(
+            insert_rows.call_args.args[1],
+            [{"canonical_name": "Famous Palace", "place_type": "palace"}],
+        )
+        self.assertEqual(result["repeated_type_count"], 1)
+
     def test_event_brief_rejects_a_generic_site_that_drops_target_identity(self) -> None:
         selected_hook = {
             "verified_hard_hook": (
@@ -663,6 +724,48 @@ class AiDailyMapRoundTests(unittest.TestCase):
         )
 
         self.assertEqual([candidate["place_id"] for candidate in candidates], [place_id])
+
+    def test_candidate_shortlist_excludes_recent_place_types(self) -> None:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        generate_ai_daily_map_round.daily_map_game.initialize_database(conn)
+        hook = (
+            "Uruguay beat host nation Brazil 2-1 in the decisive 1950 World Cup "
+            "match here, an upset known as the Maracanazo."
+        )
+        row = conn.execute(
+            "SELECT id FROM map_place_pool WHERE canonical_name = 'London'"
+        ).fetchone()
+        place_id = int(row["id"])
+        conn.execute(
+            """
+            UPDATE map_place_pool
+            SET canonical_name = 'Test Stadium', place_type = 'stadium',
+                verified_facts_json = ?, nearby_context = 'Test city'
+            WHERE id = ?
+            """,
+            (json.dumps([hook]), place_id),
+        )
+        puzzle_id = conn.execute(
+            "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-08-19', 'published')"
+        ).lastrowid
+        conn.execute(
+            """
+            INSERT INTO daily_map_levels (
+                puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+            ) VALUES (?, 'hard', ?, 10, 80, '2026-08-19')
+            """,
+            (puzzle_id, place_id),
+        )
+
+        candidates = generate_ai_daily_map_round.candidate_shortlist(
+            conn,
+            puzzle_date="2026-08-20",
+            eligible_place_ids={place_id},
+        )
+
+        self.assertEqual(candidates, [])
 
     def test_round_moves_to_next_place_when_first_ladder_is_rejected(self) -> None:
         conn = sqlite3.connect(":memory:")

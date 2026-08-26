@@ -380,6 +380,11 @@ def candidate_shortlist(
     ).fetchall()
     candidates: list[dict[str, Any]] = []
     required_type = str(required_place_type or "").strip().casefold()
+    recent_place_types = (
+        set()
+        if required_type
+        else daily_map_game.recent_place_type_keys(conn, puzzle_date)
+    )
     for row in rows:
         canonical_name = str(row["canonical_name"]).strip().casefold()
         if eligible_place_ids is not None and int(row["id"]) not in eligible_place_ids:
@@ -399,6 +404,8 @@ def candidate_shortlist(
         ):
             continue
         if required_type and str(row["place_type"]).strip().casefold() != required_type:
+            continue
+        if str(row["place_type"] or "").strip().casefold() in recent_place_types:
             continue
         summary = candidate_summary(
             row,
@@ -1774,6 +1781,10 @@ def discover_uncurated_candidates(
             )
             if str(item.get("canonical_name") or "").strip()
         ]
+        recent_place_types = daily_map_game.recent_place_type_keys(
+            conn,
+            puzzle_date,
+        )
     finally:
         conn.close()
     excluded = {
@@ -1796,6 +1807,13 @@ def discover_uncurated_candidates(
             f" This launch round requires place_type '{required_type}'. Return only "
             f"{required_type} places, but do not lower any interest, evidence, or map-playability gate."
         )
+    elif recent_place_types:
+        focus += (
+            " For variety, do not return these place types because they appeared "
+            "in the previous three rounds: "
+            + ", ".join(sorted(recent_place_types))
+            + "."
+        )
     discovery = candidate_generator.generate_review_batch(
         db_path=db_path,
         provider=provider,
@@ -1810,11 +1828,31 @@ def discover_uncurated_candidates(
         blocked_name_examples=blocked_examples,
     )
     generated_accepted = discovery.get("accepted") or []
+    wrong_type_count = sum(
+        1
+        for row in generated_accepted
+        if required_type
+        and str(row.get("place_type") or "").strip().casefold() != required_type
+    )
+    repeated_type_count = sum(
+        1
+        for row in generated_accepted
+        if not required_type
+        and str(row.get("place_type") or "").strip().casefold()
+        in recent_place_types
+    )
     accepted = [
         row
         for row in generated_accepted
-        if not required_type
-        or str(row.get("place_type") or "").strip().casefold() == required_type
+        if (
+            required_type
+            and str(row.get("place_type") or "").strip().casefold() == required_type
+        )
+        or (
+            not required_type
+            and str(row.get("place_type") or "").strip().casefold()
+            not in recent_place_types
+        )
     ]
     if not accepted:
         type_context = f" for required place_type '{required_type}'" if required_type else ""
@@ -1856,7 +1894,8 @@ def discover_uncurated_candidates(
         "candidate_names": sorted(resolved_names or generated_names),
         "attempts": discovery.get("attempts") or [],
         "rejected_count": len(discovery.get("rejected") or []),
-        "wrong_type_count": len(generated_accepted) - len(accepted),
+        "wrong_type_count": wrong_type_count,
+        "repeated_type_count": repeated_type_count,
         "required_place_type": required_type,
     }
 
