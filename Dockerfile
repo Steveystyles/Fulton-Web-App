@@ -16,7 +16,8 @@ WORKDIR /app
 
 ARG FULTONS_BUILD_COMMIT=unknown
 
-RUN apk add --no-cache tzdata \
+RUN apk upgrade --no-cache \
+  && apk add --no-cache tzdata \
   && adduser -D -u 1000 appuser
 
 LABEL org.opencontainers.image.revision="${FULTONS_BUILD_COMMIT}" \
