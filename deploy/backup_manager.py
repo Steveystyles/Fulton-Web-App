@@ -18,6 +18,7 @@ import sqlite3
 import stat
 import sys
 import tarfile
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -175,6 +176,23 @@ def _write_private(path: Path, data: str) -> None:
             os.close(descriptor)
     try:
         os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
+def _copy_private(source: Path, destination: Path) -> None:
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with source.open("rb") as source_handle, os.fdopen(descriptor, "wb") as destination_handle:
+            descriptor = -1
+            shutil.copyfileobj(source_handle, destination_handle, length=1024 * 1024)
+            destination_handle.flush()
+            os.fsync(destination_handle.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    try:
+        os.chmod(destination, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
 
@@ -352,8 +370,14 @@ def create_backup(
         artifacts: list[dict[str, Any]] = []
         database_source = source_root / database_name
         database_target = stage_path / database_name
-        sqlite_metadata = _sqlite_online_backup(database_source, database_target)
-        _fsync_file(database_target)
+        # SQLite's destination connection can fail on FUSE/mergerfs even when the
+        # same filesystem safely stores and verifies an immutable database file.
+        # Build the consistent snapshot locally, then seal it into backup storage.
+        with tempfile.TemporaryDirectory(prefix="fultons-backup-sqlite-") as sqlite_stage:
+            local_database_target = Path(sqlite_stage) / database_name
+            sqlite_metadata = _sqlite_online_backup(database_source, local_database_target)
+            _fsync_file(local_database_target)
+            _copy_private(local_database_target, database_target)
         artifacts.append(_artifact(database_target, kind="sqlite-online-backup", metadata=sqlite_metadata))
 
         durable_files = list(_durable_files(source_root, database_name))

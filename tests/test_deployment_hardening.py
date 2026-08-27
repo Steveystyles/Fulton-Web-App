@@ -60,6 +60,31 @@ def rewrite_manifest(backup_dir: Path, payload: object) -> None:
 
 
 class BackupManagerTests(unittest.TestCase):
+    def test_sqlite_snapshot_is_staged_outside_backup_filesystem(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data_dir = root / "data"
+            backup_root = root / "backup-root"
+            data_dir.mkdir()
+            build_database(data_dir / "fultons.db")
+            destinations: list[Path] = []
+            original_backup = backup_manager._sqlite_online_backup
+
+            def observe_destination(source: Path, destination: Path) -> dict[str, object]:
+                destinations.append(destination)
+                return original_backup(source, destination)
+
+            with patch.object(
+                backup_manager,
+                "_sqlite_online_backup",
+                side_effect=observe_destination,
+            ):
+                created = backup_manager.create_backup(data_dir, backup_root)
+
+            self.assertEqual(len(destinations), 1)
+            self.assertFalse(destinations[0].is_relative_to(backup_root))
+            self.assertEqual(backup_manager.verify_backup(created)["database"], "fultons.db")
+
     def test_wal_mode_backup_verification_does_not_create_sidecars(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
