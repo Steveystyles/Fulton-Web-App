@@ -649,7 +649,7 @@ class DeploymentScriptStaticTests(unittest.TestCase):
                     )
         self.assertEqual(set(scanned_files), production_python_files)
 
-        self.assertEqual(len(findings), 41)
+        self.assertEqual(len(findings), 39)
         self.assertEqual({result["issue_severity"] for result in findings}, {"MEDIUM"})
         self.assertEqual(
             {result["test_id"] for result in findings},
@@ -662,7 +662,7 @@ class DeploymentScriptStaticTests(unittest.TestCase):
                 )
                 for level in {"HIGH", "MEDIUM"}
             },
-            {"HIGH": 17, "MEDIUM": 24},
+            {"HIGH": 17, "MEDIUM": 22},
         )
         exact_sites = {
             (
