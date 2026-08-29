@@ -346,6 +346,49 @@
         "created_at": "2026-08-22T21:30:00+00:00",
         "map_search_anchors_json": "[{\"name\":\"Rome\",\"lat\":41.8933203,\"lng\":12.4829321,\"min_hint_count\":1,\"min_zoom\":4,\"max_zoom\":9,\"guidance_radius_m\":25000,\"boundary_min_zoom\":4},{\"name\":\"Foro Italico\",\"lat\":41.9318,\"lng\":12.4581,\"min_hint_count\":2,\"min_zoom\":8,\"max_zoom\":11,\"guidance_radius_m\":4000,\"boundary_min_zoom\":8},{\"name\":\"Stadio Olimpico\",\"lat\":41.9338,\"lng\":12.4547,\"min_hint_count\":2,\"min_zoom\":12,\"max_zoom\":19}]"
       }
+    },
+    {
+      "qaDate": "2026-08-30",
+      "place": {
+        "slug": "ai-medium-pompeii-d0e8f3",
+        "canonical_name": "Pompeii",
+        "country_code": "IT",
+        "country_name": "Italy",
+        "continent": "Europe",
+        "admin1": "Campania",
+        "place_type": "archaeological_site",
+        "difficulty": "medium",
+        "lat": 40.7512,
+        "lng": 14.4869,
+        "coordinate_precision": "archaeological park centre",
+        "suggested_map_zoom": 13,
+        "clue_text": "In 79 AD, Mount Vesuvius buried this Roman city beneath ash and pumice, preserving streets, homes and public buildings for centuries.",
+        "medium_clue_text": "In southern Italy's Campania region, this site lies on the plain southeast of Mount Vesuvius, close to the Bay of Naples.",
+        "easy_clue_text": "From Naples, look about 22 kilometres southeast, just east of Torre Annunziata and beside the railway, for the large excavated Roman site.",
+        "reveal_text": "Pompeii is the Roman city buried by Mount Vesuvius in AD 79. Its ash-covered streets and buildings preserve an extraordinary picture of everyday ancient life.",
+        "acceptable_aliases": "Pompeii Archaeological Park; Scavi di Pompei",
+        "nearby_context": "Naples, southeast of Mount Vesuvius, just east of Torre Annunziata, beside the Circumvesuviana railway",
+        "verified_facts_json": "[\"In 79 AD, Mount Vesuvius buried this Roman city beneath ash and pumice, preserving streets, homes and public buildings for centuries.\", \"In southern Italy's Campania region, this site lies on the plain southeast of Mount Vesuvius, close to the Bay of Naples.\", \"From Naples, look about 22 kilometres southeast, just east of Torre Annunziata and beside the railway, for the large excavated Roman site.\"]",
+        "sources_json": "[{\"name\":\"UNESCO - Archaeological Areas of Pompei, Herculaneum and Torre Annunziata\",\"url\":\"https://whc.unesco.org/en/list/829/\"},{\"name\":\"Pompeii Archaeological Park\",\"url\":\"https://pompeiisites.org/en/\"}]",
+        "coordinate_source_name": "UNESCO World Heritage Centre",
+        "coordinate_source_url": "https://whc.unesco.org/en/list/829/",
+        "avoid_in_clues": "Pompeii; Pompeii Archaeological Park; Scavi di Pompei; Pompei",
+        "deconflict_group": "pompeii",
+        "fact_stability": "stable_historic_event",
+        "review_status": "machine_validated",
+        "review_notes": "Promoted from the grounded candidate pool after deterministic clue review and staged map-guidance validation.",
+        "reviewed_on": "2026-08-29T00:06:25+00:00",
+        "clue_generation_source": "grounded candidate + deterministic review",
+        "clue_profile_hash": "e344492772dd74ca",
+        "clue_critic_mode": "local",
+        "validation_grade": 9.0,
+        "validation_reasoning": "The eruption is an iconic hard hook; later clues progressively narrow the search through Campania, Naples and Torre Annunziata.",
+        "scoring_radius_m": 3000,
+        "active": 1,
+        "cooldown_until": null,
+        "created_at": "2026-08-29T00:06:25+00:00",
+        "map_search_anchors_json": "[{\"name\":\"Naples area\",\"lat\":40.8518,\"lng\":14.2681,\"min_hint_count\":1,\"min_zoom\":4,\"max_zoom\":9,\"guidance_radius_m\":45000,\"boundary_kind\":\"guidance\",\"boundary_min_zoom\":4},{\"name\":\"Torre Annunziata\",\"lat\":40.7537,\"lng\":14.4525,\"min_hint_count\":2,\"min_zoom\":8,\"max_zoom\":12,\"guidance_radius_m\":7000,\"boundary_kind\":\"guidance\",\"boundary_min_zoom\":8},{\"name\":\"Pompeii\",\"lat\":40.7512,\"lng\":14.4869,\"min_hint_count\":2,\"min_zoom\":12,\"max_zoom\":19}]"
+      }
     }
   ]
 }

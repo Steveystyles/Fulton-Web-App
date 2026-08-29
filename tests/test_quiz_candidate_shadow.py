@@ -170,6 +170,26 @@ class QuizCandidateShadowTests(unittest.TestCase):
             )
         )
 
+    def test_shadow_run_requires_dedicated_provider_credentials(self) -> None:
+        with patch.dict(shadow.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "dedicated QUIZ_SHADOW"):
+                shadow.configure_shadow_provider_credentials(allow_shared=False)
+
+    def test_shadow_credentials_replace_live_provider_secrets(self) -> None:
+        with patch.dict(
+            shadow.os.environ,
+            {
+                "GEMINI_API_KEY": "live-gemini",
+                "AI_API_KEY": "live-compatible",
+                "QUIZ_SHADOW_GEMINI_API_KEY": "shadow-gemini",
+            },
+            clear=True,
+        ):
+            shadow.configure_shadow_provider_credentials(allow_shared=False)
+
+            self.assertEqual(shadow.os.environ["GEMINI_API_KEY"], "shadow-gemini")
+            self.assertNotIn("AI_API_KEY", shadow.os.environ)
+
     def test_shadow_run_pauses_before_later_dates_when_provider_quota_is_exhausted(
         self,
     ) -> None:
@@ -210,6 +230,7 @@ class QuizCandidateShadowTests(unittest.TestCase):
                 max_rounds=16,
                 retry_delay_seconds=0,
                 resume=False,
+                allow_shared_provider_quota=True,
             )
             config_stub = SimpleNamespace(
                 answer_embargo_days=45,
@@ -281,6 +302,7 @@ class QuizCandidateShadowTests(unittest.TestCase):
                 max_rounds=2,
                 retry_delay_seconds=0,
                 resume=True,
+                allow_shared_provider_quota=True,
             )
             config_stub = SimpleNamespace(
                 answer_embargo_days=45,

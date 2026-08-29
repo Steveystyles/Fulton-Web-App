@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sqlite3
 import statistics
 import sys
@@ -22,6 +23,35 @@ import daily_quiz
 DEFAULT_DB_PATH = PROJECT_DIR / "data" / "fultons.db"
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "data" / "qa" / "quiz-candidate-shadow"
 STATE_FILENAME = "state.json"
+
+SHADOW_PROVIDER_CREDENTIALS = {
+    "QUIZ_SHADOW_GEMINI_API_KEY": "GEMINI_API_KEY",
+    "QUIZ_SHADOW_AI_API_KEY": "AI_API_KEY",
+    "QUIZ_SHADOW_FALLBACK_API_KEY": "AI_FALLBACK_API_KEY",
+    "QUIZ_SHADOW_FALLBACK_GEMINI_API_KEY": "AI_FALLBACK_GEMINI_API_KEY",
+    "QUIZ_SHADOW_FALLBACK2_API_KEY": "AI_FALLBACK2_API_KEY",
+    "QUIZ_SHADOW_FALLBACK2_GEMINI_API_KEY": "AI_FALLBACK2_GEMINI_API_KEY",
+    "QUIZ_SHADOW_EVIDENCE_OPENROUTER_API_KEY": "QUIZ_EVIDENCE_OPENROUTER_API_KEY",
+}
+
+
+def configure_shadow_provider_credentials(*, allow_shared: bool) -> None:
+    if allow_shared:
+        return
+    overrides = {
+        target: os.environ[source].strip()
+        for source, target in SHADOW_PROVIDER_CREDENTIALS.items()
+        if os.environ.get(source, "").strip()
+    }
+    if not overrides:
+        raise RuntimeError(
+            "Shadow evaluation requires dedicated QUIZ_SHADOW_* provider credentials. "
+            "Live provider keys are not used by default because a shadow run can exhaust "
+            "the production quota."
+        )
+    for target in SHADOW_PROVIDER_CREDENTIALS.values():
+        os.environ.pop(target, None)
+    os.environ.update(overrides)
 
 
 def provider_capacity_exhausted(messages: list[str]) -> bool:
@@ -220,6 +250,9 @@ def write_review_sample(conn: sqlite3.Connection, output_path: Path) -> None:
 
 
 def evaluate(args: argparse.Namespace) -> dict[str, Any]:
+    configure_shadow_provider_credentials(
+        allow_shared=bool(getattr(args, "allow_shared_provider_quota", False))
+    )
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     shadow_db = output_dir / "shadow.db"
@@ -241,7 +274,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         answer_embargo_days=45,
         recovery_answer_embargo_days=30,
         question_similarity_days=180,
-        candidate_max_calls_per_quiz=42,
+        candidate_max_calls_per_quiz=30,
     )
     daily_quiz.initialize_database(conn)
     if not args.resume:
@@ -404,6 +437,14 @@ def parse_args() -> argparse.Namespace:
         "--resume",
         action="store_true",
         help="Resume the existing shadow database and active-time state in output-dir.",
+    )
+    parser.add_argument(
+        "--allow-shared-provider-quota",
+        action="store_true",
+        help=(
+            "Allow normal provider credentials only when no production scheduler shares "
+            "their quota."
+        ),
     )
     return parser.parse_args()
 

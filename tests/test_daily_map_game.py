@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from datetime import date, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import patch
@@ -407,20 +408,17 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(selected["place_type"], "stadium")
 
     def test_daily_selection_does_not_reuse_a_recent_reviewed_place(self) -> None:
+        entries = install_map_reviewed_fallbacks.load_package(REVIEWED_FALLBACKS_PATH)
         install_map_reviewed_fallbacks.install_seed(self.conn, REVIEWED_FALLBACKS_PATH)
-        for puzzle_date, place_name in (
-            ("2026-08-01", "Terracotta Army"),
-            ("2026-08-02", "Canterbury Cathedral"),
-            ("2026-08-03", "Wembley Stadium"),
-            ("2026-08-04", "Stade de France"),
-            ("2026-08-05", "Camp Nou"),
-            ("2026-08-06", "Estádio do Dragão"),
-            ("2026-08-07", "Estadio Azteca"),
-            ("2026-08-08", "Stadio Olimpico"),
-        ):
-            self.publish_named_level(place_name, puzzle_date=puzzle_date)
+        first_date = date(2026, 8, 1)
+        for offset, entry in enumerate(entries):
+            self.publish_named_level(
+                entry["place"]["canonical_name"],
+                puzzle_date=(first_date + timedelta(days=offset)).isoformat(),
+            )
 
-        selected = daily_map_game.select_daily_place(self.conn, "2026-08-09")
+        target_date = (first_date + timedelta(days=len(entries))).isoformat()
+        selected = daily_map_game.select_daily_place(self.conn, target_date)
 
         self.assertIsNone(selected)
 

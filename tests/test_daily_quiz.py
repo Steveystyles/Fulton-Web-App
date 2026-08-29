@@ -541,6 +541,12 @@ class DailyQuizTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertIsNotNone(result.question)
 
+    def test_config_uses_thirty_call_candidate_ceiling_by_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            loaded = daily_quiz.QuizConfig.from_env()
+
+        self.assertEqual(loaded.candidate_max_calls_per_quiz, 30)
+
     def test_config_reuses_openrouter_fallback_for_evidence_search(self) -> None:
         with patch.dict(
             os.environ,
@@ -650,6 +656,15 @@ class DailyQuizTests(unittest.TestCase):
         )
 
         self.assertNotEqual(lane, "competitions and rules")
+
+    def test_candidate_allows_specific_topic_inside_a_broad_saturated_lane(self) -> None:
+        recent = [{"tags": ["rules"]} for _ in range(5)]
+
+        saturated = daily_quiz.candidate_saturated_topic_tag(
+            ["rules", "back-pass rule"], recent
+        )
+
+        self.assertIsNone(saturated)
 
     def test_candidate_hook_must_be_a_factual_statement(self) -> None:
         candidate = {
@@ -1384,6 +1399,16 @@ class DailyQuizTests(unittest.TestCase):
                 result = daily_quiz.validate_question(question)
                 self.assertFalse(result.passed)
                 self.assertIn(expected_reason, result.reason)
+
+    def test_validator_rejects_malformed_text_encoding(self) -> None:
+        question = valid_question()
+        question["choices"][0] = "Luis Barrag%n"
+        question["correct_answer"] = "Luis Barrag%n"
+
+        result = daily_quiz.validate_question(question)
+
+        self.assertFalse(result.passed)
+        self.assertIn("malformed text encoding", result.reason)
 
     def test_validator_allows_stable_today_wording(self) -> None:
         question = valid_question(difficulty="hard")

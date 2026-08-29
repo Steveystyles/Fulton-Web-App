@@ -264,7 +264,7 @@ class QuizConfig:
     question_similarity_days: int = 180
     candidate_batch_size: int = 8
     candidate_batches_per_slot: int = 3
-    candidate_max_calls_per_quiz: int = 42
+    candidate_max_calls_per_quiz: int = 30
 
     @classmethod
     def from_env(cls) -> "QuizConfig":
@@ -385,7 +385,7 @@ class QuizConfig:
                 "QUIZ_CANDIDATE_BATCHES_PER_SLOT", 3, minimum=1, maximum=6
             ),
             candidate_max_calls_per_quiz=env_int(
-                "QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ", 42, minimum=1, maximum=500
+                "QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ", 30, minimum=1, maximum=500
             ),
         )
 
@@ -1522,6 +1522,7 @@ Rules:
 - The evidence query must contain the exact answer text plus the central event, record, custom, discovery, or connection; copy the answer into it verbatim.
 - Do not write choices, explanations, or complete questions.
 - Produce genuinely different answers and hooks within the batch.
+- Tags must identify specific entities or events. Do not use broad lane labels such as rules, tactics, club history, tournament history, design, or awards as topic tags.
 - {scope_rule}
 
 {subject_prompt_guidance(subject, difficulty)}
@@ -1789,6 +1790,15 @@ def question_uses_volatile_fact(question: str) -> bool:
     return any(pattern.search(question) for pattern in VOLATILE_FACT_PATTERNS)
 
 
+def text_has_encoding_damage(value: str) -> bool:
+    text = str(value or "")
+    if "\ufffd" in text or re.search(
+        r"(?:\u00c3[\x80-\xBF]|\u00c2[\x80-\xBF]|\u00e2\u20ac)", text
+    ):
+        return True
+    return bool(re.search(r"[A-Za-z]%[A-Za-z]", text))
+
+
 def is_generic_topic_tag(value: str) -> bool:
     return normalize_text(value) in GENERIC_TOPIC_TAGS
 
@@ -1856,6 +1866,10 @@ def validate_question(
         return ValidationResult(False, "interesting_reason must contain at least 20 characters.")
     if len(interesting_reason.strip()) > 500:
         return ValidationResult(False, "interesting_reason is longer than 500 characters.")
+
+    text_fields = [question, *clean_choices, explanation, interesting_reason]
+    if any(text_has_encoding_damage(text) for text in text_fields):
+        return ValidationResult(False, "Question payload contains malformed text encoding.")
 
     tags = value.get("tags")
     if not isinstance(tags, list) or len(tags) < 2:
@@ -2872,11 +2886,11 @@ def candidate_local_rejection(
         if previous
     ):
         return "Candidate hook duplicates or closely matches a previous hook."
-    topic_counts = recent_topic_counts(recent_questions_for_topics)
-    for tag in candidate["tags"]:
-        normalized = normalize_text(tag)
-        if not is_generic_topic_tag(normalized) and topic_counts[normalized] >= 5:
-            return f"Topic tag {tag!r} has appeared too often recently."
+    saturated_tag = candidate_saturated_topic_tag(
+        candidate["tags"], recent_questions_for_topics
+    )
+    if saturated_tag:
+        return f"Topic tag {saturated_tag!r} has appeared too often recently."
     return None
 
 
@@ -2891,6 +2905,25 @@ def recent_topic_counts(
             if not is_generic_topic_tag(normalize_text(tag))
         )
     return counts
+
+
+def candidate_saturated_topic_tag(
+    tags: list[str], recent_questions: list[dict[str, Any]]
+) -> str | None:
+    specific_tags = [
+        str(tag).strip()
+        for tag in tags
+        if str(tag).strip() and not is_generic_topic_tag(str(tag))
+    ]
+    if not specific_tags:
+        return None
+    topic_counts = recent_topic_counts(recent_questions)
+    saturated = [
+        tag for tag in specific_tags if topic_counts[normalize_text(tag)] >= 5
+    ]
+    if len(saturated) != len(specific_tags):
+        return None
+    return max(saturated, key=lambda tag: topic_counts[normalize_text(tag)])
 
 
 def saturated_topic_feedback(

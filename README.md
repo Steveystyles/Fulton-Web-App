@@ -153,15 +153,18 @@ The two-stage candidate pipeline can be shadow-tested without touching the live
 database or published quizzes:
 
 ```bash
-python tools/evaluate_quiz_candidate_pipeline.py --start-date 2026-08-14
+QUIZ_SHADOW_GEMINI_API_KEY=... python tools/evaluate_quiz_candidate_pipeline.py --start-date 2026-08-14
 ```
 
 It copies quiz history into `data/qa/quiz-candidate-shadow/shadow.db`, generates
 seven unpublished comparison dates, writes automated metrics to `report.json`,
 and exports a 12-question human review sample. Production activation remains
 controlled by `QUIZ_CANDIDATE_PIPELINE_ENABLED`, which defaults to `0`. The
-pipeline enforces `QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ` (default `42`) before
-making each discovery or composition request.
+pipeline enforces `QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ` (default `30`) before
+making each discovery or composition request. Shadow evaluation requires
+dedicated `QUIZ_SHADOW_*` credentials by default so it cannot exhaust the live
+generator's quota. `--allow-shared-provider-quota` is reserved for isolated
+environments where no production scheduler uses those credentials.
 
 Run the safe fixture evaluator to confirm the held-out eval file is structurally valid:
 
