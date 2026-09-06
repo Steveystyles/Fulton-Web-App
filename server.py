@@ -34,6 +34,7 @@ import daily_quiz
 from env_config import env_bool, env_int, env_ip_networks
 from safe_http import read_bounded_response
 from tools import generate_ai_daily_map_round
+from tools import controlled_map_round
 from tools import build_map_selector_profile
 from tools import install_map_training_seed
 from tools import install_map_reviewed_fallbacks
@@ -145,6 +146,8 @@ DAILY_MAP_GAME_TRANSIENT_RETRY_INTERVAL_SEC = max(
 DAILY_MAP_AI_GENERATION_ENABLED = env_bool(
     "FULTONS_DAILY_MAP_AI_GENERATION_ENABLED", True
 )
+DAILY_MAP_CONTROLLED_ENABLED = env_bool("FULTONS_DAILY_MAP_CONTROLLED_ENABLED", False)
+DAILY_MAP_CONTROLLED_CATALOG = Path(os.environ.get("MAP_AI_CATALOG_PATH", "").strip() or controlled_map_round.DEFAULT_CATALOG)
 DAILY_MAP_AI_SHORTLIST_LIMIT = env_int(
     "FULTONS_DAILY_MAP_AI_SHORTLIST_LIMIT", 24, minimum=4, maximum=500
 )
@@ -3927,6 +3930,24 @@ def generate_daily_map_game_for_date(
             allow_recent_preferred_place=preferred_place_id is not None,
             log=lambda message: safe_log(f"Daily map game: {message}"),
         )
+
+    if DAILY_MAP_CONTROLLED_ENABLED:
+        # Published rounds remain immutable in this mode, including force requests.
+        if existing["status"] == "published":
+            return existing
+        try:
+            controlled_provider = controlled_map_round.ControlledProvider.from_runtime_env()
+            generated = controlled_map_round.generate_and_publish(
+                conn, puzzle_date=normalized_date, provider=controlled_provider, catalog=DAILY_MAP_CONTROLLED_CATALOG,
+            )
+            safe_log(f"Daily map controlled generation completed for {normalized_date} in {generated['request_count']} request(s).")
+            return dict(generated["publish_result"])
+        except Exception as error:
+            safe_log(f"Daily map controlled generation failed for {normalized_date}: {type(error).__name__}")
+            return publish_reviewed_daily_map_fallback(
+                conn, puzzle_date=normalized_date, required_place_type=required_place_type,
+                ai_failure_reason=f"Controlled generation failed: {type(error).__name__}",
+            )
 
     try:
         provider = map_clue_rewriter.ConfiguredMapClueProvider.from_env()

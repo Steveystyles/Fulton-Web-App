@@ -1,0 +1,284 @@
+{
+  "version": 1,
+  "places": [
+    {
+      "id": "sydney-opera-house",
+      "canonical_name": "Sydney Opera House",
+      "acceptable_aliases": [
+        "Opera House"
+      ],
+      "place_type": "performing arts venue",
+      "country_name": "Australia",
+      "locality_name": "Sydney",
+      "lat": -33.8568,
+      "lng": 151.2153,
+      "checked_on": "2026-09-06",
+      "coordinate_source_url": "https://www.openstreetmap.org/?mlat=-33.8568&mlon=151.2153#map=18/-33.8568/151.2153",
+      "sources": {
+        "history": "https://www.sydneyoperahouse.com/our-story/the-spherical-solution",
+        "location": "https://www.sydneyoperahouse.com/visit/getting-here"
+      },
+      "facts": {
+        "hard": {
+          "text": "JÃ¸rn Utzon solved the construction problem of this performance building's shell roofs by deriving their shapes from one sphere. The story that he discovered this while peeling an orange is a myth.",
+          "source_ids": [
+            "history"
+          ]
+        },
+        "medium": {
+          "text": "The venue stands on the harbour in Sydney, New South Wales, Australia.",
+          "source_ids": [
+            "history",
+            "location"
+          ]
+        },
+        "easy": {
+          "text": "In central Sydney, find this performance venue on Bennelong Point near Circular Quay.",
+          "source_ids": [
+            "location"
+          ]
+        }
+      },
+      "anchors": [
+        {
+          "name": "Sydney",
+          "lat": -33.8688,
+          "lng": 151.2093,
+          "radius_m": 25000,
+          "min_hint_count": 1
+        },
+        {
+          "name": "Circular Quay",
+          "lat": -33.861,
+          "lng": 151.211,
+          "radius_m": 1800,
+          "min_hint_count": 2
+        }
+      ],
+      "country_code": "AU"
+    },
+    {
+      "id": "gateway-arch",
+      "canonical_name": "Gateway Arch",
+      "acceptable_aliases": [
+        "St Louis Arch",
+        "Saint Louis Arch"
+      ],
+      "place_type": "monument",
+      "country_name": "United States",
+      "locality_name": "St. Louis",
+      "lat": 38.6247,
+      "lng": -90.1848,
+      "checked_on": "2026-09-06",
+      "coordinate_source_url": "https://www.openstreetmap.org/?mlat=38.6247&mlon=-90.1848#map=18/38.6247/-90.1848",
+      "sources": {
+        "engineering": "https://www.nps.gov/jeff/planyourvisit/gateway-arch-still-a-modern-engineering-marvel.htm",
+        "location": "https://www.nps.gov/jeff/getinvolved/supportyourpark/upload/JEFF_OV_2021-508_spg.pdf"
+      },
+      "facts": {
+        "hard": {
+          "text": "This curved monument needed a specially designed tram to reach its observation deck because ordinary lifts could not follow its changing slope. Its height and ground-level width are both 630 feet.",
+          "source_ids": [
+            "engineering"
+          ]
+        },
+        "medium": {
+          "text": "The monument stands in St. Louis, Missouri, in the United States, beside the Mississippi River.",
+          "source_ids": [
+            "engineering",
+            "location"
+          ]
+        },
+        "easy": {
+          "text": "In downtown St. Louis, the monument is on the west bank of the Mississippi River, two blocks east of the Old Courthouse.",
+          "source_ids": [
+            "location"
+          ]
+        }
+      },
+      "anchors": [
+        {
+          "name": "St. Louis",
+          "lat": 38.627,
+          "lng": -90.1994,
+          "radius_m": 25000,
+          "min_hint_count": 1
+        },
+        {
+          "name": "Old Courthouse",
+          "lat": 38.6252,
+          "lng": -90.1893,
+          "radius_m": 1800,
+          "min_hint_count": 2
+        }
+      ],
+      "country_code": "US"
+    },
+    {
+      "id": "atomium",
+      "canonical_name": "Atomium",
+      "acceptable_aliases": [],
+      "place_type": "exhibition landmark",
+      "country_name": "Belgium",
+      "locality_name": "Brussels",
+      "lat": 50.8949,
+      "lng": 4.3416,
+      "checked_on": "2026-09-06",
+      "coordinate_source_url": "https://www.openstreetmap.org/?mlat=50.8949&mlon=4.3416#map=18/50.8949/4.3416",
+      "sources": {
+        "history": "https://atomium.be/the_shape_of_the_atomium?lang=en",
+        "district": "https://www.visit.brussels/en/visitors/what-to-do/the-little-secrets-of-the-heysel-district",
+        "access": "https://atomium.be/atomium-access"
+      },
+      "facts": {
+        "hard": {
+          "text": "Built for Expo 58, this landmark represents an iron crystal enlarged 165 billion times, turning an atomic structure into a building.",
+          "source_ids": [
+            "history"
+          ]
+        },
+        "medium": {
+          "text": "The landmark is in Brussels, the capital of Belgium.",
+          "source_ids": [
+            "history",
+            "district"
+          ]
+        },
+        "easy": {
+          "text": "In northern Brussels, the landmark stands in the Heysel district, near Heysel/Heizel metro station.",
+          "source_ids": [
+            "district",
+            "access"
+          ]
+        }
+      },
+      "anchors": [
+        {
+          "name": "Brussels",
+          "lat": 50.8503,
+          "lng": 4.3517,
+          "radius_m": 25000,
+          "min_hint_count": 1
+        },
+        {
+          "name": "Heysel",
+          "lat": 50.897,
+          "lng": 4.337,
+          "radius_m": 1800,
+          "min_hint_count": 2
+        }
+      ],
+      "country_code": "BE"
+    },
+    {
+      "id": "eiffel-tower",
+      "canonical_name": "Eiffel Tower",
+      "acceptable_aliases": [
+        "Tour Eiffel"
+      ],
+      "place_type": "tower",
+      "country_name": "France",
+      "country_code": "FR",
+      "locality_name": "Paris",
+      "lat": 48.8584,
+      "lng": 2.2945,
+      "checked_on": "2026-09-06",
+      "coordinate_source_url": "https://www.openstreetmap.org/?mlat=48.8584&mlon=2.2945#map=18/48.8584/2.2945",
+      "sources": {
+        "history": "https://www.toureiffel.paris/en/news/130-years/why-was-eiffel-tower-kept",
+        "location": "https://www.toureiffel.paris/en/access-map"
+      },
+      "facts": {
+        "hard": {
+          "text": "This exhibition tower escaped demolition because it proved useful as a giant radio antenna, turning a temporary attraction into a lasting landmark.",
+          "source_ids": [
+            "history"
+          ]
+        },
+        "medium": {
+          "text": "The tower stands in Paris, the capital of France.",
+          "source_ids": [
+            "location"
+          ]
+        },
+        "easy": {
+          "text": "In central Paris, find the tower on the Champ de Mars in the 7th arrondissement.",
+          "source_ids": [
+            "location"
+          ]
+        }
+      },
+      "anchors": [
+        {
+          "name": "Paris",
+          "lat": 48.8566,
+          "lng": 2.3522,
+          "radius_m": 25000,
+          "min_hint_count": 1
+        },
+        {
+          "name": "Champ de Mars",
+          "lat": 48.8556,
+          "lng": 2.2986,
+          "radius_m": 1800,
+          "min_hint_count": 2
+        }
+      ]
+    },
+    {
+      "id": "golden-gate-bridge",
+      "canonical_name": "Golden Gate Bridge",
+      "acceptable_aliases": [
+        "Golden Gate"
+      ],
+      "place_type": "bridge",
+      "country_name": "United States",
+      "country_code": "US",
+      "locality_name": "San Francisco",
+      "lat": 37.8199,
+      "lng": -122.4783,
+      "checked_on": "2026-09-06",
+      "coordinate_source_url": "https://www.openstreetmap.org/?mlat=37.8199&mlon=-122.4783#map=18/37.8199/-122.4783",
+      "sources": {
+        "history": "https://www.goldengate.org/bridge/history-research/bridge-features/foghorns-beacons/",
+        "location": "https://www.nps.gov/fopo/planyourvisit/upload/fopo-english-web.pdf"
+      },
+      "facts": {
+        "hard": {
+          "text": "This suspension bridge was painted International Orange partly to make it more visible in fog, rather than matching the precious metal in its name.",
+          "source_ids": [
+            "history"
+          ]
+        },
+        "medium": {
+          "text": "The bridge reaches San Francisco in California, in the United States.",
+          "source_ids": [
+            "location"
+          ]
+        },
+        "easy": {
+          "text": "In northern San Francisco, find the bridge above Fort Point at its southern end.",
+          "source_ids": [
+            "location"
+          ]
+        }
+      },
+      "anchors": [
+        {
+          "name": "San Francisco",
+          "lat": 37.7749,
+          "lng": -122.4194,
+          "radius_m": 25000,
+          "min_hint_count": 1
+        },
+        {
+          "name": "Fort Point",
+          "lat": 37.8106,
+          "lng": -122.477,
+          "radius_m": 2500,
+          "min_hint_count": 2
+        }
+      ]
+    }
+  ]
+}

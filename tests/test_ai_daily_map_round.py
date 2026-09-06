@@ -873,6 +873,10 @@ class AiDailyMapRoundTests(unittest.TestCase):
                 return_value={"status": "published"},
             ),
             patch.object(
+                generate_ai_daily_map_round.daily_map_game,
+                "save_reviewed_clue_ladder",
+            ),
+            patch.object(
                 generate_ai_daily_map_round,
                 "build_verified_map_search_anchors",
                 return_value=[
@@ -892,7 +896,7 @@ class AiDailyMapRoundTests(unittest.TestCase):
         ):
             result = generate_ai_daily_map_round.generate_round(
                 conn,
-                provider=object(),
+                provider=type("Provider", (), {"name": "fixture"})(),
                 puzzle_date="2026-07-30",
                 shortlist_limit=8,
                 max_clue_attempts=2,
@@ -903,6 +907,7 @@ class AiDailyMapRoundTests(unittest.TestCase):
         self.assertEqual(result["place_attempts"], 2)
         self.assertEqual(result["rejected_places"][0]["place"], "London")
         self.assertEqual(generate_clues.call_count, 2)
+        self.assertFalse(generate_clues.call_args.kwargs["save"])
 
     def test_map_search_anchor_uses_named_locality_near_answer(self) -> None:
         place = {
