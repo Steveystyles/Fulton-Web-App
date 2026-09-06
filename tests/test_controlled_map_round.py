@@ -163,6 +163,20 @@ class ControlledMapTests(unittest.TestCase):
                 controlled.generate_and_publish(conn, puzzle_date="2026-09-20", provider=provider)
             request.assert_not_called()
 
+    def test_all_catalogue_places_can_publish_with_evidence_based_clues(self):
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.row_factory = sqlite3.Row
+            controlled.daily_map_game.initialize_database(conn)
+            conn.commit()
+            for index, place in enumerate(self.places):
+                payload = {"place_id": place["id"], "selection_reason": "A sourced landmark with distinctive history and practical map guidance.",
+                           "clues": {k: {"text": v["text"], "fact_id": k} for k, v in place["facts"].items()}}
+                provider = self.provider()
+                with self.subTest(place=place["id"]), patch.object(provider, "request_json", return_value=payload):
+                    result = controlled.generate_and_publish(conn, puzzle_date=f"2026-10-{index + 1:02d}", provider=provider)
+                    self.assertEqual(result["publish_result"]["status"], "published")
+                    conn.commit()
+
     def test_real_publication_and_rollback_preserve_callers_transaction(self):
         for fail in (False, True):
             with self.subTest(fail=fail), closing(sqlite3.connect(":memory:")) as conn:
