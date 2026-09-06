@@ -143,6 +143,8 @@ def generate_and_publish(conn: sqlite3.Connection, *, puzzle_date: str, provider
     """Run one bounded request and publish through the existing game transaction."""
     if provider.max_requests != 1:
         raise ValueError("Controlled generation requires a one-request provider.")
+    if not daily_map_game.map_learning_profile_hash():
+        raise ValueError("Install the bundled map learning profile before production generation.")
     places = eligible_places_in_database(conn, puzzle_date, load_catalog(catalog))
     payload = provider.call_with_fallback(model_attr="generator_model", prompt=build_prompt(places), schema=response_schema())
     result = validate_result(payload, places)

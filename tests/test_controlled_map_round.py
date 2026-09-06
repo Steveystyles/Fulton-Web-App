@@ -1,6 +1,7 @@
 from copy import deepcopy
 from contextlib import closing
 import json
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -13,6 +14,10 @@ from tools import controlled_map_round as controlled
 
 class ControlledMapTests(unittest.TestCase):
     def setUp(self):
+        seed = controlled.PROJECT_DIR / "deploy" / "map-training-seed" / "map_learning_profile_latest.json"
+        profile = patch.object(controlled.daily_map_game, "map_learning_profile_hash", return_value=hashlib.sha256(seed.read_bytes()).hexdigest()[:16])
+        profile.start()
+        self.addCleanup(profile.stop)
         self.places = controlled.load_catalog(controlled.DEFAULT_CATALOG)
         self.place = next(p for p in self.places if p["id"] == "atomium")
         self.payload = {"place_id": "atomium", "selection_reason": "A surprising scientific idea turned into a recognisable landmark.",
@@ -150,6 +155,13 @@ class ControlledMapTests(unittest.TestCase):
             self.assertEqual(provider.max_requests, 1)
             self.assertEqual(provider.clients[0].config.generator_model, "explicit-model")
             self.assertEqual(provider.clients[0].config.fallback_provider, "")
+
+    def test_missing_learning_profile_stops_before_api_call(self):
+        provider = self.provider()
+        with closing(sqlite3.connect(":memory:")) as conn, patch.object(controlled.daily_map_game, "map_learning_profile_hash", return_value=""), patch.object(provider, "request_json") as request:
+            with self.assertRaisesRegex(ValueError, "learning profile"):
+                controlled.generate_and_publish(conn, puzzle_date="2026-09-20", provider=provider)
+            request.assert_not_called()
 
     def test_real_publication_and_rollback_preserve_callers_transaction(self):
         for fail in (False, True):
