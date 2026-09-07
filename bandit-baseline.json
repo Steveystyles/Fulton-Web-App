@@ -26,6 +26,7 @@
     "tools/check_bandit_baseline.py",
     "tools/consolidate_training_data.py",
     "tools/controlled_map_round.py",
+    "tools/discover_map_places.py",
     "tools/evaluate_quiz_candidate_pipeline.py",
     "tools/evaluate_quiz_generator.py",
     "tools/export_map_clue_review_training_data.py",

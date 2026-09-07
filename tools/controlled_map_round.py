@@ -60,6 +60,8 @@ def load_catalog(path: Path) -> list[dict[str, Any]]:
         raise ValueError("Expected a version 1 catalogue with 1–500 places.")
     ids: set[str] = set()
     for place in places:
+        if place.get("review_status", "source_reviewed") != "source_reviewed":
+            raise ValueError("Discovered candidates require source review before runtime use.")
         if not place.get("id") or place["id"] in ids:
             raise ValueError("Catalogue place IDs must be nonempty and unique.")
         ids.add(place["id"])

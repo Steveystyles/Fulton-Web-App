@@ -29,6 +29,7 @@ COPY --chown=appuser:appuser tools/__init__.py tools/build_map_learning_profile.
 COPY --chown=appuser:appuser tools/map_launch_round.py ./tools/
 COPY --chown=appuser:appuser tools/install_map_reviewed_fallbacks.py ./tools/
 COPY --chown=appuser:appuser tools/controlled_map_round.py tools/preview_ai_map_round.py ./tools/
+COPY --chown=appuser:appuser tools/discover_map_places.py ./tools/
 COPY --chown=appuser:appuser deploy/map-evidence-catalog.json ./map-evidence-catalog.json
 COPY --chown=appuser:appuser deploy/map-training-seed ./map-training-seed
 COPY --chown=appuser:appuser deploy/map-reviewed-fallbacks.json ./map-reviewed-fallbacks.json
