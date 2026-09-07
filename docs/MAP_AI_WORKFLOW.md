@@ -2,7 +2,7 @@
 
 ## New place discovery
 
-The discovery command in [MAP_PLACE_DISCOVERY.md](MAP_PLACE_DISCOVERY.md) proposes places beyond the starter catalogue, retrieves source text and coordinates, and returns a selected place with three clues for source review. It has a persistent two-request budget per date. Reviewed candidates can be added to the runtime catalogue using the exact candidate hash. Discovery is not automatically enabled in the production scheduler; live AI validation of this new command is still pending.
+The discovery command in [MAP_PLACE_DISCOVERY.md](MAP_PLACE_DISCOVERY.md) proposes places beyond the starter catalogue, retrieves source text and coordinates, and returns a selected place with three clues for source review. It has a persistent two-request budget per date. Reviewed candidates can be added to the runtime catalogue using the exact candidate hash. A live run selected Tower Bridge, and its saved result passed the real publisher and player serializer in a temporary database. Discovery is not automatically enabled in the production scheduler; the detailed record includes earlier failures and the remaining review requirement.
 
 ## Recommended development workflow: controlled generation
 

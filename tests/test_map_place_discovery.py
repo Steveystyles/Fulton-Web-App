@@ -62,6 +62,49 @@ class DiscoveryTests(unittest.TestCase):
                 discovery.title(value)
         self.assertEqual(discovery.title('Edinburgh Castle'), 'Edinburgh Castle')
 
+    def test_entity_request_includes_revision_metadata_for_pinned_sources(self):
+        source = discovery.WikimediaSource(self.budget())
+        def response(host, params):
+            self.assertEqual(host, 'www.wikidata.org')
+            self.assertIn('info', params['props'].split('|'))
+            return {'entities': {'Q100': {'lastrevid': 12345}}}
+        with patch.object(source, 'request', side_effect=response):
+            self.assertEqual(source.entities(['Q100'])['Q100']['lastrevid'], 12345)
+
+    def test_article_fetch_does_not_use_truncating_extract_parameter(self):
+        source = discovery.WikimediaSource(self.budget())
+        article = 'A landmark with recorded history. ' * 220 + 'Beside Local Park.'
+        def response(host, params):
+            self.assertNotIn('exchars', params)
+            return {'query': {'pages': [{'ns': 0, 'title': 'Example', 'lastrevid': 123,
+                     'extract': article, 'pageprops': {'wikibase_item': 'Q100'},
+                     'coordinates': [{'lat': 50, 'lon': 1, 'globe': 'earth'}]}]}}
+        with patch.object(source, 'request', side_effect=response):
+            self.assertIn('Local Park', source.page('Example')['text'])
+
+    def test_country_fetch_limits_claims_and_caches_result(self):
+        source = discovery.WikimediaSource(self.budget())
+        def response(host, params):
+            if params['action'] == 'wbgetentities':
+                self.assertNotIn('claims', params['props'].split('|'))
+                return {'entities': {'Q100': {'labels': {'en': {'value': 'Example'}}}}}
+            self.assertEqual(params['property'], 'P297')
+            return {'claims': {}}
+        with patch.object(source, 'request', side_effect=response) as request:
+            source.country('Q100')
+            source.country('Q100')
+            self.assertEqual(request.call_count, 2)
+
+    def test_excerpt_retains_distant_anchor_passage_with_bounded_model_input(self):
+        candidate = {'anchors': [{'name': 'City'}, {'name': 'Local Park'}],
+                     'evidence': {'article': {'text': 'City. ' + 'Source history. ' * 2000 + 'Next to Local Park.'}}}
+        excerpts = discovery.evidence_excerpt(candidate)
+        self.assertIn('Local Park', ' '.join(excerpts))
+        self.assertLess(sum(map(len, excerpts)), 8500)
+        candidate['anchors'][1]['name'] = 'Invented Area'
+        with self.assertRaises(ValueError):
+            discovery.evidence_excerpt(candidate)
+
     def test_only_map_key_is_used_and_failed_request_is_not_retried(self):
         budget = self.budget()
         with patch.dict(os.environ, {'GEMINI_API_KEY_DEV': 'dev-fixture', 'GEMINI_API_KEY': 'general-fixture'}, clear=True):
@@ -87,6 +130,18 @@ class DiscoveryTests(unittest.TestCase):
             payload['facts']['hard'][key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
                 discovery.validate_selection(payload, [self.place])
+
+    def test_passage_ids_copy_original_evidence_and_form_the_three_clues(self):
+        units = discovery.evidence_units(self.place)
+        payload = {'place_id': self.place['id'], 'selection_reason': self.payload['selection_reason'],
+                   'facts': {level: {'text': fact['text'], 'source_ids': [unit['id'] for unit in units]}
+                             for level, fact in self.place['facts'].items()}}
+        candidate, result = discovery.validate_selection(payload, [self.place])
+        self.assertEqual(result['clue_ladder']['hard'], payload['facts']['hard']['text'])
+        self.assertEqual(candidate['facts']['hard']['supporting_quotes'], [unit['text'] for unit in units])
+        payload['facts']['hard']['source_ids'] = ['invented-passage']
+        with self.assertRaisesRegex(ValueError, 'passage reference'):
+            discovery.validate_selection(payload, [self.place])
 
     def test_source_quote_does_not_override_existing_answer_leak_checks(self):
         payload = deepcopy(self.payload)
@@ -160,6 +215,7 @@ class DiscoveryTests(unittest.TestCase):
                                             'P17': [claim({'id': 'Q200'})]}}
         country = {'labels': {'en': {'value': 'France'}}, 'claims': {'P297': [claim('FR')]}}
         source.entities.side_effect = lambda ids: {key: {'Q100': entity, 'Q200': country}[key] for key in ids}
+        source.country.return_value = country
         proposal = {'title': 'Target', 'city_title': 'City', 'local_title': 'Park', 'place_type': 'castle', 'reason': 'A distinctive royal story.'}
         return source, entity, pages, proposal
 

@@ -10,7 +10,7 @@ This is a separate discovery and review command. The deployed daily scheduler co
 2. Asks Gemini for three varied landmark proposals, including Wikipedia titles for the target and two nearby search-area centres. Existing catalogue places and recent answers are excluded. Broad regions, private homes, demolished structures and stadiums are excluded from this initial discovery version.
 3. Retrieves the exact target, city and local-feature articles from the fixed English Wikipedia API. It rejects missing and disambiguation pages, missing coordinates, duplicate identities, recent place types and broad or unusable map areas.
 4. Retrieves the linked Wikidata entity and country. Target coordinates must agree within 250 metres. This is a cross-dataset consistency check: Wikipedia and Wikidata may share sources, so it is not independent survey verification.
-5. Makes one further AI request to choose the best supported place and write hard, medium and easy evidence facts and clues. Each fact must have an exact contiguous quotation from the retrieved target article. Geographic quotations must name the corresponding map area. Unsupported numbers, answer leaks and failures of the existing clue and map checks are rejected.
+5. Makes one further AI request to choose the best supported place and write hard, medium and easy clues. Each clue cites 1–3 IDs for retrieved article passages. Code copies the original passages into the report; the model does not retype quotations. Geographic passages must name the corresponding map area. Unsupported numbers, answer leaks and failures of the existing clue and map checks are rejected.
 6. Writes a JSON evidence report and readable Markdown review, including source revisions, quotations, rejection reasons, request counts, model usage and a hash of the selected candidate.
 
 The AI chooses proposals and the final candidate. Code obtains target coordinates and creates nested map search circles; the model cannot invent map geometry. The three clue stages remain compatible with the existing player interface.
@@ -58,8 +58,23 @@ Catalogue changes then follow the normal reviewed Git/CI/signed-image deployment
 
 Offline tests cover persistent budgets, provider failures and credential isolation, fixed-host fetching and response bounds, title injection, exact quotations, unsupported numbers, source-derived geometry, duplicate identities, cooldowns, promotion hashes, pending-candidate rejection and publication through the real game serializer after review.
 
-On 7 September 2026, all 628 server tests completed successfully (one expected skip), including 15 discovery tests. Bandit 1.9.4 passed the existing baseline gate: 39 existing reviewed findings, no new findings, all 53 required production Python files scanned.
+All 633 server tests completed successfully (one expected skip), including 20 discovery tests. Bandit 1.9.4 passed the existing baseline gate: 39 existing reviewed findings, no new findings, all 53 required production Python files scanned.
 
-The initial live model test has not run: automatic approval review requires explicit user approval for the production-history exclusion payload and up to two requests using the map credential. Public Wikipedia endpoint probes succeeded. Do not describe those probes or mocked model tests as successful live AI selection.
+The user authorized live testing with the map key and the history-only exclusion payload. Six bounded evaluations were retained:
+
+| Target date | AI requests | Outcome |
+| --- | --- | --- |
+| 2026-09-10 | 1 | Failed: missing Wikidata revision metadata. Added the `info` property. |
+| 2026-09-11 | 2 | Failed: shortened article omitted the local feature. Removed the API's capped `exchars` parameter and narrowed country-data retrieval. |
+| 2026-09-12 | 2 | Rejected: easy clue lacked useful city-sector guidance. Clarified role requirements. |
+| 2026-09-13 | 2 | Rejected: model altered supporting quotations. Replaced quotation generation with source-passage IDs. |
+| 2026-09-14 | 2 | Rejected: answer leakage and poor easy clue. Added a role example and explicit final checks. |
+| 2026-09-15 | 2 | Passed automated checks: selected Tower Bridge outside the starter catalogue, with all three clues; 3,228 total tokens. |
+
+No counter or acceptance threshold was reset to convert a failure into a pass. The successful saved model response was replayed through the real publisher in a disposable copy of SQLite, without another API request. It published successfully and the real player serializer returned 1/2/3 clues and 0/1/2 map areas, with no answer result disclosed. Production games and the runtime catalogue were unchanged.
+
+Assistant source review checked the recognition hook against the [bridge owner's account](https://www.citybridgefoundation.org.uk/news-and-blog/london-bridge-buyers-grandson-quashes-wrong-bridge-myth) and [Tower Bridge's official comparison](https://www.towerbridge.org.uk/stories/tower-bridge-vs-london-bridge). The clue correctly describes an urban legend; the buyer did not actually purchase the wrong bridge. The official site also supports the upstream relationship and proximity to the Tower of London. This is an assistant source check, not a claim of human approval or a broad quality qualification.
+
+Reports remain under `data/qa/map-discovery/`, including `discovery-2026-09-15.json`, its Markdown review and `discovery-publication-check-2026-09-15.json`. The selector remains a reviewed discovery command, not an automatically approved daily replenishment system. More varied successful samples are needed before considering unattended promotion.
 
 API references: [MediaWiki REST and API documentation](https://www.mediawiki.org/wiki/API:Main_page), [Wikidata data access](https://www.wikidata.org/wiki/Wikidata:Data_access).
