@@ -17,13 +17,15 @@ Rewrite runs now maintain an append-only failure log at `data/training/map_clue_
 
 Rejected rows are exported as negative learning examples even if they are inactive. This is deliberate: inactive broad targets still teach the generator which kinds of places and clue patterns to avoid.
 
-The local quality gate now expects clue ladders to be about what a place is known for. Every playable clue must use a recognisable hook such as landmarks, history, culture, industry, architecture, institutions, events, nicknames, or famous products. A single weak clue that mainly says the place is a capital, large city, coastal city, near something, beside something, or on a river is rejected.
+Each of the three clues has a separate job. Hard gives a specific, memorable story owned by the place. Medium materially narrows the geographic search to a useful country, region or city. Easy supplies a practical local map route or visible anchor within that area. Medium and easy do not need another spectacular story; geographic progress is mandatory. Avoid generic location wording that could fit many targets. Use `MAP_CLUE_GRADING_MATRIX.md` and the current generator prompt when reviewing, rather than requiring every clue to be a known-for hook.
 
 For enriched rows, the local gate also checks that each playable clue overlaps with the row's verified facts or nearby context. This does not prove every generated sentence is true, but it prevents the generator from inventing unsupported landmarks, industries, products, institutions, or events just to satisfy the known-for rule.
 
 Broad UNESCO serial properties are held back until they are split into clearer pin targets. Examples include Ancient Thebes with its Necropolis, Ancient Villages of Northern Syria, Aflaj Irrigation Systems of Oman, Baekje Historic Areas, and Bagrati Cathedral and Gelati Monastery. Prefer replacements such as one temple, one monastery, one fort, one bridge, or one archaeological mound.
 
-Clues are also held to a child-readable mobile style: one short sentence per clue, normally around 10-16 words, with tighter character limits than the live card. This is intentional; generated text should feel like a clear quiz clue, not an encyclopaedia sentence.
+Write concise, natural sentences for an adult reading on a phone. Keep the people, action, outcome and context needed to make the hard hook recognisable and fair. Do not remove essential meaning to force an arbitrary word count. The current code enforces the actual card limits.
+
+For selecting a fresh place and generating a complete three-clue round in isolation, use the preview workflow in `MAP_AI_WORKFLOW.md`. The commands below are bulk rewrites of stored places and can use production credentials; they are not the isolated development workflow.
 
 Dry-run first:
 

@@ -757,6 +757,7 @@ class GeminiProvider:
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.5,
+        max_output_tokens: int | None = None,
     ) -> dict[str, Any]:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -770,6 +771,10 @@ class GeminiProvider:
                 "responseJsonSchema": schema,
             },
         }
+        if max_output_tokens is not None:
+            if not 1 <= max_output_tokens <= 4096:
+                raise ValueError("Output token limit must be between 1 and 4096.")
+            payload["generationConfig"]["maxOutputTokens"] = max_output_tokens
         if tools:
             payload["tools"] = tools
         request = Request(
@@ -814,6 +819,7 @@ class GeminiProvider:
                 raise RuntimeError(f"Gemini request failed: {error}") from error
         else:  # pragma: no cover - loop always exits through break or raise
             raise RuntimeError("Gemini request failed.")
+        self.last_usage = response_payload.get("usageMetadata", {})
         try:
             text = response_payload["candidates"][0]["content"]["parts"][0]["text"]
         except (IndexError, KeyError, TypeError) as error:

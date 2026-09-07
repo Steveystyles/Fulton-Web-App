@@ -1676,9 +1676,11 @@ def generate_daily_map_game(
     require_current_profile_for_qa: bool = True,
     allow_recent_preferred_place: bool = False,
     log: Any | None = None,
+    initialize_schema: bool = True,
 ) -> dict[str, Any]:
     puzzle_date = valid_game_date(puzzle_date)
-    initialize_database(conn)
+    if initialize_schema:
+        initialize_database(conn)
     puzzle = get_or_create_puzzle(conn, puzzle_date)
     if puzzle["status"] == "published" and not force:
         return puzzle_status(conn, puzzle_date)
