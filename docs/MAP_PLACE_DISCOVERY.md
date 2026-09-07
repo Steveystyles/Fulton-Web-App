@@ -58,7 +58,7 @@ Catalogue changes then follow the normal reviewed Git/CI/signed-image deployment
 
 Offline tests cover persistent budgets, provider failures and credential isolation, fixed-host fetching and response bounds, title injection, exact quotations, unsupported numbers, source-derived geometry, duplicate identities, cooldowns, promotion hashes, pending-candidate rejection and publication through the real game serializer after review.
 
-All 633 server tests completed successfully (one expected skip), including 20 discovery tests. Bandit 1.9.4 passed the existing baseline gate: 39 existing reviewed findings, no new findings, all 53 required production Python files scanned.
+All 634 server tests completed successfully (one expected skip), including 20 discovery tests. Bandit 1.9.4 passed the existing baseline gate: 39 existing reviewed findings, no new findings, all 53 required production Python files scanned.
 
 The user authorized live testing with the map key and the history-only exclusion payload. Six bounded evaluations were retained:
 
@@ -78,3 +78,7 @@ Assistant source review checked the recognition hook against the [bridge owner's
 Reports remain under `data/qa/map-discovery/`, including `discovery-2026-09-15.json`, its Markdown review and `discovery-publication-check-2026-09-15.json`. The selector remains a reviewed discovery command, not an automatically approved daily replenishment system. More varied successful samples are needed before considering unattended promotion.
 
 API references: [MediaWiki REST and API documentation](https://www.mediawiki.org/wiki/API:Main_page), [Wikidata data access](https://www.wikidata.org/wiki/Wikidata:Data_access).
+
+## Reviewed publication addition
+
+The user authorized publishing this release. The catalogue now includes the source-checked Tower Bridge entry, bringing it to six places. Its recognition fact cites both the official Tower Bridge comparison and City Bridge Foundation account. A regression check requires generated clues to preserve the myth/legend qualifier. The discovery command remains review-gated; this does not enable unattended candidate promotion.

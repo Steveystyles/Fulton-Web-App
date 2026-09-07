@@ -72,6 +72,16 @@ class ControlledMapTests(unittest.TestCase):
         self.assertFalse(result["validation"]["passed"])
         self.assertNotIn("scores", result["validation"])
 
+    def test_urban_legend_cannot_be_rewritten_as_a_true_purchase_mistake(self):
+        place = next(p for p in self.places if p['id'] == 'q83125')
+        payload = {'place_id': place['id'], 'selection_reason': 'A sourced story with a clearly identified urban legend.',
+                   'clues': {k: {'text': v['text'], 'fact_id': k} for k, v in place['facts'].items()}}
+        self.assertTrue(controlled.validate_result(payload, [place])['automated_pass'])
+        payload['clues']['hard']['text'] = 'An American buyer confused this landmark with another upstream crossing and purchased the wrong bridge.'
+        result = controlled.validate_result(payload, [place])
+        self.assertFalse(result['automated_pass'])
+        self.assertTrue(any('qualification' in reason for reason in result['validation']['failure_reasons']))
+
     def test_catalogue_rejects_missing_sources_and_bad_geometry(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "catalog.json"
