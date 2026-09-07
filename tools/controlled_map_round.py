@@ -60,6 +60,8 @@ def load_catalog(path: Path) -> list[dict[str, Any]]:
         raise ValueError("Expected a version 1 catalogue with 1–500 places.")
     ids: set[str] = set()
     for place in places:
+        if place.get("review_status", "source_reviewed") != "source_reviewed":
+            raise ValueError("Discovered candidates require source review before runtime use.")
         if not place.get("id") or place["id"] in ids:
             raise ValueError("Catalogue place IDs must be nonempty and unique.")
         ids.add(place["id"])
@@ -235,6 +237,10 @@ def validate_result(payload: dict[str, Any], places: list[dict[str, Any]]) -> di
     critique.pop("scores", None)
     for level in LEVELS:
         allowed_numbers = set(re.findall(r"\d+(?:\.\d+)?", place["facts"][level]["text"]))
+        if re.search(r"\b(?:myth|urban legend)\b", place["facts"][level]["text"], re.IGNORECASE) and not re.search(
+            r"\b(?:myth|legend)\b", ladder[level], re.IGNORECASE
+        ):
+            critique["failure_reasons"].append(f"{level} must preserve the source's myth or legend qualification.")
         if set(re.findall(r"\d+(?:\.\d+)?", ladder[level])) - allowed_numbers:
             critique["failure_reasons"].append(f"{level} introduces a number absent from its evidence.")
     for level, anchor in zip(("medium", "easy"), place["anchors"]):
