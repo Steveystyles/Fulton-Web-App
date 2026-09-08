@@ -3873,11 +3873,14 @@ def publish_reviewed_daily_map_fallback(
     puzzle_date: str,
     required_place_type: str | None,
     ai_failure_reason: str,
+    preserve_published: bool = False,
 ) -> dict[str, Any]:
+    # The generator checks publication after acquiring its database write lock.
+    # Automatic callers must also preserve rounds published by another process.
     result = daily_map_game.generate_daily_map_game(
         conn,
         puzzle_date=puzzle_date,
-        force=True,
+        force=not preserve_published,
         required_place_type=required_place_type,
         log=lambda message: safe_log(f"Daily map fallback: {message}"),
     )
@@ -3889,7 +3892,7 @@ def publish_reviewed_daily_map_fallback(
         result = daily_map_game.generate_daily_map_game(
             conn,
             puzzle_date=puzzle_date,
-            force=True,
+            force=not preserve_published,
             log=lambda message: safe_log(f"Daily map fallback: {message}"),
         )
     if result.get("status") == "published":
@@ -3943,6 +3946,7 @@ def generate_daily_map_game_for_date(
             return publish_reviewed_daily_map_fallback(
                 conn, puzzle_date=normalized_date, required_place_type=required_place_type,
                 ai_failure_reason=f"Automatic map queue unavailable: {type(error).__name__}",
+                preserve_published=True,
             )
 
     if DAILY_MAP_CONTROLLED_ENABLED:
