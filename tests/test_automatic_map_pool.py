@@ -234,6 +234,32 @@ class AutomaticPoolTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM automatic_map_runs').fetchone()[0], 0)
 
+    def test_automatic_fallback_preserves_round_published_by_another_connection(self):
+        import server
+        self.queue()
+        published = {}
+
+        def competing_publication(conn, *, puzzle_date):
+            with closing(self.connect()) as competing:
+                controlled.publish_validated_round(
+                    competing, puzzle_date=puzzle_date, place=self.place, result=self.result,
+                    provider_name='test-competing-publication',
+                )
+                competing.commit()
+                published['puzzle'] = tuple(competing.execute('SELECT * FROM daily_map_puzzles').fetchone())
+                published['level'] = tuple(competing.execute('SELECT * FROM daily_map_levels').fetchone())
+            # The automatic publisher's transaction recheck sees the competing publication.
+            controlled.eligible_places_in_database(conn, puzzle_date, [self.place])
+
+        with closing(self.connect()) as conn, patch.object(server, 'DAILY_MAP_AUTOMATIC_ENABLED', True), \
+             patch.object(server, 'DAILY_MAP_AI_GENERATION_ENABLED', True), \
+             patch.object(pool, 'publish', side_effect=competing_publication):
+            result = server.generate_daily_map_game_for_date(conn, puzzle_date='2026-09-08')
+            self.assertEqual(result['status'], 'published')
+            self.assertEqual(tuple(conn.execute('SELECT * FROM daily_map_puzzles').fetchone()), published['puzzle'])
+            self.assertEqual(tuple(conn.execute('SELECT * FROM daily_map_levels').fetchone()), published['level'])
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
+
     def test_stocked_queue_stops_requests_and_expiry_reopens_maintenance(self):
         self.queue()
         factory = Mock()
