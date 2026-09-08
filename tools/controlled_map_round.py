@@ -153,6 +153,14 @@ def generate_and_publish(conn: sqlite3.Connection, *, puzzle_date: str, provider
     if not result["automated_pass"]:
         raise ValueError("; ".join(result["validation"]["failure_reasons"]))
     place = next(p for p in places if p["id"] == result["catalogue_id"])
+    publication = publish_validated_round(conn, puzzle_date=puzzle_date, place=place, result=result)
+    return {**result, "publish_result": publication, "request_count": len(provider.requests),
+            "usage": getattr(provider.clients[0].provider, "last_usage", {})}
+
+
+def publish_validated_round(conn: sqlite3.Connection, *, puzzle_date: str, place: dict,
+                            result: dict, provider_name: str = "controlled-gemini") -> dict:
+    """Publish an already validated round without another model request or internal commit."""
     # No existing place row is overwritten; publication failure removes this row too.
     if not conn.in_transaction:
         conn.execute("BEGIN")
@@ -163,18 +171,19 @@ def generate_and_publish(conn: sqlite3.Connection, *, puzzle_date: str, provider
         inserted = conn.execute(
             "INSERT INTO map_place_pool (slug,canonical_name,country_code,country_name,admin1,place_type,"
             "difficulty,lat,lng,clue_text,acceptable_aliases,nearby_context,verified_facts_json,sources_json,"
-            "coordinate_source_name,coordinate_source_url,coordinate_precision,suggested_map_zoom,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "coordinate_source_name,coordinate_source_url,coordinate_precision,suggested_map_zoom,created_at,scoring_radius_m) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (f"controlled-{place['id']}-{puzzle_date}", place["canonical_name"], place["country_code"],
              place["country_name"], place["locality_name"], place["place_type"], "medium", place["lat"], place["lng"],
              result["clue_ladder"]["hard"], "; ".join(place["acceptable_aliases"]), place["facts"]["easy"]["text"],
              json.dumps([f["text"] for f in place["facts"].values()]),
              json.dumps([{"name": name, "url": url} for name, url in place["sources"].items()]),
-             "Source-reviewed catalogue", place["coordinate_source_url"], "landmark", 16,
-             datetime.now(timezone.utc).isoformat()),
+             "Retrieved source coordinates" if provider_name.startswith("automatic-map-") else "Source-reviewed catalogue",
+             place["coordinate_source_url"], "landmark", 16,
+             datetime.now(timezone.utc).isoformat(), daily_map_game.normalized_scoring_radius_m("medium")),
         )
         publication = generator.persist_generated_round(
-            conn, provider_name="controlled-gemini", puzzle_date=puzzle_date, place_id=inserted.lastrowid,
+            conn, provider_name=provider_name, puzzle_date=puzzle_date, place_id=inserted.lastrowid,
             clue_result={"clue_ladder": result["clue_ladder"], "critic_mode": "local"},
             map_anchors=result["map_search_anchors"],
         )
@@ -183,8 +192,7 @@ def generate_and_publish(conn: sqlite3.Connection, *, puzzle_date: str, provider
         raise
     finally:
         conn.execute("RELEASE controlled_map_publication")
-    return {**result, "publish_result": publication, "request_count": len(provider.requests),
-            "usage": getattr(provider.clients[0].provider, "last_usage", {})}
+    return publication
 
 
 def build_prompt(places: list[dict[str, Any]]) -> str:

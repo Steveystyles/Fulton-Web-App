@@ -35,6 +35,7 @@ from env_config import env_bool, env_int, env_ip_networks
 from safe_http import read_bounded_response
 from tools import generate_ai_daily_map_round
 from tools import controlled_map_round
+from tools import automatic_map_pool
 from tools import build_map_selector_profile
 from tools import install_map_training_seed
 from tools import install_map_reviewed_fallbacks
@@ -147,6 +148,7 @@ DAILY_MAP_AI_GENERATION_ENABLED = env_bool(
     "FULTONS_DAILY_MAP_AI_GENERATION_ENABLED", True
 )
 DAILY_MAP_CONTROLLED_ENABLED = env_bool("FULTONS_DAILY_MAP_CONTROLLED_ENABLED", False)
+DAILY_MAP_AUTOMATIC_ENABLED = env_bool("FULTONS_DAILY_MAP_AUTOMATIC_ENABLED", False)
 DAILY_MAP_CONTROLLED_CATALOG = Path(os.environ.get("MAP_AI_CATALOG_PATH", "").strip() or controlled_map_round.DEFAULT_CATALOG)
 DAILY_MAP_AI_SHORTLIST_LIMIT = env_int(
     "FULTONS_DAILY_MAP_AI_SHORTLIST_LIMIT", 24, minimum=4, maximum=500
@@ -3931,6 +3933,18 @@ def generate_daily_map_game_for_date(
             log=lambda message: safe_log(f"Daily map game: {message}"),
         )
 
+    if DAILY_MAP_AUTOMATIC_ENABLED:
+        if existing["status"] == "published":
+            return existing
+        try:
+            return automatic_map_pool.publish(conn, puzzle_date=normalized_date)
+        except Exception as error:
+            safe_log(f"Automatic map queue unavailable for {normalized_date}: {type(error).__name__}")
+            return publish_reviewed_daily_map_fallback(
+                conn, puzzle_date=normalized_date, required_place_type=required_place_type,
+                ai_failure_reason=f"Automatic map queue unavailable: {type(error).__name__}",
+            )
+
     if DAILY_MAP_CONTROLLED_ENABLED:
         # Published rounds remain immutable in this mode, including force requests.
         if existing["status"] == "published":
@@ -4046,6 +4060,12 @@ def ensure_daily_map_game_dates(target_dates: list[str]) -> list[dict[str, Any]]
     results: list[dict[str, Any]] = []
     seen_dates: set[str] = set()
     with DAILY_MAP_GAME_OPERATION_LOCK:
+        if DAILY_MAP_AUTOMATIC_ENABLED and DAILY_MAP_AI_GENERATION_ENABLED:
+            try:
+                maintenance = automatic_map_pool.maintain(Path(DB_PATH), Path(DB_PATH).parent / "qa" / "automatic-map")
+                safe_log(f"Automatic map maintenance: {maintenance['status']}; ready={maintenance.get('ready', 0)}")
+            except Exception as error:
+                safe_log(f"Automatic map maintenance deferred: {type(error).__name__}")
         with closing(connect_db()) as conn:
             with conn:
                 for puzzle_date in target_dates:
@@ -4100,6 +4120,8 @@ def daily_map_game_scheduler_loop() -> None:
             wake_at = retry_at if retry_at < next_run else next_run
         else:
             wake_at = next_run
+        if DAILY_MAP_AUTOMATIC_ENABLED and DAILY_MAP_AI_GENERATION_ENABLED:
+            wake_at = min(wake_at, now + timedelta(minutes=15))
         delay = max(1.0, (wake_at - now).total_seconds())
         safe_log(f"Daily map game scheduler sleeping until {wake_at.isoformat()}")
         time.sleep(delay)
