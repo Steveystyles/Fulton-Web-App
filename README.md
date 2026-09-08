@@ -180,6 +180,44 @@ python tools/evaluate_quiz_generator.py --eval-file data/training/quiz_eval_YYYY
 
 Do not upload a training file until the manifest and eval examples have been reviewed. The current deterministic validators and duplicate checks must remain in the generation path even when using a fine-tuned model.
 
+## Automatic map place selection
+
+Set `FULTONS_DAILY_MAP_AUTOMATIC_ENABLED=1`, keep the map scheduler and map AI
+generation enabled, and configure the server-only `MAP_AI_API_KEY` and
+`MAP_AI_MODEL`. The scheduler checks its queue every 15 minutes, including when
+today's games are already prepared. This mode takes precedence over the older
+controlled-catalogue generator.
+
+The service discovers new places, retrieves Wikipedia/Wikidata evidence and
+coordinates, writes three progressive clues, and performs a separate model
+verification against the retrieved passages. Local checks enforce source IDs,
+identity, coordinate agreement, map areas, clue format and repeat cooldowns.
+Passing rounds enter a persistent queue automatically; no routine manual
+promotion or hand-maintained place list is required. Machine checking reduces
+errors but is not a guarantee of factual accuracy.
+
+The queue targets seven eligible rounds. Unused entries expire after 14 days;
+used entries cannot publish twice. Maintenance makes at most four attempts,
+12 model requests and 64 source requests per UTC day, across restarts and future
+puzzle dates. An attempt allows at most three model calls: proposals, clue
+composition and verification. Publication consumes saved, checked clues without
+another model call. Failed candidates stay out; failed names are avoided on
+subsequent attempts. Quota or source failures defer replenishment while available
+rounds remain usable. The existing reviewed reserve is an optional one-time
+bootstrap and emergency fallback, not the source of automatic discovery.
+
+Queue entries, evidence verdicts and request accounting live in the production
+SQLite database (`automatic_map_*` tables); private source reports are stored
+beside it under `qa/automatic-map`. Publication and queue consumption share one
+transaction. Already published games and their guesses are preserved.
+
+To exercise discovery with no seed catalogue against a disposable initialized
+database, run:
+
+```bash
+python tools/automatic_map_pool.py --source-db data/qa/test.db --no-bootstrap
+```
+
 ## Checks
 
 ```bash
