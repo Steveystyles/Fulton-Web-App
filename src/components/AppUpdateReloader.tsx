@@ -1,147 +1,44 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 
-const buildVersionStorageKey = "fultons-app-build-version";
-const buildReloadStorageKey = "fultons-app-reloaded-build-version";
-const updateCheckIntervalMs = 5 * 60 * 1000;
-
-type HealthPayload = {
-  build?: {
-    version?: unknown;
-  };
-};
-
-function readStorage(storage: Storage | undefined, key: string) {
-  try {
-    return storage?.getItem(key) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStorage(storage: Storage | undefined, key: string, value: string) {
-  try {
-    storage?.setItem(key, value);
-  } catch {
-    // Version checks should never block the app if browser storage is unavailable.
-  }
-}
-
-function removeStorage(storage: Storage | undefined, key: string) {
-  try {
-    storage?.removeItem(key);
-  } catch {
-    // Ignore storage failures; the next health check can try again.
-  }
-}
-
-function browserStorage(kind: "localStorage" | "sessionStorage") {
-  try {
-    return window[kind];
-  } catch {
-    return undefined;
-  }
-}
-
-function versionFromPayload(payload: HealthPayload) {
-  const version = payload.build?.version;
-  return typeof version === "string" && version.trim() ? version.trim() : null;
-}
-
-async function fetchServerBuildVersion(signal: AbortSignal) {
-  const response = await fetch(`/api/health?updateCheck=${Date.now()}`, {
-    cache: "no-store",
-    credentials: "include",
-    headers: {
-      Accept: "application/json",
-    },
-    signal,
-  });
-  const payload = (await response.json().catch(() => null)) as HealthPayload | null;
-  return payload === null ? null : versionFromPayload(payload);
-}
-
+/** Never interrupt a game, form or unsent selection with an automatic reload. */
 export function AppUpdateReloader() {
+  const initialVersion = useRef<string | null>(null);
+  const [available, setAvailable] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   useEffect(() => {
     let disposed = false;
     let checking = false;
-    const localStorage = browserStorage("localStorage");
-    const sessionStorage = browserStorage("sessionStorage");
-    let rememberedVersion = readStorage(localStorage, buildVersionStorageKey);
-    const abortController = new AbortController();
-
-    async function checkForUpdate() {
-      if (disposed || checking || document.visibilityState === "hidden") {
-        return;
-      }
-
+    let pending: AbortController | null = null;
+    async function check() {
+      if (checking || document.visibilityState === "hidden") return;
       checking = true;
+      const controller = new AbortController();
+      pending = controller;
+      const timeout = window.setTimeout(() => controller.abort(), 15000);
       try {
-        const serverVersion = await fetchServerBuildVersion(abortController.signal);
-        if (disposed || serverVersion === null) {
-          return;
+        const response = await fetch(`/api/health?updateCheck=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+        const payload = await response.json();
+        const version = payload?.build?.version;
+        if (!disposed && typeof version === "string" && version) {
+          if (initialVersion.current === null) initialVersion.current = version;
+          else if (version !== initialVersion.current) setAvailable(true);
         }
-
-        const previousVersion =
-          readStorage(localStorage, buildVersionStorageKey) ?? rememberedVersion;
-        if (previousVersion === null) {
-          rememberedVersion = serverVersion;
-          writeStorage(localStorage, buildVersionStorageKey, serverVersion);
-          return;
-        }
-
-        if (previousVersion === serverVersion) {
-          rememberedVersion = serverVersion;
-          removeStorage(sessionStorage, buildReloadStorageKey);
-          return;
-        }
-
-        rememberedVersion = serverVersion;
-        writeStorage(localStorage, buildVersionStorageKey, serverVersion);
-
-        if (readStorage(sessionStorage, buildReloadStorageKey) === serverVersion) {
-          return;
-        }
-
-        writeStorage(sessionStorage, buildReloadStorageKey, serverVersion);
-        window.setTimeout(() => {
-          if (!disposed) {
-            window.location.reload();
-          }
-        }, 300);
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-      } finally {
-        checking = false;
-      }
+      } catch { /* A failed update check must not block play. */ }
+      finally { checking = false; window.clearTimeout(timeout); }
     }
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        void checkForUpdate();
-      }
-    };
-    const handleFocus = () => {
-      void checkForUpdate();
-    };
-
-    void checkForUpdate();
-    const intervalId = window.setInterval(() => {
-      void checkForUpdate();
-    }, updateCheckIntervalMs);
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("focus", handleFocus);
-
-    return () => {
-      disposed = true;
-      abortController.abort();
-      window.clearInterval(intervalId);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("focus", handleFocus);
-    };
+    void check();
+    const interval = window.setInterval(() => void check(), 5 * 60 * 1000);
+    const focus = () => void check();
+    window.addEventListener("focus", focus);
+    return () => { disposed = true; pending?.abort(); window.clearInterval(interval); window.removeEventListener("focus", focus); };
   }, []);
-
-  return null;
+  if (!available || dismissed) return null;
+  return <aside role="status" className="fixed left-3 right-3 top-3 z-[2000] mx-auto max-w-md rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-950 shadow-xl">
+    <p className="font-black">An update is ready</p>
+    <p className="mt-1">Finish and save your current game first. Updating reloads this page.</p>
+    <div className="mt-3 flex gap-3">
+      <button className="min-h-11 rounded-lg bg-saints-black px-4 font-bold text-white saints-focus" onClick={() => window.location.reload()}>Update now</button>
+      <button className="min-h-11 rounded-lg border px-4 font-bold saints-focus" onClick={() => setDismissed(true)}>Later</button>
+    </div>
+  </aside>;
 }

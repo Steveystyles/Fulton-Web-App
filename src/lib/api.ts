@@ -1,5 +1,18 @@
 export type Role = "admin" | "mod" | "user";
 
+export type ActivityId = "wordle" | "football" | "general" | "map";
+export type TodayResponse = {
+  date: string; nextRoundAt: string;
+  activities: Array<{ id: ActivityId; title: string; href: string; status: "ready" | "continue" | "completed" | "unavailable"; score: number | null }>;
+};
+export type LeaguePlayer = {
+  id: number; username: string; rank: number | null; points: number; games: Record<ActivityId, number>;
+};
+export type LeagueResponse = {
+  periodStart: string; periodEnd: string; scoringVersion: string; players: LeaguePlayer[];
+  previousWinners: LeaguePlayer[]; previousPeriodEnd: string;
+};
+
 export type User = {
   id: number;
   username: string;
@@ -329,6 +342,8 @@ export type DailyQuizAdjudication = DailyQuizSelection & {
 
 export type DailyQuestionsResponse = {
   date: string;
+  results: Partial<Record<"football" | "general", DailyQuizResult>>;
+  progress: Partial<Record<"football" | "general", DailyQuizSelection[]>>;
   football: DailyQuizQuestion[];
   general: DailyQuizQuestion[];
 };
@@ -524,6 +539,8 @@ type PublishedQuizQuestion = {
 
 type PublishedQuizResponse = {
   date: string;
+  results?: DailyQuestionsResponse["results"];
+  progress?: DailyQuestionsResponse["progress"];
   status: "published";
   questions: PublishedQuizQuestion[];
 };
@@ -548,8 +565,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (init.signal?.aborted) controller.abort();
+  init.signal?.addEventListener("abort", abort, { once: true });
+  const timeout = setTimeout(abort, 45000);
+  try {
   const response = await fetch(path, {
     ...init,
+    signal: controller.signal,
     credentials: init.credentials ?? "include",
     headers,
   });
@@ -564,6 +588,15 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   return data as T;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new ApiError("The connection timed out or was interrupted. Your action may have saved; refresh to check before retrying.", 408);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", abort);
+  }
 }
 
 let cachedLocalOpsToken: string | undefined;
@@ -610,6 +643,8 @@ function fetchDailyQuestions(options: { force?: boolean } = {}) {
     .then((payload) => {
       const questions: DailyQuestionsResponse = {
         date: payload.date,
+        results: payload.results ?? {},
+        progress: payload.progress ?? {},
         football: [],
         general: [],
       };
@@ -666,6 +701,7 @@ export const api = {
   },
 
   login(username: string, password: string) {
+    dailyQuestionsPromise = undefined;
     return request<AuthResponse>("/api/auth/login", {
       method: "POST",
       body: jsonBody({ username, password }),
@@ -673,6 +709,7 @@ export const api = {
   },
 
   logout() {
+    dailyQuestionsPromise = undefined;
     return request<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
   },
 
@@ -720,6 +757,32 @@ export const api = {
 
   dailyQuestions(options?: { force?: boolean }) {
     return fetchDailyQuestions(options);
+  },
+
+  today() {
+    return request<TodayResponse>("/api/today");
+  },
+
+  practiceDates() { return request<{ dates: string[] }>("/api/practice/quizzes"); },
+  async practiceQuiz(date: string): Promise<DailyQuestionsResponse> {
+    const payload = await request<PublishedQuizResponse>(`/api/practice/quiz?date=${encodeURIComponent(date)}`);
+    const convert = (subject: string) => payload.questions.filter(question => question.subject === subject)
+      .map(question => ({ id: question.id, question: question.question, difficulty: question.difficulty, answers: question.choices }));
+    return { date: payload.date, results: {}, progress: {}, football: convert("football"), general: convert("general_knowledge") };
+  },
+  submitPracticeQuiz(payload: { date: string; category: "football" | "general"; answers: DailyQuizSelection[] }) {
+    return request<{ result: DailyQuizResult }>("/api/practice/quiz/result", { method: "POST", body: jsonBody(payload) });
+  },
+
+  league() {
+    return request<LeagueResponse>("/api/league");
+  },
+
+  saveQuizProgress(payload: { date: string; category: "football" | "general"; answers: DailyQuizSelection[] }) {
+    dailyQuestionsPromise = undefined;
+    return request<{ answers: DailyQuizSelection[]; result?: DailyQuizResult }>("/api/daily-quiz/progress", {
+      method: "POST", body: jsonBody(payload),
+    });
   },
 
   submitDailyQuizResult(payload: {

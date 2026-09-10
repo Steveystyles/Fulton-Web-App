@@ -333,7 +333,7 @@ function CurrentPlayerCard({
           <div className="min-w-0">
             <p className="flex items-center gap-1.5 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
               <Medal aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-              Rolling 7-day score
+              Original game scores · rolling 7 days
             </p>
             <h1 className="mt-1 truncate text-xl font-black leading-tight">{player.username}</h1>
           </div>
@@ -355,13 +355,13 @@ function CurrentPlayerCard({
           <div className="grid shrink-0 grid-cols-2 gap-1.5 text-center">
             <div className="min-w-[3.6rem] rounded-lg bg-saints-red px-2 py-1.5">
               <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/70">
-                Level
+                Wordle level
               </p>
               <p className="mt-0.5 text-2xl font-black leading-none">{player.wordleLevel}</p>
             </div>
             <div className="min-w-[3.6rem] rounded-lg bg-white/10 px-2 py-1.5">
               <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
-                Best
+                Best level
               </p>
               <p className="mt-0.5 text-2xl font-black leading-none">{player.bestWordleLevel}</p>
             </div>

@@ -54,7 +54,7 @@ input[type="date"] {
   right: 0;
   left: 0;
   z-index: 50;
-  width: min(100%, 430px);
+  width: min(100%, var(--shell-width, 430px));
   margin-inline: auto;
 }
 
@@ -64,7 +64,7 @@ input[type="date"] {
   bottom: 0;
   left: 0;
   z-index: 40;
-  width: min(100%, 430px);
+  width: min(100%, var(--shell-width, 430px));
   margin-inline: auto;
 }
 
@@ -132,7 +132,20 @@ input[type="date"] {
 }
 
 .page-fade {
-  animation: page-fade 190ms ease-out both;
+  animation: page-fade 190ms ease-out backwards;
+}
+
+.map-play-layout { display: grid; gap: 0.75rem; }
+.map-stage { height: clamp(240px, 40dvh, 480px); }
+.map-commit { position: fixed; left: 50%; transform: translateX(-50%); width: min(calc(100% - 2rem), 398px); bottom: calc(5.2rem + env(safe-area-inset-bottom)); z-index: 800; }
+@media (min-width: 760px) {
+  .map-play-layout { grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.6fr); grid-template-rows: min-content 1fr; align-items: start; }
+  .map-clues { grid-column: 1; grid-row: 1; }
+  .map-canvas { grid-column: 2; grid-row: 1 / span 2; }
+  .map-commit { grid-column: 1; grid-row: 2; position: static; transform: none; width: auto; z-index: auto; grid-template-columns: 1fr; }
+  .map-clues > div { max-height: none; }
+  .map-result { grid-column: 1 / -1; }
+  .map-stage { height: 500px; }
 }
 
 .daily-map-pin {

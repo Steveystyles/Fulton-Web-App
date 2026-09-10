@@ -14,6 +14,7 @@ import {
   cleanNewsSummary,
   cleanNewsTitle,
   newsFallbackRefreshMs,
+  mergeNewsItems,
   newsStoryKey,
   visibleNewsTags,
 } from "../lib/news";
@@ -29,15 +30,7 @@ const categoryOptions: Array<{ value: NewsCategory; label: string }> = [
 ];
 
 function mergeItems(currentItems: NewsItem[], nextItems: NewsItem[]) {
-  const itemsByKey = new Map<string, NewsItem>();
-
-  for (const item of [...nextItems, ...currentItems]) {
-    itemsByKey.set(newsStoryKey(item.title, item.source), item);
-  }
-
-  return Array.from(itemsByKey.values()).sort((left, right) => {
-    return right.publishedAt.localeCompare(left.publishedAt);
-  });
+  return mergeNewsItems(currentItems, nextItems);
 }
 
 function formatPublishedAt(value: string) {
@@ -165,7 +158,7 @@ export function News() {
       return "Loading";
     }
     if (status === "live") {
-      return "Live";
+      return "Connected";
     }
     if (status === "polling") {
       return "Polling";
@@ -272,7 +265,7 @@ export function News() {
                 No {emptyStoryLabel} yet
               </p>
               <p className="mt-1 text-sm font-semibold leading-relaxed text-slate-600">
-                New stories will appear here as the app news monitor finds them.
+                Club and sports stories will appear here when available. Check back after your daily games.
               </p>
             </div>
           </div>
@@ -300,7 +293,7 @@ export function News() {
                       </p>
                       <p className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-slate-500">
                         <Clock3 aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.4} />
-                        {formatPublishedAt(item.publishedAt)}
+                        {formatPublishedAt(item.publishedAt)}{item.updatedAt !== item.createdAt ? ` · Updated ${formatPublishedAt(item.updatedAt)}` : ""}
                       </p>
                     </div>
                     <span

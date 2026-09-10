@@ -1,11 +1,14 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { lazy, Suspense, useEffect, type ReactNode } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { lazy, Suspense, useEffect, type ReactNode, type CSSProperties } from "react";
 import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
 
 const Account = lazy(() => import("../pages/Account").then((module) => ({ default: module.Account })));
+const Today = lazy(() => import("../pages/Today").then((module) => ({ default: module.Today })));
+const Practice = lazy(() => import("../pages/Practice").then((module) => ({ default: module.Practice })));
+const League = lazy(() => import("../pages/League").then((module) => ({ default: module.League })));
 const Admin = lazy(() => import("../pages/Admin").then((module) => ({ default: module.Admin })));
 const Leaderboard = lazy(() =>
   import("../pages/Leaderboard").then((module) => ({ default: module.Leaderboard })),
@@ -43,8 +46,10 @@ function AppFrame({
   compact?: boolean;
   reviewMode?: boolean;
 }) {
+  const { pathname } = useLocation();
+  const wide = ["/", "/today", "/map", "/scores"].includes(pathname);
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-[430px] flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10">
+    <div style={{ "--shell-width": wide ? "960px" : "430px" } as CSSProperties} className={`mx-auto flex min-h-dvh w-full ${wide ? "max-w-[960px]" : "max-w-[430px]"} flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10`}>
       <div className="top-shell">
         <Header reviewMode={reviewMode} />
       </div>
@@ -75,7 +80,7 @@ function PageLoading() {
 }
 
 export function AppRouter() {
-  const { acknowledgeAnnouncement, loading, pendingAnnouncements, user } = useAuth();
+  const { loading, user } = useAuth();
   const pathname =
     typeof window === "undefined" ? "/" : window.location.pathname.replace(/\/+$/, "") || "/";
   const hostname =
@@ -83,9 +88,6 @@ export function AppRouter() {
   const localOpsMode = pathname === "/ops";
   const promoReviewMode = pathname === "/promo";
   const mapTestMode = isMapTestHostname(hostname);
-  const mapPromo = pendingAnnouncements.find(
-    (announcement) => announcement.kind === "daily-map-promo",
-  );
 
   useEffect(() => {
     if (user !== null) {
@@ -155,19 +157,6 @@ export function AppRouter() {
     );
   }
 
-  if (mapPromo) {
-    return (
-      <Suspense fallback={<PageLoading />}>
-      <MapGamePromo
-        onDismiss={() => acknowledgeAnnouncement(mapPromo.id, "dismissed")}
-        onPlay={async () => {
-          await acknowledgeAnnouncement(mapPromo.id, "played");
-          window.location.assign("/map");
-        }}
-      />
-      </Suspense>
-    );
-  }
 
   return (
     <Suspense fallback={<PageLoading />}>
@@ -176,10 +165,13 @@ export function AppRouter() {
         <Routes>
           <Route
             path="/"
-            element={<Navigate to="/scores" replace />}
+            element={<AppFrame><Today /></AppFrame>}
           />
+          <Route path="/today" element={<Navigate to="/" replace />} />
+          <Route path="/practice" element={<AppFrame><Practice /></AppFrame>} />
+          <Route path="/scores" element={<AppFrame><League /></AppFrame>} />
           <Route
-            path="/scores"
+            path="/scores/history"
             element={
               <AppFrame compact>
                 <Leaderboard />
@@ -202,8 +194,8 @@ export function AppRouter() {
               </AppFrame>
             }
           />
-          <Route path="/football" element={<Navigate to="/quiz" replace />} />
-          <Route path="/general" element={<Navigate to="/quiz" replace />} />
+          <Route path="/football" element={<Navigate to="/quiz?category=football" replace />} />
+          <Route path="/general" element={<Navigate to="/quiz?category=general" replace />} />
           <Route
             path="/leaderboard"
             element={<Navigate to="/scores" replace />}
@@ -245,7 +237,7 @@ export function AppRouter() {
               )
             }
           />
-          <Route path="*" element={<Navigate to="/scores" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
     </BrowserRouter>

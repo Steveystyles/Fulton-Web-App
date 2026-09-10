@@ -6,6 +6,8 @@ import { useAuth } from "../context/AuthContext";
 import { api } from "../lib/api";
 
 export function Account() {
+  const [largeText, setLargeText] = useState(() => { try { return localStorage.getItem("fultons-wordle-large-print") === "1"; } catch { return false; } });
+  const [sound, setSound] = useState(() => { try { return localStorage.getItem("fultons-wordle-sound") === "1"; } catch { return false; } });
   const { updateUser, user } = useAuth();
   const [username, setUsername] = useState(user?.username ?? "");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -144,6 +146,12 @@ export function Account() {
             {savingPassword ? "Saving" : "Save Password"}
           </button>
         </form>
+      </Card>
+
+      <Card><h2 className="text-xl font-black">Play preferences</h2><p className="mt-2 text-sm text-slate-600">Saved on this browser. You can also change these inside Wordle. Animations respect your device's reduced-motion setting.</p>
+        <label className="mt-3 flex min-h-12 items-center justify-between gap-3 font-bold">Large Wordle text<input type="checkbox" checked={largeText} onChange={event => { setLargeText(event.target.checked); try { localStorage.setItem("fultons-wordle-large-print", event.target.checked ? "1" : "0"); } catch { setError("This browser could not save the preference."); } }} className="h-5 w-5 accent-red-600" /></label>
+        <label className="flex min-h-12 items-center justify-between gap-3 font-bold">Wordle sound<input type="checkbox" checked={sound} onChange={event => { setSound(event.target.checked); try { localStorage.setItem("fultons-wordle-sound", event.target.checked ? "1" : "0"); } catch { setError("This browser could not save the preference."); } }} className="h-5 w-5 accent-red-600" /></label>
+        <p className="mt-3 text-sm text-slate-600">Need help accessing your account? Contact the administrator who invited you. Never share your password.</p>
       </Card>
 
       {message ? (

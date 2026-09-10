@@ -20,6 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
+import { DailyJourney } from "../components/DailyJourney";
 import { useAuth } from "../context/AuthContext";
 import { MapGamePromo } from "./MapGamePromo";
 import {
@@ -463,12 +464,21 @@ function MapCanvas({
   }, [acceptedSelection, draftSelection, level]);
 
   return (
-    <div className="relative -mx-3 w-[calc(100%+1.5rem)] overflow-hidden border-y border-slate-200 bg-slate-100 min-[420px]:rounded-xl min-[420px]:border">
+    <div className="map-canvas relative isolate overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
       <div
         ref={containerRef}
-        className="h-[30rem] w-full min-[420px]:h-[34rem]"
+        className="map-stage w-full"
         aria-label={`${level.title} guessing map`}
+        aria-describedby="map-keyboard-help"
       />
+      <p id="map-keyboard-help" className="sr-only">Focus the map and use arrow keys to move, plus and minus to zoom. Then use Select map centre to review a nearby place. Locking a place is final.</p>
+      {!level.submitted && !measuring ? <>
+        <span aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 z-[600] -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-black/70 px-1 text-xl leading-none text-white">+</span>
+        <button type="button" disabled={snapLoading || submitting} className="absolute bottom-24 left-3 z-[700] min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold shadow saints-focus" onClick={() => {
+          const map = mapRef.current;
+          if (map) { const centre = map.getCenter(); onMapPick({ lat: centre.lat, lng: centre.lng }, map.getZoom()); }
+        }}>Select map centre</button>
+      </> : null}
       {snapLoading ? (
         <div className="absolute left-3 top-3 z-[700] inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 shadow-lg">
           <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin text-saints-red" />
@@ -550,7 +560,7 @@ function MapCanvas({
               </button>
               <button
                 type="button"
-                aria-label="Use selected place"
+                aria-label={`Lock ${draftSelection.name} for ${level.clues[level.clues.length - 1]?.maxPoints ?? 0} points`}
                 onClick={onUseDraft}
                 disabled={submitting}
                 className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-black text-white shadow-sm saints-focus disabled:cursor-not-allowed disabled:bg-emerald-300"
@@ -560,7 +570,7 @@ function MapCanvas({
                 ) : (
                   <Check aria-hidden="true" className="h-5 w-5" strokeWidth={3} />
                 )}
-                Use this place
+                Lock for {level.clues[level.clues.length - 1]?.maxPoints ?? 0} pts
               </button>
             </div>
           </div>
@@ -743,12 +753,7 @@ export function MapGame() {
       setSnapLoading(true);
       setError("");
       setSelectionNotice("");
-      setDraftSelection(null);
-      setPendingSelections((current) => {
-        const next = { ...current };
-        delete next[levelId];
-        return next;
-      });
+      // Keep the previous valid selection until a replacement lookup succeeds.
       try {
         const selection = await api.snapDailyMapGuess(levelId, point, zoom);
         if (!selection.snapped) {
@@ -890,19 +895,8 @@ export function MapGame() {
     if (selectedLevel === undefined || draftSelection === null) {
       return;
     }
-    setPendingSelections((current) => ({ ...current, [selectedLevel.id]: draftSelection }));
-    setDraftSelection(null);
-    setSelectionNotice("");
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => {
-        lockButtonRef.current?.scrollIntoView({
-          behavior: "smooth",
-          block: "center",
-        });
-        lockButtonRef.current?.focus({ preventScroll: true });
-      });
-    });
-  }, [draftSelection, selectedLevel]);
+    void submitSelectedGuess(draftSelection);
+  }, [draftSelection, selectedLevel, submitSelectedGuess]);
 
   const rejectDraftSelection = useCallback(() => {
     setDraftSelection(null);
@@ -960,7 +954,7 @@ export function MapGame() {
           onPlay={() => setShowPromoReplay(false)}
         />
       ) : null}
-      <section className="page-fade space-y-3 pb-2" aria-label="Daily map game">
+      <section className="space-y-3 pb-24 md:pb-2" aria-label="Daily map game">
       <Card className="overflow-hidden p-0">
         <div className="bg-saints-black px-4 py-3 text-white">
           <div className="flex items-start justify-between gap-3">
@@ -1004,6 +998,9 @@ export function MapGame() {
         </div>
 
         <div className="space-y-3 p-3">
+          <details className="rounded-lg border border-slate-200 p-3 text-sm">
+          <summary className="cursor-pointer font-bold saints-focus">How to play & map options</summary>
+          <p className="my-3 leading-relaxed">Read the clue, tap the map or select its centre, then check the named place. Choose Lock only when you're sure — it is your final answer. More clues reduce the available points: 10 → 7 → 5 → 2. Aim at the named town, city or landmark, not just its country. After locking, we'll show the accepted answer area.</p>
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -1045,12 +1042,14 @@ export function MapGame() {
             </div>
           </div>
 
-          <div className="space-y-2" aria-label="Map game clues">
-            {visibleClues.map((clue) => (
+          </details>
+          <div className="map-play-layout">
+          <div className="map-clues space-y-2" aria-label="Map game clues">
+            {visibleClues.slice(-1).map((clue) => (
               <div
                 key={clue.id}
                 className={[
-                  "rounded-xl border px-3 py-3",
+                  "max-h-40 overflow-y-auto rounded-xl border px-3 py-3",
                   clue.revealsName
                     ? "border-saints-red/25 bg-red-50"
                     : "border-slate-200 bg-slate-50",
@@ -1069,6 +1068,7 @@ export function MapGame() {
                 </p>
               </div>
             ))}
+            {visibleClues.length > 1 ? <details className="relative text-sm"><summary className="cursor-pointer rounded-lg border bg-white p-2 font-bold saints-focus">Previous clues ({visibleClues.length - 1})</summary><div className="absolute left-0 right-0 top-full z-[900] max-h-64 space-y-3 overflow-y-auto rounded-xl border bg-white p-3 shadow-xl">{visibleClues.slice(0, -1).map(clue => <div key={clue.id}><p className="font-black text-saints-red">{clue.title}</p><p className="mt-1 leading-relaxed">{clue.text}</p></div>)}</div></details> : null}
             {nextClue ? (
               <button
                 type="button"
@@ -1091,7 +1091,7 @@ export function MapGame() {
             draftSelection={draftSelection}
             selectionNotice={selectionNotice}
             snapLoading={snapLoading}
-            submitting={submitting}
+            submitting={submitting || snapLoading || revealing}
             onMapPick={pickPointForSelected}
             onUseDraft={useDraftSelection}
             onRejectDraft={rejectDraftSelection}
@@ -1100,9 +1100,9 @@ export function MapGame() {
           />
 
           {selectedLevel.result ? (
-            <ResultPanel result={selectedLevel.result} />
+            <div className="map-result"><ResultPanel result={selectedLevel.result} date={game.date} /></div>
           ) : (
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <div className="map-commit grid grid-cols-[minmax(0,1fr)_auto] gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
               <div className="min-w-0 rounded-lg bg-slate-50 px-3 py-2">
                 <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
                   Current pin
@@ -1111,7 +1111,7 @@ export function MapGame() {
                   {pendingSelection
                     ? pendingSelection.name
                     : draftSelection
-                      ? "Awaiting tick"
+                      ? draftSelection.name
                       : selectionNotice
                         ? "Try another tap"
                       : snapLoading
@@ -1122,11 +1122,11 @@ export function MapGame() {
               <button
                 ref={lockButtonRef}
                 type="button"
-                onClick={() => void submitSelectedGuess(pendingSelection)}
-                disabled={pendingPoint === undefined || draftSelection !== null || snapLoading || submitting || revealing}
+                onClick={() => void submitSelectedGuess(draftSelection ?? pendingSelection)}
+                disabled={(!draftSelection && pendingPoint === undefined) || snapLoading || submitting || revealing}
                 className={[
                   "inline-flex min-h-12 min-w-[8.5rem] items-center justify-center gap-2 rounded-lg px-4 text-sm font-black transition saints-focus",
-                  pendingPoint === undefined || draftSelection !== null || snapLoading || submitting || revealing
+                  (!draftSelection && pendingPoint === undefined) || snapLoading || submitting || revealing
                     ? "bg-slate-200 text-slate-400"
                     : "bg-saints-red text-white shadow-sm hover:bg-saints-redDark",
                 ].join(" ")}
@@ -1136,10 +1136,11 @@ export function MapGame() {
                 ) : (
                   <Lock aria-hidden="true" className="h-4 w-4" />
                 )}
-                Lock {currentMaxPoints}
+                Lock for {currentMaxPoints} pts
               </button>
             </div>
           )}
+          </div>
 
           {error ? (
             <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
@@ -1153,7 +1154,8 @@ export function MapGame() {
   );
 }
 
-function ResultPanel({ result }: { result: DailyMapGameResult }) {
+function ResultPanel({ result, date }: { result: DailyMapGameResult; date: string }) {
+  const { user } = useAuth();
   const cluesSeen = result.revealedHintCount + 1;
   const solvingStage = result.revealedHintCount === 0
     ? "the hard clue"
@@ -1166,13 +1168,13 @@ function ResultPanel({ result }: { result: DailyMapGameResult }) {
     ? result.revealedHintCount >= 3
       ? "You completed the round after revealing the place name."
       : `You solved it after seeing ${solvingStage}.`
-    : `Your selected place was outside the answer area after seeing ${solvingStage}.`;
+    : `Not quite this time. Your pin was ${result.distanceFromCentreMeters < 1000 ? `${Math.round(result.distanceFromCentreMeters)} m` : `${(result.distanceFromCentreMeters / 1000).toFixed(1)} km`} from the target centre. The accepted area extends ${result.targetRadiusMeters < 1000 ? `${result.targetRadiusMeters} m` : `${(result.targetRadiusMeters / 1000).toFixed(1)} km`} from it.`;
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white px-3 py-3 shadow-sm">
       <div className="grid grid-cols-3 gap-2 text-center">
         <ResultMetric label="Score" value={`${result.score}`} icon={<Trophy className="h-4 w-4" />} />
-        <ResultMetric label="Result" value={result.correct ? "Correct" : "Wrong"} />
+        <ResultMetric label="Result" value={result.correct ? "Found it!" : "Missed"} />
         <ResultMetric label="Clues seen" value={`${cluesSeen}`} />
       </div>
       <div className="mt-3 border-t border-slate-200 pt-3">
@@ -1191,6 +1193,7 @@ function ResultPanel({ result }: { result: DailyMapGameResult }) {
         <p className="mt-2 text-sm font-semibold leading-snug text-slate-600">
           {result.place.revealText}
         </p>
+        {user ? <DailyJourney current="map" summary={`Fulton's Quiz · ${date}\nPin the place: ${result.correct ? "Found it" : "A new place discovered"} · ${result.score} points · ${cluesSeen} clues`} /> : null}
       </div>
     </div>
   );

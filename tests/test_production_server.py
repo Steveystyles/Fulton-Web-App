@@ -440,6 +440,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             patch("server.get_cookie_value", return_value="token"),
             patch("server.current_user", return_value={"id": 1, "role": "user"}),
             patch("server.today_game_date", return_value="2026-06-23"),
+            patch("server.daily_quiz_player_state", return_value={"results": {}, "progress": {}}),
             patch(
                 "server.daily_quiz.lock_published_quiz_for_play",
                 side_effect=lambda *_: calls.append("lock"),
