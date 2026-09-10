@@ -39,7 +39,7 @@ export function Login() {
                 Fulton's Quiz
               </p>
               <p className="mt-1 text-sm font-bold uppercase tracking-normal text-saints-red">
-                Login
+                Your daily games club
               </p>
             </div>
           </div>
@@ -95,7 +95,7 @@ export function Login() {
               strokeWidth={2.4}
             />
             <p className="min-w-0">
-              Sign in with the account created for you by an administrator.
+              Wordle, two quick quizzes and a place to discover. Sign in with your club account. Need an account or a password reset? Ask the administrator who invited you.
             </p>
           </div>
         </section>

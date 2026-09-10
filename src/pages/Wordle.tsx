@@ -1,3 +1,5 @@
+import { DialogPortal } from "../components/DialogPortal";
+import { DailyJourney } from "../components/DailyJourney";
 import {
   useCallback,
   useEffect,
@@ -98,13 +100,13 @@ function writeLargePrintPreference(enabled: boolean) {
 
 function readSoundPreference() {
   if (typeof window === "undefined") {
-    return true;
+    return false;
   }
 
   try {
-    return window.localStorage.getItem(soundStorageKey) !== "0";
+    return window.localStorage.getItem(soundStorageKey) === "1";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -775,7 +777,9 @@ export function Wordle() {
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       const tagName = target?.tagName;
-      if (tagName === "INPUT" || tagName === "TEXTAREA" || target?.isContentEditable) {
+      if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey || event.isComposing ||
+          tagName === "INPUT" || tagName === "TEXTAREA" || target?.isContentEditable ||
+          target?.closest("button, a, select, summary, [role='button']") || document.querySelector('[aria-modal="true"]')) {
         return;
       }
 
@@ -963,6 +967,7 @@ export function Wordle() {
 
   return (
     <section className="page-fade wordle-game" aria-label="Wordle game" data-large-print={largePrint}>
+      <details className="mb-3 rounded-xl border border-slate-200 bg-white p-3 text-sm"><summary className="cursor-pointer font-bold saints-focus">How to play Wordle</summary><p className="mt-2 leading-relaxed">Find the five-letter word in six guesses. ✓ means the right letter in the right place; ↔ means the letter belongs elsewhere; × means it is absent, or you have already found all copies of that letter. There is no timer. Your Wordle level measures mastery, separately from weekly league points.</p></details>
       <section className={["max-w-full rounded-lg saints-card wordle-game-card", cardOverflowClass, cardPaddingClass].join(" ")}>
         <form className={formSpacingClass} onSubmit={handleSubmit}>
           <div className="space-y-2">
@@ -1117,6 +1122,9 @@ export function Wordle() {
                       return (
                         <div
                           key={letterIndex}
+                          role="img"
+                          aria-label={`Guess ${rowIndex + 1}, position ${letterIndex + 1}: ${letter || "empty"}${shouldShowFeedback && feedbackTile ? `, ${feedbackTile.color === "green" ? "correct position" : feedbackTile.color === "yellow" ? "different position" : "absent or no further copies"}` : ""}`}
+                          data-score={shouldShowFeedback && feedbackTile ? (feedbackTile.color === "green" ? "✓" : feedbackTile.color === "yellow" ? "↔" : "×") : undefined}
                           className={[
                             "wordle-tile",
                             tileClass,
@@ -1259,7 +1267,12 @@ export function Wordle() {
         ) : null}
       </section>
 
-      {showWinDialog ? (
+      <p className="mt-3 text-center text-sm font-bold">{isComplete ? `${guesses.length} guesses played` : `Guess ${Math.min(guesses.length + 1, maxAttempts)} of ${maxAttempts}`}</p>
+      <p className="sr-only" aria-live="polite" aria-atomic="true">{!isAnimatingReveal && guesses.length ? guesses[guesses.length - 1].feedback.map((tile, index) => `Position ${index + 1}: ${tile.letter}, ${tile.color === "green" ? "correct position" : tile.color === "yellow" ? "different position" : "absent or no further copies"}`).join(". ") : ""}</p>
+      {largePrint && guesses.length > 0 && !isAnimatingReveal ? <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer font-bold saints-focus">All previous guesses ({guesses.length})</summary><div className="mt-3 space-y-3">{guesses.map((row, index) => <div key={row.attemptNumber}><p className="mb-1 text-sm font-bold">Guess {index + 1}</p><div className="grid grid-cols-5 gap-1">{row.feedback.map((tile, position) => <div key={position} className={`rounded-lg border p-2 text-center text-xl font-black ${tile.color === "green" ? "bg-emerald-100" : tile.color === "yellow" ? "bg-amber-100" : "bg-slate-100"}`}><span>{tile.letter.toUpperCase()}</span><span className="block text-base" aria-label={tile.color === "green" ? "correct position" : tile.color === "yellow" ? "different position" : "absent or no further copies"}>{tile.color === "green" ? "✓" : tile.color === "yellow" ? "↔" : "×"}</span></div>)}</div></div>)}</div></details> : null}
+      {isComplete && !isAnimatingReveal && state ? <DailyJourney current="wordle" summary={`Fulton's Quiz · ${state.game.date}\nWordle ${state.result.status === "won" ? `${state.result.attemptsUsed}/6` : "X/6"} · ${state.result.score} game points\n${guesses.map(row => row.feedback.map(tile => tile.color === "green" ? "🟩" : tile.color === "yellow" ? "🟨" : "⬛").join("")).join("\n")}`} /> : null}
+
+      {showWinDialog ? <DialogPortal onClose={() => setWinDialogDismissed(true)}>
         <div
           className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
           role="dialog"
@@ -1347,9 +1360,9 @@ export function Wordle() {
             </div>
           </section>
         </div>
-      ) : null}
+      </DialogPortal> : null}
 
-      {showLossDialog ? (
+      {showLossDialog ? <DialogPortal onClose={() => setLossDialogDismissed(true)}>
         <div
           className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
           role="dialog"
@@ -1437,7 +1450,7 @@ export function Wordle() {
             </div>
           </section>
         </div>
-      ) : null}
+      </DialogPortal> : null}
     </section>
   );
 }

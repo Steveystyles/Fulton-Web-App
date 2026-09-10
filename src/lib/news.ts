@@ -1,5 +1,20 @@
 export const newsFallbackRefreshMs = 10 * 60 * 1000;
 
+export function mergeNewsItems<T extends { id: number; title: string; source: string; updatedAt: string; publishedAt: string }>(current: T[], incoming: T[]): T[] {
+  const ids = new Set<number>();
+  const stories = new Set<string>();
+  return [...incoming, ...current]
+    .sort((a, b) => (b.updatedAt || b.publishedAt).localeCompare(a.updatedAt || a.publishedAt))
+    .filter((item) => {
+      const story = newsStoryKey(item.title, item.source);
+      if (ids.has(item.id) || stories.has(story)) return false;
+      ids.add(item.id);
+      stories.add(story);
+      return true;
+    })
+    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+}
+
 export function cleanNewsTitle(title: string, source: string) {
   const trimmedTitle = title.trim();
   const trimmedSource = source.trim();

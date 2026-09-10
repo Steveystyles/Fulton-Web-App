@@ -1069,6 +1069,15 @@ def _initialize_database_locked() -> None:
                 UNIQUE (result_id, attempt_number)
             );
 
+            CREATE TABLE IF NOT EXISTS daily_quiz_progress (
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                game_date TEXT NOT NULL,
+                category TEXT NOT NULL CHECK (category IN ('football', 'general')),
+                answers_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, game_date, category)
+            );
+
             CREATE TABLE IF NOT EXISTS daily_quiz_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -2737,6 +2746,67 @@ def adjudicate_quiz_answers(
     return normalized_answers, adjudications, score_quiz_adjudications(questions, adjudications)
 
 
+def daily_quiz_player_state(conn: sqlite3.Connection, user_id: int, game_date: str) -> dict[str, Any]:
+    results = {
+        row["category"]: serialize_quiz_result(row)
+        for row in conn.execute(
+            "SELECT * FROM daily_quiz_results WHERE user_id = ? AND game_date = ?",
+            (user_id, game_date),
+        )
+    }
+    progress = {
+        row["category"]: json.loads(row["answers_json"])
+        for row in conn.execute(
+            "SELECT category, answers_json FROM daily_quiz_progress WHERE user_id = ? AND game_date = ?",
+            (user_id, game_date),
+        )
+    }
+    return {"results": results, "progress": progress}
+
+
+def save_daily_quiz_progress(conn: sqlite3.Connection, user_id: int, game_date: str,
+                             category: str, answers: Any) -> tuple[dict[str, Any], int]:
+    if game_date != today_game_date() or category not in {"football", "general"}:
+        return {"error": "Only today's football or general quiz can be saved."}, HTTPStatus.BAD_REQUEST
+    if not isinstance(answers, list) or not 1 <= len(answers) <= 3:
+        return {"error": "Send between one and three answers."}, HTTPStatus.BAD_REQUEST
+    try:
+        questions = quiz_category_questions(conn, game_date, category)
+    except (LookupError, ValueError):
+        return {"error": "Today's quiz is not available."}, HTTPStatus.NOT_FOUND
+    if len(answers) > len(questions):
+        return {"error": "Too many answers."}, HTTPStatus.BAD_REQUEST
+    normalized = []
+    for question, answer in zip(questions, answers):
+        question_id = daily_quiz.public_question_id(int(question["id"]))
+        choices = {daily_quiz.public_choice_id(int(question["id"]), index) for index in range(len(question["choices"]))}
+        if (not isinstance(answer, dict) or set(answer) != {"questionId", "choiceId"}
+                or answer.get("questionId") != question_id or not isinstance(answer.get("choiceId"), str)
+                or answer["choiceId"] not in choices):
+            return {"error": "Select a valid answer for each question in order."}, HTTPStatus.BAD_REQUEST
+        normalized.append({"questionId": question_id, "choiceId": answer["choiceId"]})
+    # Acquire the SQLite write lock before checking progress, including competing devices.
+    conn.execute(
+        "INSERT INTO daily_quiz_progress (user_id, game_date, category, updated_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, game_date, category) DO NOTHING", (user_id, game_date, category, utc_now()),
+    )
+    state = daily_quiz_player_state(conn, user_id, game_date)
+    if category in state["results"]:
+        return {"result": state["results"][category], "answers": state["progress"].get(category, [])}, HTTPStatus.OK
+    stored = state["progress"].get(category, [])
+    if normalized[:len(stored)] != stored:
+        return {"error": "This round has advanced on another device. Refresh to resume your saved answers."}, HTTPStatus.CONFLICT
+    conn.execute(
+        "UPDATE daily_quiz_progress SET answers_json = ?, updated_at = ? "
+        "WHERE user_id = ? AND game_date = ? AND category = ?",
+        (json.dumps(normalized), utc_now(), user_id, game_date, category),
+    )
+    if len(normalized) == len(questions):
+        payload, status = save_daily_quiz_result(conn, user_id, game_date, category, normalized)
+        return {**payload, "answers": normalized}, status
+    return {"answers": normalized}, HTTPStatus.OK
+
+
 def save_daily_quiz_result(
     conn: sqlite3.Connection,
     user_id: int,
@@ -2752,6 +2822,12 @@ def save_daily_quiz_result(
         }, HTTPStatus.BAD_REQUEST
     if not isinstance(answers, list) or len(answers) > QUIZ_MAX_SUBMITTED_ANSWERS:
         return {"error": "Quiz answers must be a bounded list."}, HTTPStatus.BAD_REQUEST
+
+    # Serialize direct final submissions with per-question progress on other devices.
+    conn.execute(
+        "INSERT INTO daily_quiz_progress (user_id, game_date, category, updated_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(user_id, game_date, category) DO NOTHING", (user_id, game_date, category, utc_now()),
+    )
 
     existing = conn.execute(
         """
@@ -2774,6 +2850,14 @@ def save_daily_quiz_result(
         )
     except ValueError as error:
         return {"error": str(error)}, HTTPStatus.BAD_REQUEST
+    progress = conn.execute(
+        "SELECT answers_json FROM daily_quiz_progress WHERE user_id = ? AND game_date = ? AND category = ?",
+        (user_id, game_date, category),
+    ).fetchone()
+    if progress is not None:
+        locked_answers = json.loads(progress["answers_json"])
+        if normalized_answers[:len(locked_answers)] != locked_answers:
+            return {"error": "Saved answers cannot be changed. Refresh to resume this round."}, HTTPStatus.CONFLICT
     quiz_version = quiz_content_version(questions)
     now = utc_now()
     cursor = conn.execute(
@@ -3172,7 +3256,7 @@ def upsert_news_item(
     now = utc_now()
     existing = conn.execute(
         """
-        SELECT id, story_key
+        SELECT *
         FROM news_items
         WHERE source_key = ? OR story_key = ?
         ORDER BY published_at DESC, id DESC
@@ -3183,7 +3267,7 @@ def upsert_news_item(
     if existing is None:
         recent_rows = conn.execute(
             """
-            SELECT id, title, source, published_at, story_key
+            SELECT *
             FROM news_items
             ORDER BY published_at DESC, id DESC
             LIMIT 100
@@ -3194,6 +3278,10 @@ def upsert_news_item(
             None,
         )
 
+    if existing is not None and all(existing[key] == item[key] for key in (
+        "kind", "title", "url", "source", "summary", "published_at", "host", "priority", "tags_json"
+    )):
+        return serialize_news_item(existing), False
     if existing is None:
         cursor = conn.execute(
             """
@@ -3653,7 +3741,8 @@ def ingest_news_once() -> int:
 
             if inserted:
                 inserted_count += 1
-                broadcast_news_item(item)
+            # Existing stories can contain corrections or live-score updates too.
+            broadcast_news_item(item)
         pruned_count = prune_news_items(conn)
         if pruned_count:
             safe_log(f"News retention removed {pruned_count} stale item(s)")
@@ -5106,9 +5195,70 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     return
                 try:
                     daily_quiz.lock_published_quiz_for_play(conn, quiz_date)
-                    self.send_json(HTTPStatus.OK, daily_quiz.quiz_payload(conn, quiz_date))
+                    self.send_json(HTTPStatus.OK, {
+                        **daily_quiz.quiz_payload(conn, quiz_date),
+                        **daily_quiz_player_state(conn, user["id"], quiz_date),
+                    })
                 except (LookupError, ValueError):
                     self.send_error_json(HTTPStatus.NOT_FOUND, "No published quiz exists for that date.")
+                return
+
+            if path == "/api/today" and method == "GET":
+                import playability
+                self.send_json(HTTPStatus.OK, playability.today_payload(conn, user["id"], today_game_date(), SERVER_TZ))
+                return
+
+            if path == "/api/practice/quizzes" and method == "GET":
+                dates = [row[0] for row in conn.execute(
+                    "SELECT quiz_date FROM daily_quiz_sets WHERE status = 'published' AND quiz_date < ? "
+                    "ORDER BY quiz_date DESC LIMIT 30", (today_game_date(),),
+                )]
+                self.send_json(HTTPStatus.OK, {"dates": dates})
+                return
+
+            if path == "/api/practice/quiz" and method == "GET":
+                practice_date = str(params.get("date", [""])[0])
+                try:
+                    if datetime.strptime(practice_date, "%Y-%m-%d").date().isoformat() >= today_game_date():
+                        raise ValueError("Practice uses past rounds only.")
+                    self.send_json(HTTPStatus.OK, daily_quiz.quiz_payload(conn, practice_date))
+                except (LookupError, ValueError):
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "Choose an available past round.")
+                return
+
+            if path == "/api/practice/quiz/result" and method == "POST":
+                payload = self.read_json()
+                practice_date = str(payload.get("date", ""))
+                category = str(payload.get("category", ""))
+                try:
+                    if datetime.strptime(practice_date, "%Y-%m-%d").date().isoformat() >= today_game_date():
+                        raise ValueError("Practice uses past rounds only.")
+                    answers = payload.get("answers")
+                    if not isinstance(answers, list) or len(answers) > QUIZ_MAX_SUBMITTED_ANSWERS:
+                        raise ValueError("Quiz answers must be a bounded list.")
+                    questions = quiz_category_questions(conn, practice_date, category)
+                    _, adjudications, totals = adjudicate_quiz_answers(questions, answers)
+                    self.send_json(HTTPStatus.OK, {"result": {
+                        **totals, "date": practice_date, "category": category,
+                        "quizVersion": quiz_content_version(questions), "scoringVersion": "practice-only",
+                        "adjudications": adjudications, "completedAt": utc_now(),
+                    }})
+                except (LookupError, ValueError) as error:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            if path == "/api/league" and method == "GET":
+                import playability
+                self.send_json(HTTPStatus.OK, playability.league_payload(conn, today_game_date()))
+                return
+
+            if path == "/api/daily-quiz/progress" and method == "POST":
+                payload = self.read_json()
+                result_payload, status = save_daily_quiz_progress(
+                    conn, user["id"], str(payload.get("date", "")),
+                    str(payload.get("category", "")), payload.get("answers"),
+                )
+                self.send_json(status, result_payload)
                 return
 
             if path == "/api/daily-quiz/result" and method == "POST":

@@ -1,5 +1,6 @@
 import { CircleHelp, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { DailyQuiz } from "../components/DailyQuiz";
 import { useAuth } from "../context/AuthContext";
 import { api, type DailyQuestionsResponse } from "../lib/api";
@@ -17,7 +18,9 @@ const options: Array<{
 
 export function Quiz() {
   const { user } = useAuth();
-  const [category, setCategory] = useState<QuizCategory>("football");
+  const [params, setParams] = useSearchParams();
+  const category: QuizCategory = params.get("category") === "general" ? "general" : "football";
+  const [refreshVersion, setRefreshVersion] = useState(0);
   const [dailyQuestions, setDailyQuestions] = useState<DailyQuestionsResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
@@ -56,7 +59,7 @@ export function Quiz() {
       active = false;
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, []);
+  }, [refreshVersion]);
 
   const questions =
     category === "football"
@@ -73,7 +76,8 @@ export function Quiz() {
             <button
               key={option.value}
               type="button"
-              onClick={() => setCategory(option.value)}
+              onClick={() => setParams({ category: option.value })}
+              aria-pressed={active}
               className={[
                 "flex min-h-12 items-center justify-center gap-2 rounded-lg border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
                 active
@@ -89,12 +93,16 @@ export function Quiz() {
       </div>
 
       <DailyQuiz
+        key={`${user?.id}:${category}:${dailyQuestions?.date}`}
         category={category}
         storageScope={user?.id ?? 0}
         quizDate={dailyQuestions?.date}
         questions={questions}
         loading={loading}
         error={error}
+        serverResult={dailyQuestions?.results[category] ?? null}
+        serverAnswers={dailyQuestions?.progress[category] ?? []}
+        onRefresh={() => setRefreshVersion(value => value + 1)}
       />
     </section>
   );
