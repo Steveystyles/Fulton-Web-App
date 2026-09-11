@@ -1,3 +1,4 @@
+import { HelpButton } from "../components/HelpButton";
 import { Link } from "react-router-dom";
 import { Check, CircleHelp, Hash, MapPinned, ArrowRight, Trophy } from "lucide-react";
 import { Card } from "../components/Card";
@@ -30,6 +31,6 @@ export function Today() {
     <Link to="/scores" className="flex min-h-20 items-center gap-4 rounded-2xl border border-saints-line bg-white p-4 saints-focus"><Trophy className="h-7 w-7 text-saints-red" aria-hidden="true" /><div className="flex-1"><h2 className="font-black">This week's league</h2><p className="mt-1 text-sm text-slate-600">Four activities. Equal daily point opportunities.</p></div><ArrowRight className="h-5 w-5" aria-hidden="true" /></Link>
     {complete === 4 && data ? <Card><ShareResult text={`Fulton's Quiz · ${data.date}\nDaily four complete!\n${data.activities.map(item => `${item.title}: ${item.score} game points`).join("\n")}`} /></Card> : null}
     <Link className={`${secondaryClass} w-full`} to="/practice">Fancy another round? Explore practice quizzes</Link>
-    <details className="rounded-xl border border-slate-200 bg-white p-4 text-sm"><summary className="cursor-pointer font-bold saints-focus">New here? How the club works</summary><p className="mt-3 leading-relaxed">Choose any game, in any order. Confirmed answers are saved to your account. Game points record your original achievements; the weekly league balances each activity to a maximum of 10 points per day. Rounds refresh at midnight UK time. There is no timer and no obligation to play everything.</p><Link className={`${secondaryClass} mt-3`} to="/account">Preferences and account help</Link></details>
+    <HelpButton title="How the club works"><p className="mt-3 leading-relaxed">Choose any game, in any order. Confirmed answers are saved to your account. Game points record your original achievements; the weekly league balances each activity to a maximum of 10 points per day. Rounds refresh at midnight UK time. There is no timer and no obligation to play everything.</p><Link className={`${secondaryClass} mt-3`} to="/account">Preferences and account help</Link></HelpButton>
   </section>;
 }

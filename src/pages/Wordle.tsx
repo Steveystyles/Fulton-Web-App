@@ -17,6 +17,7 @@ import {
   CircleAlert,
   CircleHelp,
   Delete,
+  CornerDownLeft,
   ExternalLink,
   LoaderCircle,
   Trophy,
@@ -1195,12 +1196,14 @@ export function Wordle() {
                     type="button"
                     onClick={() => void submitGuess()}
                     disabled={!canSubmit}
+                    aria-label="Enter guess"
+                    title="Enter guess"
                     className={[
                       "wordle-key wordle-key--action wordle-key--enter",
                       actionKeyClass,
                     ].join(" ")}
                   >
-                    Enter
+                    <CornerDownLeft aria-hidden="true" className="h-5 w-5 shrink-0" strokeWidth={2.5} />
                   </button>
                 ) : null}
 
