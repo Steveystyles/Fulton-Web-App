@@ -15,7 +15,7 @@ export function NavItem({ to, label, icon: Icon, end = false }: NavItemProps) {
       end={end}
       className={({ isActive }) =>
         [
-          "group flex min-h-16 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-xs font-bold transition saints-focus",
+          "group flex min-h-16 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-1 text-xs font-bold transition saints-focus",
           isActive
             ? "bg-saints-black text-white shadow-sm"
             : "text-slate-500 hover:bg-white hover:text-saints-black",

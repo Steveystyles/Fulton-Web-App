@@ -12,7 +12,7 @@ export function Card({
   ...props
 }: CardProps) {
   const classes = [
-    "max-w-full overflow-hidden rounded-[1.75rem] saints-card p-4",
+    "min-w-0 max-w-full overflow-hidden rounded-[1.75rem] saints-card saints-card-padding",
     className,
   ].join(" ");
 

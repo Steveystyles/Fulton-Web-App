@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronUp,
   CircleAlert,
+  CircleHelp,
   Delete,
   ExternalLink,
   LoaderCircle,
@@ -334,6 +335,7 @@ export function Wordle() {
   const [definitionLoading, setDefinitionLoading] = useState(false);
   const [largePrint, setLargePrint] = useState(readLargePrintPreference);
   const [soundEnabled, setSoundEnabled] = useState(readSoundPreference);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [winDialogDismissed, setWinDialogDismissed] = useState(false);
   const [lossDialogDismissed, setLossDialogDismissed] = useState(false);
   const [revealingRowIndex, setRevealingRowIndex] = useState<number | null>(null);
@@ -413,6 +415,10 @@ export function Wordle() {
     if (gameStatus === "lost") {
       setLossDialogDismissed(false);
     }
+  }, [gameStatus, state?.game.date]);
+
+  useEffect(() => {
+    setHelpOpen(false);
   }, [gameStatus, state?.game.date]);
 
   useEffect(() => {
@@ -926,8 +932,8 @@ export function Wordle() {
   const controlBarClass =
     "mx-auto w-full max-w-[22rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm";
   const settingsRowClass = state
-    ? "grid grid-cols-[minmax(0,5.6rem)_minmax(0,1fr)_3.15rem] divide-x divide-slate-200 min-[380px]:grid-cols-[minmax(0,5.9rem)_minmax(0,1fr)_3.3rem]"
-    : "grid grid-cols-1";
+    ? "grid grid-cols-[3.25rem_minmax(0,1fr)_2.75rem_3.25rem] divide-x divide-slate-200"
+    : "grid grid-cols-[minmax(0,1fr)_2.75rem_3.25rem] divide-x divide-slate-200";
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
   const cardPaddingClass = largePrint ? "p-2" : "p-3";
@@ -967,7 +973,6 @@ export function Wordle() {
 
   return (
     <section className="page-fade wordle-game" aria-label="Wordle game" data-large-print={largePrint}>
-      <details className="mb-3 rounded-xl border border-slate-200 bg-white p-3 text-sm"><summary className="cursor-pointer font-bold saints-focus">How to play Wordle</summary><p className="mt-2 leading-relaxed">Find the five-letter word in six guesses. ✓ means the right letter in the right place; ↔ means the letter belongs elsewhere; × means it is absent, or you have already found all copies of that letter. There is no timer. Your Wordle level measures mastery, separately from weekly league points.</p></details>
       <section className={["max-w-full rounded-lg saints-card wordle-game-card", cardOverflowClass, cardPaddingClass].join(" ")}>
         <form className={formSpacingClass} onSubmit={handleSubmit}>
           <div className="space-y-2">
@@ -1044,6 +1049,20 @@ export function Wordle() {
                   ) : (
                     <VolumeX aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
                   )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setHelpOpen(true)}
+                  aria-label="How to play Wordle"
+                  aria-haspopup="dialog"
+                  aria-expanded={helpOpen}
+                  aria-controls="wordle-help-dialog"
+                  disabled={submitting || isAnimatingReveal}
+                  className="flex min-h-[3.3rem] min-w-0 flex-col items-center justify-center gap-0.5 bg-white px-1 py-1 text-slate-700 transition hover:bg-slate-50 hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:opacity-50"
+                >
+                  <CircleHelp aria-hidden="true" className="h-5 w-5" strokeWidth={2.4} />
+                  <span className="text-[0.65rem] font-black leading-none">Help</span>
                 </button>
               </div>
 
@@ -1271,6 +1290,42 @@ export function Wordle() {
       <p className="sr-only" aria-live="polite" aria-atomic="true">{!isAnimatingReveal && guesses.length ? guesses[guesses.length - 1].feedback.map((tile, index) => `Position ${index + 1}: ${tile.letter}, ${tile.color === "green" ? "correct position" : tile.color === "yellow" ? "different position" : "absent or no further copies"}`).join(". ") : ""}</p>
       {largePrint && guesses.length > 0 && !isAnimatingReveal ? <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer font-bold saints-focus">All previous guesses ({guesses.length})</summary><div className="mt-3 space-y-3">{guesses.map((row, index) => <div key={row.attemptNumber}><p className="mb-1 text-sm font-bold">Guess {index + 1}</p><div className="grid grid-cols-5 gap-1">{row.feedback.map((tile, position) => <div key={position} className={`rounded-lg border p-2 text-center text-xl font-black ${tile.color === "green" ? "bg-emerald-100" : tile.color === "yellow" ? "bg-amber-100" : "bg-slate-100"}`}><span>{tile.letter.toUpperCase()}</span><span className="block text-base" aria-label={tile.color === "green" ? "correct position" : tile.color === "yellow" ? "different position" : "absent or no further copies"}>{tile.color === "green" ? "✓" : tile.color === "yellow" ? "↔" : "×"}</span></div>)}</div></div>)}</div></details> : null}
       {isComplete && !isAnimatingReveal && state ? <DailyJourney current="wordle" summary={`Fulton's Quiz · ${state.game.date}\nWordle ${state.result.status === "won" ? `${state.result.attemptsUsed}/6` : "X/6"} · ${state.result.score} game points\n${guesses.map(row => row.feedback.map(tile => tile.color === "green" ? "🟩" : tile.color === "yellow" ? "🟨" : "⬛").join("")).join("\n")}`} /> : null}
+
+      {helpOpen && !showWinDialog && !showLossDialog ? (
+        <DialogPortal onClose={() => setHelpOpen(false)}>
+          <div className="fixed inset-0 z-[80] flex items-center justify-center bg-saints-black/75 p-4">
+            <section
+              id="wordle-help-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="wordle-help-title"
+              className="max-h-[calc(100dvh_-_2rem)] w-full min-w-0 max-w-sm overflow-y-auto rounded-xl bg-white p-4 text-slate-950 shadow-2xl"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h2 id="wordle-help-title" className="min-w-0 text-xl font-black">How to play Wordle</h2>
+                <button
+                  type="button"
+                  onClick={() => setHelpOpen(false)}
+                  aria-label="Close Wordle help"
+                  className="saints-focus flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-700 hover:bg-slate-200"
+                >
+                  <X aria-hidden="true" className="h-5 w-5" />
+                </button>
+              </div>
+              <div className={["mt-3 space-y-4 leading-relaxed", largePrint ? "text-lg" : "text-base"].join(" ")}>
+                <p>Find the five-letter word in six guesses. There is no timer.</p>
+                <ul className="space-y-3">
+                  <li className="flex items-start gap-3"><span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-emerald-100 font-black text-emerald-900">✓</span><span><strong>Right place:</strong> this letter is in the correct position.</span></li>
+                  <li className="flex items-start gap-3"><span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-amber-100 font-black text-amber-900">↔</span><span><strong>Different place:</strong> this letter belongs elsewhere in the word.</span></li>
+                  <li className="flex items-start gap-3"><span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-100 font-black text-slate-700">×</span><span><strong>No more copies:</strong> this letter is absent, or you have already found all copies of it.</span></li>
+                </ul>
+                <p>Your Wordle level measures mastery, separately from weekly league points.</p>
+              </div>
+              <button type="button" onClick={() => setHelpOpen(false)} className="saints-focus mt-5 min-h-11 w-full rounded-lg bg-slate-950 px-4 py-2 font-black text-white">Back to the board</button>
+            </section>
+          </div>
+        </DialogPortal>
+      ) : null}
 
       {showWinDialog ? <DialogPortal onClose={() => setWinDialogDismissed(true)}>
         <div
