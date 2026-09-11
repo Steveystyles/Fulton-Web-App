@@ -98,13 +98,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4547,
+      "line_number": 4545,
       "line_range": [
-        4547
+        4545
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "ca1afadf2c38e5505b9d3ef50fece78c483de24770a98c0962cedae72d7a7211"
+      "code_sha256": "27ef7017a088613679eb779efe89841823597070e2899fab93a1c19fefdd8365"
     },
     {
       "filename": "daily_map_game.py",
@@ -114,13 +114,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4602,
+      "line_number": 4600,
       "line_range": [
-        4602
+        4600
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "81953b28d5131725bdaed1c67cf789b8921379a3986b33046c54ea12544cbd30"
+      "code_sha256": "df9eabc170b52becd079d86996f1fd5077b6a2591ac686db066ac59d42722fee"
     },
     {
       "filename": "daily_quiz.py",
