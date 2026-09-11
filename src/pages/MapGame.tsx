@@ -7,9 +7,10 @@ import {
   ChevronRight,
   CircleAlert,
   LoaderCircle,
-  Lock,
   Layers,
   MapPinned,
+  Maximize2,
+  Minimize2,
   PlayCircle,
   RotateCcw,
   Ruler,
@@ -21,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
 import { DailyJourney } from "../components/DailyJourney";
+import { layoutMapLabels, type LabelBox } from "../lib/mapLabels";
 import { useAuth } from "../context/AuthContext";
 import { MapGamePromo } from "./MapGamePromo";
 import {
@@ -118,12 +120,12 @@ function escapedMapLabel(value: string) {
   });
 }
 
-function mapAnchorIcon(name: string) {
+function mapAnchorIcon(name: string, width: number, height: number, offsetX: number, offsetY: number) {
   return L.divIcon({
     className: "daily-map-search-anchor",
     html: `<span>${escapedMapLabel(name)}</span>`,
-    iconSize: [180, 42],
-    iconAnchor: [90, 21],
+    iconSize: [width, height],
+    iconAnchor: [-offsetX, -offsetY],
   });
 }
 
@@ -139,10 +141,10 @@ type MapCanvasProps = {
   mapLabels: boolean;
   mapStyle: MapStyle;
   mapAnchors: DailyMapAnchor[];
-  acceptedSelection: DailyMapSnapSelection | undefined;
   draftSelection: DailyMapSnapSelection | null;
   selectionNotice: string;
   snapLoading: boolean;
+  revealing: boolean;
   submitting: boolean;
   onMapPick: (point: MapPoint, zoom: number) => void;
   onUseDraft: () => void;
@@ -156,10 +158,10 @@ function MapCanvas({
   mapLabels,
   mapStyle,
   mapAnchors,
-  acceptedSelection,
   draftSelection,
   selectionNotice,
   snapLoading,
+  revealing,
   submitting,
   onMapPick,
   onUseDraft,
@@ -176,6 +178,9 @@ function MapCanvas({
   const tileLayerRefs = useRef<L.TileLayer[]>([]);
   const displayedLevelIdRef = useRef<number | null>(null);
   const [measuring, setMeasuring] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const selectionBusy = snapLoading || submitting || revealing;
+  const selectionPanelRef = useRef<HTMLDivElement>(null);
   const [measurementPoints, setMeasurementPoints] = useState<MapPoint[]>([]);
   const [visibleBoundary, setVisibleBoundary] = useState<{
     name: string;
@@ -210,9 +215,12 @@ function MapCanvas({
         map.invalidateSize();
       }
     }, 50);
+    const resizeObserver = new ResizeObserver(() => map.invalidateSize({ pan: false }));
+    resizeObserver.observe(containerRef.current);
 
     return () => {
       window.clearTimeout(resizeTimer);
+      resizeObserver.disconnect();
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
@@ -301,11 +309,30 @@ function MapCanvas({
         return;
       }
       const zoom = currentMap.getZoom();
-      mapAnchors
-        .filter((anchor) => zoom >= anchor.minZoom && zoom <= anchor.maxZoom)
-        .forEach((anchor) => {
+      const size = currentMap.getSize();
+      const reserved: LabelBox[] = [{ left: size.x - 58, top: size.y - 122, right: size.x, bottom: size.y }];
+      const activePin = draftSelection;
+      const pins = level.result
+        ? [level.result.answerPoint, level.result.guessedPoint]
+        : activePin ? [activePin.point] : [];
+      for (const pin of pins) {
+        const point = currentMap.latLngToContainerPoint([pin.lat, pin.lng]);
+        reserved.push({ left: point.x - 20, top: point.y - 20, right: point.x + 20, bottom: point.y + 20 });
+      }
+      const textContext = document.createElement("canvas").getContext("2d");
+      if (textContext) textContext.font = "800 13px system-ui";
+      const candidates = mapAnchors.flatMap((anchor, id) => {
+        if (zoom < anchor.minZoom || zoom > anchor.maxZoom) return [];
+        const point = currentMap.latLngToContainerPoint([anchor.point.lat, anchor.point.lng]);
+        return [{ id, name: anchor.name, x: point.x, y: point.y,
+          width: Math.ceil(textContext?.measureText(anchor.name).width ?? anchor.name.length * 8) + 12,
+          height: 24, priority: anchor.minHintCount }];
+      });
+      layoutMapLabels(candidates, { width: size.x, height: size.y }, reserved)
+        .forEach((label) => {
+          const anchor = mapAnchors[label.id];
           L.marker([anchor.point.lat, anchor.point.lng], {
-            icon: mapAnchorIcon(anchor.name),
+            icon: mapAnchorIcon(anchor.name, label.width, label.height, label.left - label.x, label.top - label.y),
             interactive: false,
             keyboard: false,
             zIndexOffset: 150,
@@ -314,12 +341,17 @@ function MapCanvas({
     }
 
     renderMapAnchors();
-    currentMap.on("zoomend", renderMapAnchors);
+    currentMap.on("moveend zoomend resize", renderMapAnchors);
     return () => {
-      currentMap.off("zoomend", renderMapAnchors);
+      currentMap.off("moveend zoomend resize", renderMapAnchors);
       currentLayer.clearLayers();
     };
-  }, [mapAnchors, mapLabels]);
+  }, [mapAnchors, mapLabels, level.result, draftSelection]);
+
+  useEffect(() => {
+    if (!draftSelection) return;
+    selectionPanelRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [draftSelection?.selectionId]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -446,10 +478,10 @@ function MapCanvas({
       return () => window.clearTimeout(resizeTimer);
     }
 
-    const activeSelection = draftSelection ?? acceptedSelection;
+    const activeSelection = draftSelection;
     if (activeSelection !== undefined && activeSelection !== null) {
       const point: L.LatLngTuple = [activeSelection.point.lat, activeSelection.point.lng];
-      const marker = L.marker(point, {
+      L.marker(point, {
         draggable: false,
         icon: markerIcon("guess"),
       }).addTo(layer);
@@ -461,33 +493,46 @@ function MapCanvas({
       map.setView([25, 0], defaultMapZoom(), { animate: false });
     }
     return () => window.clearTimeout(resizeTimer);
-  }, [acceptedSelection, draftSelection, level]);
+  }, [draftSelection, level]);
 
   return (
-    <div className="map-canvas relative isolate overflow-hidden rounded-xl border border-slate-200 bg-slate-100">
+    <div className="map-canvas min-w-0 space-y-2">
+      <div className="map-viewport relative isolate overflow-hidden rounded-xl border border-slate-200 bg-slate-100" data-expanded={expanded}>
       <div
         ref={containerRef}
         className="map-stage w-full"
         aria-label={`${level.title} guessing map`}
         aria-describedby="map-keyboard-help"
       />
-      <p id="map-keyboard-help" className="sr-only">Focus the map and use arrow keys to move, plus and minus to zoom. Then use Select map centre to review a nearby place. Locking a place is final.</p>
+      <p id="map-keyboard-help" className="sr-only">Focus the map and use arrow keys to move, plus and minus to zoom. Then use the Use centre button below the map to review a nearby place. Locking a place is final.</p>
       {!level.submitted && !measuring ? <>
         <span aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 z-[600] -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-black/70 px-1 text-xl leading-none text-white">+</span>
-        <button type="button" disabled={snapLoading || submitting} className="absolute bottom-24 left-3 z-[700] min-h-11 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold shadow saints-focus" onClick={() => {
+      </> : null}
+      </div>
+      <div className="map-tools" role="group" aria-label="Map tools">
+        {!level.submitted ? <button type="button" disabled={selectionBusy || measuring} className="map-tool saints-focus" onClick={() => {
           const map = mapRef.current;
           if (map) { const centre = map.getCenter(); onMapPick({ lat: centre.lat, lng: centre.lng }, map.getZoom()); }
-        }}>Select map centre</button>
-      </> : null}
+        }}><MapPinned aria-hidden="true" className="h-4 w-4 shrink-0" /><span>Use centre</span></button> : null}
+        <button type="button" aria-label={measuring ? "Stop measuring distance" : "Measure distance"} aria-pressed={measuring} onClick={toggleMeasurement} disabled={selectionBusy} className="map-tool saints-focus">
+          <Ruler aria-hidden="true" className="h-4 w-4 shrink-0" /><span>{measuring ? "Done" : "Measure"}</span>
+        </button>
+        <button type="button" aria-label={expanded ? "Reduce map height" : "Enlarge map"} aria-pressed={expanded} onClick={() => setExpanded(current => !current)} className="map-tool saints-focus">
+          {expanded ? <Minimize2 aria-hidden="true" className="h-4 w-4 shrink-0" /> : <Maximize2 aria-hidden="true" className="h-4 w-4 shrink-0" />}<span>{expanded ? "Smaller" : "Larger map"}</span>
+        </button>
+      </div>
+      {measuring ? <p role="status" className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-bold text-slate-800">
+        {measuredDistance !== null ? `Distance: ${formatMeasuredDistance(measuredDistance)}. Tap to start a new measurement.` : measurementPoints.length === 1 ? "Tap the end point on the map." : "Tap the start point on the map."}
+      </p> : null}
       {snapLoading ? (
-        <div className="absolute left-3 top-3 z-[700] inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 shadow-lg">
+        <div role="status" className="flex min-h-11 items-center gap-2 rounded-lg bg-slate-100 px-3 text-sm font-bold text-slate-700">
           <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin text-saints-red" />
           Finding place
         </div>
       ) : null}
       {selectionNotice && draftSelection === null && !snapLoading && !level.submitted ? (
         <div
-          className="absolute left-3 right-3 top-3 z-[700] flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2 text-amber-950 shadow-xl"
+          className="flex min-w-0 items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2 text-amber-950"
           aria-live="polite"
         >
           <CircleAlert aria-hidden="true" className="h-5 w-5 shrink-0 text-amber-600" strokeWidth={2.6} />
@@ -504,14 +549,15 @@ function MapCanvas({
       ) : null}
       {draftSelection !== null && !level.submitted ? (
         <div
-          className="absolute left-3 right-3 top-3 z-[700] rounded-xl border border-slate-200 bg-white p-3 shadow-xl"
+          ref={selectionPanelRef}
+          className="map-pin-review min-w-0 rounded-xl border border-slate-200 bg-white p-3"
           aria-live="polite"
         >
           <div className="min-w-0">
             <p className="text-[0.62rem] font-black uppercase tracking-normal text-saints-red">
               {draftSelection.snapped ? "Selected place" : "Selected point"}
             </p>
-            <p className="mt-0.5 break-words text-xl font-black leading-tight text-slate-950">
+            <p className="mt-0.5 text-lg font-black leading-tight text-slate-950 [overflow-wrap:anywhere]">
               {draftSelection.name}
             </p>
             {draftSelection.admin1 || draftSelection.countryCode ? (
@@ -525,36 +571,37 @@ function MapCanvas({
               </p>
             ) : null}
           </div>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="mt-3 space-y-2">
             {(draftSelection.alternatives?.length ?? 0) > 1 ? (
-              <>
+              <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2">
                 <button
                   type="button"
                   aria-label="Previous nearby place"
                   onClick={() => onCycleDraft(-1)}
-                  disabled={submitting}
-                  className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
+                  disabled={selectionBusy}
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
                 >
                   <ChevronLeft aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
                 </button>
+                <p className="min-w-0 text-center text-sm text-slate-600">Choose a nearby place</p>
                 <button
                   type="button"
                   aria-label="Next nearby place"
                   onClick={() => onCycleDraft(1)}
-                  disabled={submitting}
-                  className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
+                  disabled={selectionBusy}
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
                 >
                   <ChevronRight aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
                 </button>
-              </>
+              </div>
             ) : null}
-            <div className="ml-auto flex items-center gap-2">
+            <div className="grid grid-cols-[2.75rem_minmax(0,1fr)] gap-2">
               <button
                 type="button"
                 aria-label="Reject selected place"
                 onClick={onRejectDraft}
-                disabled={submitting}
-                className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
+                disabled={selectionBusy}
+                className="inline-flex min-h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
               >
                 <X aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
               </button>
@@ -562,15 +609,15 @@ function MapCanvas({
                 type="button"
                 aria-label={`Lock ${draftSelection.name} for ${level.clues[level.clues.length - 1]?.maxPoints ?? 0} points`}
                 onClick={onUseDraft}
-                disabled={submitting}
-                className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-black text-white shadow-sm saints-focus disabled:cursor-not-allowed disabled:bg-emerald-300"
+                disabled={selectionBusy}
+                className="inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-lg bg-saints-red px-3 py-2 text-sm font-black text-white saints-focus disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? (
                   <LoaderCircle aria-hidden="true" className="h-5 w-5 animate-spin" />
                 ) : (
                   <Check aria-hidden="true" className="h-5 w-5" strokeWidth={3} />
                 )}
-                Lock for {level.clues[level.clues.length - 1]?.maxPoints ?? 0} pts
+                <span>Lock for {level.clues[level.clues.length - 1]?.maxPoints ?? 0} pts</span>
               </button>
             </div>
           </div>
@@ -579,7 +626,7 @@ function MapCanvas({
       {visibleBoundary ? (
         <div
           className={[
-            "pointer-events-none absolute bottom-24 left-3 z-[700] inline-flex min-h-9 max-w-[calc(100%-5rem)] items-center gap-2 rounded-lg bg-white/95 px-3 text-xs font-black shadow-lg",
+            "flex min-w-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold",
             visibleBoundary.kind === "guidance"
               ? "border border-blue-200 text-blue-800"
               : "border border-emerald-200 text-emerald-800",
@@ -588,47 +635,15 @@ function MapCanvas({
           <span
             aria-hidden="true"
             className={[
-              "w-7 border-t-[3px] border-dashed",
+              "w-5 shrink-0 border-t-[3px] border-dashed",
               visibleBoundary.kind === "guidance" ? "border-blue-700" : "border-emerald-700",
             ].join(" ")}
           />
-          <span className="truncate">
+          <span className="min-w-0 [overflow-wrap:anywhere]">
             {visibleBoundary.name} {visibleBoundary.kind === "guidance" ? "search area" : "boundary"}
           </span>
         </div>
       ) : null}
-      <div className="pointer-events-none absolute bottom-10 left-3 z-[700] flex max-w-[calc(100%-5rem)] items-stretch gap-2">
-        <button
-          type="button"
-          aria-label={measuring ? "Stop measuring distance" : "Measure distance"}
-          aria-pressed={measuring}
-          title={measuring ? "Stop measuring distance" : "Measure distance"}
-          onClick={toggleMeasurement}
-          disabled={snapLoading}
-          className={[
-            "pointer-events-auto inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg border px-3 text-sm font-black shadow-lg saints-focus",
-            measuring
-              ? "border-slate-950 bg-slate-950 text-white"
-              : "border-slate-200 bg-white text-slate-800",
-            snapLoading ? "cursor-not-allowed opacity-50" : "",
-          ].join(" ")}
-        >
-          <Ruler aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
-          <span>{measuring ? "Done" : "Measure"}</span>
-        </button>
-        {measuring ? (
-          <div
-            className="flex min-h-11 min-w-0 items-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-black text-slate-800 shadow-lg"
-            aria-live="polite"
-          >
-            {measuredDistance !== null
-              ? formatMeasuredDistance(measuredDistance)
-              : measurementPoints.length === 1
-                ? "Tap end"
-                : "Tap start"}
-          </div>
-        ) : null}
-      </div>
     </div>
   );
 }
@@ -643,7 +658,6 @@ export function MapGame() {
     (announcement) => announcement.kind === "daily-map-promo",
   );
   const [selectedLevelId, setSelectedLevelId] = useState<number | null>(null);
-  const [pendingSelections, setPendingSelections] = useState<Record<number, DailyMapSnapSelection>>({});
   const [draftSelection, setDraftSelection] = useState<DailyMapSnapSelection | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -652,7 +666,6 @@ export function MapGame() {
   const [submitting, setSubmitting] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const submitInFlightRef = useRef(false);
-  const lockButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mapLabels, setMapLabels] = useState(() => {
     try {
       return window.localStorage.getItem("fultons:daily-map:labels") !== "off";
@@ -721,8 +734,6 @@ export function MapGame() {
     () => levels.find((level) => level.id === selectedLevelId) ?? levels[0],
     [levels, selectedLevelId],
   );
-  const pendingSelection = selectedLevel ? pendingSelections[selectedLevel.id] : undefined;
-  const pendingPoint = pendingSelection?.point;
   const totalScore = levels.reduce((total, level) => total + (level.result?.score ?? 0), 0);
   const completed = levels.filter((level) => level.submitted).length;
   const currentRevealedHintCount = selectedLevel?.revealedHintCount ?? 0;
@@ -735,8 +746,6 @@ export function MapGame() {
         { title: "Place name", maxPoints: 2 },
       ][currentRevealedHintCount]
     : undefined;
-  const currentMaxPoints =
-    selectedLevel?.result?.maxPoints ?? clues[clues.length - 1]?.maxPoints ?? 0;
 
   const pickPointForSelected = useCallback(
     async (point: MapPoint, zoom: number) => {
@@ -806,6 +815,7 @@ export function MapGame() {
         selection === undefined ||
         selectedLevel.submitted ||
         submitInFlightRef.current ||
+        snapLoading ||
         submitting ||
         revealing
       ) {
@@ -841,11 +851,6 @@ export function MapGame() {
             ),
           };
         });
-        setPendingSelections((current) => {
-          const next = { ...current };
-          delete next[selectedLevel.id];
-          return next;
-        });
         setDraftSelection(null);
       } catch (caughtError) {
         setError(caughtError instanceof Error ? caughtError.message : "Guess failed to submit.");
@@ -854,7 +859,7 @@ export function MapGame() {
         setSubmitting(false);
       }
     },
-    [revealing, selectedLevel, submitting],
+    [revealing, selectedLevel, snapLoading, submitting],
   );
 
   const revealNextClue = useCallback(async () => {
@@ -954,10 +959,10 @@ export function MapGame() {
           onPlay={() => setShowPromoReplay(false)}
         />
       ) : null}
-      <section className="space-y-3 pb-24 md:pb-2" aria-label="Daily map game">
-      <Card className="overflow-hidden p-0">
+      <section className="min-w-0 space-y-3 pb-2" aria-label="Daily map game">
+      <Card className="map-game-card p-0">
         <div className="bg-saints-black px-4 py-3 text-white">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="flex items-center gap-1.5 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
                 <MapPinned aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
@@ -997,11 +1002,11 @@ export function MapGame() {
           </div>
         </div>
 
-        <div className="space-y-3 p-3">
-          <details className="rounded-lg border border-slate-200 p-3 text-sm">
+        <div className="min-w-0 space-y-3 p-2 sm:p-3">
+          <details className="rounded-lg border border-slate-200 p-2 text-sm">
           <summary className="cursor-pointer font-bold saints-focus">How to play & map options</summary>
           <p className="my-3 leading-relaxed">Read the clue, tap the map or select its centre, then check the named place. Choose Lock only when you're sure — it is your final answer. More clues reduce the available points: 10 → 7 → 5 → 2. Aim at the named town, city or landmark, not just its country. After locking, we'll show the accepted answer area.</p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid min-w-0 gap-2 min-[380px]:grid-cols-2">
             <button
               type="button"
               aria-pressed={mapLabels}
@@ -1029,7 +1034,7 @@ export function MapGame() {
                   aria-pressed={mapStyle === style}
                   onClick={() => setMapStyle(style)}
                   className={[
-                    "flex min-h-9 items-center justify-center gap-1 rounded-md px-2 text-sm font-black leading-none transition saints-focus",
+                    "flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-md px-2 text-sm font-black leading-tight transition saints-focus",
                     mapStyle === style
                       ? "bg-slate-950 text-white shadow-sm"
                       : "text-slate-500",
@@ -1049,13 +1054,13 @@ export function MapGame() {
               <div
                 key={clue.id}
                 className={[
-                  "max-h-40 overflow-y-auto rounded-xl border px-3 py-3",
+                  "min-w-0 rounded-xl border px-3 py-2",
                   clue.revealsName
                     ? "border-saints-red/25 bg-red-50"
                     : "border-slate-200 bg-slate-50",
                 ].join(" ")}
               >
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <p className="text-[0.68rem] font-black uppercase tracking-normal text-saints-red">
                     {clue.title}
                   </p>
@@ -1063,12 +1068,12 @@ export function MapGame() {
                     Max {clue.maxPoints} pts
                   </p>
                 </div>
-                <p className="mt-1 text-base font-black leading-snug text-slate-950">
+                <p className="mt-1 text-base font-bold leading-snug text-slate-950 [overflow-wrap:anywhere]">
                   {clue.text}
                 </p>
               </div>
             ))}
-            {visibleClues.length > 1 ? <details className="relative text-sm"><summary className="cursor-pointer rounded-lg border bg-white p-2 font-bold saints-focus">Previous clues ({visibleClues.length - 1})</summary><div className="absolute left-0 right-0 top-full z-[900] max-h-64 space-y-3 overflow-y-auto rounded-xl border bg-white p-3 shadow-xl">{visibleClues.slice(0, -1).map(clue => <div key={clue.id}><p className="font-black text-saints-red">{clue.title}</p><p className="mt-1 leading-relaxed">{clue.text}</p></div>)}</div></details> : null}
+            {visibleClues.length > 1 ? <details className="min-w-0 text-sm"><summary className="min-h-11 cursor-pointer rounded-lg border bg-white p-2 font-bold saints-focus">Previous clues ({visibleClues.length - 1})</summary><div className="mt-2 space-y-3 rounded-xl border bg-white p-3">{visibleClues.slice(0, -1).map(clue => <div key={clue.id}><p className="font-black text-saints-red">{clue.title}</p><p className="mt-1 leading-relaxed">{clue.text}</p></div>)}</div></details> : null}
             {nextClue ? (
               <button
                 type="button"
@@ -1087,10 +1092,10 @@ export function MapGame() {
             mapLabels={mapLabels}
             mapStyle={mapStyle}
             mapAnchors={selectedLevel.mapAnchors ?? []}
-            acceptedSelection={pendingSelection}
             draftSelection={draftSelection}
             selectionNotice={selectionNotice}
             snapLoading={snapLoading}
+            revealing={revealing}
             submitting={submitting || snapLoading || revealing}
             onMapPick={pickPointForSelected}
             onUseDraft={useDraftSelection}
@@ -1101,45 +1106,7 @@ export function MapGame() {
 
           {selectedLevel.result ? (
             <div className="map-result"><ResultPanel result={selectedLevel.result} date={game.date} /></div>
-          ) : (
-            <div className="map-commit grid grid-cols-[minmax(0,1fr)_auto] gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-sm">
-              <div className="min-w-0 rounded-lg bg-slate-50 px-3 py-2">
-                <p className="text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
-                  Current pin
-                </p>
-                <p className="mt-0.5 truncate text-sm font-bold text-slate-700">
-                  {pendingSelection
-                    ? pendingSelection.name
-                    : draftSelection
-                      ? draftSelection.name
-                      : selectionNotice
-                        ? "Try another tap"
-                      : snapLoading
-                        ? "Finding place"
-                        : "No pin accepted"}
-                </p>
-              </div>
-              <button
-                ref={lockButtonRef}
-                type="button"
-                onClick={() => void submitSelectedGuess(draftSelection ?? pendingSelection)}
-                disabled={(!draftSelection && pendingPoint === undefined) || snapLoading || submitting || revealing}
-                className={[
-                  "inline-flex min-h-12 min-w-[8.5rem] items-center justify-center gap-2 rounded-lg px-4 text-sm font-black transition saints-focus",
-                  (!draftSelection && pendingPoint === undefined) || snapLoading || submitting || revealing
-                    ? "bg-slate-200 text-slate-400"
-                    : "bg-saints-red text-white shadow-sm hover:bg-saints-redDark",
-                ].join(" ")}
-              >
-                {submitting ? (
-                  <LoaderCircle aria-hidden="true" className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Lock aria-hidden="true" className="h-4 w-4" />
-                )}
-                Lock for {currentMaxPoints} pts
-              </button>
-            </div>
-          )}
+          ) : null}
           </div>
 
           {error ? (

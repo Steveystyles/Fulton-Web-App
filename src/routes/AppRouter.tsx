@@ -1,5 +1,5 @@
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
-import { lazy, Suspense, useEffect, type ReactNode, type CSSProperties } from "react";
+import { lazy, Suspense, useEffect, useRef, type ReactNode, type CSSProperties } from "react";
 import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
 import { useAuth } from "../context/AuthContext";
@@ -47,20 +47,35 @@ function AppFrame({
   reviewMode?: boolean;
 }) {
   const { pathname } = useLocation();
+  const frameRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const frame = frameRef.current;
+    const header = headerRef.current;
+    if (!frame || !header) return;
+    const nav = frame.querySelector<HTMLElement>(".bottom-nav");
+    const measure = () => {
+      frame.style.setProperty("--app-header-height", `${header.getBoundingClientRect().height}px`);
+      frame.style.setProperty("--app-nav-height", `${nav?.getBoundingClientRect().height ?? 0}px`);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(header);
+    if (nav) observer.observe(nav);
+    measure();
+    return () => observer.disconnect();
+  }, [reviewMode]);
   const wide = ["/", "/today", "/map", "/scores"].includes(pathname);
   return (
-    <div style={{ "--shell-width": wide ? "960px" : "430px" } as CSSProperties} className={`mx-auto flex min-h-dvh w-full ${wide ? "max-w-[960px]" : "max-w-[430px]"} flex-col overflow-x-hidden bg-saints-paper shadow-2xl ring-1 ring-white/10`}>
-      <div className="top-shell">
+    <div ref={frameRef} style={{ "--shell-width": wide ? "960px" : "430px" } as CSSProperties} className={`app-frame mx-auto flex min-h-dvh w-full ${wide ? "max-w-[960px]" : "max-w-[430px]"} flex-col bg-saints-paper shadow-2xl ring-1 ring-white/10`}>
+      <div ref={headerRef} className="top-shell">
         <Header reviewMode={reviewMode} />
       </div>
-      <div className="h-[4rem] shrink-0" aria-hidden="true" />
+      <div className="app-header-space shrink-0" aria-hidden="true" />
       <main
         id="main-content"
+        data-review={reviewMode}
         className={[
-          "flex-1 overflow-x-hidden px-4",
-          reviewMode
-            ? "pb-[max(1rem,env(safe-area-inset-bottom))]"
-            : "pb-[calc(5rem+env(safe-area-inset-bottom))]",
+          "app-main flex-1 px-3 sm:px-4",
           compact ? "pt-2" : "pt-4",
         ].join(" ")}
       >

@@ -67,8 +67,8 @@ export function Quiz() {
       : dailyQuestions?.general ?? [];
 
   return (
-    <section className="page-fade space-y-3" aria-label="Daily quiz">
-      <div className="grid grid-cols-2 gap-2" aria-label="Quiz type">
+    <section className="page-fade min-w-0 space-y-2" aria-label="Daily quiz">
+      <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] gap-2" aria-label="Quiz type">
         {options.map((option) => {
           const Icon = option.icon;
           const active = option.value === category;
@@ -79,14 +79,14 @@ export function Quiz() {
               onClick={() => setParams({ category: option.value })}
               aria-pressed={active}
               className={[
-                "flex min-h-12 items-center justify-center gap-2 rounded-lg border px-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
+                "flex min-h-11 min-w-0 items-center justify-center gap-1.5 rounded-lg border px-2 py-2 text-sm font-black transition focus:outline-none focus:ring-4 focus:ring-saints-red/20",
                 active
                   ? "border-saints-black bg-saints-black text-white shadow-sm"
                   : "border-saints-line bg-white text-slate-700 hover:border-saints-red/40",
               ].join(" ")}
             >
               <Icon aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.5} />
-              <span className="leading-tight">{option.label}</span>
+              <span className="min-w-0 leading-tight [overflow-wrap:anywhere]">{option.label}</span>
             </button>
           );
         })}

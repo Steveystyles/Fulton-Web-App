@@ -101,13 +101,32 @@ export function DailyQuiz({ category, storageScope, quizDate, questions, loading
     void api.saveQuizProgress({ date: quizDate, category, answers }).then(response => { if (response.result) setResult(response.result); })
       .catch((reason: Error) => setSaveError(reason.message)).finally(() => { inFlight.current = false; setSaving(false); });
   }}>{saving ? "Saving…" : "Finish saving this round"}</button>{saveError ? <p role="alert" className="mt-2 text-sm text-saints-red">{saveError}</p> : null}</Card>;
-  return <Card className="overflow-hidden p-0">
-    <div className="bg-saints-black p-4 text-white"><p className="text-xs font-bold uppercase text-white/65">{quizDate} · {question.difficulty} · {difficultyPoints[question.difficulty]} points</p><h2 ref={heading} tabIndex={-1} className="mt-2 text-xl font-black">Question {answers.length + 1} of {questions.length}</h2><progress aria-label="Confirmed answers" value={answers.length} max={questions.length} className="mt-3 h-2 w-full accent-red-600" /></div>
-    <div className="space-y-4 p-4">
-      <p className="text-xl font-black leading-snug">{question.question}</p>
-      <div className="grid gap-3" role="group" aria-label="Answer choices">{question.answers.map((answer, index) => <button key={answer.id} type="button" disabled={saving} aria-pressed={choice === answer.id} onClick={() => choose(answer.id)} className={`flex min-h-14 items-center gap-3 rounded-xl border p-3 text-left font-bold saints-focus disabled:opacity-60 ${choice === answer.id ? "border-saints-black bg-saints-black text-white" : "border-slate-300 bg-white"}`}><span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-current">{String.fromCharCode(65 + index)}</span>{answer.text}</button>)}</div>
-      <p className="text-sm text-slate-600">You can change your selection until you press {answers.length === questions.length - 1 ? "Finish round" : "Next question"}. {practice ? "Practice stays outside your daily scores." : "Confirmed answers are saved."} We'll reveal all three together.</p>
-      <button type="button" disabled={!choice || saving} className={`${actionClass} w-full disabled:opacity-50`} onClick={() => void next()}>{saving ? "Saving your answer…" : answers.length === questions.length - 1 ? "Finish round" : "Next question"}</button>
+  return <Card className="min-w-0 overflow-hidden p-0">
+    <div className="bg-saints-black px-3 py-3 text-white sm:px-4">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h2 ref={heading} tabIndex={-1} className="text-base font-black">Question {answers.length + 1} of {questions.length}</h2>
+        <p className="text-xs font-bold capitalize text-white/80">{question.difficulty} · {difficultyPoints[question.difficulty]} {difficultyPoints[question.difficulty] === 1 ? "point" : "points"}</p>
+      </div>
+      <p className="mt-1 text-xs text-white/65">{quizDate}</p>
+      <progress aria-label="Confirmed answers" value={answers.length} max={questions.length} className="mt-2 block h-1.5 w-full accent-red-600" />
+    </div>
+    <div className="min-w-0 space-y-3 p-3 sm:p-4">
+      <p className="text-[clamp(1rem,4.6vw,1.125rem)] font-black leading-snug [overflow-wrap:anywhere]">{question.question}</p>
+      <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] auto-rows-fr gap-2" role="group" aria-label="Answer choices">
+        {question.answers.map((answer, index) => <button
+          key={answer.id}
+          type="button"
+          disabled={saving}
+          aria-pressed={choice === answer.id}
+          onClick={() => choose(answer.id)}
+          className={`flex min-h-20 min-w-0 items-start gap-1.5 rounded-xl border px-2 py-3 text-left text-[clamp(0.875rem,3.8vw,1rem)] font-bold leading-snug saints-focus disabled:opacity-60 sm:gap-2 sm:px-3 ${choice === answer.id ? "border-saints-black bg-saints-black text-white" : "border-slate-300 bg-white"}`}
+        >
+          <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-current text-xs">{String.fromCharCode(65 + index)}</span>
+          <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{answer.text}</span>
+        </button>)}
+      </div>
+      <p className="text-xs leading-relaxed text-slate-600">Change your choice before {answers.length === questions.length - 1 ? "finishing" : "continuing"}. {practice ? "Practice doesn't affect your scores." : "Confirmed answers are saved."} Answers revealed at the end.</p>
+      <button type="button" disabled={!choice || saving} className={`${actionClass} min-h-11 w-full disabled:opacity-50`} onClick={() => void next()}>{saving ? "Saving your answer…" : answers.length === questions.length - 1 ? "Finish round" : "Next question"}</button>
       {saveError ? <div role="alert" className="rounded-xl bg-red-50 p-3 text-sm"><p>{saveError}</p><button className={`${secondaryClass} mt-2`} onClick={onRefresh}>Refresh saved progress</button></div> : null}
     </div>
   </Card>;
