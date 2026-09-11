@@ -1,3 +1,4 @@
+import { HelpButton } from "../components/HelpButton";
 import { CircleHelp, UsersRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -68,7 +69,7 @@ export function Quiz() {
 
   return (
     <section className="page-fade min-w-0 space-y-2" aria-label="Daily quiz">
-      <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] gap-2" aria-label="Quiz type">
+      <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))_2.75rem] gap-2" aria-label="Quiz type">
         {options.map((option) => {
           const Icon = option.icon;
           const active = option.value === category;
@@ -90,6 +91,7 @@ export function Quiz() {
             </button>
           );
         })}
+        <HelpButton compact title="How to play the quiz"><p>Pick one answer, then confirm with Next question or Finish round. You can change your choice before confirming. Confirmed answers are saved and cannot be changed. All three answers are revealed at the end. There is no timer.</p></HelpButton>
       </div>
 
       <DailyQuiz

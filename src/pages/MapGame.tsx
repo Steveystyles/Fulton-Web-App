@@ -1,3 +1,4 @@
+import { HelpButton } from "../components/HelpButton";
 import "leaflet/dist/leaflet.css";
 
 import L from "leaflet";
@@ -506,7 +507,7 @@ function MapCanvas({
       />
       <p id="map-keyboard-help" className="sr-only">Focus the map and use arrow keys to move, plus and minus to zoom. Then use the Use centre button below the map to review a nearby place. Locking a place is final.</p>
       {!level.submitted && !measuring ? <>
-        <span aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 z-[600] -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-black/70 px-1 text-xl leading-none text-white">+</span>
+        <span aria-hidden="true" className="map-crosshair pointer-events-none absolute left-1/2 top-1/2 z-[600] flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-black/70 text-white"><svg viewBox="0 0 24 24" className="block h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg></span>
       </> : null}
       </div>
       <div className="map-tools" role="group" aria-label="Map tools">
@@ -530,13 +531,13 @@ function MapCanvas({
           Finding place
         </div>
       ) : null}
-      {selectionNotice && draftSelection === null && !snapLoading && !level.submitted ? (
+      {selectionNotice && !snapLoading && !level.submitted ? (
         <div
           className="flex min-w-0 items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 p-2 text-amber-950"
           aria-live="polite"
         >
           <CircleAlert aria-hidden="true" className="h-5 w-5 shrink-0 text-amber-600" strokeWidth={2.6} />
-          <p className="min-w-0 flex-1 text-sm font-black leading-snug">{selectionNotice}</p>
+          <p className="min-w-0 flex-1 text-sm font-black leading-snug">{selectionNotice}{draftSelection ? " Your previous pin has been kept; this tap did not select a new place." : ""}</p>
           <button
             type="button"
             aria-label="Dismiss place selection message"
@@ -1003,9 +1004,8 @@ export function MapGame() {
         </div>
 
         <div className="min-w-0 space-y-3 p-2 sm:p-3">
-          <details className="rounded-lg border border-slate-200 p-2 text-sm">
-          <summary className="cursor-pointer font-bold saints-focus">How to play & map options</summary>
-          <p className="my-3 leading-relaxed">Read the clue, tap the map or select its centre, then check the named place. Choose Lock only when you're sure — it is your final answer. More clues reduce the available points: 10 → 7 → 5 → 2. Aim at the named town, city or landmark, not just its country. After locking, we'll show the accepted answer area.</p>
+          <HelpButton title="How to play & map options">
+          <p className="my-3 leading-relaxed">Read the clue, tap the map or select its centre, then check the named place. Choose Lock only when you're sure — it is your final answer. More clues reduce the available points: 10 → 7 → 5 → 2. Zoom in and tap close to the named town, city or landmark, not just its country. Snapping is deliberately precise. After locking, we'll show the accepted answer area.</p>
           <div className="grid min-w-0 gap-2 min-[380px]:grid-cols-2">
             <button
               type="button"
@@ -1047,7 +1047,7 @@ export function MapGame() {
             </div>
           </div>
 
-          </details>
+          </HelpButton>
           <div className="map-play-layout">
           <div className="map-clues space-y-2" aria-label="Map game clues">
             {visibleClues.slice(-1).map((clue) => (

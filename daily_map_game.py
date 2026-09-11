@@ -47,17 +47,17 @@ DEFAULT_SCORING_RADIUS_M = {
 }
 
 SNAP_RADIUS_FLOOR_M = {
-    "easy": 90_000,
-    "medium": 35_000,
-    "hard": 30_000,
+    "easy": 500,
+    "medium": 200,
+    "hard": 50,
 }
 
-SNAP_TOUCH_RADIUS_PX = 56
+SNAP_TOUCH_RADIUS_PX = 16
 
 SNAP_TOUCH_RADIUS_CAP_M = {
-    "easy": 200_000,
-    "medium": 120_000,
-    "hard": 75_000,
+    "easy": 5_000,
+    "medium": 1_500,
+    "hard": 250,
 }
 
 MAX_SNAP_ALTERNATIVES = 5
@@ -3954,11 +3954,9 @@ def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> int:
 
 
 def place_snap_radius_m(place: sqlite3.Row) -> int:
-    difficulty = place["difficulty"]
-    return max(
-        normalized_scoring_radius_m(difficulty, place["scoring_radius_m"]),
-        SNAP_RADIUS_FLOOR_M[difficulty],
-    )
+    # Selection precision is independent of the accepted scoring area. A large
+    # scoring radius must never pull a distant tap onto a named place.
+    return SNAP_RADIUS_FLOOR_M[place["difficulty"]]
 
 
 def normalized_zoom(value: object | None) -> float | None:
@@ -4782,22 +4780,7 @@ def snap_guess(
     if level["puzzle_date"] != today:
         return {"error": "Only today's map game can be selected."}, HTTPStatus.BAD_REQUEST
 
-    largest_stored_radius = conn.execute(
-        """
-        SELECT scoring_radius_m
-        FROM map_place_pool
-        WHERE active = 1
-        ORDER BY scoring_radius_m DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    candidate_radius_m = max(
-        max(SNAP_TOUCH_RADIUS_CAP_M.values()),
-        max(SNAP_RADIUS_FLOOR_M.values()),
-        int(largest_stored_radius["scoring_radius_m"] or 0)
-        if largest_stored_radius is not None
-        else 0,
-    )
+    candidate_radius_m = max(SNAP_TOUCH_RADIUS_CAP_M.values())
     latitude_delta = min(180.0, (candidate_radius_m / 110_000.0) + 0.01)
     candidates = conn.execute(
         """
@@ -4855,7 +4838,7 @@ def snap_guess(
 
     if not nearby_places:
         return {
-            "error": "No nearby place found. Try tapping closer to a town, city, or landmark."
+            "error": "No nearby place found. Zoom in and tap closer to the town, city, or landmark."
         }, HTTPStatus.UNPROCESSABLE_ENTITY
 
     nearby_places.sort(

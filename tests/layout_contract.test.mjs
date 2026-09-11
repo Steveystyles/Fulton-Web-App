@@ -14,6 +14,7 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 let vite;
 let DailyQuiz;
 let Card;
+let HelpButton;
 const originalFetch = globalThis.fetch;
 
 before(async () => {
@@ -26,6 +27,7 @@ before(async () => {
   });
   ({ DailyQuiz } = await vite.ssrLoadModule("/src/components/DailyQuiz.tsx"));
   ({ Card } = await vite.ssrLoadModule("/src/components/Card.tsx"));
+  ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
 });
 
 after(async () => {
@@ -36,6 +38,26 @@ after(async () => {
 function classesFrom(tag) {
   return new Set((tag.match(/\bclass="([^"]*)"/)?.[1] ?? "").split(/\s+/));
 }
+
+test("help starts as a compact button with no instructions in the game layout", () => {
+  const html = renderToStaticMarkup(createElement(HelpButton, { title: "Game help", compact: true }, "Hidden instructions"));
+  assert.match(html, /aria-haspopup="dialog"/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /Hidden instructions|<details|role="dialog"/);
+});
+
+test("Wordle Enter uses an accessible icon and map crosshair uses centred geometry", async () => {
+  const wordle = await sourceTree("src/pages/Wordle.tsx");
+  const enter = elements(wordle).find(node => attribute(node, "aria-label") === "Enter guess");
+  assert.ok(enter);
+  assert.match(enter.getText(wordle), /<CornerDownLeft/);
+  const map = await sourceTree("src/pages/MapGame.tsx");
+  const crosshair = elements(map).find(node => attribute(node, "className")?.split(/\s+/).includes("map-crosshair"));
+  assert.ok(crosshair);
+  const classes = attribute(crosshair, "className").split(/\s+/);
+  for (const expected of ["h-7", "w-7", "flex", "items-center", "justify-center", "left-1/2", "top-1/2"]) assert.ok(classes.includes(expected));
+  assert.match(crosshair.getText(map), /M12 5v14M5 12h14/);
+});
 
 function escapeHtml(text) {
   return text.replace(/[&<>"']/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#x27;" })[character]);

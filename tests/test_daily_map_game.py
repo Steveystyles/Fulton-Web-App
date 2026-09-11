@@ -2419,7 +2419,7 @@ class DailyMapGameTests(unittest.TestCase):
         self.reveal_clue(level, 1)
         selection = self.snap_selection(
             level,
-            lat=float(level["lat"]) + 0.05,
+            lat=float(level["lat"]) + 0.001,
             lng=level["lng"],
         )
 
@@ -2686,7 +2686,7 @@ class DailyMapGameTests(unittest.TestCase):
             self.conn,
             user_id=1,
             level_id=level["id"],
-            lat=float(level["lat"]) + 0.05,
+            lat=float(level["lat"]) + 0.001,
             lng=level["lng"],
             today="2026-07-13",
         )
@@ -2850,7 +2850,7 @@ class DailyMapGameTests(unittest.TestCase):
             user_id=1,
             level_id=level["id"],
             lat=level["lat"],
-            lng=float(level["lng"]) + 0.5,
+            lng=float(level["lng"]) + 0.02,
             today="2026-07-13",
             zoom=1,
         )
@@ -2858,9 +2858,9 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(status, HTTPStatus.OK)
         self.assertTrue(selection["snapped"])
         self.assertEqual(selection["name"], "Cairo")
-        self.assertGreater(selection["snapRadiusMeters"], 90_000)
+        self.assertGreater(selection["snapRadiusMeters"], 500)
         self.assertGreater(selection["snapRadiusMeters"], selection["distanceMeters"])
-        self.assertLessEqual(selection["snapRadiusMeters"], 200_000)
+        self.assertLessEqual(selection["snapRadiusMeters"], 5_000)
 
     def test_snap_guess_keeps_one_answer_option_within_tighter_low_zoom_radius(self) -> None:
         level = self.publish_named_level("Cairo")
@@ -2898,7 +2898,7 @@ class DailyMapGameTests(unittest.TestCase):
             user_id=1,
             level_id=level["id"],
             lat=float(level["lat"]),
-            lng=float(level["lng"]) + 0.5,
+            lng=float(level["lng"]) + 0.02,
             today="2026-07-13",
             zoom=1,
             allow_reverse_geocode=False,
@@ -2911,7 +2911,7 @@ class DailyMapGameTests(unittest.TestCase):
             [alternative["name"] for alternative in selection["alternatives"]].count("Cairo"),
             1,
         )
-        self.assertLessEqual(selection["snapRadiusMeters"], 200_000)
+        self.assertLessEqual(selection["snapRadiusMeters"], 5_000)
 
     def test_snap_guess_does_not_select_answer_from_across_a_country(self) -> None:
         level = self.publish_named_level("Cairo")
@@ -2977,7 +2977,7 @@ class DailyMapGameTests(unittest.TestCase):
 
         self.assertEqual(status, HTTPStatus.OK)
         self.assertEqual(selection["name"], "Closer Place")
-        self.assertIn(
+        self.assertNotIn(
             "Cairo",
             [alternative["name"] for alternative in selection["alternatives"]],
         )
@@ -2998,15 +2998,46 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertTrue(selection["snapped"])
         self.assertEqual(selection["kind"], "landmark")
 
+    def test_snap_limits_are_independent_of_scoring_and_tighten_with_zoom(self) -> None:
+        for difficulty, cap in (("easy", 5000), ("medium", 1500), ("hard", 250)):
+            place = {"difficulty": difficulty, "scoring_radius_m": 500_000}
+            with self.subTest(difficulty=difficulty):
+                low = daily_map_game.effective_snap_radius_m(place, clicked_lat=51, zoom=1)
+                high = daily_map_game.effective_snap_radius_m(place, clicked_lat=51, zoom=19)
+                self.assertEqual(low, cap)
+                self.assertLess(high, low)
+                self.assertEqual(high, daily_map_game.SNAP_RADIUS_FLOOR_M[difficulty])
+                self.assertEqual(daily_map_game.effective_snap_radius_m(place, clicked_lat=51, zoom=None), high)
+                self.assertEqual(daily_map_game.reverse_geocode_snap_radius_m(51, 1, difficulty), cap)
+
+    def test_distant_low_zoom_taps_cannot_snap_even_with_large_scoring_area(self) -> None:
+        for index, (name, offset) in enumerate((("Cairo", 0.06), ("Bath", 0.02), ("Falkirk Wheel", 0.004))):
+            with self.subTest(place=name):
+                game_date = f"2026-07-{13 + index}"
+                level = self.publish_named_level(name, puzzle_date=game_date)
+                self.assertEqual(level["canonical_name"], name)
+                self.conn.execute("UPDATE map_place_pool SET active = CASE WHEN canonical_name = ? THEN 1 ELSE 0 END", (name,))
+                self.conn.execute("UPDATE map_place_pool SET scoring_radius_m = 500000 WHERE canonical_name = ?", (name,))
+                payload, status = daily_map_game.snap_guess(self.conn, user_id=1, level_id=level["id"], lat=float(level["lat"]) + offset, lng=level["lng"], today=game_date, zoom=1, allow_reverse_geocode=False)
+                self.assertEqual(status, HTTPStatus.UNPROCESSABLE_ENTITY)
+                self.assertNotIn("selectionId", payload)
+
+    def test_reverse_geocoding_cannot_bypass_strict_landmark_limit(self) -> None:
+        with patch.object(daily_map_game, "fetch_reverse_geocode", return_value={"lat": "51.51", "lon": "-0.1", "name": "Distant landmark", "type": "attraction", "address": {}}):
+            selection = daily_map_game.reverse_geocode_candidate(self.conn, level_slug="hard", clicked_lat=51.5, clicked_lng=-0.1, zoom=1)
+        self.assertIsNone(selection)
+
     def test_snap_guess_returns_nearby_alternatives(self) -> None:
         level = self.publish_named_level("Bath")
+        nearby_id = self.duplicate_place("Bath", slug="nearby-bath-fixture", canonical_name="Nearby test place")
+        self.conn.execute("UPDATE map_place_pool SET lat = lat + 0.001 WHERE id = ?", (nearby_id,))
 
         selection, status = daily_map_game.snap_guess(
             self.conn,
             user_id=1,
             level_id=level["id"],
-            lat=51.42,
-            lng=-2.48,
+            lat=level["lat"],
+            lng=level["lng"],
             today="2026-07-13",
             zoom=8,
         )
@@ -3016,7 +3047,8 @@ class DailyMapGameTests(unittest.TestCase):
         names = [alternative["name"] for alternative in selection["alternatives"]]
         self.assertGreaterEqual(len(names), 2)
         self.assertIn("Bath", names)
-        self.assertIn("Clifton Suspension Bridge", names)
+        self.assertIn("Nearby test place", names)
+        self.assertNotIn("Clifton Suspension Bridge", names)
         self.assertEqual(selection["selectedIndex"], 0)
 
     def test_snap_guess_skips_explicitly_excluded_places(self) -> None:
