@@ -6,7 +6,7 @@
 - Decode HTML entities as plain text, preserving historical grading identifiers and versions. Show the verified interesting fact after submission, never in the unsolved public payload.
 - Map discovery: enforce exclusions before source work and after identity resolution; reject stadiums disguised as another type; disregard ended country claims.
 - Map review: require correct type, a distinctive hard hook and an unambiguous easy target. Reject age/material-only hard hooks.
-- Correct the Wembley fallback's old/new stadium distinction and replace the unsupported A406 direction. Sources are recorded with the fallback.
+- Prepared a Wembley fallback correction, but excluded the bundle change from deployment: startup synchronizes shared place rows, so releasing it would alter historical rounds. Apply future-only content corrections separately.
 - Private operations: expose map reserve shortages, excessive quiz rejections and missed evening publication readiness.
 - Compatible npm lockfile updates; no major framework migration.
 - Daily verified-backup wrapper and example systemd user service/timer for the inspected host.
@@ -25,6 +25,6 @@ The host lacks `crontab`; its user systemd manager is running but `Linger=no`. A
 
 Host updates and reboot require administrator access: passwordless sudo is unavailable. Schedule maintenance and recheck the proxy, Docker, storage, application and schedulers afterwards. Do not send passwords through chat.
 
-Existing published map rows are not rewritten by editing the fallback bundle. Future problematic rows (including the September 21 Panathenaic clue and September 22 Wembley clue) still need guarded, source-reviewed repair that preserves played rounds and shared records. No historical quiz content or player scores were changed.
+Startup synchronizes the fallback bundle into shared map rows. The release therefore leaves that bundle unchanged. Future problematic rows (including the September 21 Panathenaic clue and September 22 Wembley clue) still need guarded, source-reviewed repair that preserves played rounds and shared records. No historical quiz content or player scores were changed.
 
 The map reserve still needs replenishment and the revised generators need observation over real runs. No paid generation calls were made. These fixes improve enforceable quality gates; they do not establish human enjoyment. Fun-target acceptance still requires play-testing and enough solve/feedback data.
