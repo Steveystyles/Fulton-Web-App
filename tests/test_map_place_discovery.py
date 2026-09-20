@@ -105,6 +105,31 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             discovery.evidence_excerpt(candidate)
 
+    def test_evidence_units_keep_anchor_whole_across_chunk_boundary(self):
+        candidate = {
+            'anchors': [{'name': 'Local Park'}, {'name': 'River Walk'}],
+            'evidence': {
+                'article': {
+                    'text': (
+                        'A' * 494
+                        + 'Local Park is beside the landmark. '
+                        + 'B' * 520
+                        + 'River Walk is visible nearby.'
+                    )
+                }
+            },
+        }
+
+        units = discovery.evidence_units(candidate)
+
+        self.assertTrue(any('Local Park' in unit['text'] for unit in units))
+        self.assertTrue(any('River Walk' in unit['text'] for unit in units))
+        anchor_units = [unit for unit in units if unit['id'].startswith('article-anchor-')]
+        self.assertEqual(
+            [(unit['anchor_name'], unit['clue_role']) for unit in anchor_units],
+            [('Local Park', 'medium'), ('River Walk', 'easy')],
+        )
+
     def test_only_map_key_is_used_and_failed_request_is_not_retried(self):
         budget = self.budget()
         with patch.dict(os.environ, {'GEMINI_API_KEY_DEV': 'dev-fixture', 'GEMINI_API_KEY': 'general-fixture'}, clear=True):

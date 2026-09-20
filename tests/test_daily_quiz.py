@@ -541,6 +541,85 @@ class DailyQuizTests(unittest.TestCase):
         self.assertTrue(result.passed)
         self.assertIsNotNone(result.question)
 
+    def test_generation_marks_current_round_separately_from_history(self) -> None:
+        historical_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-19")
+        current_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        daily_quiz.save_question(
+            self.conn,
+            quiz_set_id=historical_set["id"],
+            question=valid_question("football", "hard"),
+            evidence=supporting_evidence(valid_question("football", "hard")),
+            verification=passing_verification([]),
+        )
+        self.conn.execute(
+            "UPDATE daily_quiz_sets SET status = 'published' WHERE id = ?",
+            (historical_set["id"],),
+        )
+        daily_quiz.save_question(
+            self.conn,
+            quiz_set_id=current_set["id"],
+            question=valid_question("football", "easy"),
+            evidence=supporting_evidence(valid_question("football", "easy")),
+            verification=passing_verification([]),
+        )
+        daily_quiz.save_attempt(
+            self.conn,
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="medium",
+            attempt_number=1,
+            provider="fixture",
+            generated={"correct_answer": "Previously Rejected FC"},
+            critic=None,
+            passed=False,
+            failure_reason="Correct answer already appeared recently in this quiz subject.",
+        )
+
+        class ContextCapturingProvider(PassingProvider):
+            def __init__(self) -> None:
+                super().__init__("context-capturing")
+                self.contexts: list[list[dict[str, object]]] = []
+
+            def generate_question(self, **kwargs: object) -> dict[str, object]:
+                self.contexts.append(list(kwargs["recent_questions"]))
+                return valid_question(
+                    str(kwargs["subject"]), str(kwargs["difficulty"])
+                )
+
+        provider = ContextCapturingProvider()
+        result = daily_quiz.generate_slot(
+            self.conn,
+            quiz_set_id=current_set["id"],
+            quiz_date="2026-08-20",
+            subject="football",
+            difficulty="medium",
+            provider=provider,
+            config=config(),
+            log=lambda _: None,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(len(provider.contexts), 1)
+        by_difficulty = {
+            str(question["difficulty"]): question for question in provider.contexts[0]
+        }
+        self.assertEqual(by_difficulty["easy"]["context_scope"], "current_round")
+        self.assertEqual(by_difficulty["hard"]["context_scope"], "history")
+        self.assertEqual(by_difficulty["easy"]["subject"], "football")
+        rejected = [
+            question
+            for question in provider.contexts[0]
+            if question["context_scope"] == "rejected_attempt"
+        ]
+        self.assertEqual(
+            [question["correct_answer"] for question in rejected],
+            ["Previously Rejected FC"],
+        )
+        self.assertNotIn(
+            "Previously Rejected FC",
+            json.dumps(daily_quiz.public_recent_questions(provider.contexts[0])),
+        )
+
     def test_config_uses_thirty_call_candidate_ceiling_by_default(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             loaded = daily_quiz.QuizConfig.from_env()
@@ -2212,6 +2291,22 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIn("direct recall question", prompt)
         self.assertIn("easy, not medium", prompt)
+
+    def test_critic_compares_relative_difficulty_inside_subject_round(self) -> None:
+        prompt = daily_quiz.critic_prompt(
+            "general_knowledge",
+            "hard",
+            valid_question("general_knowledge", "hard"),
+            [
+                {
+                    **valid_question("general_knowledge", "medium"),
+                    "context_scope": "current_round",
+                }
+            ],
+        )
+
+        self.assertIn("Relative difficulty is inverted", prompt)
+        self.assertIn("hard question that is easier", prompt)
 
     def test_prior_attempt_feedback_prefers_newest_failures(self) -> None:
         for index in range(7):

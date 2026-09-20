@@ -1640,6 +1640,10 @@ Hard:
 Recent accepted questions:
 {json.dumps(public_recent_questions(recent_questions), indent=2)}
 
+Only entries marked context_scope="current_round" belong to this round. Apply
+same-round theme variety only within the requested subject and current round;
+historical entries still constrain repeated answers, facts and overused tags.
+
 Blocked correct answers from the full repetition window:
 {json.dumps(recent_answer_blocklist(recent_questions), indent=2)}
 
@@ -1679,6 +1683,11 @@ Question JSON:
 Recent accepted questions:
 {json.dumps(public_recent_questions(recent_questions), indent=2)}
 
+Only entries marked context_scope="current_round" belong to this round. Apply
+same-round theme variety only within the requested subject and current round;
+do not mistake a historical theme for a duplicate in today's round. Historical
+entries still constrain repeated answers, facts and overused tags.
+
 Fail the question if:
 - It is ambiguous.
 - More than one answer could be correct.
@@ -1693,6 +1702,7 @@ Fail the question if:
 - A quoted name fragment identifies just the correct choice (for example Sanfrecce/Hiroshima).
 - Another question in this subject round already tests the same theme, such as stadiums.
 - Easy requires specialist historical/technical knowledge, or hard merely disguises a familiar answer with long wording.
+- Relative difficulty is inverted within this subject round: easy must be the most broadly accessible, hard the most specialist, and medium must sit credibly between them. Fail a new hard question that is easier or more familiar than the accepted medium question, and fail medium when it is more obscure than an accepted hard question.
 - An incidental claim (a stadium location, an architect attribution, a date) lacks support, even if the main answer is correct.
 
 Score every dimension with an integer from 0 to 10.
@@ -2440,14 +2450,21 @@ def question_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def public_recent_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
+    public: list[dict[str, Any]] = []
+    for question in questions:
+        if question.get("context_scope") == "rejected_attempt":
+            continue
+        public.append({
+            "subject": question.get("subject", ""),
+            "difficulty": question.get("difficulty", ""),
+            "context_scope": question.get("context_scope", "history"),
             "question": question["question"],
             "correct_answer": question["correct_answer"],
             "tags": question["tags"],
-        }
-        for question in questions[:30]
-    ]
+        })
+        if len(public) >= 30:
+            break
+    return public
 
 
 def recent_answer_blocklist(
@@ -4175,8 +4192,22 @@ def generate_slot(
     )
     for attempt_number in range(1, config.max_attempts_per_slot + 1):
         same_set_questions = quiz_set_questions(conn, quiz_set_id)
-        context_questions = [*same_set_questions, *recent]
         failed_answers = failed_answer_blocklist(conn, quiz_date, subject)
+        context_questions = [
+            *[{**item, "context_scope": "current_round"} for item in same_set_questions],
+            *[
+                {
+                    "subject": subject,
+                    "difficulty": "",
+                    "context_scope": "rejected_attempt",
+                    "question": "",
+                    "correct_answer": answer,
+                    "tags": [],
+                }
+                for answer in failed_answers
+            ],
+            *[{**item, "context_scope": "history"} for item in recent],
+        ]
         generation_feedback = [*feedback]
         if failed_answers:
             generation_feedback.insert(max(0, len(generation_feedback) - 1), "Previously rejected answers for this date; prefer a fresh idea unless correcting the specific failure: " + json.dumps(failed_answers))

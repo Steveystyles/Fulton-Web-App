@@ -386,8 +386,18 @@ def evidence_units(candidate: dict) -> list[dict]:
         for i, match in enumerate(matches):
             if match.start() <= hit.start() < match.end():
                 chosen.update(range(max(0, i - 1), min(len(matches), i + 2)))
-    return [{'id': f'article-{i}', 'text': matches[i].group().strip()} for i in sorted(chosen)
-            if len(matches[i].group().strip()) >= 30]
+    units = [{'id': f'article-{i}', 'text': matches[i].group().strip()} for i in sorted(chosen)
+             if len(matches[i].group().strip()) >= 30]
+    # Keep the whole anchor in one verbatim passage even at a chunk boundary.
+    # Additional metadata guides selection; validation still checks the actual text.
+    for index, anchor in enumerate(candidate['anchors']):
+        hit = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
+        passage = text[max(0, hit.start() - 250):min(len(text), hit.end() + 400)].strip()
+        if len(passage) >= 30:
+            units.append({'id': f'article-anchor-{index}', 'text': passage,
+                          'anchor_name': anchor['name'],
+                          'clue_role': 'medium' if index == 0 else 'easy'})
+    return units
 
 
 def review_markdown(report: dict) -> str:
