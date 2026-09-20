@@ -720,6 +720,15 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         tomorrow_quiz = ops_quiz_preview(conn, tomorrow_date)
         today_map = daily_map_game.puzzle_status(conn, today_date)
         tomorrow_map = daily_map_game.puzzle_status(conn, tomorrow_date)
+        queue_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automatic_map_entries'").fetchone()
+        if queue_exists:
+            queue_ready = conn.execute("SELECT COUNT(*) FROM automatic_map_entries WHERE state='ready' AND expires_at>?", (utc_now(),)).fetchone()[0]
+            tests.append({"id": "map_reserve", "label": "Map reserve queue", "status": "pass" if queue_ready >= automatic_map_pool.TARGET_READY else "warn",
+                          "detail": f"{queue_ready}/{automatic_map_pool.TARGET_READY} unexpired rounds; eligibility may reduce this count"})
+        quiz_failures = conn.execute("SELECT COUNT(*) FROM daily_quiz_attempts WHERE quiz_date=? AND passed=0", (tomorrow_date,)).fetchone()[0]
+        tests.append({"id": "quiz_generation_retries", "label": "Tomorrow quiz generation retries", "status": "warn" if quiz_failures >= 60 else "pass", "detail": f"{quiz_failures} rejected attempts"})
+        if local_now.hour >= DAILY_QUIZ_RECOVERY_HOUR and tomorrow_quiz.get("status") != "published":
+            tests.append({"id": "quiz_publication_deadline", "label": "Tomorrow quiz readiness", "status": "fail", "detail": "Quiz is still unpublished after the evening recovery deadline"})
         user_count = db_user_count(conn)
 
     application_health = health_payload(storage)
@@ -2645,7 +2654,11 @@ def serialize_quiz_result(row: sqlite3.Row) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             parsed = []
         if isinstance(parsed, list):
-            adjudications = [item for item in parsed if isinstance(item, dict)]
+            adjudications = [dict(item) for item in parsed if isinstance(item, dict)]
+            for item in adjudications:
+                for field in ("correctAnswer", "explanation", "interestingReason"):
+                    if field in item:
+                        item[field] = daily_quiz.display_text(item[field])
     return {
         "date": row["game_date"],
         "category": row["category"],
@@ -2736,8 +2749,9 @@ def adjudicate_quiz_answers(
                 "choiceId": selected_choice_id,
                 "correct": is_correct,
                 "correctChoiceId": correct_choice_id,
-                "correctAnswer": correct_answer,
-                "explanation": str(question.get("explanation") or ""),
+                "correctAnswer": daily_quiz.display_text(correct_answer),
+                "explanation": daily_quiz.display_text(question.get("explanation") or ""),
+                "interestingReason": daily_quiz.display_text(question.get("interesting_reason") or ""),
                 "pointsAwarded": points if is_correct else 0,
             }
         )

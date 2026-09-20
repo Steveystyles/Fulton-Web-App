@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -1607,6 +1608,10 @@ Rules:
 - The question must have exactly one correct answer.
 - Provide exactly 4 plausible answer choices.
 - The correct_answer must exactly match one of the choices.
+- Use plain Unicode text, never HTML entities. Keep the question under 200 characters.
+- Each question in a subject round must use a different theme; do not repeat stadiums, kits or nicknames.
+- Do not include the answer or a distinctive fragment of its name in the question.
+- Give easy questions widely familiar answers; qanat engineering or obscure ancient fortifications are not easy general knowledge.
 - The interesting_reason must be a specific, sourceable fact, not subjective praise or an unsupported record claim.
 - Avoid recent or current facts unless they are very stable and well-known.
 - Avoid questions that are overly obscure, ambiguous, disputed, or boring.
@@ -1685,6 +1690,10 @@ Fail the question if:
 - It is too similar to a recent question.
 - It depends on very recent information that may have changed.
 - The choices are too obvious, silly, or implausible.
+- A quoted name fragment identifies just the correct choice (for example Sanfrecce/Hiroshima).
+- Another question in this subject round already tests the same theme, such as stadiums.
+- Easy requires specialist historical/technical knowledge, or hard merely disguises a familiar answer with long wording.
+- An incidental claim (a stadium location, an architect attribution, a date) lacks support, even if the main answer is correct.
 
 Score every dimension with an integer from 0 to 10.
 - A score of 5 means borderline and must be rejected.
@@ -1805,6 +1814,38 @@ def text_has_encoding_damage(value: str) -> bool:
     return bool(re.search(r"[A-Za-z]%[A-Za-z]", text))
 
 
+def display_text(value: str) -> str:
+    """Decode entities as text, never HTML; leave stored historical versions intact."""
+    return html.unescape(str(value or ""))
+
+
+def answer_is_given_away(question: str, choices: list[str], answer: str) -> bool:
+    stem = normalize_text(question)
+    key = normalize_answer(answer)
+    if len(key) >= 4 and not key.isdigit() and re.search(rf"\b{re.escape(key)}\b", stem):
+        return True
+    # A unique quoted name fragment (e.g. 'Sanfrecce') must not identify one choice.
+    for quoted in re.findall(r"['\"‘“]([^'\"’”]+)['\"’”]", question):
+        token = normalize_text(quoted)
+        if len(token) < 6 or ' ' in token or not token.isalpha():
+            continue
+        matches = [choice for choice in choices if token in normalize_text(choice).split()]
+        if matches == [answer]:
+            return True
+    return False
+
+
+def quiz_theme(question: dict[str, Any]) -> set[str]:
+    """Conservative whole-round checks independent of model-provided tags."""
+    stem = normalize_text(question.get("question", ""))
+    patterns = {
+        "stadiums": r"\b(stadiums?|arenas?|home ground|east stand|west stand|north stand|south stand)\b",
+        "kits": r"\b(shirt|shirts|kit|kits|jersey|jerseys)\b",
+        "nicknames": r"\b(nickname|nicknamed|nicknames)\b",
+    }
+    return {name for name, pattern in patterns.items() if re.search(pattern, stem)}
+
+
 def is_generic_topic_tag(value: str) -> bool:
     return normalize_text(value) in GENERIC_TOPIC_TAGS
 
@@ -1820,6 +1861,13 @@ def validate_question(
     missing = [field for field in QUESTION_REQUIRED_FIELDS if field not in value]
     if missing:
         return ValidationResult(False, f"Missing required fields: {', '.join(missing)}.")
+
+    value = dict(value)
+    for field in ("question", "correct_answer", "explanation", "interesting_reason"):
+        if isinstance(value.get(field), str):
+            value[field] = display_text(value[field]).strip()
+    if isinstance(value.get("choices"), list):
+        value["choices"] = [display_text(item).strip() if isinstance(item, str) else item for item in value["choices"]]
 
     subject = str(value.get("subject") or "").strip()
     difficulty = str(value.get("difficulty") or "").strip()
@@ -1860,6 +1908,8 @@ def validate_question(
     correct_answer = value.get("correct_answer")
     if not isinstance(correct_answer, str) or correct_answer not in clean_choices:
         return ValidationResult(False, "correct_answer must exactly match one choice.")
+    if answer_is_given_away(question, clean_choices, correct_answer):
+        return ValidationResult(False, "The question gives away the correct answer or a unique quoted name fragment.")
 
     explanation = value.get("explanation")
     if not isinstance(explanation, str) or len(explanation.strip()) < 40:
@@ -2501,6 +2551,13 @@ def check_repetition(
     answer_count = 0
     topic_counts: dict[str, int] = {}
     for previous in previous_questions:
+        if reject_any_repeated_answer and question.get("subject") == previous.get("subject"):
+            overlap = quiz_theme(question) & quiz_theme(previous)
+            if overlap:
+                return RepetitionResult(False, "This round already contains a question about " + ', '.join(sorted(overlap)) + ". Choose a different theme.")
+            previous_answer = normalize_answer(previous["correct_answer"])
+            if len(previous_answer) >= 6 and re.search(rf"\b{re.escape(previous_answer)}\b", normalized):
+                return RepetitionResult(False, "This question is primed by an earlier answer in the same round.")
         previous_normalized = normalize_text(previous["question"])
         if normalized == previous_normalized:
             return RepetitionResult(False, "Question duplicates a recent accepted question.")
@@ -3325,6 +3382,27 @@ def rejected_answer_instruction(value: Any) -> str | None:
     return f"Do not reuse the previously rejected correct answer: {failed_answer}."
 
 
+def failed_answer_blocklist(conn: sqlite3.Connection, quiz_date: str, subject: str) -> list[str]:
+    """Keep rejected ideas across scheduler retries instead of forgetting after 12 messages."""
+    answers: dict[str, str] = {}
+    rows = conn.execute(
+        "SELECT generated_json,failure_reason FROM daily_quiz_attempts "
+        "WHERE quiz_date=? AND subject=? AND passed=0 ORDER BY id DESC LIMIT 500",
+        (quiz_date, subject),
+    )
+    for row in rows:
+        if is_transient_provider_failure(str(row["failure_reason"] or "")):
+            continue
+        try:
+            value = json.loads(row["generated_json"])
+        except (ValueError, TypeError):
+            continue
+        answer = value.get("correct_answer") if isinstance(value, dict) else None
+        if isinstance(answer, str) and answer.strip():
+            answers.setdefault(normalize_answer(display_text(answer)), display_text(answer))
+    return list(answers.values())[:100]
+
+
 def merge_feedback_entries(*groups: list[str], limit: int = 16) -> list[str]:
     feedback: list[str] = []
     seen: set[str] = set()
@@ -4098,13 +4176,17 @@ def generate_slot(
     for attempt_number in range(1, config.max_attempts_per_slot + 1):
         same_set_questions = quiz_set_questions(conn, quiz_set_id)
         context_questions = [*same_set_questions, *recent]
+        failed_answers = failed_answer_blocklist(conn, quiz_date, subject)
+        generation_feedback = [*feedback]
+        if failed_answers:
+            generation_feedback.insert(max(0, len(generation_feedback) - 1), "Previously rejected answers for this date; prefer a fresh idea unless correcting the specific failure: " + json.dumps(failed_answers))
         log(f"Generating {subject} / {difficulty} attempt {attempt_number}")
         try:
             generated = provider.generate_question(
                 subject=subject,
                 difficulty=difficulty,
                 recent_questions=context_questions,
-                feedback=feedback,
+                feedback=generation_feedback,
             )
             generator_provider_name = current_provider_name(provider)
         except Exception as error:
@@ -4961,6 +5043,7 @@ def quiz_questions_payload(
                 "choices": json.loads(row["choices_json"]),
                 "correct_answer": row["correct_answer"],
                 "explanation": row["explanation"],
+                "interesting_reason": row["interesting_reason"] if verification_payload_passed(row["verification_json"]) else "",
             }
             for row in rows
         ],
@@ -4990,11 +5073,11 @@ def quiz_payload(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
                 "id": public_question_id(int(question["id"])),
                 "subject": question["subject"],
                 "difficulty": question["difficulty"],
-                "question": question["question"],
+                "question": display_text(question["question"]),
                 "choices": [
                     {
                         "id": public_choice_id(int(question["id"]), choice_index),
-                        "text": str(choice),
+                        "text": display_text(choice),
                     }
                     for choice_index, choice in enumerate(question["choices"])
                 ],

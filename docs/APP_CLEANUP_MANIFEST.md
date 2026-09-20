@@ -104,8 +104,15 @@ Completed in this cleanup pass.
 
 1. After the compatibility release, confirm retired API traffic is absent and
    schedule the backed-up offline table-drop migration.
-2. Decide whether to move the power-outage scripts into an ops folder and update README references.
+2. Keep the power-outage scripts in `deploy/`; that move is already complete (see Completed Moves).
 3. Optionally split the large root backend modules into a package in a later, higher-risk refactor.
+
+## Audit cleanup — 20 September 2026
+
+- Removed 87 regenerable Python bytecode files from seven checked cache directories (about 3.23 MiB).
+- Preserved application data, training feedback, backups, release evidence and sibling worktrees.
+- Rebuilt the frontend successfully. No runtime source or dependency changes were made.
+- See [the current audit](AUDIT_2026-09-20.md) for production health, pending maintenance and map/quiz quality findings.
 
 ## Verification
 
