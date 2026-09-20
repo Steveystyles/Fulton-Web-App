@@ -337,6 +337,7 @@ export type DailyQuizAdjudication = DailyQuizSelection & {
   correctChoiceId: string;
   correctAnswer: string;
   explanation: string;
+  interestingReason?: string;
   pointsAwarded: number;
 };
 

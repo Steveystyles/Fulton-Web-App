@@ -3333,6 +3333,9 @@ def local_map_clue_critique(
         if clue_has_known_for_hook(ladder[field], known_for_terms)
     ]
     weak_role_fields: list[str] = []
+    if re.search(r"\b(?:million years|built entirely of|made entirely of)\b", ladder["hard"], re.I):
+        reasons.append("Hard clue relies on geological age or construction material, not a memorable recognition hook.")
+        feedback.append("Use a specific place-owned event, story or surprising function instead of static material or age trivia.")
     if not required_hard_hook and "hard" not in known_for_fields:
         weak_role_fields.append("hard")
     if not medium_materially_narrows_geography(ladder["medium"], place):

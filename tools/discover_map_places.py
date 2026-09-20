@@ -14,6 +14,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import unicodedata
 from typing import Any
 from urllib.parse import urlencode
 
@@ -36,6 +37,18 @@ USER_AGENT = 'FultonsMapSelector/1.0 (https://fultons-quiz.co.uk)'
 
 def normalized(text: str) -> str:
     return ' '.join(text.split())
+
+
+def exclusion_key(text: str) -> str:
+    text = ''.join(c for c in unicodedata.normalize('NFKD', text.casefold()) if not unicodedata.combining(c))
+    text = re.sub(r'\bst[.]?\b', 'saint', text)
+    return re.sub(r'[^a-z0-9]', '', text)
+
+
+def reject_excluded_place(names: list[str], excluded: list[str]) -> None:
+    blocked = {exclusion_key(name) for name in excluded if name}
+    if any(exclusion_key(name) in blocked for name in names if name):
+        raise ValueError('Place was rejected recently; choose a new candidate.')
 
 
 def plain(value: Any, maximum: int = 600) -> str:
@@ -191,8 +204,11 @@ class WikimediaSource:
 
 
 def claim_values(entity: dict, prop: str) -> list:
-    return [claim['mainsnak']['datavalue']['value'] for claim in entity.get('claims', {}).get(prop, [])
-            if claim.get('rank') != 'deprecated' and claim.get('mainsnak', {}).get('snaktype') == 'value']
+    claims = [claim for claim in entity.get('claims', {}).get(prop, [])
+              if claim.get('rank') != 'deprecated' and claim.get('mainsnak', {}).get('snaktype') == 'value'
+              and not (prop == 'P17' and claim.get('qualifiers', {}).get('P582'))]
+    preferred = [claim for claim in claims if claim.get('rank') == 'preferred']
+    return [claim['mainsnak']['datavalue']['value'] for claim in (preferred or claims)]
 
 
 def history(source_db: Path, puzzle_date: str) -> list[dict]:
@@ -233,6 +249,12 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     if any(r['type'] == kind and r['date'] >= (date.fromisoformat(sources.budget.day) - timedelta(days=2)).isoformat() for r in recent):
         raise ValueError('Place type was used in the last two days.')
     target = sources.page(proposal.get('title'))
+    # Check source identity, not merely the model's category label.
+    intro = target['text'][:700]
+    if re.search(r'\b(stadium|stadion|sports arena|football ground)\b', target['title'], re.I) or re.search(
+        r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I
+    ):
+        raise ValueError('Source identifies a stadium, which automatic discovery excludes.')
     city = sources.page(proposal.get('city_title'))
     local = sources.page(proposal.get('local_title'))
     if len({p['entity'] for p in (target, city, local)}) != 3:
@@ -410,7 +432,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         prompt = ('Propose exactly THREE varied, interesting, currently existing, precisely pinnable landmarks '
                   'outside the exclusions. Use different countries and different place types. No stadiums, broad regions, '
                   'private homes, demolished structures, or generic fame. Prefer a memorable place-owned story or '
-                  'engineering idea. For each give exact English Wikipedia article titles for the target, its city/town '
+                  'engineering idea. Never disguise a stadium as engineering. Prefer source-rich landmarks with a famous incident, '
+                  'not geological age, building material or a superlative. For each give exact English Wikipedia article titles for the target, its city/town '
                   '(centre within 20 km), and a DISTINCT nearby named district, park, harbour or landmark 0.1–4 km away. '
                   'The local feature must be mentioned in the TARGET article and must not contain the answer name. '
                   'Choose landmarks whose article clearly names their city, country and this local feature. '
@@ -429,7 +452,9 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         candidates = []
         for proposal in proposals:
             try:
+                reject_excluded_place([str(proposal.get('title', ''))], excluded_names or [])
                 candidate = resolve(proposal, sources, recent, [*existing, *candidates])
+                reject_excluded_place([candidate['canonical_name'], *candidate['acceptable_aliases']], excluded_names or [])
                 evidence_excerpt(candidate)
                 if any(c['country_code'] == candidate['country_code'] or c['place_type'] == candidate['place_type'] for c in candidates):
                     raise ValueError('Batch country or place type is repetitive.')
@@ -452,8 +477,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'Hard: a specific memorable story or surprising function, preserving the distinctive details; '
                   'construction dates, listed status, designer names and vague engineering praise are insufficient. '
                   'No city/country hints in hard. Medium: name the supplied '
-                  'city anchor and country, using this complete sentence: "Look for this landmark in '
-                  '[city anchor], within the country of [country]." BOTH easy fact and easy clue MUST name the city, a broad city sector '
+                  'city anchor and country in a natural clue about the place, not a repeated template instruction. '
+                  'BOTH easy fact and easy clue MUST name the city, a broad city sector '
                   '(north/south/east/west/central, supported by quotations), and the supplied local anchor with '
                   'a practical relationship to the target. Do not waste easy words on history or ownership. '
                   'Cite multiple passage IDs to support sector and local relationship separately. Source passages '

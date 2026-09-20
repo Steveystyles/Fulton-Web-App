@@ -26,7 +26,8 @@ DAILY_MODEL_REQUESTS = 12
 DAILY_SOURCE_REQUESTS = 64
 MAX_AGE_DAYS = 14
 CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interesting_hook',
-          'usable_map_route', 'qualifiers_preserved')
+          'usable_map_route', 'qualifiers_preserved', 'place_type_correct', 'distinctive_hard_hook',
+          'unique_easy_target')
 
 
 def now() -> datetime:
@@ -127,8 +128,13 @@ def verify(report: dict, provider: discovery.DiscoveryProvider) -> dict:
               'For EACH clue return supported=true only when every important claim is supported, citing '
               'actual passage IDs. Check country/identity against the supplied Wikidata-derived metadata. '
               'Return false for any failed check; explain briefly. Do not invent factual confidence scores.\n'
+              'Editorial requirements: place_type_correct is false for a stadium disguised as engineering. '
+              'distinctive_hard_hook requires a memorable event/story or a recognisable surprising function; '
+              'geological age, construction material, height, capacity, generic broadcast needs or a bare superlative fail. '
+              'unique_easy_target is false if the directions still fit several adjacent museums or landmarks. '
+              'The whole ladder must be beatable by an adult general-knowledge player without specialist local knowledge.\n'
               + json.dumps({'place': candidate['canonical_name'], 'country': candidate['country_name'],
-                            'city': candidate['locality_name'], 'aliases': candidate['acceptable_aliases'],
+                            'city': candidate['locality_name'], 'place_type': candidate['place_type'], 'aliases': candidate['acceptable_aliases'],
                             'anchors': candidate['anchors'], 'clues': result['clue_ladder'], 'passages': units}))
     verdict = provider.call_with_fallback(model_attr='generator_model', prompt=prompt, schema=verification_schema())
     if any(verdict.get(check) is not True for check in CHECKS):

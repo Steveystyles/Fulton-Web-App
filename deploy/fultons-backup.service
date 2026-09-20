@@ -1,0 +1,8 @@
+[Unit]
+Description=Verified Fulton SQLite backup
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /home/ste/fulton-web-app/deploy/daily-backup.sh
+UMask=0077
+NoNewPrivileges=true
