@@ -318,6 +318,31 @@ unverifiable backup directories are protected rather than deleted. Schedule a
 real restore drill; a copied file is not a proven backup until it can be
 restored.
 
+### Jellyfin recovery points
+
+`deploy/jellyfin-backup.sh` creates a separate Jellyfin recovery point without
+stopping playback. It streams the non-database `/config` content from the
+container, uses SQLite's online-backup API for `jellyfin.db`, verifies the
+archive, database and checksums, and only then promotes the `.incomplete`
+directory. Media under `/media/content` is intentionally excluded.
+
+After the reviewed source commit is installed at `/home/ste/fulton-web-app`,
+install the user timer:
+
+```bash
+install -d -m 700 ~/.config/systemd/user
+install -m 600 deploy/jellyfin-backup.service ~/.config/systemd/user/
+install -m 600 deploy/jellyfin-backup.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now jellyfin-backup.timer
+systemctl --user start jellyfin-backup.service
+systemctl --user status jellyfin-backup.timer
+```
+
+The timer runs weekly and does not delete older recovery points. Review their
+size and complete a disposable restore drill before defining retention or
+performing a Jellyfin major-version upgrade.
+
 The updater records the prior healthy image and Compose definition. A rollout,
 image/revision, or health failure triggers rollback and verifies the restored
 revision and health. If rollback verification fails, stop and perform the

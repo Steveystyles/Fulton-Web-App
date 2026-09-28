@@ -1,0 +1,10 @@
+[Unit]
+Description=Verified Jellyfin configuration and database backup
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /home/ste/fulton-web-app/deploy/jellyfin-backup.sh
+UMask=0077
+NoNewPrivileges=true
+
