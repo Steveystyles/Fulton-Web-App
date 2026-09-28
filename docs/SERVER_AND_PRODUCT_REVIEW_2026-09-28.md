@@ -33,8 +33,9 @@ and instrument the player funnel before adding more features.
 - Fulton uses about 61 MiB RAM; Jellyfin 430 MiB; Pi-hole 37 MiB; Traefik
   117 MiB at the idle sample.
 - Fulton SQLite `quick_check` is `ok`; the public and internal health probes pass.
-- Daily verified Fulton backups have run successfully since the timer was
-  enabled. The current backup series has 28 restore points.
+- The daily Fulton backup timer is active. The direct `/disk2` backup root has
+  26 directories: the current verifier accepts two, while the retention tool
+  protects 24 legacy or incomplete-format directories instead of deleting them.
 - The user-level `fultons-resilience.timer` is enabled and active. It recovers
   stopped/unhealthy Fulton containers and records power events, but currently
   writes only to the local journal and event log rather than an observed alert
@@ -189,9 +190,9 @@ now passes with disk, memory, Docker and SQLite details.
    Jellyfin's documentation explains that major migrations may not be reversible
    without a backup
    ([Jellyfin backup guidance](https://jellyfin.org/docs/general/administration/backup-and-restore/)).
-5. After 30 current daily Fulton points exist, review and activate the existing
-   30-daily/12-monthly/3-annual retention plan. Old one-off backup directories
-   should be catalogued before removal.
+5. Catalogue the 24 legacy or incomplete-format Fulton backup directories before
+   removal or migration. The current 30-daily/12-monthly/3-annual retention dry
+   run keeps both current-format backups and deletes nothing.
 6. If media is expensive to replace, add a parity disk at least as large as the
    largest protected data branch and use SnapRAID for the mostly static media
    tree, excluding live databases, caches and download-in-progress paths. Parity
@@ -312,4 +313,7 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
   the digest and passed its health check. Public health reports the new revision,
   the container has zero restarts, and the production data directory/database
   modes were tightened to `0700`/`0600`.
+- Ran the Fulton retention tool against the direct `/disk2` backup root without
+  `--apply`. It retained both current-format backups, protected all 24 legacy or
+  incomplete-format directories and proposed no deletion.
 - No paid AI calls were made.
