@@ -55,4 +55,3 @@ verified restore point even when one of its surviving artifacts is readable.
 - The current retention policy keeps both verified directories and refuses to
   delete all 24 protected directories. Any future removal requires an explicit,
   separately reviewed decision; this catalog is evidence, not authorization.
-
