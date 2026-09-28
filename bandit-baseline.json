@@ -6,6 +6,7 @@
     "daily_quiz.py",
     "deploy/backup-retention.py",
     "deploy/backup_manager.py",
+    "deploy/fultons-alert-monitor.py",
     "deploy/promo-test/ensure_guest_session.py",
     "env_config.py",
     "games/__init__.py",
