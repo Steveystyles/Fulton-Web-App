@@ -98,4 +98,3 @@ mv -- "$work" "$final"
 trap - EXIT HUP INT TERM
 printf '%s\n' "$final" >"$STATE_DIR/last-success"
 printf 'Verified Jellyfin backup: %s\n' "$final"
-
