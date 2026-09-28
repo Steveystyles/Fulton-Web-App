@@ -55,3 +55,18 @@ verified restore point even when one of its surviving artifacts is readable.
 - The current retention policy keeps both verified directories and refuses to
   delete all 24 protected directories. Any future removal requires an explicit,
   separately reviewed decision; this catalog is evidence, not authorization.
+
+## Disposable restore drill
+
+The newest verified backup was restored into a uniquely created `/tmp`
+directory and mounted into the signed production image with Docker networking
+disabled. The disposable application reached a healthy state and reported build
+`051a8327470df93444d91415b78d9ceb4ff89633`. Its restored SQLite database passed
+`quick_check`, exposed 35 tables, two users, 112 published quizzes and 52
+published map puzzles; all 16 manifest-listed durable files were present.
+
+The temporary container and directory were removed by a path-checked cleanup
+trap. The live container remained healthy with zero restarts, and the sealed
+source backup passed the repository verifier again after the drill. This proves
+a local restore from the current backup format; it does not prove an encrypted
+off-host copy or recovery after loss of the server.

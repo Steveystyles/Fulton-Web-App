@@ -175,7 +175,8 @@ now passes with disk, memory, Docker and SQLite details.
    actually observed. The existing weekly log is evidence, not notification.
 3. Enable encrypted off-host Fulton backups and perform a restore drill. Current
    verified backups are distributed across the same physical machine and the
-   off-host gate is disabled.
+   off-host gate is disabled. A network-isolated disposable restore from the
+   newest local backup now passes, but it does not cover loss of this server.
 4. An initial verified Jellyfin recovery point exists at
    `/disk2/backups/jellyfin/jellyfin-20260928T003251Z`. It contains a compressed
    configuration/metadata archive and an online SQLite copy; all checksums,
@@ -322,4 +323,9 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
   found nine legacy databases with a passing SQLite `quick_check`, eleven legacy
   archives with passing gzip validation and eight directories with neither
   recovery artifact.
+- Restored the newest verified Fulton backup into a disposable directory and
+  booted the signed production image with networking disabled. Health, SQLite
+  `quick_check`, all 35 tables and all 16 durable files passed; cleanup removed
+  the temporary container and directory, the source backup re-verified, and the
+  live container remained healthy with zero restarts.
 - No paid AI calls were made.
