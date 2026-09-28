@@ -21,6 +21,9 @@ COMPOSE_FILE = DEPLOY_DIR / "compose.yaml"
 RESTART_SCRIPT = DEPLOY_DIR / "restart-fultons-home-server.ps1"
 POWER_RECOVERY_SCRIPT = DEPLOY_DIR / "check-and-fix-after-power-outage.ps1"
 SET_GEMINI_SCRIPT = DEPLOY_DIR / "set-gemini-key.ps1"
+JELLYFIN_BACKUP_SCRIPT = DEPLOY_DIR / "jellyfin-backup.sh"
+JELLYFIN_BACKUP_SERVICE = DEPLOY_DIR / "jellyfin-backup.service"
+JELLYFIN_BACKUP_TIMER = DEPLOY_DIR / "jellyfin-backup.timer"
 PROMO_COMPOSE_FILE = DEPLOY_DIR / "promo-test" / "compose.yaml"
 BUILD_WORKFLOW = PROJECT_DIR / ".github" / "workflows" / "build.yml"
 BANDIT_CONFIG = PROJECT_DIR / "bandit.yaml"
@@ -415,6 +418,9 @@ class DeploymentScriptStaticTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.script = UPDATE_SCRIPT.read_text(encoding="utf-8")
         cls.compose = COMPOSE_FILE.read_text(encoding="utf-8")
+        cls.jellyfin_backup = JELLYFIN_BACKUP_SCRIPT.read_text(encoding="utf-8")
+        cls.jellyfin_service = JELLYFIN_BACKUP_SERVICE.read_text(encoding="utf-8")
+        cls.jellyfin_timer = JELLYFIN_BACKUP_TIMER.read_text(encoding="utf-8")
 
     def test_requires_full_sha_and_reviewed_reachability_override(self) -> None:
         self.assertIn("^[0-9a-f]{40}$", self.script)
@@ -452,6 +458,31 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("FULTONS_IMAGE:?", self.compose)
         self.assertIn("pull_policy: never", self.compose)
         self.assertNotIn(":latest", self.compose)
+
+    def test_compose_compresses_public_responses_at_the_proxy(self) -> None:
+        self.assertIn(
+            "traefik.http.routers.fultons-quiz.middlewares=fultons-quiz-compress",
+            self.compose,
+        )
+
+    def test_jellyfin_backup_is_consistent_private_and_non_disruptive(self) -> None:
+        self.assertIn("umask 077", self.jellyfin_backup)
+        self.assertIn("flock -n", self.jellyfin_backup)
+        self.assertIn("source.backup(target)", self.jellyfin_backup)
+        self.assertIn("PRAGMA quick_check", self.jellyfin_backup)
+        self.assertIn("gzip -t", self.jellyfin_backup)
+        self.assertIn("sha256sum --check", self.jellyfin_backup)
+        self.assertIn(".incomplete", self.jellyfin_backup)
+        self.assertIn("jellyfin.db-wal", self.jellyfin_backup)
+        self.assertNotIn("docker stop", self.jellyfin_backup)
+        self.assertNotIn("/media/content", self.jellyfin_backup)
+        self.assertIn("NoNewPrivileges=true", self.jellyfin_service)
+        self.assertIn("OnCalendar=Sun", self.jellyfin_timer)
+        self.assertIn("Persistent=true", self.jellyfin_timer)
+        self.assertIn(
+            "traefik.http.middlewares.fultons-quiz-compress.compress=true",
+            self.compose,
+        )
 
     def test_preflight_backup_and_offhost_gate_precede_rollout(self) -> None:
         rollout = self.script.index('ROLLOUT_STARTED=1')
