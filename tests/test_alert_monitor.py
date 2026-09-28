@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT_DIR / "deploy" / "fultons-alert-monitor.py"
+WINDOWS_BACKUP_SCRIPT = PROJECT_DIR / "deploy" / "windows-offhost-backup.ps1"
 SPEC = importlib.util.spec_from_file_location("fultons_alert_monitor", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 monitor = importlib.util.module_from_spec(SPEC)
@@ -94,6 +95,15 @@ class AlertMonitorTests(unittest.TestCase):
         self.assertIn("NoNewPrivileges=true", service)
         self.assertIn("OnUnitActiveSec=5min", timer)
         self.assertIn("Persistent=true", timer)
+
+    def test_windows_offhost_backup_is_encrypted_and_restore_verified(self) -> None:
+        script = WINDOWS_BACKUP_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("RandomNumberGenerator]::GetBytes(32)", script)
+        self.assertIn("-mhe=on", script)
+        self.assertIn("DataProtectionScope]::CurrentUser", script)
+        self.assertIn("$SevenZip x -y", script)
+        self.assertGreaterEqual(script.count("$BackupManager verify"), 2)
+        self.assertIn("Refusing to remove unsafe temporary path", script)
 
 
 if __name__ == "__main__":
