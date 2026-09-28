@@ -453,6 +453,16 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         self.assertIn("pull_policy: never", self.compose)
         self.assertNotIn(":latest", self.compose)
 
+    def test_compose_compresses_public_responses_at_the_proxy(self) -> None:
+        self.assertIn(
+            "traefik.http.routers.fultons-quiz.middlewares=fultons-quiz-compress",
+            self.compose,
+        )
+        self.assertIn(
+            "traefik.http.middlewares.fultons-quiz-compress.compress=true",
+            self.compose,
+        )
+
     def test_preflight_backup_and_offhost_gate_precede_rollout(self) -> None:
         rollout = self.script.index('ROLLOUT_STARTED=1')
         self.assertLess(self.script.index('backup_manager.py" create'), rollout)

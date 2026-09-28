@@ -16,6 +16,7 @@ from typing import Any, Callable, Protocol
 from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from env_config import env_bool, env_float, env_int
 from safe_http import ResponseTooLarge, read_bounded_response
@@ -253,6 +254,7 @@ class QuizConfig:
     question_history_days: int
     learning_profile_path: str
     internal_token: str
+    max_failed_attempts_per_date: int = 180
     evidence_required: bool = True
     evidence_search_timeout_sec: int = 90
     evidence_max_results: int = 8
@@ -355,6 +357,9 @@ class QuizConfig:
             ),
             learning_profile_path=os.environ.get("QUIZ_LEARNING_PROFILE_PATH", "").strip(),
             internal_token=os.environ.get("INTERNAL_QUIZ_TOKEN", "").strip(),
+            max_failed_attempts_per_date=env_int(
+                "QUIZ_MAX_FAILED_ATTEMPTS_PER_DATE", 180, minimum=1, maximum=10000
+            ),
             evidence_required=env_bool("QUIZ_EVIDENCE_REQUIRED", True),
             evidence_search_timeout_sec=env_int(
                 "QUIZ_EVIDENCE_SEARCH_TIMEOUT_SEC", 90, minimum=3, maximum=300
@@ -1238,6 +1243,51 @@ class FallbackQuizProvider:
         )
 
 
+class ProviderCircuitOpen(RuntimeError):
+    pass
+
+
+class CircuitTrackingProvider:
+    def __init__(self, conn: sqlite3.Connection, provider: QuizAIProvider) -> None:
+        self.conn = conn
+        self.provider = provider
+        self.name = provider.name
+        self.config = getattr(provider, "config", None)
+
+    def _call(self, method_name: str, **kwargs: Any) -> dict[str, Any]:
+        circuit = active_provider_circuit(
+            self.conn,
+            provider_circuit_key(self.provider, method_name=method_name),
+        )
+        if circuit is not None:
+            raise ProviderCircuitOpen(provider_circuit_message(circuit))
+        try:
+            return getattr(self.provider, method_name)(**kwargs)
+        except Exception as error:
+            open_provider_quota_circuit(
+                self.conn,
+                self.provider,
+                str(error),
+                method_name=method_name,
+            )
+            raise
+
+    def generate_question(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("generate_question", **kwargs)
+
+    def critique_question(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("critique_question", **kwargs)
+
+    def discover_candidates(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("discover_candidates", **kwargs)
+
+    def compose_question(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("compose_question", **kwargs)
+
+    def verify_question(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("verify_question", **kwargs)
+
+
 def provider_from_config(config: QuizConfig) -> QuizAIProvider:
     if config.provider == "gemini":
         return GeminiProvider(config)
@@ -1271,6 +1321,214 @@ def provider_chain_from_config(config: QuizConfig) -> QuizAIProvider:
     if len(providers) == 1:
         return providers[0]
     return FallbackQuizProvider(providers)
+
+
+def provider_circuit_key(
+    provider: QuizAIProvider,
+    *,
+    method_name: str = "generate_question",
+) -> str:
+    name = str(getattr(provider, "name", "unknown")).strip().lower() or "unknown"
+    config = getattr(provider, "config", None)
+    model_field = (
+        "critic_model"
+        if method_name in {"critique_question", "verify_question"}
+        else "generator_model"
+    )
+    model = str(getattr(config, model_field, "") or "").strip().lower()
+    if name == "gemini" and model:
+        return f"{name}:{model}"
+    return name
+
+
+def is_daily_quota_failure(reason: str) -> bool:
+    normalized = str(reason or "").casefold()
+    explicit_daily_markers = (
+        "free-models-per-day",
+        "requests per day",
+        "requests_per_day",
+        "requestperday",
+        "requestsperday",
+        "per-day quota",
+        "daily quota",
+        "quota per day",
+    )
+    if any(marker in normalized for marker in explicit_daily_markers):
+        return True
+    return "resource_exhausted" in normalized and "free_tier_requests" in normalized
+
+
+def provider_quota_reset_at(
+    provider_name: str,
+    *,
+    now: datetime | None = None,
+) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    provider_key = provider_name.strip().lower()
+    if provider_key.startswith("gemini"):
+        try:
+            reset_timezone = ZoneInfo("America/Los_Angeles")
+        except ZoneInfoNotFoundError:
+            march_first = datetime(current.year, 3, 1, tzinfo=timezone.utc)
+            second_sunday = 1 + ((6 - march_first.weekday()) % 7) + 7
+            dst_starts = datetime(
+                current.year, 3, second_sunday, 10, tzinfo=timezone.utc
+            )
+            november_first = datetime(current.year, 11, 1, tzinfo=timezone.utc)
+            first_sunday = 1 + ((6 - november_first.weekday()) % 7)
+            dst_ends = datetime(
+                current.year, 11, first_sunday, 9, tzinfo=timezone.utc
+            )
+            pacific_offset = -7 if dst_starts <= current < dst_ends else -8
+            reset_timezone = timezone(timedelta(hours=pacific_offset))
+    elif provider_key.startswith("openrouter"):
+        reset_timezone = timezone.utc
+    else:
+        return current + timedelta(hours=24)
+    local_now = current.astimezone(reset_timezone)
+    next_midnight = (local_now + timedelta(days=1)).replace(
+        hour=0,
+        minute=5,
+        second=0,
+        microsecond=0,
+    )
+    return next_midnight.astimezone(timezone.utc)
+
+
+def active_provider_circuit(
+    conn: sqlite3.Connection,
+    provider_key: str,
+    *,
+    now: datetime | None = None,
+) -> sqlite3.Row | None:
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    row = conn.execute(
+        "SELECT * FROM daily_quiz_provider_circuits WHERE provider_key = ?",
+        (provider_key,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        blocked_until = datetime.fromisoformat(
+            str(row["blocked_until"]).replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        blocked_until = current
+    if blocked_until <= current:
+        conn.execute(
+            "DELETE FROM daily_quiz_provider_circuits WHERE provider_key = ?",
+            (provider_key,),
+        )
+        commit_if_needed(conn)
+        return None
+    return row
+
+
+def provider_circuit_message(circuit: sqlite3.Row) -> str:
+    return (
+        f"Provider {circuit['provider_key']} is paused until "
+        f"{circuit['blocked_until']} after a daily quota failure."
+    )
+
+
+def provider_circuit_statuses(conn: sqlite3.Connection) -> list[dict[str, str]]:
+    statuses: list[dict[str, str]] = []
+    provider_keys = [
+        str(row["provider_key"])
+        for row in conn.execute(
+            "SELECT provider_key FROM daily_quiz_provider_circuits ORDER BY provider_key"
+        ).fetchall()
+    ]
+    for provider_key in provider_keys:
+        circuit = active_provider_circuit(conn, provider_key)
+        if circuit is None:
+            continue
+        statuses.append(
+            {
+                "provider": provider_key,
+                "blocked_until": str(circuit["blocked_until"]),
+                "failure_reason": str(circuit["failure_reason"]),
+            }
+        )
+    return statuses
+
+
+def open_provider_quota_circuit(
+    conn: sqlite3.Connection,
+    provider: QuizAIProvider,
+    reason: str,
+    *,
+    now: datetime | None = None,
+    method_name: str = "generate_question",
+) -> bool:
+    if not is_daily_quota_failure(reason):
+        return False
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    provider_key = provider_circuit_key(provider, method_name=method_name)
+    blocked_until = provider_quota_reset_at(provider_key, now=current)
+    conn.execute(
+        """
+        INSERT INTO daily_quiz_provider_circuits (
+            provider_key, blocked_until, failure_reason, opened_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(provider_key) DO UPDATE SET
+            blocked_until = CASE
+                WHEN excluded.blocked_until > blocked_until
+                THEN excluded.blocked_until ELSE blocked_until
+            END,
+            failure_reason = excluded.failure_reason,
+            updated_at = excluded.updated_at
+        """,
+        (
+            provider_key,
+            blocked_until.isoformat(),
+            str(reason)[:2000],
+            current.isoformat(),
+            current.isoformat(),
+        ),
+    )
+    commit_if_needed(conn)
+    return True
+
+
+def provider_with_available_circuits(
+    conn: sqlite3.Connection,
+    provider: QuizAIProvider,
+    *,
+    now: datetime | None = None,
+) -> tuple[QuizAIProvider | None, list[str]]:
+    providers = quality_provider_stages(provider)
+    wrapped: list[QuizAIProvider] = []
+    blocked_messages: list[str] = []
+    has_generator = False
+    has_critic = False
+    for candidate in providers:
+        generator_circuit = active_provider_circuit(
+            conn,
+            provider_circuit_key(candidate, method_name="generate_question"),
+            now=now,
+        )
+        critic_circuit = active_provider_circuit(
+            conn,
+            provider_circuit_key(candidate, method_name="critique_question"),
+            now=now,
+        )
+        has_generator = has_generator or generator_circuit is None
+        has_critic = has_critic or critic_circuit is None
+        for circuit in (generator_circuit, critic_circuit):
+            if circuit is not None:
+                message = provider_circuit_message(circuit)
+                if message not in blocked_messages:
+                    blocked_messages.append(message)
+        wrapped.append(CircuitTrackingProvider(conn, candidate))
+    if not has_generator or not has_critic:
+        return None, blocked_messages
+    if len(wrapped) == 1:
+        return wrapped[0], blocked_messages
+    return FallbackQuizProvider(wrapped), blocked_messages
 
 
 def quality_provider_stages(provider: QuizAIProvider) -> list[QuizAIProvider]:
@@ -2129,6 +2387,14 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             passed INTEGER NOT NULL,
             failure_reason TEXT,
             created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_quiz_provider_circuits (
+            provider_key TEXT PRIMARY KEY,
+            blocked_until TEXT NOT NULL,
+            failure_reason TEXT NOT NULL,
+            opened_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS daily_quiz_candidates (
@@ -3248,6 +3514,23 @@ def save_attempt(
     commit_if_needed(conn)
 
 
+def failed_attempt_count(conn: sqlite3.Connection, quiz_date: str) -> int:
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_attempts WHERE quiz_date = ? AND passed = 0",
+            (quiz_date,),
+        ).fetchone()[0]
+    )
+
+
+def failed_attempt_budget_reason(config: QuizConfig) -> str:
+    return (
+        "Generation paused after reaching the persistent daily failure budget "
+        f"of {config.max_failed_attempts_per_date} attempts. Use an explicit forced "
+        "regeneration after correcting provider quota or quality issues."
+    )
+
+
 def save_candidate_composition_failure(
     conn: sqlite3.Connection,
     *,
@@ -4157,7 +4440,14 @@ def generate_slot(
     log: Callable[[str], None],
     generation_mode: str = "normal",
     prefetched_evidence: list[dict[str, Any]] | None = None,
+    enforce_date_attempt_budget: bool = True,
 ) -> bool | None:
+    if (
+        enforce_date_attempt_budget
+        and failed_attempt_count(conn, quiz_date) >= config.max_failed_attempts_per_date
+    ):
+        log(failed_attempt_budget_reason(config))
+        return None
     if config.candidate_pipeline_enabled:
         return generate_slot_two_stage(
             conn,
@@ -4191,6 +4481,12 @@ def generate_slot(
         exclude_quiz_date=quiz_date,
     )
     for attempt_number in range(1, config.max_attempts_per_slot + 1):
+        if (
+            enforce_date_attempt_budget
+            and failed_attempt_count(conn, quiz_date) >= config.max_failed_attempts_per_date
+        ):
+            log(failed_attempt_budget_reason(config))
+            return None
         same_set_questions = quiz_set_questions(conn, quiz_set_id)
         failed_answers = failed_answer_blocklist(conn, quiz_date, subject)
         context_questions = [
@@ -4653,6 +4949,14 @@ def _generate_daily_quiz_in_place(
         removed = remove_unverified_questions(conn, int(quiz_set["id"]))
         if removed:
             log(f"Removed {removed} unverified question(s) before resuming generation.")
+    if (
+        not force
+        and failed_attempt_count(conn, quiz_date) >= config.max_failed_attempts_per_date
+    ):
+        reason = failed_attempt_budget_reason(config)
+        set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)
+        log(reason)
+        return quiz_status(conn, quiz_date)
     set_quiz_status(conn, quiz_date, "generating")
     generation_started_at = utc_now()
     conn.execute(
@@ -4686,6 +4990,16 @@ def _generate_daily_quiz_in_place(
             set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)
             return quiz_status(conn, quiz_date)
 
+    if not force:
+        provider, blocked_providers = provider_with_available_circuits(conn, provider)
+        if provider is None:
+            reason = " ".join(blocked_providers)
+            set_quiz_status(conn, quiz_date, "generating", failure_reason=reason)
+            log(reason)
+            return quiz_status(conn, quiz_date)
+        for blocked_provider in blocked_providers:
+            log(blocked_provider)
+
     log(f"Starting daily quiz generation for {quiz_date} using {provider.name}")
     existing_slots = {
         (row["subject"], row["difficulty"])
@@ -4707,8 +5021,18 @@ def _generate_daily_quiz_in_place(
             config=config,
             generation_mode=generation_mode,
             log=log,
+            enforce_date_attempt_budget=not force,
         )
         if slot_result is None:
+            if (
+                not force
+                and failed_attempt_count(conn, quiz_date)
+                >= config.max_failed_attempts_per_date
+            ):
+                reason = failed_attempt_budget_reason(config)
+                set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)
+                log(reason)
+                return quiz_status(conn, quiz_date)
             log(f"Deferred {subject} / {difficulty}; will retry later.")
             return quiz_status(conn, quiz_date)
         if not slot_result:
@@ -5142,6 +5466,7 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
             "candidate_providers": [],
             "candidate_generation_calls": 0,
             "generation_elapsed_seconds": None,
+            "provider_circuits": provider_circuit_statuses(conn),
         }
     accepted = conn.execute(
         "SELECT COUNT(*) FROM daily_quiz_questions WHERE quiz_set_id = ?",
@@ -5210,6 +5535,7 @@ def quiz_status(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
         "candidate_providers": providers,
         "candidate_generation_calls": candidate_generation_call_count(conn, quiz_date),
         "generation_elapsed_seconds": elapsed_seconds,
+        "provider_circuits": provider_circuit_statuses(conn),
     }
 
 

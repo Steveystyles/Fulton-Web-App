@@ -625,6 +625,7 @@ class DailyQuizTests(unittest.TestCase):
             loaded = daily_quiz.QuizConfig.from_env()
 
         self.assertEqual(loaded.candidate_max_calls_per_quiz, 30)
+        self.assertEqual(loaded.max_failed_attempts_per_date, 180)
 
     def test_config_reuses_openrouter_fallback_for_evidence_search(self) -> None:
         with patch.dict(
@@ -1743,6 +1744,79 @@ class DailyQuizTests(unittest.TestCase):
         with self.assertRaises(LookupError):
             daily_quiz.quiz_payload(self.conn, "2026-06-03")
 
+    def test_daily_failure_budget_persists_across_retries_and_force_bypasses_it(self) -> None:
+        quiz_date = "2026-06-04"
+        budget_config = replace(
+            config(max_attempts=3),
+            max_failed_attempts_per_date=3,
+        )
+        for attempt_number in (1, 2):
+            daily_quiz.save_attempt(
+                self.conn,
+                quiz_date=quiz_date,
+                subject="general_knowledge",
+                difficulty="easy",
+                attempt_number=attempt_number,
+                provider="seed",
+                generated={"invalid": True},
+                critic=None,
+                passed=False,
+                failure_reason="Seeded quality rejection.",
+            )
+
+        class CountingInvalidProvider(AlwaysInvalidProvider):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def generate_question(self, **kwargs: object) -> dict[str, object]:
+                self.calls += 1
+                return super().generate_question(**kwargs)
+
+        invalid_provider = CountingInvalidProvider()
+        first = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=budget_config,
+            provider=invalid_provider,
+            log=lambda _: None,
+        )
+        second = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=budget_config,
+            provider=invalid_provider,
+            log=lambda _: None,
+        )
+
+        self.assertEqual(first["status"], "failed")
+        self.assertEqual(second["status"], "failed")
+        self.assertEqual(first["failed_attempts"], 3)
+        self.assertEqual(second["failed_attempts"], 3)
+        self.assertIn("persistent daily failure budget", second["failure_reason"])
+        self.assertEqual(invalid_provider.calls, 1)
+
+        class CountingPassingProvider(PassingProvider):
+            def __init__(self) -> None:
+                super().__init__("forced-recovery")
+                self.calls = 0
+
+            def generate_question(self, **kwargs: object) -> dict[str, object]:
+                self.calls += 1
+                return super().generate_question(**kwargs)
+
+        recovery_provider = CountingPassingProvider()
+        recovered = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date=quiz_date,
+            config=budget_config,
+            force=True,
+            provider=recovery_provider,
+            log=lambda _: None,
+        )
+
+        self.assertEqual(recovered["status"], "published")
+        self.assertEqual(recovery_provider.calls, 6)
+
     def test_force_regeneration_failure_preserves_published_quiz(self) -> None:
         quiz_date = "2026-06-13"
         quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, quiz_date)
@@ -2406,6 +2480,97 @@ class DailyQuizTests(unittest.TestCase):
             )
         }
         self.assertEqual(providers, {"openrouter"})
+
+    def test_daily_quota_circuit_skips_exhausted_provider_until_its_reset(self) -> None:
+        class CountingQuotaProvider(AlwaysFailingProvider):
+            def __init__(self) -> None:
+                super().__init__(
+                    "gemini",
+                    "RESOURCE_EXHAUSTED free_tier_requests requests per day",
+                )
+                self.calls = 0
+
+            def generate_question(self, **kwargs: object) -> dict[str, object]:
+                self.calls += 1
+                return super().generate_question(**kwargs)
+
+        exhausted = CountingQuotaProvider()
+        provider = daily_quiz.FallbackQuizProvider(
+            [exhausted, PassingProvider("openrouter")]
+        )
+
+        payload = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-05",
+            config=config(),
+            provider=provider,
+            log=lambda _: None,
+        )
+
+        self.assertEqual(payload["status"], "published")
+        self.assertEqual(exhausted.calls, 1)
+        circuit = daily_quiz.active_provider_circuit(self.conn, "gemini")
+        self.assertIsNotNone(circuit)
+        circuit_status = daily_quiz.quiz_status(self.conn, "2026-06-05")[
+            "provider_circuits"
+        ]
+        self.assertEqual([item["provider"] for item in circuit_status], ["gemini"])
+        available, blocked = daily_quiz.provider_with_available_circuits(
+            self.conn,
+            daily_quiz.FallbackQuizProvider(
+                [exhausted, PassingProvider("openrouter")]
+            ),
+        )
+        self.assertIsNotNone(available)
+        self.assertEqual(len(blocked), 1)
+        available.generate_question(
+            subject="general_knowledge",
+            difficulty="easy",
+            recent_questions=[],
+            feedback=[],
+        )
+        self.assertEqual(daily_quiz.current_provider_name(available), "openrouter")
+        self.assertEqual(exhausted.calls, 1)
+
+    def test_all_open_provider_circuits_defer_without_an_attempt(self) -> None:
+        reason = "free-models-per-day daily quota exceeded"
+        gemini = AlwaysFailingProvider("gemini", reason)
+        openrouter = AlwaysFailingProvider("openrouter", reason)
+        self.assertTrue(
+            daily_quiz.open_provider_quota_circuit(self.conn, gemini, reason)
+        )
+        self.assertTrue(
+            daily_quiz.open_provider_quota_circuit(self.conn, openrouter, reason)
+        )
+
+        result = daily_quiz.generate_daily_quiz(
+            self.conn,
+            quiz_date="2026-06-06",
+            config=config(),
+            provider=daily_quiz.FallbackQuizProvider([gemini, openrouter]),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(result["status"], "generating")
+        self.assertEqual(result["failed_attempts"], 0)
+        self.assertIn("paused until", result["failure_reason"])
+
+    def test_provider_daily_quota_resets_follow_documented_timezones(self) -> None:
+        now = datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            daily_quiz.provider_quota_reset_at("gemini:model", now=now),
+            datetime(2026, 7, 2, 7, 5, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            daily_quiz.provider_quota_reset_at("openrouter", now=now),
+            datetime(2026, 7, 2, 0, 5, tzinfo=timezone.utc),
+        )
+        self.assertFalse(
+            daily_quiz.is_daily_quota_failure(
+                "Provider request failed with HTTP 429 after a minute limit."
+            )
+        )
 
     def test_provider_chain_uses_next_critic_after_invalid_payload(self) -> None:
         invalid = InvalidCriticProvider("invalid-critic")

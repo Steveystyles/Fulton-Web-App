@@ -47,6 +47,8 @@ services:
       - "traefik.http.routers.fultons-quiz.rule=Host(`fultons-quiz.co.uk`) || Host(`www.fultons-quiz.co.uk`)"
       - "traefik.http.routers.fultons-quiz.entrypoints=websecure"
       - "traefik.http.routers.fultons-quiz.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.fultons-quiz.middlewares=fultons-quiz-compress"
+      - "traefik.http.middlewares.fultons-quiz-compress.compress=true"
       - "traefik.http.services.fultons-quiz.loadbalancer.server.port=3000"
 
 networks:
