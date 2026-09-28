@@ -24,7 +24,9 @@ and instrument the player funnel before adding more features.
 
 ## Authoritative state inspected
 
-- Live build `051a8327470df93444d91415b78d9ceb4ff89633`, matching repository `main`.
+- Live application build `051a8327470df93444d91415b78d9ceb4ff89633`, the last
+  runtime-changing `main` commit. The later evidence-only follow-up changes
+  documentation, not the deployed application.
 - Ubuntu 24.04.5 LTS on an i5-6200U (2 cores/4 threads), 15.5 GiB RAM.
 - Root 1 TB SSD plus two active 1 TB ext4 data branches. Mergerfs presents
   2.7 TB with 1.5 TB free.
