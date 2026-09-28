@@ -68,5 +68,22 @@ published map puzzles; all 16 manifest-listed durable files were present.
 The temporary container and directory were removed by a path-checked cleanup
 trap. The live container remained healthy with zero restarts, and the sealed
 source backup passed the repository verifier again after the drill. This proves
-a local restore from the current backup format; it does not prove an encrypted
-off-host copy or recovery after loss of the server.
+a local restore from the current backup format.
+
+## Encrypted off-host copy
+
+The same verified source,
+`fultons-quiz-20260928T103325Z-da45f5a0`, was copied to the Windows host outside
+the repository. It was packaged with AES-256 encryption and encrypted headers;
+the independently generated 256-bit password is stored only as a Windows DPAPI
+CurrentUser-protected key file. The archive's SHA-256 is recorded in adjacent
+metadata. A clean extraction passed the repository verifier, including artifact
+hashes and SQLite `quick_check`, and both temporary trees were removed with
+path-checked cleanup.
+
+The native Windows task `Fultons Offhost Backup` is enabled daily at 05:30,
+starts when the machine next becomes available, and skips a source already
+copied. Its first task-level execution returned `0x00000000`. This protects
+against loss of the server while the Windows host and its user-bound DPAPI key
+remain available; a separate key escrow would still be required to recover
+after loss of the Windows user profile as well.

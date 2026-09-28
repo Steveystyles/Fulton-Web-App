@@ -7,6 +7,7 @@ import argparse
 import http.client
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -115,6 +116,33 @@ def freshness_problem(path: Path, max_age_hours: float, label: str) -> str | Non
     return None
 
 
+def smart_problem(lookback_minutes: int) -> str | None:
+    result = run(
+        [
+            "journalctl",
+            "--since",
+            f"{lookback_minutes} minutes ago",
+            "-u",
+            "smartd.service",
+            "-u",
+            "smartmontools.service",
+            "--no-pager",
+            "-o",
+            "cat",
+        ]
+    )
+    if result.returncode != 0:
+        return "SMART journal could not be checked"
+    warning = re.compile(
+        r"SMART.*(?:FAILED|failure)|(?:pending|uncorrectable) sectors?|"
+        r"read failure|Device: .* (?:FAILED|unreadable)",
+        re.IGNORECASE,
+    )
+    if warning.search(result.stdout):
+        return "SMART reported a disk warning in the last 65 minutes"
+    return None
+
+
 def collect_problems(args: argparse.Namespace) -> list[str]:
     checks = [
         container_problem("fultons-quiz", require_health=True),
@@ -126,6 +154,7 @@ def collect_problems(args: argparse.Namespace) -> list[str]:
             args.jellyfin_max_age_hours,
             "Jellyfin",
         ),
+        smart_problem(args.smart_lookback_minutes),
     ]
     return sorted(problem for problem in checks if problem)
 
@@ -196,6 +225,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--health-url", default="https://fultons-quiz.co.uk/api/health")
     parser.add_argument("--backup-max-age-hours", type=float, default=36)
     parser.add_argument("--jellyfin-max-age-hours", type=float, default=192)
+    parser.add_argument("--smart-lookback-minutes", type=int, default=65)
     return parser.parse_args()
 
 

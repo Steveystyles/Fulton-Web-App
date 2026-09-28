@@ -169,19 +169,22 @@ now passes with disk, memory, Docker and SQLite details.
 
 ### Required recovery changes
 
-1. Replace or physically disconnect `/dev/sdd`. It is retired and unmounted but
-   still reports five pending and four offline-uncorrectable sectors every 30
-   minutes. Smartd's attempted mail notification fails because no mail command
-   is installed. Keeping a known-bad disk spinning adds noise and risk. The
-   [shutdown-first removal runbook](FAILED_DISK_REMOVAL_2026-09-28.md) records
-   the exact model, serial, UUID, stale `noauto,nofail` fstab entry and post-boot
-   checks.
-2. Send SMART, backup, container and public-health failures to a channel that is
-   actually observed. The existing weekly log is evidence, not notification.
-3. Enable encrypted off-host Fulton backups and perform a restore drill. Current
-   verified backups are distributed across the same physical machine and the
-   off-host gate is disabled. A network-isolated disposable restore from the
-   newest local backup now passes, but it does not cover loss of this server.
+1. Completed: the retired `/dev/sdd` was physically disconnected. Its model,
+   serial and WWN are absent from `lsblk`; `/disk2`, `/disk4`, mergerfs and all
+   four containers remain healthy. The stale `noauto,nofail` `/disk5` line is
+   harmless but still needs privileged removal from `/etc/fstab` as housekeeping.
+   The [removal runbook](FAILED_DISK_REMOVAL_2026-09-28.md) records the exact
+   device and verified post-removal state.
+2. Completed: a private 192-bit random ntfy destination now receives
+   deduplicated SMART, container, public-health, Fulton-backup and
+   Jellyfin-backup alerts. The five-minute user timer is enabled and active. A
+   healthy test plus isolated synthetic warning and recovery drill were all
+   received externally.
+3. Completed: the newest verified Fulton backup was copied to the Windows host,
+   encrypted with AES-256 and encrypted headers, and paired with a DPAPI
+   CurrentUser-protected 256-bit random key. The archive passed a clean
+   extraction and the repository verifier. A daily 05:30 scheduled task is
+   enabled, starts when available and returned `0x00000000` in its live test.
 4. An initial verified Jellyfin recovery point exists at
    `/disk2/backups/jellyfin/jellyfin-20260928T003251Z`. It contains a compressed
    configuration/metadata archive and an online SQLite copy; all checksums,
@@ -267,8 +270,10 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
 
 1. Completed: backed up, upgraded and digest-pinned Pi-hole 2026.09.0; retain
    the stopped rollback container until the agreed observation window passes.
-2. Disconnect the failed retired disk and make SMART alerts deliver somewhere.
-3. Turn on an encrypted off-host Fulton backup and prove a restore.
+2. Completed: disconnected the failed retired disk and enabled observed external
+   operational alerts with tested warning and recovery delivery.
+3. Completed: enabled daily encrypted off-host Fulton copies on the Windows host
+   and proved a clean restore from the first archive.
 4. Completed and deployed: persistent per-date failed-attempt budget and
    reset-aware, provider-specific daily-quota circuits. Still ensure a vetted
    reserve can publish a missing slot.
@@ -334,8 +339,18 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
   the temporary container and directory, the source backup re-verified, and the
   live container remained healthy with zero restarts.
 - Identified the failed disk as the external 2 TB WD20EARX with serial
-  `WD-WCAZAA791731`. It is unmounted, outside mergerfs, unused by Docker and has
-  no kernel holder or visible open descriptor. Its UUID remains in a stale
-  `noauto,nofail` `/disk5` fstab entry; the shutdown-first removal runbook covers
-  that cleanup and exact post-boot checks.
+  `WD-WCAZAA791731`, proved it was outside mergerfs and unused, and physically
+  disconnected it. The serial and WWN are now absent while the active storage,
+  containers and backup timers remain healthy. Its UUID remains in a harmless
+  stale `noauto,nofail` `/disk5` fstab entry pending privileged housekeeping.
+- Merged PR 30 as `48ef8af130b25618a23e97b7759bca562ccaf48f`
+  after build, secret and SAST gates passed. It adds an HTTPS-only, deduplicated
+  external alert monitor plus the Windows encrypted off-host-copy automation.
+  The monitor timer is enabled on the server, and external receipt was proved
+  for a healthy test, a synthetic public-health warning and recovery.
+- Created an AES-256 off-host archive of
+  `fultons-quiz-20260928T103325Z-da45f5a0` on the Windows host. Its 256-bit random
+  key is protected with DPAPI CurrentUser; archive testing, clean extraction and
+  `backup_manager.py verify` all passed. The daily scheduled task is enabled and
+  its first task-level execution returned success.
 - No paid AI calls were made.
