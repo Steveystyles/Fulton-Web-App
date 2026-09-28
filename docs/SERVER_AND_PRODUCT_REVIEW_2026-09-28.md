@@ -35,6 +35,10 @@ and instrument the player funnel before adding more features.
 - Fulton SQLite `quick_check` is `ok`; the public and internal health probes pass.
 - Daily verified Fulton backups have run successfully since the timer was
   enabled. The current backup series has 28 restore points.
+- The user-level `fultons-resilience.timer` is enabled and active. It recovers
+  stopped/unhealthy Fulton containers and records power events, but currently
+  writes only to the local journal and event log rather than an observed alert
+  destination.
 - Local build passed, 26 client contracts passed, and 683 server tests passed
   with one platform-specific skip.
 
