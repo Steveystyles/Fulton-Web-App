@@ -88,6 +88,24 @@ class AlertMonitorTests(unittest.TestCase):
             self.assertIn("hours old", problem)
             run.assert_not_called()
 
+    def test_smart_check_detects_pending_sector_warning(self) -> None:
+        completed = monitor.subprocess.CompletedProcess(
+            [],
+            0,
+            "Device: /dev/sdb, 5 Currently unreadable (pending) sectors\n",
+            "",
+        )
+        with patch.object(monitor, "run", return_value=completed):
+            self.assertEqual(
+                monitor.smart_problem(65),
+                "SMART reported a disk warning in the last 65 minutes",
+            )
+
+    def test_smart_check_accepts_quiet_journal(self) -> None:
+        completed = monitor.subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(monitor, "run", return_value=completed):
+            self.assertIsNone(monitor.smart_problem(65))
+
     def test_units_use_private_environment_and_persistent_timer(self) -> None:
         service = (PROJECT_DIR / "deploy" / "fultons-alert.service").read_text()
         timer = (PROJECT_DIR / "deploy" / "fultons-alert.timer").read_text()

@@ -73,3 +73,17 @@ The retired serial and WWN should be absent, `/disk2`, `/disk4` and
 `/srv/storage` should be mounted, all four containers should be healthy/running,
 all three user timers should be active, and smartd should no longer emit the
 half-hourly `/dev/sdd` sector warnings.
+
+## Verified completion
+
+The disk was physically disconnected on 28 September 2026. A live post-removal
+check found neither `/dev/sdd` nor serial `WD-WCAZAA791731` in `lsblk`.
+`/disk2`, `/disk4` and `/srv/storage` remained mounted; Fulton, Jellyfin and
+Pi-hole were healthy, Traefik was running, all containers had zero restarts, and
+the Fulton, Jellyfin and resilience timers remained active. Public Fulton health
+also passed.
+
+The old UUID line remains in `/etc/fstab` because the deployment user does not
+have passwordless sudo. It is `noauto,nofail`, so it neither mounts the absent
+disk nor blocks boot. Remove or comment that exact line during the next
+privileged maintenance session, then run `sudo findmnt --verify --verbose`.
