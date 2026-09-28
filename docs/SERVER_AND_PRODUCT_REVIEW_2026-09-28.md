@@ -171,9 +171,13 @@ now passes with disk, memory, Docker and SQLite details.
 3. Enable encrypted off-host Fulton backups and perform a restore drill. Current
    verified backups are distributed across the same physical machine and the
    off-host gate is disabled.
-4. Back up Jellyfin configuration and its database. No built-in Jellyfin backup
-   was present. Jellyfin 10.11 added online backups, and its documentation
-   explains that major migrations may not be reversible without a backup
+4. An initial verified Jellyfin recovery point now exists at
+   `/disk2/backups/jellyfin/jellyfin-20260928T003251Z`. It contains a compressed
+   configuration/metadata archive and an online SQLite copy; all checksums,
+   archive validation and SQLite `quick_check` pass. Add this method to a
+   recurring retention schedule and perform a disposable restore drill before a
+   major upgrade. Jellyfin's documentation explains that major migrations may
+   not be reversible without a backup
    ([Jellyfin backup guidance](https://jellyfin.org/docs/general/administration/backup-and-restore/)).
 5. After 30 current daily Fulton points exist, review and activate the existing
    30-daily/12-monthly/3-annual retention plan. Old one-off backup directories
@@ -255,7 +259,8 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
 1. Build the answer-first seven-day quiz reserve and shrink diagnostic retention.
 2. Add funnel/difficulty/fun telemetry and a private weekly operator report.
 3. Test Daily Three and a less frequent featured map cadence.
-4. Back up Jellyfin config, then stage its version upgrade and hardening.
+4. Initial Jellyfin backup completed and verified; schedule it, perform a
+   disposable restore drill, then stage the version upgrade and hardening.
 5. Measure Jellyfin playback method before deciding on QSV.
 
 ### Later, only if evidence demands it
@@ -280,4 +285,8 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
   it to 2026.09.0, pinned the tested digest, and retained the stopped old
   container for rollback. Pi-hole performed its own schema migration from 21 to
   22 and remained healthy; Fulton data, content and scores were not changed.
+- Created and independently re-verified the first Jellyfin recovery point at
+  `/disk2/backups/jellyfin/jellyfin-20260928T003251Z`. It is owner-only, contains
+  a consistent 34-table database plus the configuration/metadata archive, and
+  did not interrupt or restart Jellyfin.
 - No paid AI calls were made.
