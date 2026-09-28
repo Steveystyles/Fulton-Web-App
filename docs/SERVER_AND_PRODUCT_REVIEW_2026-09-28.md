@@ -192,7 +192,10 @@ now passes with disk, memory, Docker and SQLite details.
    ([Jellyfin backup guidance](https://jellyfin.org/docs/general/administration/backup-and-restore/)).
 5. Catalogue the 24 legacy or incomplete-format Fulton backup directories before
    removal or migration. The current 30-daily/12-monthly/3-annual retention dry
-   run keeps both current-format backups and deletes nothing.
+   run keeps both current-format backups and deletes nothing. The read-only
+   [backup catalog](FULTON_BACKUP_CATALOG_2026-09-28.md) records each directory,
+   its size and its surviving validated artifacts without promoting partial
+   directories to verified restore points.
 6. If media is expensive to replace, add a parity disk at least as large as the
    largest protected data branch and use SnapRAID for the mostly static media
    tree, excluding live databases, caches and download-in-progress paths. Parity
@@ -315,5 +318,8 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
   modes were tightened to `0700`/`0600`.
 - Ran the Fulton retention tool against the direct `/disk2` backup root without
   `--apply`. It retained both current-format backups, protected all 24 legacy or
-  incomplete-format directories and proposed no deletion.
+  incomplete-format directories and proposed no deletion. A read-only catalog
+  found nine legacy databases with a passing SQLite `quick_check`, eleven legacy
+  archives with passing gzip validation and eight directories with neither
+  recovery artifact.
 - No paid AI calls were made.
