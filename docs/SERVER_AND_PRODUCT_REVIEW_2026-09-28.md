@@ -40,7 +40,10 @@ and instrument the player funnel before adding more features.
   writes only to the local journal and event log rather than an observed alert
   destination.
 - Local build passed, 26 client contracts passed, and 684 server tests passed
-  with one platform-specific skip.
+  with one platform-specific skip. The release branch also passes `npm audit`
+  with zero vulnerabilities and the exact-site Bandit gate with all 39 reviewed
+  findings accounted for. Container scanning and full-history secret scanning
+  remain CI gates.
 
 ## Player evidence
 
