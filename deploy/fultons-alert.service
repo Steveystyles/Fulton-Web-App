@@ -1,0 +1,13 @@
+[Unit]
+Description=Fulton's external operational alert monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/fultons-alert.env
+ExecStart=/usr/bin/python3 %h/fulton-web-app/deploy/fultons-alert-monitor.py
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
