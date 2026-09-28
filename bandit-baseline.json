@@ -130,13 +130,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 794,
+      "line_number": 799,
       "line_range": [
-        794
+        799
       ],
       "col_offset": 21,
       "end_col_offset": 70,
-      "code_sha256": "49fc61bc668e760a8f56f57897a2c8ea6743913f1b385f29067fa8ce40942f09"
+      "code_sha256": "49d983f51e5dad17a8797ab5f36e7e8aa4c280e8bdce3c779d44df5e84775703"
     },
     {
       "filename": "daily_quiz.py",
@@ -146,13 +146,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 1011,
+      "line_number": 1016,
       "line_range": [
-        1011
+        1016
       ],
       "col_offset": 21,
       "end_col_offset": 70,
-      "code_sha256": "61f78bb24770ed9627224992b8a80b3f1da72838db2ef7aafc5ea2ae047c2b32"
+      "code_sha256": "798132806d570f0ea096e56c59c1bc4f134fd2b439ec1027a0a1be3c6c747a54"
     },
     {
       "filename": "daily_quiz.py",
@@ -162,13 +162,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 2233,
+      "line_number": 2499,
       "line_range": [
-        2233
+        2499
       ],
       "col_offset": 14,
       "end_col_offset": 26,
-      "code_sha256": "389c5a1194b532170fc1b6af19204ec1338e607e3d2efc40c629220e10d295a6"
+      "code_sha256": "5ab5eaa078e4c416ba15da5cd0978a9b4275f66cee89b7258150d060677194b7"
     },
     {
       "filename": "daily_quiz.py",
@@ -178,21 +178,21 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 2237,
+      "line_number": 2503,
       "line_range": [
-        2237,
-        2238,
-        2239,
-        2240,
-        2241,
-        2242,
-        2243,
-        2244,
-        2245
+        2503,
+        2504,
+        2505,
+        2506,
+        2507,
+        2508,
+        2509,
+        2510,
+        2511
       ],
       "col_offset": 16,
       "end_col_offset": 24,
-      "code_sha256": "0bf241a495650c9b3ae696122c948241ecb62653f7d809fd2b20a1bd7913e892"
+      "code_sha256": "82dc59ec2e7e16a85e98cda8bd6aa29a176d53004ace0ff6db51948b56278b04"
     },
     {
       "filename": "daily_quiz.py",
@@ -202,22 +202,22 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 2414,
+      "line_number": 2680,
       "line_range": [
-        2414,
-        2415,
-        2416,
-        2417,
-        2418,
-        2419,
-        2420,
-        2421,
-        2422,
-        2423
+        2680,
+        2681,
+        2682,
+        2683,
+        2684,
+        2685,
+        2686,
+        2687,
+        2688,
+        2689
       ],
       "col_offset": 12,
       "end_col_offset": 10,
-      "code_sha256": "67b064ac2bf3e2d71d6ec19000dda2db459489b6aae2a47170cdf82a559b0bf7"
+      "code_sha256": "7258553b487801e19b6c40982a166e8741e865800c8b44559d2004d27cc6df3a"
     },
     {
       "filename": "daily_quiz.py",
@@ -227,13 +227,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4739,
+      "line_number": 5063,
       "line_range": [
-        4739
+        5063
       ],
       "col_offset": 28,
       "end_col_offset": 35,
-      "code_sha256": "38b3e32252fd3d6773c7a0a6a0862c196d8fab03388de15ea1c5d57c10bc62cc"
+      "code_sha256": "91a460fbc77f453cb95254ce4664c98137061e6e3a8c6846c3eb1360ecd937b4"
     },
     {
       "filename": "daily_quiz.py",
@@ -243,13 +243,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4742,
+      "line_number": 5066,
       "line_range": [
-        4742
+        5066
       ],
       "col_offset": 14,
       "end_col_offset": 26,
-      "code_sha256": "45af325bfc8579557924b1a2bababdf90cd3a4767707fb89128d1ba77a041289"
+      "code_sha256": "f8967509eb10836068f003666e0693c5dbaefbf131fc0100cb26efccca26cfad"
     },
     {
       "filename": "daily_quiz.py",
@@ -259,13 +259,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4784,
+      "line_number": 5108,
       "line_range": [
-        4784
+        5108
       ],
       "col_offset": 10,
       "end_col_offset": 52,
-      "code_sha256": "25183978f5ca6d6972bfd2861b0ac8c5a898af85dcd97b0a053a45121ea5a978"
+      "code_sha256": "0e36f48d9570d8f34025705ac67ca2b4ed5e2b33b6771891d75c82debfef47b3"
     },
     {
       "filename": "daily_quiz.py",
@@ -275,13 +275,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4797,
+      "line_number": 5121,
       "line_range": [
-        4797
+        5121
       ],
       "col_offset": 14,
       "end_col_offset": 49,
-      "code_sha256": "1589adbc0f89143d6d8ecf0a17e2b2ae5782f4e51fe97f8b0e2ae5282db71b2d"
+      "code_sha256": "b652ae6912eecc7187cbfd84c8c7ba223f040d50e5eaf63e439b66ae295f68ac"
     },
     {
       "filename": "daily_quiz.py",
@@ -291,13 +291,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4823,
+      "line_number": 5147,
       "line_range": [
-        4823
+        5147
       ],
       "col_offset": 10,
       "end_col_offset": 50,
-      "code_sha256": "d1915370d2ca3d65312edea8c59486cf572fb3477a6cd39975a2ae79df250a5c"
+      "code_sha256": "63671fbb5dfa718abf609e04372fc95efc89878301ee5ee49354ef203b603b61"
     },
     {
       "filename": "daily_quiz.py",
@@ -307,13 +307,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4841,
+      "line_number": 5165,
       "line_range": [
-        4841
+        5165
       ],
       "col_offset": 14,
       "end_col_offset": 47,
-      "code_sha256": "f6b2fa98bd7ddd536533510cee0d7f74c0229c081ca8dc31c0a30589b5678c90"
+      "code_sha256": "e4defc9a1ba58b7196e39f786c670b72d0d63592fbc1b4dc4817b2c937fba19d"
     },
     {
       "filename": "daily_quiz.py",
@@ -323,13 +323,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4864,
+      "line_number": 5188,
       "line_range": [
-        4864
+        5188
       ],
       "col_offset": 10,
       "end_col_offset": 51,
-      "code_sha256": "289dfa9f1e6d2d82ec0786084747c3b4cad676ba41baf44bbdcc26626849e30a"
+      "code_sha256": "324d5c32452bbe8dcb4193e10db02fa49d5eea0e733f50c3086997aac8d381b6"
     },
     {
       "filename": "daily_quiz.py",
@@ -339,13 +339,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 4876,
+      "line_number": 5200,
       "line_range": [
-        4876
+        5200
       ],
       "col_offset": 14,
       "end_col_offset": 48,
-      "code_sha256": "80414bdcb77c00c2aecc9d168dd718e1419a05364db68ac692242d6c7527d62e"
+      "code_sha256": "f41711bbded8339856cbf4131a8df2866ae9456f01c8fc8da29664344f09ae36"
     },
     {
       "filename": "deploy/backup_manager.py",
