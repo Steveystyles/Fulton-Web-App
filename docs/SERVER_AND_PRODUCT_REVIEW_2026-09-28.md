@@ -24,7 +24,9 @@ and instrument the player funnel before adding more features.
 
 ## Authoritative state inspected
 
-- Live build `1e3e91fcc1ed841c784dde8ba58ecb14eadf8e2b`, matching repository `main`.
+- Live application build `051a8327470df93444d91415b78d9ceb4ff89633`, the last
+  runtime-changing `main` commit. The later evidence-only follow-up changes
+  documentation, not the deployed application.
 - Ubuntu 24.04.5 LTS on an i5-6200U (2 cores/4 threads), 15.5 GiB RAM.
 - Root 1 TB SSD plus two active 1 TB ext4 data branches. Mergerfs presents
   2.7 TB with 1.5 TB free.
@@ -33,17 +35,18 @@ and instrument the player funnel before adding more features.
 - Fulton uses about 61 MiB RAM; Jellyfin 430 MiB; Pi-hole 37 MiB; Traefik
   117 MiB at the idle sample.
 - Fulton SQLite `quick_check` is `ok`; the public and internal health probes pass.
-- Daily verified Fulton backups have run successfully since the timer was
-  enabled. The current backup series has 28 restore points.
+- The daily Fulton backup timer is active. The direct `/disk2` backup root has
+  26 directories: the current verifier accepts two, while the retention tool
+  protects 24 legacy or incomplete-format directories instead of deleting them.
 - The user-level `fultons-resilience.timer` is enabled and active. It recovers
   stopped/unhealthy Fulton containers and records power events, but currently
   writes only to the local journal and event log rather than an observed alert
   destination.
 - Local build passed, 26 client contracts passed, and 684 server tests passed
-  with one platform-specific skip. The release branch also passes `npm audit`
-  with zero vulnerabilities and the exact-site Bandit gate with all 39 reviewed
-  findings accounted for. Container scanning and full-history secret scanning
-  remain CI gates.
+  with one platform-specific skip. The release passed `npm audit` with zero
+  vulnerabilities, the exact-site Bandit gate with all 39 reviewed findings
+  accounted for, the full-history secret scan, the container scan and keyless
+  signature verification. The resulting immutable image was deployed by digest.
 
 ## Player evidence
 
@@ -134,13 +137,14 @@ clear focus targets, no horizontal overflow and a coherent visual hierarchy.
 The public map promo also renders correctly after its media loads. The route
 code uses lazy page chunks, and the app/container security baseline is strong.
 
-The main performance omission is HTTP compression. The live hashed core bundle
-is 194.2 KB but builds to 64.6 KB gzip; the main CSS is 54.3 KB versus 11.6 KB
-gzip. The live response has no `Content-Encoding`. Traefik's official compress
-middleware supports gzip, Brotli and Zstandard and defaults to compressing
-eligible bodies above 1 KB ([Traefik documentation](https://doc.traefik.io/traefik/v3.3/middlewares/http/compress/)).
-The repository now attaches this middleware to the Fulton router. It is not live
-until the normal signed-image deployment process runs.
+The review identified HTTP compression as the main delivery omission. The live
+hashed core bundle was 194.2 KB but built to 64.6 KB gzip; the main CSS was 54.3
+KB versus 11.6 KB gzip. Traefik's official compress middleware supports gzip,
+Brotli and Zstandard and defaults to compressing eligible bodies above 1 KB
+([Traefik documentation](https://doc.traefik.io/traefik/v3.3/middlewares/http/compress/)).
+The signed deployment now attaches this middleware to the Fulton router. A
+post-release request with gzip accepted returned the expected `Content-Encoding`
+and `Vary` response headers.
 
 Do not replace the Python `ThreadingHTTPServer` or SQLite yet. With two users,
 current latency and headroom do not justify that migration. If the audience
@@ -168,26 +172,36 @@ now passes with disk, memory, Docker and SQLite details.
 1. Replace or physically disconnect `/dev/sdd`. It is retired and unmounted but
    still reports five pending and four offline-uncorrectable sectors every 30
    minutes. Smartd's attempted mail notification fails because no mail command
-   is installed. Keeping a known-bad disk spinning adds noise and risk.
+   is installed. Keeping a known-bad disk spinning adds noise and risk. The
+   [shutdown-first removal runbook](FAILED_DISK_REMOVAL_2026-09-28.md) records
+   the exact model, serial, UUID, stale `noauto,nofail` fstab entry and post-boot
+   checks.
 2. Send SMART, backup, container and public-health failures to a channel that is
    actually observed. The existing weekly log is evidence, not notification.
 3. Enable encrypted off-host Fulton backups and perform a restore drill. Current
    verified backups are distributed across the same physical machine and the
-   off-host gate is disabled.
-4. An initial verified Jellyfin recovery point now exists at
+   off-host gate is disabled. A network-isolated disposable restore from the
+   newest local backup now passes, but it does not cover loss of this server.
+4. An initial verified Jellyfin recovery point exists at
    `/disk2/backups/jellyfin/jellyfin-20260928T003251Z`. It contains a compressed
    configuration/metadata archive and an online SQLite copy; all checksums,
    archive validation and SQLite `quick_check` pass. A disposable restore drill
    then parsed all five XML configurations, opened all 34 database tables and
-   recovered six plugin assemblies without touching the live service. A weekly
-   verified backup script and systemd timer are prepared on the review branch;
-   install them after merge, then define retention before a major upgrade.
+   recovered six plugin assemblies without touching the live service. The
+   reviewed weekly backup timer is now installed, enabled and active with user
+   lingering enabled. Its first service-run recovery point,
+   `/disk2/backups/jellyfin/jellyfin-20260928T103421Z`, also passed all checksums,
+   archive validation and the 34-table SQLite `quick_check`. Define retention
+   before a major upgrade.
    Jellyfin's documentation explains that major migrations may not be reversible
    without a backup
    ([Jellyfin backup guidance](https://jellyfin.org/docs/general/administration/backup-and-restore/)).
-5. After 30 current daily Fulton points exist, review and activate the existing
-   30-daily/12-monthly/3-annual retention plan. Old one-off backup directories
-   should be catalogued before removal.
+5. Catalogue the 24 legacy or incomplete-format Fulton backup directories before
+   removal or migration. The current 30-daily/12-monthly/3-annual retention dry
+   run keeps both current-format backups and deletes nothing. The read-only
+   [backup catalog](FULTON_BACKUP_CATALOG_2026-09-28.md) records each directory,
+   its size and its surviving validated artifacts without promoting partial
+   directories to verified restore points.
 6. If media is expensive to replace, add a parity disk at least as large as the
    largest protected data branch and use SnapRAID for the mostly static media
    tree, excluding live databases, caches and download-in-progress paths. Parity
@@ -255,19 +269,20 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
    the stopped rollback container until the agreed observation window passes.
 2. Disconnect the failed retired disk and make SMART alerts deliver somewhere.
 3. Turn on an encrypted off-host Fulton backup and prove a restore.
-4. Completed in code: persistent per-date failed-attempt budget and reset-aware,
-   provider-specific daily-quota circuits. Still ensure a vetted reserve can
-   publish a missing slot.
-5. Deploy the Fulton compression labels through the signed release path.
+4. Completed and deployed: persistent per-date failed-attempt budget and
+   reset-aware, provider-specific daily-quota circuits. Still ensure a vetted
+   reserve can publish a missing slot.
+5. Completed: deployed the Fulton compression labels through the signed release
+   path and verified a compressed public response.
 
 ### Next two weeks: product and cost
 
 1. Build the answer-first seven-day quiz reserve and shrink diagnostic retention.
 2. Add funnel/difficulty/fun telemetry and a private weekly operator report.
 3. Test Daily Three and a less frequent featured map cadence.
-4. Initial Jellyfin backup and disposable restore drill completed; merge and
-   install the prepared weekly timer, then stage the version upgrade and
-   hardening.
+4. Initial Jellyfin backup and disposable restore drill completed; the weekly
+   timer is installed and its first service run verified. Next define retention,
+   then stage the version upgrade and hardening.
 5. Measure Jellyfin playback method before deciding on QSV.
 
 ### Later, only if evidence demands it
@@ -296,6 +311,31 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
   `/disk2/backups/jellyfin/jellyfin-20260928T003251Z`. It is owner-only, contains
   a consistent 34-table database plus the configuration/metadata archive, and
   did not interrupt or restart Jellyfin. A disposable restore of the database,
-  XML configuration and plugins also passed; a reviewed weekly backup script
-  and timer are included in the release branch.
+  XML configuration and plugins also passed. The reviewed weekly backup script
+  and timer are installed and active; their first service run created and
+  verified `/disk2/backups/jellyfin/jellyfin-20260928T103421Z`.
+- Merged PR 28 as `051a8327470df93444d91415b78d9ceb4ff89633` after build,
+  secret, SAST and automated review gates passed. CI published and signed image
+  digest `sha256:38826c253ed8132f073b799d20c994d8a46f6f511ab49ca0dee4011797d6f038`.
+  The verified updater checked the signature and image labels, created backup
+  `/disk2/backups/fultons-quiz/fultons-quiz-20260928T103325Z-da45f5a0`, deployed
+  the digest and passed its health check. Public health reports the new revision,
+  the container has zero restarts, and the production data directory/database
+  modes were tightened to `0700`/`0600`.
+- Ran the Fulton retention tool against the direct `/disk2` backup root without
+  `--apply`. It retained both current-format backups, protected all 24 legacy or
+  incomplete-format directories and proposed no deletion. A read-only catalog
+  found nine legacy databases with a passing SQLite `quick_check`, eleven legacy
+  archives with passing gzip validation and eight directories with neither
+  recovery artifact.
+- Restored the newest verified Fulton backup into a disposable directory and
+  booted the signed production image with networking disabled. Health, SQLite
+  `quick_check`, all 35 tables and all 16 durable files passed; cleanup removed
+  the temporary container and directory, the source backup re-verified, and the
+  live container remained healthy with zero restarts.
+- Identified the failed disk as the external 2 TB WD20EARX with serial
+  `WD-WCAZAA791731`. It is unmounted, outside mergerfs, unused by Docker and has
+  no kernel holder or visible open descriptor. Its UUID remains in a stale
+  `noauto,nofail` `/disk5` fstab entry; the shutdown-first removal runbook covers
+  that cleanup and exact post-boot checks.
 - No paid AI calls were made.
