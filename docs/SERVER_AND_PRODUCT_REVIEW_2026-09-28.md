@@ -170,7 +170,10 @@ now passes with disk, memory, Docker and SQLite details.
 1. Replace or physically disconnect `/dev/sdd`. It is retired and unmounted but
    still reports five pending and four offline-uncorrectable sectors every 30
    minutes. Smartd's attempted mail notification fails because no mail command
-   is installed. Keeping a known-bad disk spinning adds noise and risk.
+   is installed. Keeping a known-bad disk spinning adds noise and risk. The
+   [shutdown-first removal runbook](FAILED_DISK_REMOVAL_2026-09-28.md) records
+   the exact model, serial, UUID, stale `noauto,nofail` fstab entry and post-boot
+   checks.
 2. Send SMART, backup, container and public-health failures to a channel that is
    actually observed. The existing weekly log is evidence, not notification.
 3. Enable encrypted off-host Fulton backups and perform a restore drill. Current
@@ -328,4 +331,9 @@ logs by default. Docker documents a default ceiling of about 100 MB per containe
   `quick_check`, all 35 tables and all 16 durable files passed; cleanup removed
   the temporary container and directory, the source backup re-verified, and the
   live container remained healthy with zero restarts.
+- Identified the failed disk as the external 2 TB WD20EARX with serial
+  `WD-WCAZAA791731`. It is unmounted, outside mergerfs, unused by Docker and has
+  no kernel holder or visible open descriptor. Its UUID remains in a stale
+  `noauto,nofail` `/disk5` fstab entry; the shutdown-first removal runbook covers
+  that cleanup and exact post-boot checks.
 - No paid AI calls were made.
