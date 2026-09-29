@@ -5,8 +5,8 @@ import { Card } from "../components/Card";
 import { actionClass, secondaryClass, ShareResult, useToday } from "../components/DailyJourney";
 import { useAuth } from "../context/AuthContext";
 
-const icons = { wordle: Hash, football: CircleHelp, general: CircleHelp, map: MapPinned };
-const descriptions = { wordle: "Six guesses. One word. Your next little victory.", football: "Three questions, from the warm-up to the big finish.", general: "A little knowledge. A satisfying discovery.", map: "Follow the clues. Decide when you're ready to pin." };
+const icons = { wordle: Hash, quiz: CircleHelp, map: MapPinned };
+const descriptions = { wordle: "Six guesses. One word. Your next little victory.", quiz: "Pick four from six. Choose your subjects and stakes.", map: "Follow the clues. Decide when you're ready to pin." };
 
 export function Today() {
   const { user } = useAuth();
@@ -16,8 +16,8 @@ export function Today() {
     <div className="rounded-2xl bg-saints-black p-5 text-white">
       <p className="text-xs font-black uppercase tracking-wider text-white/60">Your daily games club</p>
       <h1 className="mt-2 text-3xl font-black">Hello, {user?.username}.</h1>
-      <p className="mt-2 text-sm leading-relaxed text-white/80">{complete === 4 ? "Four challenges finished. Enjoy the rest of your day." : "A word, a little knowledge, a place to discover. Where will you start?"}</p>
-      {data ? <p className="mt-4 flex items-center gap-2 text-sm font-bold"><Check className="h-4 w-4" aria-hidden="true" />{complete} of 4 completed · {new Date(`${data.date}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}</p> : null}
+      <p className="mt-2 text-sm leading-relaxed text-white/80">{data && complete === data.activities.length ? "Today's challenges are finished. Enjoy the rest of your day." : "A word, a little knowledge, and — on Wednesdays and Saturdays — a place to discover."}</p>
+      {data ? <p className="mt-4 flex items-center gap-2 text-sm font-bold"><Check className="h-4 w-4" aria-hidden="true" />{complete} of {data.activities.length} completed · {new Date(`${data.date}T12:00:00`).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" })}</p> : null}
     </div>
     {error ? <Card><p role="alert" className="text-sm text-saints-red">{error}</p><button className={`${secondaryClass} mt-3`} onClick={refresh}>Retry daily progress</button></Card> : null}
     {!data && !error ? <p role="status" className="p-5 text-center font-bold">Finding your daily games…</p> : null}
@@ -28,9 +28,10 @@ export function Today() {
         <Link className={`${item.status === "completed" || item.status === "unavailable" ? secondaryClass : actionClass} mt-4 w-full gap-2`} to={item.href}>{item.status === "completed" ? `View result · ${item.score ?? 0} game points` : item.status === "continue" ? "Continue playing" : item.status === "ready" ? "Let's play" : "Check availability"}<ArrowRight className="h-4 w-4" aria-hidden="true" /></Link>
       </Card>; })}
     </div>
-    <Link to="/scores" className="flex min-h-20 items-center gap-4 rounded-2xl border border-saints-line bg-white p-4 saints-focus"><Trophy className="h-7 w-7 text-saints-red" aria-hidden="true" /><div className="flex-1"><h2 className="font-black">This week's league</h2><p className="mt-1 text-sm text-slate-600">Four activities. Equal daily point opportunities.</p></div><ArrowRight className="h-5 w-5" aria-hidden="true" /></Link>
-    {complete === 4 && data ? <Card><ShareResult text={`Fulton's Quiz · ${data.date}\nDaily four complete!\n${data.activities.map(item => `${item.title}: ${item.score} game points`).join("\n")}`} /></Card> : null}
-    <Link className={`${secondaryClass} w-full`} to="/practice">Fancy another round? Explore practice quizzes</Link>
+    {data?.nextMapDates?.length ? <Card><h2 className="font-black">Next map rounds</h2><p className="mt-1 text-sm text-slate-600">{data.nextMapDates.map(value => new Date(`${value}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })).join(" · ")}</p></Card> : null}
+    <Link to="/scores" className="flex min-h-20 items-center gap-4 rounded-2xl border border-saints-line bg-white p-4 saints-focus"><Trophy className="h-7 w-7 text-saints-red" aria-hidden="true" /><div className="flex-1"><h2 className="font-black">This week's league</h2><p className="mt-1 text-sm text-slate-600">Wordle and Quiz daily; Map on Wednesday and Saturday.</p></div><ArrowRight className="h-5 w-5" aria-hidden="true" /></Link>
+    {data && complete === data.activities.length ? <Card><ShareResult text={`Fulton's Quiz · ${data.date}\nDaily games complete!\n${data.activities.map(item => `${item.title}: ${item.score} game points`).join("\n")}`} /></Card> : null}
+    <Link className={`${secondaryClass} w-full`} to="/quiz">Daily / Practice quiz</Link>
     <HelpButton title="How the club works"><p className="mt-3 leading-relaxed">Choose any game, in any order. Confirmed answers are saved to your account. Game points record your original achievements; the weekly league balances each activity to a maximum of 10 points per day. Rounds refresh at midnight UK time. There is no timer and no obligation to play everything.</p><Link className={`${secondaryClass} mt-3`} to="/account">Preferences and account help</Link></HelpButton>
   </section>;
 }

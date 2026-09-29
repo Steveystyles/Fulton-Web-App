@@ -95,7 +95,7 @@ export function Login() {
               strokeWidth={2.4}
             />
             <p className="min-w-0">
-              Wordle, two quick quizzes and a place to discover. Sign in with your club account. Need an account or a password reset? Ask the administrator who invited you.
+              Wordle, a pick-your-own quiz and a place to discover. Sign in with your club account. Need an account or a password reset? Ask the administrator who invited you.
             </p>
           </div>
         </section>

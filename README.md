@@ -1,6 +1,6 @@
 # Fulton's Quiz
 
-Mobile-first daily quiz, map game, Wordle, news, scores, and account app backed
+Mobile-first daily quiz, map game, Wordle, scores, and account app backed
 by a Python/SQLite server.
 
 ## Run Locally

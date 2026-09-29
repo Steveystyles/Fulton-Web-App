@@ -41,13 +41,13 @@ REQUIRED_SLOTS = tuple(
 )
 QUIZ_DIAGNOSTIC_RETENTION_DAYS = env_int(
     "QUIZ_DIAGNOSTIC_RETENTION_DAYS",
-    180,
-    minimum=30,
+    14,
+    minimum=1,
     maximum=3650,
 )
 QUIZ_DIAGNOSTIC_MAX_ROWS = env_int(
     "QUIZ_DIAGNOSTIC_MAX_ROWS",
-    50_000,
+    5_000,
     minimum=1_000,
     maximum=1_000_000,
 )
@@ -268,6 +268,7 @@ class QuizConfig:
     candidate_batch_size: int = 8
     candidate_batches_per_slot: int = 3
     candidate_max_calls_per_quiz: int = 30
+    free_routes_only: bool = False
 
     @classmethod
     def from_env(cls) -> "QuizConfig":
@@ -393,6 +394,7 @@ class QuizConfig:
             candidate_max_calls_per_quiz=env_int(
                 "QUIZ_CANDIDATE_MAX_CALLS_PER_QUIZ", 30, minimum=1, maximum=500
             ),
+            free_routes_only=env_bool("QUIZ_FREE_ROUTES_ONLY", True),
         )
 
     def provider_is_configured(self) -> bool:
@@ -1296,6 +1298,22 @@ def provider_from_config(config: QuizConfig) -> QuizAIProvider:
     raise ValueError(f"Unsupported AI_PROVIDER: {config.provider}")
 
 
+def validate_free_route(config: QuizConfig) -> None:
+    """Reject deterministic paid OpenRouter routes in production-safe mode.
+
+    Gemini and Groq expose free-tier quota through their normal endpoints, so
+    there is no model-name signal to validate locally. OpenRouter does expose a
+    distinct free router and ``:free`` model variants, which we can enforce.
+    """
+    if not config.free_routes_only or config.provider != "openrouter":
+        return
+    models = (config.generator_model, config.critic_model)
+    if any(model != "openrouter/free" and not model.endswith(":free") for model in models):
+        raise ValueError(
+            "QUIZ_FREE_ROUTES_ONLY permits only openrouter/free or OpenRouter :free models."
+        )
+
+
 def provider_chain_from_config(config: QuizConfig) -> QuizAIProvider:
     providers: list[QuizAIProvider] = []
     seen_configs: set[tuple[str, str, str, str, str, str]] = set()
@@ -1303,6 +1321,7 @@ def provider_chain_from_config(config: QuizConfig) -> QuizAIProvider:
         candidate = configured_provider_config(config, stage=stage)
         if candidate is None:
             continue
+        validate_free_route(candidate)
         signature = (
             candidate.provider,
             candidate.generator_model,
