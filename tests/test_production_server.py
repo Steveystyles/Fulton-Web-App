@@ -3523,7 +3523,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(generate_daily_quiz.call_count, 1)
         self.assertEqual(generate_daily_quiz.call_args.kwargs["quiz_date"], "2026-06-24")
 
-    def test_daily_quiz_scheduler_continues_after_verified_archive_fallback(self) -> None:
+    def test_daily_quiz_scheduler_prefills_low_reserve_before_calling_provider(self) -> None:
         import server
 
         original_data_dir = server.DATA_DIR
@@ -3535,12 +3535,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.initialize_database()
             target_dates = ["2026-06-24", "2026-06-25"]
             with (
-                patch(
-                    "daily_quiz.generate_daily_quiz",
-                    side_effect=[
-                        {"date": value, "status": "failed"} for value in target_dates
-                    ],
-                ) as generate_daily_quiz,
+                patch("daily_quiz.generate_daily_quiz") as generate_daily_quiz,
                 patch(
                     "daily_quiz.publish_verified_archive_fallback",
                     side_effect=[
@@ -3554,7 +3549,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DB_PATH = original_db_path
 
         self.assertEqual([result["status"] for result in results], ["published", "published"])
-        self.assertEqual(generate_daily_quiz.call_count, 2)
+        generate_daily_quiz.assert_not_called()
         self.assertEqual(archive_fallback.call_count, 2)
 
     def test_daily_quiz_scheduler_retries_unpublished_tomorrow_before_next_window(self) -> None:

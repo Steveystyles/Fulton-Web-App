@@ -3835,11 +3835,14 @@ def daily_quiz_generation_mode(
 def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     seen_dates: set[str] = set()
+    normalized_targets = [daily_quiz.valid_quiz_date(value) for value in target_dates]
+    if not normalized_targets:
+        return results
+    reserve_start = min(normalized_targets)
     with DAILY_QUIZ_OPERATION_LOCK:
         with closing(connect_db()) as conn:
             with conn:
-                for quiz_date in target_dates:
-                    normalized_date = daily_quiz.valid_quiz_date(quiz_date)
+                for normalized_date in normalized_targets:
                     if normalized_date in seen_dates:
                         continue
                     seen_dates.add(normalized_date)
@@ -3848,6 +3851,34 @@ def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
                         safe_log(f"Daily quiz for {normalized_date} is already published")
                         results.append(status)
                         continue
+                    reserve_cards = int(
+                        conn.execute(
+                            """SELECT COUNT(*) FROM daily_quiz_questions q
+                               JOIN daily_quiz_sets s ON s.id=q.quiz_set_id
+                               WHERE s.status='published' AND s.quiz_date >= ?""",
+                            (reserve_start,),
+                        ).fetchone()[0]
+                    )
+                    if reserve_cards < quiz_board.LAUNCH_RESERVE_CARDS:
+                        try:
+                            result = daily_quiz.publish_verified_archive_fallback(
+                                conn,
+                                normalized_date,
+                                answer_embargo_days=DAILY_QUIZ_CONFIG.answer_embargo_days,
+                            )
+                            safe_log(
+                                f"Daily quiz reserve published verified archive content for {normalized_date}"
+                            )
+                            results.append(result)
+                            continue
+                        except (
+                            LookupError,
+                            ValueError,
+                            daily_quiz.QuizRegenerationBlocked,
+                        ) as error:
+                            safe_log(
+                                f"Daily quiz reserve prefill unavailable for {normalized_date}: {error}"
+                            )
                     generation_kwargs: dict[str, Any] = {}
                     if bool(
                         getattr(DAILY_QUIZ_CONFIG, "candidate_pipeline_enabled", False)
