@@ -3045,6 +3045,160 @@ class DailyQuizTests(unittest.TestCase):
                 self.conn, "2026-03-01", answer_embargo_days=45
             )
 
+    def test_quiz_pool_replenishes_complete_verified_batch_and_publishes_atomically(self) -> None:
+        replenished = daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=config(),
+            target_ready=1,
+            max_batch_attempts=1,
+            provider=PassingProvider("pool-provider"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(replenished["status"], "stocked")
+        self.assertEqual(replenished["ready"], 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_pool_questions"
+            ).fetchone()[0],
+            6,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM daily_quiz_sets WHERE quiz_date >= '9000-01-01'"
+            ).fetchone()[0],
+            0,
+        )
+
+        published = daily_quiz.publish_quiz_from_pool(
+            self.conn,
+            "2026-08-21",
+            answer_embargo_days=45,
+        )
+
+        self.assertEqual(published["status"], "published")
+        self.assertEqual(published["accepted_questions"], 6)
+        self.assertEqual(published["verified_questions"], 6)
+        stored = self.conn.execute(
+            """
+            SELECT pipeline_version, generation_mode
+            FROM daily_quiz_sets WHERE quiz_date = '2026-08-21'
+            """
+        ).fetchone()
+        self.assertEqual(tuple(stored), ("pool-v1", "pool"))
+        batch = self.conn.execute(
+            "SELECT state, used_quiz_date FROM daily_quiz_pool_batches"
+        ).fetchone()
+        self.assertEqual(tuple(batch), ("used", "2026-08-21"))
+
+    def test_quiz_pool_pauses_at_provider_cap_and_resumes_same_batch_after_reset(self) -> None:
+        capped = daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=config(max_attempts=1),
+            target_ready=1,
+            max_batch_attempts=1,
+            provider=AlwaysFailingProvider(
+                "pool-quota-provider",
+                "requests per day quota exhausted",
+            ),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(capped["status"], "capped")
+        self.assertEqual(capped["ready"], 0)
+        self.assertIsNotNone(capped["retry_at"])
+        job_before = self.conn.execute(
+            """
+            SELECT id, state, work_quiz_date
+            FROM daily_quiz_pool_batches
+            WHERE state = 'generating'
+            """
+        ).fetchone()
+        self.assertIsNotNone(job_before)
+
+        self.conn.execute("DELETE FROM daily_quiz_provider_circuits")
+        self.conn.commit()
+        resumed = daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=config(),
+            target_ready=1,
+            max_batch_attempts=1,
+            provider=PassingProvider("pool-quota-provider"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(resumed["status"], "stocked")
+        job_after = self.conn.execute(
+            "SELECT id, state, work_quiz_date FROM daily_quiz_pool_batches"
+        ).fetchone()
+        self.assertEqual(job_after["id"], job_before["id"])
+        self.assertEqual(job_after["work_quiz_date"], job_before["work_quiz_date"])
+        self.assertEqual(job_after["state"], "ready")
+
+    def test_quiz_pool_claim_rolls_back_if_publication_fails(self) -> None:
+        daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=config(),
+            target_ready=1,
+            max_batch_attempts=1,
+            provider=PassingProvider("pool-rollback-provider"),
+            log=lambda _: None,
+        )
+        self.conn.execute(
+            """
+            CREATE TRIGGER fail_pool_question_insert
+            BEFORE INSERT ON daily_quiz_questions
+            WHEN NEW.quiz_set_id IN (
+                SELECT id FROM daily_quiz_sets WHERE quiz_date = '2026-08-22'
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'simulated publication failure');
+            END
+            """
+        )
+        self.conn.commit()
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "simulated publication failure"):
+            daily_quiz.publish_quiz_from_pool(
+                self.conn,
+                "2026-08-22",
+                answer_embargo_days=45,
+            )
+
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT state FROM daily_quiz_pool_batches"
+            ).fetchone()[0],
+            "ready",
+        )
+        self.assertIsNone(
+            self.conn.execute(
+                "SELECT 1 FROM daily_quiz_sets WHERE quiz_date = '2026-08-22'"
+            ).fetchone()
+        )
+
+    def test_ready_quiz_pool_questions_are_part_of_duplicate_history(self) -> None:
+        daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=config(),
+            target_ready=1,
+            max_batch_attempts=1,
+            provider=PassingProvider("pool-history-provider"),
+            log=lambda _: None,
+        )
+
+        history = daily_quiz.recent_questions(
+            self.conn,
+            subject="football",
+            history_days=90,
+        )
+
+        self.assertEqual(len(history), 3)
+        self.assertEqual(
+            {question["difficulty"] for question in history},
+            {"easy", "medium", "hard"},
+        )
+
     def test_provider_chain_from_config_includes_openrouter_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
             daily_quiz.QuizConfig(

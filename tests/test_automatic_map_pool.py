@@ -272,6 +272,64 @@ class AutomaticPoolTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'expired')
 
+    def test_maintenance_cycle_keeps_generating_until_queue_target(self):
+        with patch.object(pool, 'TARGET_READY', 2), patch.object(
+            pool,
+            'maintain',
+            side_effect=[
+                {'status': 'added', 'ready': 1, 'place': 'First'},
+                {'status': 'added', 'ready': 2, 'place': 'Second'},
+            ],
+        ) as maintain:
+            result = pool.maintain_until_stocked(
+                self.database,
+                self.root,
+                seed_catalog=None,
+                max_attempts=4,
+            )
+
+        self.assertEqual(result['status'], 'stocked')
+        self.assertEqual(result['ready'], 2)
+        self.assertEqual(result['attempted'], 2)
+        self.assertEqual(maintain.call_count, 2)
+
+    def test_maintenance_cycle_waits_for_reset_after_attempt_cap(self):
+        with patch.object(pool, 'TARGET_READY', 7), patch.object(
+            pool,
+            'maintain',
+            return_value={'status': 'failed', 'ready': 0, 'reason': 'candidate rejected'},
+        ) as maintain:
+            result = pool.maintain_until_stocked(
+                self.database,
+                self.root,
+                seed_catalog=None,
+                max_attempts=4,
+            )
+
+        self.assertEqual(result['status'], 'attempt_cap')
+        self.assertEqual(result['attempted'], 4)
+        self.assertEqual(result['retry_at'], '2026-09-09T00:05:00+00:00')
+        self.assertEqual(maintain.call_count, 4)
+
+    def test_daily_budget_defer_reports_provider_wake_time(self):
+        with patch.object(
+            pool,
+            'maintain',
+            return_value={
+                'status': 'deferred',
+                'ready': 3,
+                'reason': 'Automatic map daily budget exhausted.',
+            },
+        ):
+            result = pool.maintain_until_stocked(
+                self.database,
+                self.root,
+                seed_catalog=None,
+            )
+
+        self.assertEqual(result['status'], 'capped')
+        self.assertEqual(result['retry_at'], '2026-09-09T00:05:00+00:00')
+
     def test_scheduler_wakes_for_maintenance_even_when_games_are_published(self):
         import server
         with patch.object(server, 'DAILY_MAP_AUTOMATIC_ENABLED', True), \

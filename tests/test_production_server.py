@@ -3552,6 +3552,73 @@ class ProductionServerHardeningTests(unittest.TestCase):
         generate_daily_quiz.assert_not_called()
         self.assertEqual(archive_fallback.call_count, 2)
 
+    def test_daily_quiz_scheduler_claims_pool_before_archive_or_inline_ai(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+            target_dates = ["2026-06-24", "2026-06-25"]
+            with (
+                patch("server.DAILY_QUIZ_POOL_ENABLED", True),
+                patch(
+                    "daily_quiz.publish_quiz_from_pool",
+                    side_effect=[
+                        {"date": value, "status": "published"} for value in target_dates
+                    ],
+                ) as pool_publish,
+                patch("daily_quiz.publish_verified_archive_fallback") as archive_fallback,
+                patch("daily_quiz.generate_daily_quiz") as generate_daily_quiz,
+            ):
+                results = server.ensure_daily_quiz_dates(target_dates)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+        self.assertEqual([result["status"] for result in results], ["published", "published"])
+        self.assertEqual(pool_publish.call_count, 2)
+        archive_fallback.assert_not_called()
+        generate_daily_quiz.assert_not_called()
+
+    def test_quiz_pool_scheduler_sleeps_until_provider_reset(self) -> None:
+        import server
+
+        now = datetime(2026, 6, 1, 0, 10, tzinfo=timezone.utc)
+        reset_at = datetime(2026, 6, 1, 8, 5, tzinfo=timezone.utc)
+        next_run = datetime(2026, 6, 2, 0, 5, tzinfo=timezone.utc)
+        sleep_calls: list[float] = []
+
+        def stop_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            raise RuntimeError("stop loop")
+
+        with (
+            patch("server.DAILY_QUIZ_POOL_ENABLED", True),
+            patch("server.ensure_active_daily_quizzes", return_value=[{"status": "published"}]),
+            patch(
+                "server.maintain_daily_quiz_pool",
+                return_value={
+                    "status": "capped",
+                    "ready": 0,
+                    "retry_at": reset_at.isoformat(),
+                },
+            ),
+            patch("server.next_daily_quiz_run", return_value=next_run),
+            patch("server.time.sleep", side_effect=stop_sleep),
+            patch("server.safe_log"),
+            patch("server.datetime") as mocked_datetime,
+        ):
+            mocked_datetime.now.return_value = now
+            mocked_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            with self.assertRaisesRegex(RuntimeError, "stop loop"):
+                server.daily_quiz_scheduler_loop()
+
+        self.assertEqual(sleep_calls, [(reset_at - now).total_seconds()])
+
     def test_daily_quiz_scheduler_retries_unpublished_tomorrow_before_next_window(self) -> None:
         import server
 
@@ -3565,6 +3632,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         with (
             patch("server.ensure_active_daily_quizzes", return_value=[{"status": "generating"}]),
+            patch("server.DAILY_QUIZ_POOL_ENABLED", False),
             patch("server.next_daily_quiz_run", return_value=next_run),
             patch("server.DAILY_QUIZ_RETRY_INTERVAL_SEC", 900),
             patch("server.time.sleep", side_effect=stop_sleep),
@@ -3594,6 +3662,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                 "server.ensure_active_daily_quizzes",
                 return_value=[{"status": "generating", "last_failure_transient": True}],
             ),
+            patch("server.DAILY_QUIZ_POOL_ENABLED", False),
             patch("server.next_daily_quiz_run", return_value=next_run),
             patch("server.DAILY_QUIZ_RETRY_INTERVAL_SEC", 900),
             patch("server.DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC", 3600),

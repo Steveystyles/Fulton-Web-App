@@ -10,12 +10,13 @@ import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Callable, Protocol
 from urllib.parse import quote
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from env_config import env_bool, env_float, env_int
@@ -2446,6 +2447,39 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             UNIQUE (quiz_set_id, subject, difficulty, batch_number, candidate_index)
         );
 
+        CREATE TABLE IF NOT EXISTS daily_quiz_pool_batches (
+            id TEXT PRIMARY KEY,
+            state TEXT NOT NULL CHECK (state IN ('generating', 'ready', 'used', 'failed')),
+            work_quiz_date TEXT NOT NULL UNIQUE,
+            pipeline_version TEXT NOT NULL DEFAULT 'legacy',
+            generation_mode TEXT NOT NULL DEFAULT 'pool',
+            failure_reason TEXT,
+            created_at TEXT NOT NULL,
+            ready_at TEXT,
+            used_quiz_date TEXT UNIQUE,
+            used_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_quiz_pool_questions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL,
+            subject TEXT NOT NULL CHECK (subject IN ('general_knowledge', 'football')),
+            difficulty TEXT NOT NULL CHECK (difficulty IN ('easy', 'medium', 'hard')),
+            question TEXT NOT NULL,
+            choices_json TEXT NOT NULL,
+            correct_answer TEXT NOT NULL,
+            explanation TEXT NOT NULL,
+            interesting_reason TEXT NOT NULL,
+            tags_json TEXT NOT NULL,
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            verification_json TEXT NOT NULL,
+            normalized_question TEXT NOT NULL,
+            normalized_answer TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (batch_id) REFERENCES daily_quiz_pool_batches(id) ON DELETE CASCADE,
+            UNIQUE (batch_id, subject, difficulty)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_daily_quiz_questions_normalized
         ON daily_quiz_questions (normalized_question);
 
@@ -2460,6 +2494,13 @@ def initialize_database(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_daily_quiz_candidates_created_at
         ON daily_quiz_candidates (created_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_daily_quiz_pool_batches_state
+        ON daily_quiz_pool_batches (state, created_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_daily_quiz_pool_questions_history
+        ON daily_quiz_pool_questions (subject, created_at, id);
+
         """
     )
     ensure_column(
@@ -2486,6 +2527,18 @@ def initialize_database(conn: sqlite3.Connection) -> None:
     )
     ensure_column(conn, "daily_quiz_sets", "generation_started_at", "TEXT")
     ensure_column(conn, "daily_quiz_sets", "locked_at", "TEXT")
+    ensure_column(
+        conn,
+        "daily_quiz_pool_questions",
+        "normalized_answer",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_daily_quiz_pool_questions_answer
+        ON daily_quiz_pool_questions (normalized_answer)
+        """
+    )
     prune_quiz_diagnostics(conn)
     commit_if_needed(conn)
 
@@ -2695,7 +2748,7 @@ def recent_questions(
     if exclude_quiz_date is not None:
         exclude_sql = "AND daily_quiz_sets.quiz_date != ?"
         params.append(exclude_quiz_date)
-    rows = conn.execute(
+    rows = list(conn.execute(
         f"""
         SELECT daily_quiz_questions.*, daily_quiz_sets.quiz_date
         FROM daily_quiz_questions
@@ -2707,7 +2760,22 @@ def recent_questions(
         ORDER BY daily_quiz_questions.created_at DESC
         """,
         params,
+    ).fetchall())
+    pool_rows = conn.execute(
+        """
+        SELECT pool_question.*, pool_batch.work_quiz_date AS quiz_date
+        FROM daily_quiz_pool_questions AS pool_question
+        INNER JOIN daily_quiz_pool_batches AS pool_batch
+            ON pool_batch.id = pool_question.batch_id
+        WHERE pool_batch.state = 'ready'
+          AND pool_question.subject = ?
+          AND pool_question.created_at >= ?
+        ORDER BY pool_question.created_at DESC
+        """,
+        (subject, cutoff),
     ).fetchall()
+    rows.extend(pool_rows)
+    rows.sort(key=lambda row: str(row["created_at"]), reverse=True)
     return [question_row(row) for row in rows]
 
 
@@ -5604,6 +5672,494 @@ def publish_quiz(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
         raise ValueError("A quiz can only be published after all six slots pass evidence verification.")
     set_quiz_status(conn, quiz_date, "published")
     return quiz_payload(conn, quiz_date)
+
+
+def quiz_pool_status(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Return durable question-pool inventory and any provider reset deadline."""
+    counts = {
+        str(row["state"]): int(row["count"])
+        for row in conn.execute(
+            """
+            SELECT state, COUNT(*) AS count
+            FROM daily_quiz_pool_batches
+            GROUP BY state
+            """
+        ).fetchall()
+    }
+    circuits = provider_circuit_statuses(conn)
+    retry_at = min(
+        (str(circuit["blocked_until"]) for circuit in circuits),
+        default=None,
+    )
+    return {
+        "ready": counts.get("ready", 0),
+        "generating": counts.get("generating", 0),
+        "used": counts.get("used", 0),
+        "failed": counts.get("failed", 0),
+        "provider_circuits": circuits,
+        "retry_at": retry_at,
+    }
+
+
+def _next_quiz_pool_work_date(conn: sqlite3.Connection) -> str:
+    """Allocate a valid, non-player date used only by the resumable generator."""
+    occupied = {
+        str(row[0])
+        for row in conn.execute(
+            """
+            SELECT quiz_date FROM daily_quiz_sets
+            UNION
+            SELECT work_quiz_date FROM daily_quiz_pool_batches
+            """
+        ).fetchall()
+    }
+    start = date(9000, 1, 1)
+    for offset in range((date(9999, 12, 31) - start).days + 1):
+        candidate = (start + timedelta(days=offset)).isoformat()
+        if candidate not in occupied:
+            return candidate
+    raise RuntimeError("Quiz pool work-date namespace is exhausted.")
+
+
+def _create_quiz_pool_job(conn: sqlite3.Connection) -> sqlite3.Row:
+    batch_id = uuid4().hex
+    work_quiz_date = _next_quiz_pool_work_date(conn)
+    conn.execute(
+        """
+        INSERT INTO daily_quiz_pool_batches (
+            id, state, work_quiz_date, pipeline_version, generation_mode, created_at
+        ) VALUES (?, 'generating', ?, 'legacy', 'pool', ?)
+        """,
+        (batch_id, work_quiz_date, utc_now()),
+    )
+    commit_if_needed(conn)
+    return conn.execute(
+        "SELECT * FROM daily_quiz_pool_batches WHERE id = ?", (batch_id,)
+    ).fetchone()
+
+
+def _cleanup_quiz_pool_work_set(conn: sqlite3.Connection, work_quiz_date: str) -> None:
+    quiz_set = conn.execute(
+        "SELECT id FROM daily_quiz_sets WHERE quiz_date = ?", (work_quiz_date,)
+    ).fetchone()
+    if quiz_set is not None:
+        conn.execute(
+            "DELETE FROM daily_quiz_candidates WHERE quiz_set_id = ?", (quiz_set["id"],)
+        )
+        conn.execute(
+            "DELETE FROM daily_quiz_questions WHERE quiz_set_id = ?", (quiz_set["id"],)
+        )
+        conn.execute("DELETE FROM daily_quiz_sets WHERE id = ?", (quiz_set["id"],))
+    conn.execute("DELETE FROM daily_quiz_attempts WHERE quiz_date = ?", (work_quiz_date,))
+
+
+def _fail_quiz_pool_job(
+    conn: sqlite3.Connection,
+    job: sqlite3.Row,
+    reason: str,
+) -> None:
+    conn.execute("SAVEPOINT fail_quiz_pool_job")
+    try:
+        conn.execute(
+            """
+            UPDATE daily_quiz_pool_batches
+            SET state = 'failed', failure_reason = ?
+            WHERE id = ? AND state = 'generating'
+            """,
+            (str(reason)[:2000], job["id"]),
+        )
+        _cleanup_quiz_pool_work_set(conn, str(job["work_quiz_date"]))
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT fail_quiz_pool_job")
+        raise
+    finally:
+        conn.execute("RELEASE SAVEPOINT fail_quiz_pool_job")
+    commit_if_needed(conn)
+
+
+def _promote_quiz_pool_job(conn: sqlite3.Connection, job: sqlite3.Row) -> None:
+    work_quiz_date = str(job["work_quiz_date"])
+    quiz_set = conn.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (work_quiz_date,)
+    ).fetchone()
+    if quiz_set is None or quiz_set["status"] != "published":
+        raise ValueError("Quiz pool work set is not published.")
+    questions = conn.execute(
+        """
+        SELECT * FROM daily_quiz_questions
+        WHERE quiz_set_id = ?
+        ORDER BY subject, difficulty
+        """,
+        (quiz_set["id"],),
+    ).fetchall()
+    slots = {(str(row["subject"]), str(row["difficulty"])) for row in questions}
+    if len(questions) != len(REQUIRED_SLOTS) or slots != set(REQUIRED_SLOTS):
+        raise ValueError("Quiz pool work set does not contain all six required slots.")
+    if any(not verification_payload_passed(row["verification_json"]) for row in questions):
+        raise ValueError("Quiz pool work set contains an unverified question.")
+
+    for row in questions:
+        duplicate = conn.execute(
+            """
+            SELECT 1
+            FROM daily_quiz_pool_questions AS question
+            INNER JOIN daily_quiz_pool_batches AS batch ON batch.id = question.batch_id
+            WHERE batch.state = 'ready'
+              AND (
+                  question.normalized_question = ?
+                  OR question.normalized_answer = ?
+              )
+            LIMIT 1
+            """,
+            (row["normalized_question"], normalize_answer(row["correct_answer"])),
+        ).fetchone()
+        if duplicate is not None:
+            raise ValueError("Quiz pool work set duplicates ready pool content.")
+
+    conn.execute("SAVEPOINT promote_quiz_pool_job")
+    try:
+        stored_at = utc_now()
+        for row in questions:
+            conn.execute(
+                """
+                INSERT INTO daily_quiz_pool_questions (
+                    batch_id, subject, difficulty, question, choices_json,
+                    correct_answer, explanation, interesting_reason, tags_json,
+                    evidence_json, verification_json, normalized_question,
+                    normalized_answer, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job["id"],
+                    row["subject"],
+                    row["difficulty"],
+                    row["question"],
+                    row["choices_json"],
+                    row["correct_answer"],
+                    row["explanation"],
+                    row["interesting_reason"],
+                    row["tags_json"],
+                    row["evidence_json"],
+                    row["verification_json"],
+                    row["normalized_question"],
+                    normalize_answer(row["correct_answer"]),
+                    stored_at,
+                ),
+            )
+        updated = conn.execute(
+            """
+            UPDATE daily_quiz_pool_batches
+            SET state = 'ready', pipeline_version = ?, generation_mode = 'pool',
+                failure_reason = NULL, ready_at = ?
+            WHERE id = ? AND state = 'generating'
+            """,
+            (str(quiz_set["pipeline_version"]), stored_at, job["id"]),
+        )
+        if updated.rowcount != 1:
+            raise ValueError("Quiz pool job was already claimed or retired.")
+        _cleanup_quiz_pool_work_set(conn, work_quiz_date)
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT promote_quiz_pool_job")
+        raise
+    finally:
+        conn.execute("RELEASE SAVEPOINT promote_quiz_pool_job")
+    commit_if_needed(conn)
+
+
+def replenish_quiz_pool(
+    conn: sqlite3.Connection,
+    *,
+    config: QuizConfig,
+    target_ready: int,
+    max_batch_attempts: int,
+    provider: QuizAIProvider | None = None,
+    log: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Generate complete verified quizzes until stocked, capped, or deferred.
+
+    A partially generated batch remains in the normal generation tables under a
+    private work date, so provider resets and process restarts resume missing
+    slots instead of throwing accepted work away.
+    """
+    if target_ready < 1:
+        raise ValueError("Quiz pool target must be at least one batch.")
+    if max_batch_attempts < 1:
+        raise ValueError("Quiz pool attempt cap must be at least one batch.")
+    initialize_database(conn)
+    inventory = quiz_pool_status(conn)
+    if inventory["ready"] >= target_ready:
+        return {"status": "stocked", "target": target_ready, **inventory}
+
+    added = 0
+    attempted = 0
+    last_reason: str | None = None
+    while inventory["ready"] < target_ready and attempted < max_batch_attempts:
+        job = conn.execute(
+            """
+            SELECT * FROM daily_quiz_pool_batches
+            WHERE state = 'generating'
+            ORDER BY created_at, id
+            LIMIT 1
+            """
+        ).fetchone()
+        if job is None:
+            job = _create_quiz_pool_job(conn)
+        attempted += 1
+        work_quiz_date = str(job["work_quiz_date"])
+        result = generate_daily_quiz(
+            conn,
+            quiz_date=work_quiz_date,
+            config=config,
+            provider=provider,
+            log=lambda message: log(f"Pool batch {job['id']}: {message}"),
+            generation_mode="pool",
+        )
+        if result.get("status") == "published":
+            try:
+                _promote_quiz_pool_job(conn, job)
+            except Exception as error:
+                _fail_quiz_pool_job(conn, job, str(error))
+                last_reason = str(error)
+                log(f"Rejected completed quiz pool batch {job['id']}: {error}")
+                inventory = quiz_pool_status(conn)
+                continue
+            added += 1
+            inventory = quiz_pool_status(conn)
+            log(
+                f"Added verified quiz pool batch {job['id']}; "
+                f"ready={inventory['ready']}/{target_ready}"
+            )
+            continue
+
+        last_reason = str(
+            result.get("failure_reason")
+            or result.get("last_failure_reason")
+            or "Quiz pool generation deferred before all six slots were verified."
+        )
+        inventory = quiz_pool_status(conn)
+        if inventory["provider_circuits"]:
+            conn.execute(
+                """
+                UPDATE daily_quiz_pool_batches
+                SET failure_reason = ?
+                WHERE id = ? AND state = 'generating'
+                """,
+                (last_reason[:2000], job["id"]),
+            )
+            commit_if_needed(conn)
+            return {
+                "status": "capped",
+                "target": target_ready,
+                "added": added,
+                "attempted": attempted,
+                "reason": last_reason,
+                **inventory,
+            }
+        if result.get("status") == "failed":
+            _fail_quiz_pool_job(conn, job, last_reason)
+            inventory = quiz_pool_status(conn)
+            if "failed-attempt safety budget" in last_reason.casefold():
+                continue
+            return {
+                "status": "failed",
+                "target": target_ready,
+                "added": added,
+                "attempted": attempted,
+                "reason": last_reason,
+                **inventory,
+            }
+        conn.execute(
+            """
+            UPDATE daily_quiz_pool_batches
+            SET failure_reason = ?
+            WHERE id = ? AND state = 'generating'
+            """,
+            (last_reason[:2000], job["id"]),
+        )
+        commit_if_needed(conn)
+        return {
+            "status": "deferred",
+            "target": target_ready,
+            "added": added,
+            "attempted": attempted,
+            "reason": last_reason,
+            **inventory,
+        }
+
+    inventory = quiz_pool_status(conn)
+    return {
+        "status": "stocked" if inventory["ready"] >= target_ready else "attempt_cap",
+        "target": target_ready,
+        "added": added,
+        "attempted": attempted,
+        "reason": last_reason,
+        **inventory,
+    }
+
+
+def publish_quiz_from_pool(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+    *,
+    answer_embargo_days: int = 45,
+) -> dict[str, Any]:
+    """Atomically claim the oldest eligible verified pool batch for a date."""
+    normalized_date = valid_quiz_date(quiz_date)
+    if answer_embargo_days < 1:
+        raise ValueError("Quiz pool embargo must be at least one day.")
+    initialize_database(conn)
+    existing = conn.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (normalized_date,)
+    ).fetchone()
+    if existing is not None and existing["status"] == "published":
+        return quiz_status(conn, normalized_date)
+    if any(
+        (
+            _table_has_rows_for_date(conn, "daily_quiz_results", normalized_date),
+            _table_has_rows_for_date(conn, "daily_quiz_progress", normalized_date),
+            _table_has_rows_for_date(conn, "quiz_boards", normalized_date),
+        )
+    ):
+        raise QuizRegenerationBlocked(
+            "Quiz pool cannot replace a quiz date with player activity."
+        )
+
+    cutoff = (
+        datetime.strptime(normalized_date, "%Y-%m-%d").date()
+        - timedelta(days=answer_embargo_days)
+    ).isoformat()
+    recent_rows = conn.execute(
+        """
+        SELECT q.question, q.correct_answer
+        FROM daily_quiz_questions AS q
+        INNER JOIN daily_quiz_sets AS s ON s.id = q.quiz_set_id
+        WHERE s.status = 'published' AND s.quiz_date > ?
+        """,
+        (cutoff,),
+    ).fetchall()
+    blocked_questions = {normalize_text(row["question"]) for row in recent_rows}
+    blocked_answers = {normalize_answer(row["correct_answer"]) for row in recent_rows}
+
+    selected_batch: sqlite3.Row | None = None
+    selected_questions: list[sqlite3.Row] = []
+    for batch in conn.execute(
+        """
+        SELECT * FROM daily_quiz_pool_batches
+        WHERE state = 'ready'
+        ORDER BY ready_at, created_at, id
+        """
+    ).fetchall():
+        questions = conn.execute(
+            """
+            SELECT * FROM daily_quiz_pool_questions
+            WHERE batch_id = ?
+            ORDER BY subject, difficulty
+            """,
+            (batch["id"],),
+        ).fetchall()
+        slots = {(str(row["subject"]), str(row["difficulty"])) for row in questions}
+        structurally_valid = (
+            len(questions) == len(REQUIRED_SLOTS)
+            and slots == set(REQUIRED_SLOTS)
+            and all(verification_payload_passed(row["verification_json"]) for row in questions)
+        )
+        if not structurally_valid:
+            conn.execute(
+                """
+                UPDATE daily_quiz_pool_batches
+                SET state = 'failed', failure_reason = ?
+                WHERE id = ? AND state = 'ready'
+                """,
+                ("Stored pool batch failed publication revalidation.", batch["id"]),
+            )
+            continue
+        if any(
+            normalize_text(row["question"]) in blocked_questions
+            or normalize_answer(row["correct_answer"]) in blocked_answers
+            for row in questions
+        ):
+            continue
+        selected_batch = batch
+        selected_questions = list(questions)
+        break
+    if selected_batch is None:
+        commit_if_needed(conn)
+        raise LookupError("No embargo-safe verified quiz pool batch is ready.")
+
+    with locked_quiz_swap(
+        conn, normalized_date, savepoint_name="publish_quiz_from_pool"
+    ):
+        current = conn.execute(
+            "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?", (normalized_date,)
+        ).fetchone()
+        if current is not None and current["status"] == "published":
+            return quiz_status(conn, normalized_date)
+        claimed = conn.execute(
+            """
+            UPDATE daily_quiz_pool_batches
+            SET state = 'used', used_quiz_date = ?, used_at = ?
+            WHERE id = ? AND state = 'ready'
+            """,
+            (normalized_date, utc_now(), selected_batch["id"]),
+        )
+        if claimed.rowcount != 1:
+            raise LookupError("Quiz pool batch was already claimed by another publisher.")
+        if current is None:
+            cursor = conn.execute(
+                """
+                INSERT INTO daily_quiz_sets (
+                    quiz_date, status, pipeline_version, generation_mode,
+                    generation_started_at
+                ) VALUES (?, 'generating', 'pool-v1', 'pool', ?)
+                """,
+                (normalized_date, utc_now()),
+            )
+            quiz_set_id = int(cursor.lastrowid)
+        else:
+            quiz_set_id = int(current["id"])
+            conn.execute(
+                "DELETE FROM daily_quiz_candidates WHERE quiz_set_id = ?", (quiz_set_id,)
+            )
+            conn.execute(
+                "DELETE FROM daily_quiz_questions WHERE quiz_set_id = ?", (quiz_set_id,)
+            )
+        stored_at = utc_now()
+        for question in selected_questions:
+            conn.execute(
+                """
+                INSERT INTO daily_quiz_questions (
+                    quiz_set_id, subject, difficulty, question, choices_json,
+                    correct_answer, explanation, interesting_reason, tags_json,
+                    evidence_json, verification_json, normalized_question, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    quiz_set_id,
+                    question["subject"],
+                    question["difficulty"],
+                    question["question"],
+                    question["choices_json"],
+                    question["correct_answer"],
+                    question["explanation"],
+                    question["interesting_reason"],
+                    question["tags_json"],
+                    question["evidence_json"],
+                    question["verification_json"],
+                    question["normalized_question"],
+                    stored_at,
+                ),
+            )
+        conn.execute(
+            """
+            UPDATE daily_quiz_sets
+            SET status = 'published', generated_at = ?, published_at = ?,
+                failure_reason = NULL, pipeline_version = 'pool-v1',
+                generation_mode = 'pool', locked_at = NULL
+            WHERE id = ?
+            """,
+            (stored_at, stored_at, quiz_set_id),
+        )
+    return quiz_status(conn, normalized_date)
 
 
 def _table_has_rows_for_date(
