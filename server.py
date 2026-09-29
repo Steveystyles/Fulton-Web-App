@@ -3862,6 +3862,24 @@ def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
                         log=lambda message: safe_log(f"Daily quiz: {message}"),
                         **generation_kwargs,
                     )
+                    if result.get("status") != "published":
+                        try:
+                            result = daily_quiz.publish_verified_archive_fallback(
+                                conn,
+                                normalized_date,
+                                answer_embargo_days=DAILY_QUIZ_CONFIG.answer_embargo_days,
+                            )
+                            safe_log(
+                                f"Daily quiz reserve published verified archive content for {normalized_date}"
+                            )
+                        except (
+                            LookupError,
+                            ValueError,
+                            daily_quiz.QuizRegenerationBlocked,
+                        ) as error:
+                            safe_log(
+                                f"Daily quiz verified archive unavailable for {normalized_date}: {error}"
+                            )
                     results.append(result)
                     if result.get("status") != "published":
                         break

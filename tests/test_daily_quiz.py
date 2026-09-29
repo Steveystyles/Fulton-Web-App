@@ -2984,6 +2984,67 @@ class DailyQuizTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "evidence verification"):
             daily_quiz.publish_quiz(self.conn, "2026-06-13")
 
+    def test_verified_archive_fallback_publishes_six_embargo_safe_slots(self) -> None:
+        for index, source_date in enumerate(
+            ("2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06")
+        ):
+            quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, source_date)
+            for subject in daily_quiz.SUBJECTS:
+                for difficulty in daily_quiz.DIFFICULTIES:
+                    question = valid_question(subject, difficulty)
+                    question["question"] = f"Archive {index} {subject} {difficulty}: which answer is correct?"
+                    question["correct_answer"] = f"Archive answer {index} {subject} {difficulty}"
+                    question["choices"] = [question["correct_answer"], "B", "C", "D"]
+                    daily_quiz.save_question(
+                        self.conn,
+                        quiz_set_id=int(quiz_set["id"]),
+                        question=question,
+                        evidence=supporting_evidence(question),
+                        verification=passing_verification(supporting_evidence(question)),
+                    )
+            daily_quiz.publish_quiz(self.conn, source_date)
+
+        result = daily_quiz.publish_verified_archive_fallback(
+            self.conn, "2026-03-01", answer_embargo_days=45
+        )
+
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["accepted_questions"], 6)
+        self.assertEqual(result["verified_questions"], 6)
+        stored = self.conn.execute(
+            "SELECT pipeline_version, generation_mode FROM daily_quiz_sets WHERE quiz_date='2026-03-01'"
+        ).fetchone()
+        self.assertEqual(tuple(stored), ("archived-reserve-v1", "reserve"))
+
+    def test_verified_archive_fallback_will_not_reuse_recent_answer(self) -> None:
+        source = daily_quiz.get_or_create_quiz_set(self.conn, "2026-01-01")
+        recent = daily_quiz.get_or_create_quiz_set(self.conn, "2026-02-20")
+        for subject in daily_quiz.SUBJECTS:
+            for difficulty in daily_quiz.DIFFICULTIES:
+                question = valid_question(subject, difficulty)
+                evidence = supporting_evidence(question)
+                daily_quiz.save_question(
+                    self.conn,
+                    quiz_set_id=int(source["id"]),
+                    question=question,
+                    evidence=evidence,
+                    verification=passing_verification(evidence),
+                )
+                daily_quiz.save_question(
+                    self.conn,
+                    quiz_set_id=int(recent["id"]),
+                    question={**question, "question": "Recent " + str(question["question"])},
+                    evidence=evidence,
+                    verification=passing_verification(evidence),
+                )
+        daily_quiz.publish_quiz(self.conn, "2026-01-01")
+        daily_quiz.publish_quiz(self.conn, "2026-02-20")
+
+        with self.assertRaisesRegex(LookupError, "embargo-safe"):
+            daily_quiz.publish_verified_archive_fallback(
+                self.conn, "2026-03-01", answer_embargo_days=45
+            )
+
     def test_provider_chain_from_config_includes_openrouter_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
             daily_quiz.QuizConfig(

@@ -5606,6 +5606,167 @@ def publish_quiz(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]:
     return quiz_payload(conn, quiz_date)
 
 
+def _table_has_rows_for_date(
+    conn: sqlite3.Connection,
+    table_name: str,
+    quiz_date: str,
+) -> bool:
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    if table_exists is None:
+        return False
+    if table_name == "quiz_boards":
+        query = "SELECT 1 FROM quiz_boards WHERE game_date=? LIMIT 1"
+    elif table_name == "daily_quiz_results":
+        query = "SELECT 1 FROM daily_quiz_results WHERE game_date=? LIMIT 1"
+    elif table_name == "daily_quiz_progress":
+        query = "SELECT 1 FROM daily_quiz_progress WHERE game_date=? LIMIT 1"
+    else:
+        raise ValueError("Unsupported quiz activity table.")
+    return conn.execute(query, (quiz_date,)).fetchone() is not None
+
+
+def publish_verified_archive_fallback(
+    conn: sqlite3.Connection,
+    quiz_date: str,
+    *,
+    answer_embargo_days: int = 45,
+) -> dict[str, Any]:
+    """Publish one immutable six-slot set from old, evidence-verified content.
+
+    This is the no-inference recovery path used after configured free providers
+    cannot fill a date. It never weakens the normal evidence gate: source rows
+    must already belong to a published set and retain their evidence and
+    verifier payload. Answers and question text used inside the embargo window
+    are excluded, including earlier dates in a newly prepared reserve.
+    """
+    normalized_date = valid_quiz_date(quiz_date)
+    if answer_embargo_days < 1:
+        raise ValueError("Archive fallback embargo must be at least one day.")
+    cutoff = (
+        datetime.strptime(normalized_date, "%Y-%m-%d").date()
+        - timedelta(days=answer_embargo_days)
+    ).isoformat()
+    initialize_database(conn)
+    existing = conn.execute(
+        "SELECT * FROM daily_quiz_sets WHERE quiz_date=?", (normalized_date,)
+    ).fetchone()
+    if existing is not None and existing["status"] == "published":
+        return quiz_status(conn, normalized_date)
+    if any(
+        (
+            _table_has_rows_for_date(conn, "daily_quiz_results", normalized_date),
+            _table_has_rows_for_date(conn, "daily_quiz_progress", normalized_date),
+            _table_has_rows_for_date(conn, "quiz_boards", normalized_date),
+        )
+    ):
+        raise QuizRegenerationBlocked(
+            "Archive fallback cannot replace a quiz date with player activity."
+        )
+
+    recent_rows = conn.execute(
+        """
+        SELECT q.question, q.correct_answer
+        FROM daily_quiz_questions q
+        JOIN daily_quiz_sets s ON s.id=q.quiz_set_id
+        WHERE s.status='published' AND s.quiz_date > ?
+        """,
+        (cutoff,),
+    ).fetchall()
+    blocked_questions = {normalize_text(row["question"]) for row in recent_rows}
+    blocked_answers = {normalize_answer(row["correct_answer"]) for row in recent_rows}
+    candidates = conn.execute(
+        """
+        SELECT q.*, s.quiz_date AS source_quiz_date
+        FROM daily_quiz_questions q
+        JOIN daily_quiz_sets s ON s.id=q.quiz_set_id
+        WHERE s.status='published' AND s.quiz_date <= ?
+        ORDER BY s.quiz_date ASC, q.id ASC
+        """,
+        (cutoff,),
+    ).fetchall()
+    selected: list[sqlite3.Row] = []
+    for subject, difficulty in REQUIRED_SLOTS:
+        eligible = [
+            row
+            for row in candidates
+            if row["subject"] == subject
+            and row["difficulty"] == difficulty
+            and verification_payload_passed(row["verification_json"])
+            and normalize_text(row["question"]) not in blocked_questions
+            and normalize_answer(row["correct_answer"]) not in blocked_answers
+        ]
+        if not eligible:
+            raise LookupError(
+                f"No embargo-safe verified archive question is available for {subject} / {difficulty}."
+            )
+        source = eligible[0]
+        selected.append(source)
+        blocked_questions.add(normalize_text(source["question"]))
+        blocked_answers.add(normalize_answer(source["correct_answer"]))
+
+    with locked_quiz_swap(
+        conn, normalized_date, savepoint_name="publish_verified_archive_fallback"
+    ):
+        current = conn.execute(
+            "SELECT * FROM daily_quiz_sets WHERE quiz_date=?", (normalized_date,)
+        ).fetchone()
+        if current is not None and current["status"] == "published":
+            return quiz_status(conn, normalized_date)
+        if current is None:
+            cursor = conn.execute(
+                """INSERT INTO daily_quiz_sets
+                   (quiz_date, status, pipeline_version, generation_mode, generation_started_at)
+                   VALUES (?, 'generating', 'archived-reserve-v1', 'reserve', ?)""",
+                (normalized_date, utc_now()),
+            )
+            quiz_set_id = int(cursor.lastrowid)
+        else:
+            quiz_set_id = int(current["id"])
+            conn.execute(
+                "DELETE FROM daily_quiz_questions WHERE quiz_set_id=?",
+                (quiz_set_id,),
+            )
+        for source in selected:
+            conn.execute(
+                """
+                INSERT INTO daily_quiz_questions (
+                    quiz_set_id, subject, difficulty, question, choices_json,
+                    correct_answer, explanation, interesting_reason, tags_json,
+                    evidence_json, verification_json, normalized_question, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    quiz_set_id,
+                    source["subject"],
+                    source["difficulty"],
+                    source["question"],
+                    source["choices_json"],
+                    source["correct_answer"],
+                    source["explanation"],
+                    source["interesting_reason"],
+                    source["tags_json"],
+                    source["evidence_json"],
+                    source["verification_json"],
+                    source["normalized_question"],
+                    utc_now(),
+                ),
+            )
+        now = utc_now()
+        conn.execute(
+            """
+            UPDATE daily_quiz_sets
+            SET status='published', generated_at=?, published_at=?, failure_reason=NULL,
+                pipeline_version='archived-reserve-v1', generation_mode='reserve', locked_at=NULL
+            WHERE id=?
+            """,
+            (now, now, quiz_set_id),
+        )
+    return quiz_status(conn, normalized_date)
+
+
 def _regenerate_question_in_place(
     conn: sqlite3.Connection,
     *,
