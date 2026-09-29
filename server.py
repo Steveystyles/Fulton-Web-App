@@ -110,6 +110,16 @@ DAILY_QUIZ_RETRY_INTERVAL_SEC = env_int(
 DAILY_QUIZ_RESERVE_DAYS = env_int(
     "FULTONS_DAILY_QUIZ_RESERVE_DAYS", 5, minimum=1, maximum=7
 )
+DAILY_QUIZ_POOL_ENABLED = env_bool("FULTONS_DAILY_QUIZ_POOL_ENABLED", True)
+DAILY_QUIZ_POOL_TARGET_BATCHES = env_int(
+    "FULTONS_DAILY_QUIZ_POOL_TARGET_BATCHES", 7, minimum=1, maximum=30
+)
+DAILY_QUIZ_POOL_MAX_BATCH_ATTEMPTS = env_int(
+    "FULTONS_DAILY_QUIZ_POOL_MAX_BATCH_ATTEMPTS", 7, minimum=1, maximum=30
+)
+DAILY_QUIZ_POOL_RETRY_INTERVAL_SEC = env_int(
+    "FULTONS_DAILY_QUIZ_POOL_RETRY_INTERVAL_SEC", 900, minimum=60, maximum=86_400
+)
 WEEKLY_SUMMARY_NTFY_URL = os.environ.get("FULTONS_WEEKLY_SUMMARY_NTFY_URL", "").strip()
 DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC = max(
     DAILY_QUIZ_RETRY_INTERVAL_SEC,
@@ -326,6 +336,7 @@ SQLITE_WAL_INITIALIZE_LOCK = threading.Lock()
 SQLITE_WAL_INITIALIZED_PATHS: set[str] = set()
 DAILY_QUIZ_OPERATION_LOCK = threading.Lock()
 DAILY_MAP_GAME_OPERATION_LOCK = threading.Lock()
+DAILY_MAP_AUTOMATIC_RETRY_AT: datetime | None = None
 
 sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(APP_DIR))
@@ -724,6 +735,7 @@ def internal_ops_summary_payload() -> dict[str, Any]:
                 )
         today_quiz = ops_quiz_preview(conn, today_date)
         tomorrow_quiz = ops_quiz_preview(conn, tomorrow_date)
+        quiz_pool = daily_quiz.quiz_pool_status(conn)
         today_map = daily_map_game.puzzle_status(conn, today_date)
         tomorrow_map = daily_map_game.puzzle_status(conn, tomorrow_date)
         queue_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automatic_map_entries'").fetchone()
@@ -731,6 +743,21 @@ def internal_ops_summary_payload() -> dict[str, Any]:
             queue_ready = conn.execute("SELECT COUNT(*) FROM automatic_map_entries WHERE state='ready' AND expires_at>?", (utc_now(),)).fetchone()[0]
             tests.append({"id": "map_reserve", "label": "Map reserve queue", "status": "pass" if queue_ready >= automatic_map_pool.TARGET_READY else "warn",
                           "detail": f"{queue_ready}/{automatic_map_pool.TARGET_READY} unexpired rounds; eligibility may reduce this count"})
+        tests.append(
+            {
+                "id": "quiz_pool",
+                "label": "Quiz reserve pool",
+                "status": (
+                    "pass"
+                    if quiz_pool["ready"] >= DAILY_QUIZ_POOL_TARGET_BATCHES
+                    else "warn"
+                ),
+                "detail": (
+                    f"{quiz_pool['ready']}/{DAILY_QUIZ_POOL_TARGET_BATCHES} "
+                    "verified batches ready"
+                ),
+            }
+        )
         quiz_failures = conn.execute("SELECT COUNT(*) FROM daily_quiz_attempts WHERE quiz_date=? AND passed=0", (tomorrow_date,)).fetchone()[0]
         tests.append({"id": "quiz_generation_retries", "label": "Tomorrow quiz generation retries", "status": "warn" if quiz_failures >= 60 else "pass", "detail": f"{quiz_failures} rejected attempts"})
         if local_now.hour >= DAILY_QUIZ_RECOVERY_HOUR and tomorrow_quiz.get("status") != "published":
@@ -3851,6 +3878,26 @@ def ensure_daily_quiz_dates(target_dates: list[str]) -> list[dict[str, Any]]:
                         safe_log(f"Daily quiz for {normalized_date} is already published")
                         results.append(status)
                         continue
+                    if DAILY_QUIZ_POOL_ENABLED:
+                        try:
+                            result = daily_quiz.publish_quiz_from_pool(
+                                conn,
+                                normalized_date,
+                                answer_embargo_days=DAILY_QUIZ_CONFIG.answer_embargo_days,
+                            )
+                            safe_log(
+                                f"Daily quiz pool published a verified batch for {normalized_date}"
+                            )
+                            results.append(result)
+                            continue
+                        except (
+                            LookupError,
+                            ValueError,
+                            daily_quiz.QuizRegenerationBlocked,
+                        ) as error:
+                            safe_log(
+                                f"Daily quiz pool unavailable for {normalized_date}: {error}"
+                            )
                     reserve_cards = int(
                         conn.execute(
                             """SELECT COUNT(*) FROM daily_quiz_questions q
@@ -3926,6 +3973,26 @@ def ensure_active_daily_quizzes(now: datetime | None = None) -> list[dict[str, A
     return ensure_daily_quiz_dates(active_daily_quiz_dates(now))
 
 
+def maintain_daily_quiz_pool() -> dict[str, Any]:
+    if not DAILY_QUIZ_POOL_ENABLED:
+        return {"status": "disabled", "ready": 0}
+    with DAILY_QUIZ_OPERATION_LOCK:
+        with closing(connect_db()) as conn:
+            with conn:
+                result = daily_quiz.replenish_quiz_pool(
+                    conn,
+                    config=DAILY_QUIZ_CONFIG,
+                    target_ready=DAILY_QUIZ_POOL_TARGET_BATCHES,
+                    max_batch_attempts=DAILY_QUIZ_POOL_MAX_BATCH_ATTEMPTS,
+                    log=lambda message: safe_log(f"Daily quiz pool: {message}"),
+                )
+    safe_log(
+        f"Daily quiz pool maintenance: {result['status']}; "
+        f"ready={result.get('ready', 0)}/{DAILY_QUIZ_POOL_TARGET_BATCHES}"
+    )
+    return result
+
+
 def daily_quiz_retry_interval_sec(results: list[dict[str, Any]]) -> int:
     if any(bool(result.get("last_failure_transient")) for result in results):
         return DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC
@@ -3936,6 +4003,7 @@ def daily_quiz_scheduler_loop() -> None:
     safe_log("Daily quiz scheduler started")
     while True:
         results: list[dict[str, Any]] = []
+        pool_maintenance: dict[str, Any] | None = None
         retry_required = False
         try:
             results = ensure_active_daily_quizzes()
@@ -3947,6 +4015,17 @@ def daily_quiz_scheduler_loop() -> None:
             safe_log(f"Daily quiz scheduler generation failed: {error}")
             retry_required = True
 
+        if DAILY_QUIZ_POOL_ENABLED:
+            try:
+                pool_maintenance = maintain_daily_quiz_pool()
+            except Exception as error:
+                safe_log(f"Daily quiz pool maintenance failed: {error}")
+                pool_maintenance = {
+                    "status": "failed",
+                    "reason": str(error),
+                    "ready": 0,
+                }
+
         next_run = next_daily_quiz_run()
         now = datetime.now(next_run.tzinfo)
         if retry_required:
@@ -3954,6 +4033,22 @@ def daily_quiz_scheduler_loop() -> None:
             wake_at = retry_at if retry_at < next_run else next_run
         else:
             wake_at = next_run
+        if pool_maintenance is not None and pool_maintenance.get("status") != "stocked":
+            pool_retry_at = now + timedelta(seconds=DAILY_QUIZ_POOL_RETRY_INTERVAL_SEC)
+            retry_at_value = str(pool_maintenance.get("retry_at") or "").strip()
+            if retry_at_value:
+                try:
+                    provider_retry_at = datetime.fromisoformat(
+                        retry_at_value.replace("Z", "+00:00")
+                    )
+                    if provider_retry_at.tzinfo is None:
+                        provider_retry_at = provider_retry_at.replace(tzinfo=timezone.utc)
+                    pool_retry_at = provider_retry_at.astimezone(now.tzinfo)
+                except ValueError:
+                    pass
+            if pool_retry_at <= now:
+                pool_retry_at = now + timedelta(seconds=DAILY_QUIZ_POOL_RETRY_INTERVAL_SEC)
+            wake_at = min(wake_at, pool_retry_at)
         delay = max(1.0, (wake_at - now).total_seconds())
         safe_log(f"Daily quiz scheduler sleeping until {wake_at.isoformat()}")
         time.sleep(delay)
@@ -4299,14 +4394,25 @@ def generate_daily_map_game_for_date(
 
 
 def ensure_daily_map_game_dates(target_dates: list[str]) -> list[dict[str, Any]]:
+    global DAILY_MAP_AUTOMATIC_RETRY_AT
     results: list[dict[str, Any]] = []
     seen_dates: set[str] = set()
     with DAILY_MAP_GAME_OPERATION_LOCK:
         if DAILY_MAP_AUTOMATIC_ENABLED and DAILY_MAP_AI_GENERATION_ENABLED:
             try:
-                maintenance = automatic_map_pool.maintain(Path(DB_PATH), Path(DB_PATH).parent / "qa" / "automatic-map")
+                maintenance = automatic_map_pool.maintain_until_stocked(
+                    Path(DB_PATH),
+                    Path(DB_PATH).parent / "qa" / "automatic-map",
+                )
+                retry_at_value = str(maintenance.get("retry_at") or "").strip()
+                DAILY_MAP_AUTOMATIC_RETRY_AT = (
+                    datetime.fromisoformat(retry_at_value.replace("Z", "+00:00"))
+                    if retry_at_value
+                    else None
+                )
                 safe_log(f"Automatic map maintenance: {maintenance['status']}; ready={maintenance.get('ready', 0)}")
             except Exception as error:
+                DAILY_MAP_AUTOMATIC_RETRY_AT = None
                 safe_log(f"Automatic map maintenance deferred: {type(error).__name__}")
         with closing(connect_db()) as conn:
             with conn:
@@ -4371,7 +4477,15 @@ def daily_map_game_scheduler_loop() -> None:
         else:
             wake_at = next_run
         if DAILY_MAP_AUTOMATIC_ENABLED and DAILY_MAP_AI_GENERATION_ENABLED:
-            wake_at = min(wake_at, now + timedelta(minutes=15))
+            maintenance_wake = now + timedelta(minutes=15)
+            if DAILY_MAP_AUTOMATIC_RETRY_AT is not None:
+                maintenance_wake = DAILY_MAP_AUTOMATIC_RETRY_AT
+                if maintenance_wake.tzinfo is None:
+                    maintenance_wake = maintenance_wake.replace(tzinfo=timezone.utc)
+                maintenance_wake = maintenance_wake.astimezone(now.tzinfo)
+                if maintenance_wake <= now:
+                    maintenance_wake = now + timedelta(minutes=15)
+            wake_at = min(wake_at, maintenance_wake)
         delay = max(1.0, (wake_at - now).total_seconds())
         safe_log(f"Daily map game scheduler sleeping until {wake_at.isoformat()}")
         time.sleep(delay)

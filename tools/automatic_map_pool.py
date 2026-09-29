@@ -281,6 +281,55 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     return outcome
 
 
+def next_budget_reset_at(current: datetime | None = None) -> str:
+    value = (current or now()).astimezone(timezone.utc)
+    return (value + timedelta(days=1)).replace(
+        hour=0, minute=5, second=0, microsecond=0
+    ).isoformat()
+
+
+def maintain_until_stocked(
+    database: Path,
+    output_dir: Path,
+    *,
+    seed_catalog: Path | None = controlled.DEFAULT_CATALOG,
+    provider_factory=None,
+    max_attempts: int = DAILY_ATTEMPTS,
+) -> dict:
+    """Keep producing checked rounds until inventory or the daily cap wins."""
+    if max_attempts < 1:
+        raise ValueError('Automatic map maintenance needs at least one attempt.')
+    outcomes: list[dict] = []
+    last: dict = {'status': 'deferred', 'ready': 0}
+    for _ in range(max_attempts):
+        last = maintain(
+            database,
+            output_dir,
+            seed_catalog=seed_catalog,
+            provider_factory=provider_factory,
+        )
+        outcomes.append(last)
+        if int(last.get('ready', 0)) >= TARGET_READY:
+            return {
+                **last,
+                'status': 'stocked',
+                'attempted': len(outcomes),
+            }
+        if last.get('status') not in {'added', 'failed'}:
+            result = {**last, 'attempted': len(outcomes)}
+            if 'daily budget exhausted' in str(last.get('reason', '')).casefold():
+                result['retry_at'] = next_budget_reset_at()
+                result['status'] = 'capped'
+            return result
+
+    return {
+        **last,
+        'status': 'attempt_cap',
+        'attempted': len(outcomes),
+        'retry_at': next_budget_reset_at(),
+    }
+
+
 def publish(conn: sqlite3.Connection, *, puzzle_date: str) -> dict:
     existing = daily_map_game.puzzle_status(conn, puzzle_date)
     if existing['status'] == 'published':

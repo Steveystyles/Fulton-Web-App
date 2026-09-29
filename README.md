@@ -84,7 +84,7 @@ Production defaults are intentionally stricter than local development:
 ## Storage
 
 - User accounts, sessions, daily Wordle games, guesses, and results are stored in `data/fultons.db` locally or `/app/data/fultons.db` inside the container.
-- Daily quiz state is stored in the SQLite database tables `daily_quiz_sets`, `daily_quiz_questions`, and `daily_quiz_attempts`. Unfinished AI-generated quizzes stay in `generating` and retry missing slots rather than falling back to local bank content.
+- Daily quiz state is stored in the SQLite database tables `daily_quiz_sets`, `daily_quiz_questions`, and `daily_quiz_attempts`. The background generator also maintains complete, evidence-verified sets in `daily_quiz_pool_batches` and `daily_quiz_pool_questions`. Unfinished pool work stays resumable across process restarts, while daily publication atomically claims one ready batch before using the verified archive emergency fallback.
 - Daily map game state is stored in `map_place_pool`, `daily_map_puzzles`, `daily_map_levels`, and `daily_map_guesses`.
 - Map selection blocks place types used in the previous three rounds by default; configure this with `FULTONS_DAILY_MAP_PLACE_TYPE_COOLDOWN_DAYS`. Explicit launch sequences can override the cooldown without weakening clue or evidence checks.
 - The Wordle implementation and word data live under `games/wordle/`. The root `wordle_game.py` file is a compatibility import for older scripts/tests. The local used-word tracker is stored at `games/wordle/used_words.txt`.
@@ -166,6 +166,17 @@ dedicated `QUIZ_SHADOW_*` credentials by default so it cannot exhaust the live
 generator's quota. `--allow-shared-provider-quota` is reserved for isolated
 environments where no production scheduler uses those credentials.
 
+The production scheduler separates generation from publication. With
+`FULTONS_DAILY_QUIZ_POOL_ENABLED=1`, it continuously builds complete six-question
+batches until `FULTONS_DAILY_QUIZ_POOL_TARGET_BATCHES` is ready. Each batch must
+pass the existing critic, evidence, duplicate and answer-embargo gates. Daily
+publication only claims an already verified batch in one transaction. The worker
+stops after `FULTONS_DAILY_QUIZ_POOL_MAX_BATCH_ATTEMPTS` in one cycle or when all
+configured provider routes report a quota cap. Quota circuits persist in SQLite;
+the scheduler sleeps until the recorded provider reset and then resumes the same
+partially completed batch. The retry interval covers transient failures that do
+not include a provider reset time.
+
 Run the safe fixture evaluator to confirm the held-out eval file is structurally valid:
 
 ```bash
@@ -196,7 +207,10 @@ Passing rounds enter a persistent queue automatically; no routine manual
 promotion or hand-maintained place list is required. Machine checking reduces
 errors but is not a guarantee of factual accuracy.
 
-The queue targets seven eligible rounds. Unused entries expire after 14 days;
+The queue targets seven eligible rounds. One maintenance wake keeps generating
+until that target or the persisted daily request/attempt cap is reached; after a
+cap it sleeps until the next UTC budget window instead of polling the provider.
+Unused entries expire after 14 days;
 used entries cannot publish twice. Maintenance makes at most four attempts,
 12 model requests and 64 source requests per UTC day, across restarts and future
 puzzle dates. An attempt allows at most three model calls: proposals, clue
