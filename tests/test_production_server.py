@@ -3523,6 +3523,40 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(generate_daily_quiz.call_count, 1)
         self.assertEqual(generate_daily_quiz.call_args.kwargs["quiz_date"], "2026-06-24")
 
+    def test_daily_quiz_scheduler_continues_after_verified_archive_fallback(self) -> None:
+        import server
+
+        original_data_dir = server.DATA_DIR
+        original_db_path = server.DB_PATH
+        try:
+            data_dir = Path(self.temp_dir.name)
+            server.DATA_DIR = data_dir
+            server.DB_PATH = data_dir / "fultons.db"
+            server.initialize_database()
+            target_dates = ["2026-06-24", "2026-06-25"]
+            with (
+                patch(
+                    "daily_quiz.generate_daily_quiz",
+                    side_effect=[
+                        {"date": value, "status": "failed"} for value in target_dates
+                    ],
+                ) as generate_daily_quiz,
+                patch(
+                    "daily_quiz.publish_verified_archive_fallback",
+                    side_effect=[
+                        {"date": value, "status": "published"} for value in target_dates
+                    ],
+                ) as archive_fallback,
+            ):
+                results = server.ensure_daily_quiz_dates(target_dates)
+        finally:
+            server.DATA_DIR = original_data_dir
+            server.DB_PATH = original_db_path
+
+        self.assertEqual([result["status"] for result in results], ["published", "published"])
+        self.assertEqual(generate_daily_quiz.call_count, 2)
+        self.assertEqual(archive_fallback.call_count, 2)
+
     def test_daily_quiz_scheduler_retries_unpublished_tomorrow_before_next_window(self) -> None:
         import server
 
