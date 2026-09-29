@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
 import { DailyJourney } from "../components/DailyJourney";
+import { GameFeedback } from "../components/GameFeedback";
 import { layoutMapLabels, type LabelBox } from "../lib/mapLabels";
 import { useAuth } from "../context/AuthContext";
 import { MapGamePromo } from "./MapGamePromo";
@@ -1105,7 +1106,7 @@ export function MapGame() {
           />
 
           {selectedLevel.result ? (
-            <div className="map-result"><ResultPanel result={selectedLevel.result} date={game.date} /></div>
+            <div className="map-result"><ResultPanel result={selectedLevel.result} date={game.date} showFeedback={levels.every(level => level.result !== undefined)} /></div>
           ) : null}
           </div>
 
@@ -1121,7 +1122,7 @@ export function MapGame() {
   );
 }
 
-function ResultPanel({ result, date }: { result: DailyMapGameResult; date: string }) {
+function ResultPanel({ result, date, showFeedback }: { result: DailyMapGameResult; date: string; showFeedback: boolean }) {
   const { user } = useAuth();
   const cluesSeen = result.revealedHintCount + 1;
   const solvingStage = result.revealedHintCount === 0
@@ -1160,6 +1161,7 @@ function ResultPanel({ result, date }: { result: DailyMapGameResult; date: strin
         <p className="mt-2 text-sm font-semibold leading-snug text-slate-600">
           {result.place.revealText}
         </p>
+        {showFeedback ? <GameFeedback game="map" /> : null}
         {user ? <DailyJourney current="map" summary={`Fulton's Quiz · ${date}\nPin the place: ${result.correct ? "Found it" : "A new place discovered"} · ${result.score} points · ${cluesSeen} clues`} /> : null}
       </div>
     </div>

@@ -1,13 +1,11 @@
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { lazy, Suspense, useEffect, useRef, type ReactNode, type CSSProperties } from "react";
-import { BottomNav } from "../components/BottomNav";
 import { Header } from "../components/Header";
 import { useAuth } from "../context/AuthContext";
-import { api } from "../lib/api";
 
 const Account = lazy(() => import("../pages/Account").then((module) => ({ default: module.Account })));
 const Today = lazy(() => import("../pages/Today").then((module) => ({ default: module.Today })));
-const Practice = lazy(() => import("../pages/Practice").then((module) => ({ default: module.Practice })));
+const Start = lazy(() => import("../pages/Start").then((module) => ({ default: module.Start })));
 const League = lazy(() => import("../pages/League").then((module) => ({ default: module.League })));
 const Admin = lazy(() => import("../pages/Admin").then((module) => ({ default: module.Admin })));
 const Leaderboard = lazy(() =>
@@ -23,7 +21,6 @@ const MapGame = lazy(() =>
 const MapGamePromo = lazy(() =>
   import("../pages/MapGamePromo").then((module) => ({ default: module.MapGamePromo })),
 );
-const News = lazy(() => import("../pages/News").then((module) => ({ default: module.News })));
 const Quiz = lazy(() => import("../pages/Quiz").then((module) => ({ default: module.Quiz })));
 const Wordle = lazy(() => import("../pages/Wordle").then((module) => ({ default: module.Wordle })));
 
@@ -53,14 +50,12 @@ function AppFrame({
     const frame = frameRef.current;
     const header = headerRef.current;
     if (!frame || !header) return;
-    const nav = frame.querySelector<HTMLElement>(".bottom-nav");
     const measure = () => {
       frame.style.setProperty("--app-header-height", `${header.getBoundingClientRect().height}px`);
-      frame.style.setProperty("--app-nav-height", `${nav?.getBoundingClientRect().height ?? 0}px`);
+      frame.style.setProperty("--app-nav-height", "0px");
     };
     const observer = new ResizeObserver(measure);
     observer.observe(header);
-    if (nav) observer.observe(nav);
     measure();
     return () => observer.disconnect();
   }, [reviewMode]);
@@ -81,7 +76,6 @@ function AppFrame({
       >
         {children}
       </main>
-      {!reviewMode ? <BottomNav /> : null}
     </div>
   );
 }
@@ -103,12 +97,6 @@ export function AppRouter() {
   const localOpsMode = pathname === "/ops";
   const promoReviewMode = pathname === "/promo";
   const mapTestMode = isMapTestHostname(hostname);
-
-  useEffect(() => {
-    if (user !== null) {
-      api.warmNews();
-    }
-  }, [user]);
 
   if (localOpsMode) {
     return (
@@ -180,10 +168,10 @@ export function AppRouter() {
         <Routes>
           <Route
             path="/"
-            element={<AppFrame><Today /></AppFrame>}
+            element={<AppFrame><Start /></AppFrame>}
           />
-          <Route path="/today" element={<Navigate to="/" replace />} />
-          <Route path="/practice" element={<AppFrame><Practice /></AppFrame>} />
+          <Route path="/today" element={<AppFrame><Today /></AppFrame>} />
+          <Route path="/practice" element={<Navigate to="/quiz" replace />} />
           <Route path="/scores" element={<AppFrame><League /></AppFrame>} />
           <Route
             path="/scores/history"
@@ -209,19 +197,11 @@ export function AppRouter() {
               </AppFrame>
             }
           />
-          <Route path="/football" element={<Navigate to="/quiz?category=football" replace />} />
-          <Route path="/general" element={<Navigate to="/quiz?category=general" replace />} />
+          <Route path="/football" element={<Navigate to="/quiz" replace />} />
+          <Route path="/general" element={<Navigate to="/quiz" replace />} />
           <Route
             path="/leaderboard"
             element={<Navigate to="/scores" replace />}
-          />
-          <Route
-            path="/news"
-            element={
-              <AppFrame>
-                <News />
-              </AppFrame>
-            }
           />
           <Route
             path="/map"
@@ -243,7 +223,7 @@ export function AppRouter() {
           <Route
             path="/admin"
             element={
-              user.role === "admin" || user.role === "mod" ? (
+              user.role === "admin" ? (
                 <AppFrame>
                   <Admin />
                 </AppFrame>

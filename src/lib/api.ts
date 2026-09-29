@@ -1,8 +1,9 @@
 export type Role = "admin" | "mod" | "user";
 
-export type ActivityId = "wordle" | "football" | "general" | "map";
+export type ActivityId = "wordle" | "quiz" | "map";
 export type TodayResponse = {
   date: string; nextRoundAt: string;
+  nextMapDates: string[];
   activities: Array<{ id: ActivityId; title: string; href: string; status: "ready" | "continue" | "completed" | "unavailable"; score: number | null }>;
 };
 export type LeaguePlayer = {
@@ -362,6 +363,31 @@ export type DailyQuizResult = {
   completedAt: string;
 };
 
+export type QuizBoardCard = {
+  id: string; subject: "football" | "general"; difficulty: QuizDifficulty;
+  points: number; teaser: string; source: "new" | "carry" | "practice";
+  appearances: number; selectedOrder: number | null; answered: boolean;
+  question?: DailyQuizQuestion;
+};
+export type QuizBoard = {
+  date: string; mode: "daily" | "practice"; status: "ready" | "in_progress" | "completed";
+  pickCount: number; selectedCount: number; answeredCount: number; score: number;
+  maxScore: number; correctCount: number; bonusPoints: number; completedAt: string | null;
+  cards: QuizBoardCard[];
+};
+export type QuizCardAdjudication = {
+  cardId: string; correct: boolean; correctAnswer: string; explanation: string;
+  interestingReason?: string; pointsAwarded: number;
+};
+export type AdminProductReport = {
+  periodStart: string; periodEnd: string;
+  quiz: { started: number; completed: number; completionRate: number; averageScore: number };
+  cards: Array<{ subject: string; difficulty: string; answers: number; correct: number }>;
+  feedback: Array<{ game: string; rating: string; count: number }>;
+  journey: Array<{ game: string; started: number; completed: number; abandoned: number; completionRate: number }>;
+  reserve: { cards: number; launchTarget: number };
+};
+
 export type Announcement = {
   id: string;
   kind: "daily-map-promo";
@@ -464,29 +490,6 @@ export type DailyMapSnapSelection = DailyMapSnapOption & {
   selectedIndex?: number;
 };
 
-export type NewsItem = {
-  id: number;
-  sourceKey: string;
-  kind: string;
-  title: string;
-  url: string;
-  source: string;
-  summary: string;
-  publishedAt: string;
-  host: string;
-  priority: string;
-  tags: string[];
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type NewsCategory = "all" | "breaking" | "news" | "live-scores";
-
-export type NewsResponse = {
-  items: NewsItem[];
-  category: NewsCategory;
-};
-
 export type LeaderboardPlayer = {
   rank: number;
   id: number;
@@ -547,7 +550,6 @@ type PublishedQuizResponse = {
 };
 
 let dailyQuestionsPromise: Promise<DailyQuestionsResponse> | undefined;
-const newsPromises = new Map<string, Promise<NewsResponse>>();
 
 export class ApiError extends Error {
   status: number;
@@ -631,10 +633,6 @@ function jsonBody(body: JsonBody): string {
   return JSON.stringify(body);
 }
 
-function newsCacheKey(limit: number, category: NewsCategory) {
-  return `${category}:${limit}`;
-}
-
 function fetchDailyQuestions(options: { force?: boolean } = {}) {
   if (!options.force && dailyQuestionsPromise !== undefined) {
     return dailyQuestionsPromise;
@@ -669,30 +667,6 @@ function fetchDailyQuestions(options: { force?: boolean } = {}) {
       throw error;
     });
   dailyQuestionsPromise = promise;
-  return promise;
-}
-
-function fetchNews(
-  limit = 50,
-  category: NewsCategory = "all",
-  options: { force?: boolean } = {},
-) {
-  const boundedLimit = Math.max(1, Math.min(100, limit));
-  const cacheKey = newsCacheKey(boundedLimit, category);
-  const existingPromise = newsPromises.get(cacheKey);
-
-  if (!options.force && existingPromise !== undefined) {
-    return existingPromise;
-  }
-
-  const promise = request<NewsResponse>(
-    `/api/news?limit=${boundedLimit}&category=${category}`,
-  ).finally(() => {
-    if (newsPromises.get(cacheKey) === promise) {
-      newsPromises.delete(cacheKey);
-    }
-  });
-  newsPromises.set(cacheKey, promise);
   return promise;
 }
 
@@ -758,6 +732,22 @@ export const api = {
 
   dailyQuestions(options?: { force?: boolean }) {
     return fetchDailyQuestions(options);
+  },
+
+  quizBoard(mode: "daily" | "practice") {
+    return request<QuizBoard>(`/api/quiz/board?mode=${mode}`);
+  },
+  selectQuizCard(mode: "daily" | "practice", cardId: string) {
+    return request<QuizBoard>("/api/quiz/board/select", { method: "POST", body: jsonBody({ mode, cardId }) });
+  },
+  answerQuizCard(mode: "daily" | "practice", cardId: string, choiceId: string) {
+    return request<{ board: QuizBoard; adjudication: QuizCardAdjudication }>("/api/quiz/board/answer", { method: "POST", body: jsonBody({ mode, cardId, choiceId }) });
+  },
+  feedback(game: "quiz" | "map", rating: "fun" | "fair" | "too_hard" | "unclear") {
+    return request<{ ok: boolean }>("/api/feedback", { method: "POST", body: jsonBody({ game, rating }) });
+  },
+  adminProductReport() {
+    return request<AdminProductReport>("/api/admin/product-report");
   },
 
   today() {
@@ -834,17 +824,6 @@ export const api = {
       method: "POST",
       body: jsonBody({ selectionId }),
     });
-  },
-
-  news(limit = 50, category: NewsCategory = "all", options?: { force?: boolean }) {
-    return fetchNews(limit, category, options);
-  },
-
-  warmNews() {
-    void fetchNews(50, "all").catch(() => undefined);
-    void fetchNews(50, "breaking").catch(() => undefined);
-    void fetchNews(50, "live-scores").catch(() => undefined);
-    void fetchNews(12, "all").catch(() => undefined);
   },
 
   adminUsers() {

@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from email.utils import parsedate_to_datetime
 from http import HTTPStatus
+from http.client import HTTPSConnection
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -31,6 +32,7 @@ from xml.etree import ElementTree
 
 import daily_map_game
 import daily_quiz
+import quiz_board
 from env_config import env_bool, env_int, env_ip_networks
 from safe_http import read_bounded_response
 from tools import generate_ai_daily_map_round
@@ -105,6 +107,10 @@ DAILY_QUIZ_SCHEDULER_MINUTE = env_int(
 DAILY_QUIZ_RETRY_INTERVAL_SEC = env_int(
     "FULTONS_DAILY_QUIZ_RETRY_INTERVAL_SEC", 900, minimum=60, maximum=604_800
 )
+DAILY_QUIZ_RESERVE_DAYS = env_int(
+    "FULTONS_DAILY_QUIZ_RESERVE_DAYS", 5, minimum=1, maximum=7
+)
+WEEKLY_SUMMARY_NTFY_URL = os.environ.get("FULTONS_WEEKLY_SUMMARY_NTFY_URL", "").strip()
 DAILY_QUIZ_TRANSIENT_RETRY_INTERVAL_SEC = max(
     DAILY_QUIZ_RETRY_INTERVAL_SEC,
     env_int(
@@ -1169,6 +1175,7 @@ def _initialize_database_locked() -> None:
                 backfill_wordle_scores,
             )
             daily_quiz.initialize_database(conn)
+            quiz_board.initialize_database(conn)
             run_schema_migration(
                 conn,
                 "2026-08-16-lock-released-daily-quizzes",
@@ -1190,14 +1197,6 @@ def _initialize_database_locked() -> None:
                     if bootstrap_error is not None:
                         safe_log(f"Admin bootstrap skipped: {bootstrap_error}")
                     safe_log("No users exist and demo seeding is disabled.")
-            backfill_news_items(conn)
-            conn.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_news_items_story_key
-                ON news_items (story_key)
-                WHERE story_key <> ''
-                """
-            )
 
 
 def initialize_database() -> None:
@@ -2985,6 +2984,14 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
             WHERE game_date >= ? AND game_date <= ?
             GROUP BY user_id
         ),
+        all_quiz_results AS (
+            SELECT user_id, game_date, score, max_score, correct_count
+            FROM daily_quiz_results
+            UNION ALL
+            SELECT user_id, game_date, score, max_score, correct_count
+            FROM quiz_boards
+            WHERE mode = 'daily' AND status = 'completed'
+        ),
         quiz_scores AS (
             SELECT
                 user_id,
@@ -2992,14 +2999,14 @@ def leaderboard_payload(conn: sqlite3.Connection) -> dict[str, Any]:
                 SUM(max_score) AS max_points,
                 COUNT(*) AS played,
                 SUM(correct_count) AS correct_count
-            FROM daily_quiz_results
+            FROM all_quiz_results
             GROUP BY user_id
         ),
         weekly_quiz_scores AS (
             SELECT
                 user_id,
                 SUM(score) AS points
-            FROM daily_quiz_results
+            FROM all_quiz_results
             WHERE game_date >= ? AND game_date <= ?
             GROUP BY user_id
         ),
@@ -3804,8 +3811,10 @@ def active_daily_quiz_dates(now: datetime | None = None) -> list[str]:
     tz = server_timezone()
     local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
     today = local_now.date()
-    tomorrow = today + timedelta(days=1)
-    return [today.isoformat(), tomorrow.isoformat()]
+    return [
+        (today + timedelta(days=offset)).isoformat()
+        for offset in range(DAILY_QUIZ_RESERVE_DAYS + 1)
+    ]
 
 
 def daily_quiz_generation_mode(
@@ -3909,6 +3918,70 @@ def start_daily_quiz_scheduler() -> None:
     thread.start()
 
 
+def weekly_product_summary_loop() -> None:
+    """Send one aggregate, privacy-minimal report each Monday after 08:00 UK time."""
+    while True:
+        try:
+            local_now = datetime.now(server_timezone())
+            if WEEKLY_SUMMARY_NTFY_URL and local_now.weekday() == 0 and local_now.hour >= 8:
+                week_start = local_now.date().isoformat()
+                with connect_db() as conn:
+                    delivered = conn.execute(
+                        "SELECT 1 FROM weekly_summary_deliveries WHERE week_start=?", (week_start,)
+                    ).fetchone()
+                    if delivered is None:
+                        end = (local_now.date() - timedelta(days=1)).isoformat()
+                        start = (local_now.date() - timedelta(days=7)).isoformat()
+                        report = quiz_board.admin_report(conn, start, end)
+                        ratings = ", ".join(
+                            f"{item['game']} {item['rating']}={item['count']}"
+                            for item in report["feedback"]
+                        ) or "no feedback"
+                        body = (
+                            f"Fulton's weekly product summary ({start} to {end})\n"
+                            f"Quiz starts {report['quiz']['started']}; completed {report['quiz']['completed']} "
+                            f"({round(report['quiz']['completionRate'] * 100)}%); "
+                            f"average score {report['quiz']['averageScore']}.\n"
+                            + "Journeys: " + ", ".join(
+                                f"{item['game']} {item['completed']}/{item['started']} complete"
+                                for item in report["journey"]
+                            ) + f".\nFeedback: {ratings}."
+                        )
+                        destination = urlparse(WEEKLY_SUMMARY_NTFY_URL)
+                        if destination.scheme != "https" or not destination.hostname:
+                            raise ValueError("Weekly ntfy destination must be an HTTPS URL.")
+                        connection = HTTPSConnection(destination.hostname, destination.port or 443, timeout=10)
+                        try:
+                            target = destination.path or "/"
+                            if destination.query:
+                                target = f"{target}?{destination.query}"
+                            connection.request(
+                                "POST", target, body=body.encode("utf-8"),
+                                headers={"Title": "Fulton's weekly summary", "Tags": "bar_chart", "Content-Type": "text/plain; charset=utf-8"},
+                            )
+                            response = connection.getresponse()
+                            response.read(1024)
+                            if response.status >= 400:
+                                raise RuntimeError(f"ntfy returned HTTP {response.status}")
+                        finally:
+                            connection.close()
+                        conn.execute(
+                            "INSERT INTO weekly_summary_deliveries (week_start, delivered_at) VALUES (?, ?)",
+                            (week_start, utc_now()),
+                        )
+                        conn.commit()
+        except Exception as error:
+            safe_log(f"Weekly product summary failed: {error}")
+        time.sleep(60)
+
+
+def start_weekly_product_summary_scheduler() -> None:
+    if not WEEKLY_SUMMARY_NTFY_URL:
+        safe_log("Weekly product summary disabled: no ntfy destination configured")
+        return
+    threading.Thread(target=weekly_product_summary_loop, daemon=True).start()
+
+
 def next_daily_map_game_run(now: datetime | None = None) -> datetime:
     tz = server_timezone()
     local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
@@ -3935,6 +4008,19 @@ def active_daily_map_game_dates(now: datetime | None = None) -> list[str]:
 
 def daily_map_date_is_requestable(puzzle_date: str) -> bool:
     return DAILY_MAP_FUTURE_REVIEW_ENABLED or puzzle_date <= today_game_date()
+
+
+def daily_map_level_is_requestable(conn: sqlite3.Connection, level_id: int) -> bool:
+    row = conn.execute(
+        """SELECT p.puzzle_date FROM daily_map_levels l
+           JOIN daily_map_puzzles p ON p.id=l.puzzle_id WHERE l.id=?""",
+        (level_id,),
+    ).fetchone()
+    return (
+        row is not None
+        and date.fromisoformat(str(row["puzzle_date"])).weekday() in {2, 5}
+        and daily_map_date_is_requestable(str(row["puzzle_date"]))
+    )
 
 
 def daily_map_submission_date(conn: sqlite3.Connection, level_id: int) -> str:
@@ -4195,7 +4281,15 @@ def ensure_daily_map_game_dates(target_dates: list[str]) -> list[dict[str, Any]]
 
 
 def ensure_active_daily_map_games(now: datetime | None = None) -> list[dict[str, Any]]:
-    return ensure_daily_map_game_dates(active_daily_map_game_dates(now))
+    tz = server_timezone()
+    local_now = now.astimezone(tz) if now is not None else datetime.now(tz)
+    featured: list[str] = []
+    cursor = local_now.date()
+    while len(featured) < DAILY_MAP_PREPARE_DAYS_AHEAD:
+        if cursor.weekday() in {2, 5}:
+            featured.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    return ensure_daily_map_game_dates(featured)
 
 
 def daily_map_game_retry_interval_sec(results: list[dict[str, Any]]) -> int:
@@ -4651,16 +4745,6 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             )
             return
 
-        if path == "/api/news/stream" and method == "GET":
-            with connect_db() as conn:
-                token = get_cookie_value(self.headers, SESSION_COOKIE)
-                user = current_user(conn, token)
-                if user is None:
-                    self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
-                    return
-            self.handle_news_stream()
-            return
-
         if path == "/internal/generate-daily-quiz" and method == "POST":
             configured_token = DAILY_QUIZ_CONFIG.internal_token
             submitted_token = self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
@@ -5101,10 +5185,6 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, auth_payload(conn, user))
                 return
 
-            if path == "/api/news/add" and method == "POST":
-                self.handle_news_add(conn)
-                return
-
             if user is None:
                 self.send_error_json(HTTPStatus.UNAUTHORIZED, "Login required.")
                 return
@@ -5217,6 +5297,70 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     self.send_error_json(HTTPStatus.NOT_FOUND, "No published quiz exists for that date.")
                 return
 
+            if path == "/api/quiz/board" and method == "GET":
+                mode = str(params.get("mode", ["daily"])[0]).strip().lower()
+                if mode not in {"daily", "practice"}:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, "Quiz mode must be daily or practice.")
+                    return
+                try:
+                    board = quiz_board.ensure_board(
+                        conn, int(user["id"]), today_game_date(), mode, utc_now()
+                    )
+                    self.send_json(HTTPStatus.OK, quiz_board.board_payload(conn, board))
+                except LookupError as error:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, str(error))
+                return
+
+            if path == "/api/quiz/board/select" and method == "POST":
+                payload = self.read_json()
+                mode = str(payload.get("mode") or "daily").strip().lower()
+                try:
+                    board = quiz_board.ensure_board(
+                        conn, int(user["id"]), today_game_date(), mode, utc_now()
+                    )
+                    response = quiz_board.select_card(
+                        conn, board, str(payload.get("cardId") or ""), utc_now()
+                    )
+                    self.send_json(HTTPStatus.OK, response)
+                except (LookupError, ValueError) as error:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            if path == "/api/quiz/board/answer" and method == "POST":
+                payload = self.read_json()
+                mode = str(payload.get("mode") or "daily").strip().lower()
+                try:
+                    board = quiz_board.ensure_board(
+                        conn, int(user["id"]), today_game_date(), mode, utc_now()
+                    )
+                    response = quiz_board.answer_card(
+                        conn,
+                        board,
+                        str(payload.get("cardId") or ""),
+                        str(payload.get("choiceId") or ""),
+                        utc_now(),
+                    )
+                    self.send_json(HTTPStatus.OK, response)
+                except (LookupError, ValueError) as error:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
+            if path == "/api/feedback" and method == "POST":
+                payload = self.read_json()
+                try:
+                    quiz_board.save_feedback(
+                        conn,
+                        int(user["id"]),
+                        today_game_date(),
+                        str(payload.get("game") or ""),
+                        str(payload.get("rating") or ""),
+                        utc_now(),
+                    )
+                    self.send_json(HTTPStatus.OK, {"ok": True})
+                except ValueError as error:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                return
+
             if path == "/api/today" and method == "GET":
                 import playability
                 self.send_json(HTTPStatus.OK, playability.today_payload(conn, user["id"], today_game_date(), SERVER_TZ))
@@ -5293,6 +5437,12 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 puzzle_date = str(params.get("date", [today_game_date()])[0]).strip()
                 try:
                     normalized_date = daily_map_game.valid_game_date(puzzle_date)
+                    if date.fromisoformat(normalized_date).weekday() not in {2, 5}:
+                        self.send_error_json(
+                            HTTPStatus.NOT_FOUND,
+                            "Pin the place is available on Wednesdays and Saturdays.",
+                        )
+                        return
                     if not daily_map_date_is_requestable(normalized_date):
                         self.send_error_json(
                             HTTPStatus.NOT_FOUND,
@@ -5318,17 +5468,6 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, leaderboard_payload(conn))
                 return
 
-            if path == "/api/news" and method == "GET":
-                limit = self.query_int(params, "limit", NEWS_LIMIT_DEFAULT, 1, NEWS_LIMIT_MAX)
-                category = params.get("category", ["all"])[0]
-                if category not in {"all", "breaking", "news", "live-scores"}:
-                    category = "all"
-                self.send_json(
-                    HTTPStatus.OK,
-                    {"items": list_news_items(conn, limit, category), "category": category},
-                )
-                return
-
             validate_match = re.fullmatch(r"/api/wordle/validate/([A-Za-z]+)", path)
             if validate_match is not None and method == "GET":
                 guess = validate_match.group(1).lower()
@@ -5343,6 +5482,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             if map_snap_match is not None and method == "POST":
                 payload = self.read_json()
                 level_id = int(map_snap_match.group(1))
+                if not daily_map_level_is_requestable(conn, level_id):
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "This map round is not available.")
+                    return
                 selection_payload, status = daily_map_game.snap_guess(
                     conn,
                     user_id=user["id"],
@@ -5361,6 +5503,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             if map_reveal_match is not None and method == "POST":
                 payload = self.read_json()
                 level_id = int(map_reveal_match.group(1))
+                if not daily_map_level_is_requestable(conn, level_id):
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "This map round is not available.")
+                    return
                 reveal_payload, status = daily_map_game.reveal_next_clue(
                     conn,
                     user_id=user["id"],
@@ -5379,6 +5524,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
             if map_guess_match is not None and method == "POST":
                 payload = self.read_json()
                 level_id = int(map_guess_match.group(1))
+                if not daily_map_level_is_requestable(conn, level_id):
+                    self.send_error_json(HTTPStatus.NOT_FOUND, "This map round is not available.")
+                    return
                 result_payload, status = daily_map_game.submit_guess(
                     conn,
                     user_id=user["id"],
@@ -5404,6 +5552,21 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     return
                 quiz_date = str(params.get("date", [today_game_date()])[0]).strip()
                 self.send_json(HTTPStatus.OK, daily_quiz.quiz_status(conn, quiz_date))
+                return
+
+            if path == "/api/admin/product-report" and method == "GET":
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                end = str(params.get("end", [today_game_date()])[0]).strip()
+                start = str(params.get("start", [(date.fromisoformat(end) - timedelta(days=6)).isoformat()])[0]).strip()
+                try:
+                    date.fromisoformat(start)
+                    date.fromisoformat(end)
+                except ValueError:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, "Report dates must use YYYY-MM-DD.")
+                    return
+                self.send_json(HTTPStatus.OK, quiz_board.admin_report(conn, start, end))
                 return
 
             if path == "/api/admin/daily-map-game-status" and method == "GET":
@@ -5495,8 +5658,8 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
 
             if path.startswith("/api/admin/"):
-                if not user_can_manage_players(user):
-                    self.send_error_json(HTTPStatus.FORBIDDEN, "Player management access required.")
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
                     return
                 self.handle_admin(conn, user, method, path)
                 return
@@ -5994,9 +6157,9 @@ def run() -> None:
         f"existing={len(fallback_seed['existing'])}"
     )
     assert_runtime_storage_ready("after database initialization")
-    start_news_monitor()
     start_daily_quiz_scheduler()
     start_daily_map_game_scheduler()
+    start_weekly_product_summary_scheduler()
     server = BoundedThreadingHTTPServer((SERVER_HOST, SERVER_PORT), FultonsHandler)
     safe_log(f"Fulton's Quiz server running at http://{SERVER_HOST}:{SERVER_PORT}")
     safe_log(f"SQLite database: {DB_PATH}")

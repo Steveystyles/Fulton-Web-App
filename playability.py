@@ -4,6 +4,10 @@ import json
 import daily_quiz
 
 
+def map_day(game_date):
+    return date.fromisoformat(game_date).weekday() in {2, 5}
+
+
 def today_payload(conn, user_id, game_date, tz=timezone.utc):
     wordle = conn.execute(
         "SELECT r.status, r.attempts_used, r.score FROM wordle_results r "
@@ -13,22 +17,30 @@ def today_payload(conn, user_id, game_date, tz=timezone.utc):
     activities = [{"id": "wordle", "title": "Wordle", "href": "/wordle",
                    "status": ("completed" if wordle["status"] != "in_progress" else "continue") if wordle else "ready",
                    "score": wordle["score"] if wordle else None}]
+    board = conn.execute(
+        "SELECT status, score FROM quiz_boards WHERE user_id=? AND game_date=? AND mode='daily'",
+        (user_id, game_date),
+    ).fetchone()
+    legacy_results = conn.execute(
+        "SELECT score FROM daily_quiz_results WHERE user_id=? AND game_date=?",
+        (user_id, game_date),
+    ).fetchall()
+    legacy_progress = conn.execute(
+        "SELECT answers_json FROM daily_quiz_progress WHERE user_id=? AND game_date=?",
+        (user_id, game_date),
+    ).fetchall()
     try:
-        available = bool(daily_quiz.quiz_payload(conn, game_date)["questions"])
+        available = len(daily_quiz.quiz_payload(conn, game_date)["questions"]) >= 6 and conn.execute(
+            """SELECT COUNT(*) FROM daily_quiz_questions q
+               JOIN daily_quiz_sets s ON s.id=q.quiz_set_id
+               WHERE s.status='published' AND s.quiz_date >= ?""",
+            (game_date,),
+        ).fetchone()[0] >= 34
     except (LookupError, ValueError):
         available = False
-    for category, title in (("football", "Football quiz"), ("general", "General knowledge")):
-        result = conn.execute(
-            "SELECT score FROM daily_quiz_results WHERE user_id = ? AND game_date = ? AND category = ?",
-            (user_id, game_date, category),
-        ).fetchone()
-        progress = conn.execute(
-            "SELECT answers_json FROM daily_quiz_progress WHERE user_id = ? AND game_date = ? AND category = ?",
-            (user_id, game_date, category),
-        ).fetchone()
-        activities.append({"id": category, "title": title, "href": f"/quiz?category={category}",
-                           "status": "completed" if result else "continue" if progress and json.loads(progress[0]) else "ready" if available else "unavailable",
-                           "score": result["score"] if result else None})
+    activities.append({"id": "quiz", "title": "Quiz", "href": "/quiz",
+                       "status": "completed" if (board and board["status"] == "completed") or legacy_results else "continue" if (board and board["status"] == "in_progress") or any(json.loads(row["answers_json"] or "[]") for row in legacy_progress) else "ready" if available else "unavailable",
+                       "score": board["score"] if board and board["status"] == "completed" else sum(row["score"] for row in legacy_results) if legacy_results else None})
     levels = conn.execute(
         "SELECT l.id, g.score, p.revealed_hint_count FROM daily_map_levels l "
         "JOIN daily_map_puzzles d ON d.id = l.puzzle_id "
@@ -37,18 +49,25 @@ def today_payload(conn, user_id, game_date, tz=timezone.utc):
         "WHERE d.puzzle_date = ? AND d.status = 'published'", (user_id, user_id, game_date),
     ).fetchall()
     complete = bool(levels) and all(row["score"] is not None for row in levels)
-    activities.append({"id": "map", "title": "Pin the place", "href": "/map",
-                       "status": "completed" if complete else "continue" if any(row["revealed_hint_count"] or row["score"] is not None for row in levels) else "ready" if levels else "unavailable",
-                       "score": sum(row["score"] or 0 for row in levels) if complete else None})
+    if map_day(game_date):
+        activities.append({"id": "map", "title": "Pin the place", "href": "/map",
+                           "status": "completed" if complete else "continue" if any(row["revealed_hint_count"] or row["score"] is not None for row in levels) else "ready" if levels else "unavailable",
+                           "score": sum(row["score"] or 0 for row in levels) if complete else None})
     tomorrow = date.fromisoformat(game_date) + timedelta(days=1)
+    upcoming_map_dates = []
+    cursor = date.fromisoformat(game_date)
+    while len(upcoming_map_dates) < 2:
+        cursor += timedelta(days=1)
+        if cursor.weekday() in {2, 5}:
+            upcoming_map_dates.append(cursor.isoformat())
     return {"date": game_date, "nextRoundAt": datetime.combine(tomorrow, time(), tz).isoformat(),
-            "activities": activities}
+            "activities": activities, "nextMapDates": upcoming_map_dates}
 
 
 def league_period(conn, start, end):
     # Work in hundredths of a point to avoid floating-point tie differences.
     players = {row["id"]: {"id": row["id"], "username": row["username"],
-               "games": {key: 0 for key in ("wordle", "football", "general", "map")}}
+               "games": {key: 0 for key in ("wordle", "quiz", "map", "football", "general")}}
                for row in conn.execute("SELECT id, username FROM users")}
     def add(user_id, game, units):
         if user_id in players:
@@ -59,17 +78,22 @@ def league_period(conn, start, end):
     ):
         add(row["user_id"], "wordle", max(0, 1100 - row["attempts_used"] * 100) if row["status"] == "won" and 1 <= row["attempts_used"] <= 6 else 0)
     for row in conn.execute("SELECT user_id, category, score, max_score FROM daily_quiz_results WHERE game_date BETWEEN ? AND ?", (start, end)):
-        add(row["user_id"], row["category"], min(1000, max(0, round(row["score"] * 1000 / row["max_score"]))) if row["max_score"] else 0)
+        units = min(1000, max(0, round(row["score"] * 1000 / row["max_score"]))) if row["max_score"] else 0
+        add(row["user_id"], "quiz", units)
+        add(row["user_id"], row["category"], units)
+    for row in conn.execute("SELECT user_id, score, max_score FROM quiz_boards WHERE mode='daily' AND status='completed' AND game_date BETWEEN ? AND ?", (start, end)):
+        add(row["user_id"], "quiz", min(1000, max(0, round(row["score"] * 1000 / row["max_score"]))) if row["max_score"] else 0)
     for row in conn.execute(
         "SELECT g.user_id, p.puzzle_date, SUM(g.score) AS score FROM daily_map_guesses g "
         "JOIN daily_map_levels l ON l.id = g.level_id JOIN daily_map_puzzles p ON p.id = l.puzzle_id "
         "WHERE p.puzzle_date BETWEEN ? AND ? GROUP BY g.user_id, p.puzzle_date", (start, end)
     ):
         add(row["user_id"], "map", min(1000, max(0, row["score"] * 100)))
-    ordered = sorted(players.values(), key=lambda player: (-sum(player["games"].values()), player["username"].casefold()))
+    total_units = lambda player: sum(player["games"][key] for key in ("wordle", "quiz", "map"))
+    ordered = sorted(players.values(), key=lambda player: (-total_units(player), player["username"].casefold()))
     last_score, rank = None, 0
     for index, player in enumerate(ordered):
-        units = sum(player["games"].values())
+        units = total_units(player)
         if units != last_score:
             rank = index + 1
         last_score = units

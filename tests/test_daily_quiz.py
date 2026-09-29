@@ -3001,6 +3001,41 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIsInstance(chain, daily_quiz.FallbackQuizProvider)
         self.assertEqual([provider.name for provider in chain.providers], ["gemini", "openrouter"])
 
+    def test_free_routes_only_rejects_named_paid_openrouter_model(self) -> None:
+        restricted = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "provider": "openrouter",
+                "generator_model": "openai/gpt-4.1-mini",
+                "critic_model": "openai/gpt-4.1-mini",
+                "gemini_api_key": "",
+                "compatible_api_key": "or-key",
+                "compatible_base_url": "https://openrouter.ai/api/v1",
+                "free_routes_only": True,
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "only openrouter/free"):
+            daily_quiz.provider_chain_from_config(restricted)
+
+    def test_free_routes_only_accepts_openrouter_free_variants(self) -> None:
+        restricted = daily_quiz.QuizConfig(
+            **{
+                **config().__dict__,
+                "provider": "openrouter",
+                "generator_model": "openrouter/free",
+                "critic_model": "meta-llama/llama-3.3-70b-instruct:free",
+                "gemini_api_key": "",
+                "compatible_api_key": "or-key",
+                "compatible_base_url": "https://openrouter.ai/api/v1",
+                "free_routes_only": True,
+            }
+        )
+
+        provider = daily_quiz.provider_chain_from_config(restricted)
+
+        self.assertIsInstance(provider, daily_quiz.OpenAICompatibleProvider)
+
     def test_hard_football_prompts_reject_inferred_statistical_superlatives(self) -> None:
         generator = daily_quiz.generator_prompt("football", "hard", [], [])
         critic = daily_quiz.critic_prompt("football", "hard", valid_question("football", "hard"), [])

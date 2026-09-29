@@ -1,4 +1,4 @@
-import { LogOut, ShieldCheck, UserRound } from "lucide-react";
+import { LogOut, ShieldCheck, Trophy } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
@@ -25,7 +25,12 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
       </div>
       {!reviewMode ? (
         <div className="flex shrink-0 items-center gap-1">
-          {user?.role === "admin" || user?.role === "mod" ? (
+          <NavLink
+            to="/scores"
+            aria-label="Scores"
+            className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]"].join(" ")}
+          ><Trophy aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink>
+          {user?.role === "admin" ? (
             <NavLink
               to="/admin"
               aria-label={user.role === "admin" ? "Admin" : "Players"}
@@ -41,18 +46,6 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
               <ShieldCheck aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
             </NavLink>
           ) : null}
-          <NavLink
-            to="/account"
-            aria-label="Account"
-            className={({ isActive }) =>
-              [
-                headerButtonClass,
-                isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]",
-              ].join(" ")
-            }
-          >
-            <UserRound aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
-          </NavLink>
           <button
             type="button"
             aria-label="Sign out"

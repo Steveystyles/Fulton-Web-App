@@ -3,7 +3,7 @@ import { KeyRound, Plus, ShieldCheck, Trash2, UsersRound } from "lucide-react";
 import { Card } from "../components/Card";
 import { PageContainer } from "../components/PageContainer";
 import { useAuth } from "../context/AuthContext";
-import { api, type AdminUser, type Role } from "../lib/api";
+import { api, type AdminProductReport, type AdminUser, type Role } from "../lib/api";
 
 export function Admin() {
   const { user } = useAuth();
@@ -17,6 +17,7 @@ export function Admin() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [report, setReport] = useState<AdminProductReport | null>(null);
 
   async function loadUsers() {
     setError("");
@@ -45,6 +46,7 @@ export function Admin() {
     }
 
     void load();
+    void api.adminProductReport().then(value => { if (active) setReport(value); }).catch(() => undefined);
 
     return () => {
       active = false;
@@ -105,6 +107,13 @@ export function Admin() {
 
   return (
     <PageContainer title={isAdmin ? "ADMIN" : "PLAYERS"} number="A">
+      {report ? <Card>
+        <div className="flex items-center justify-between gap-3"><h2 className="text-xl font-black">Last 7 days</h2><span className={`rounded-full px-2 py-1 text-xs font-black ${report.reserve.cards >= report.reserve.launchTarget ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>Reserve {report.reserve.cards}/{report.reserve.launchTarget}</span></div>
+        <div className="mt-3 grid grid-cols-3 gap-2 text-center"><div><strong className="block text-2xl">{report.quiz.started}</strong><span className="text-xs">Quiz starts</span></div><div><strong className="block text-2xl">{Math.round(report.quiz.completionRate * 100)}%</strong><span className="text-xs">Completed</span></div><div><strong className="block text-2xl">{report.quiz.averageScore}</strong><span className="text-xs">Avg score</span></div></div>
+        <div className="mt-4 space-y-1 text-sm">{report.cards.map(item => <p key={`${item.subject}:${item.difficulty}`}><strong className="capitalize">{item.subject.replace("_", " ")} · {item.difficulty}</strong>: {item.answers ? Math.round(item.correct / item.answers * 100) : 0}% correct ({item.answers})</p>)}</div>
+        <div className="mt-4 flex flex-wrap gap-2">{report.feedback.map(item => <span key={`${item.game}:${item.rating}`} className="rounded-full bg-slate-100 px-2 py-1 text-xs font-bold capitalize">{item.game} · {item.rating.replace("_", " ")} {item.count}</span>)}</div>
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">{report.journey.map(item => <div key={item.game} className="rounded-xl bg-slate-50 p-3 text-sm"><strong className="capitalize">{item.game}</strong><p>{item.completed}/{item.started} completed</p><p className="text-slate-500">{item.abandoned} unfinished</p></div>)}</div>
+      </Card> : null}
       <Card>
         <form className="space-y-4" onSubmit={handleAddUser}>
           <div className="flex items-start gap-3">
