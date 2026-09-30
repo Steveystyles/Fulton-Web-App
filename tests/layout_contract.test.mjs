@@ -107,6 +107,10 @@ async function sourceTree(relativePath) {
   return ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 }
 
+async function sourceText(relativePath) {
+  return readFile(new URL(`../${relativePath}`, import.meta.url), "utf8");
+}
+
 function attribute(node, name) {
   const opening = ts.isJsxElement(node) ? node.openingElement : node;
   const value = opening.attributes?.properties.find(item => ts.isJsxAttribute(item) && item.name.text === name)?.initializer;
@@ -116,6 +120,93 @@ function attribute(node, name) {
 function elements(node) {
   return visit(node, item => ts.isJsxElement(item) || ts.isJsxSelfClosingElement(item));
 }
+
+function elementTag(node, tree) {
+  return (ts.isJsxElement(node) ? node.openingElement : node).tagName.getText(tree);
+}
+
+function links(tree) {
+  return elements(tree).filter(node => ["Link", "NavLink"].includes(elementTag(node, tree)));
+}
+
+test("navigation structure: every authenticated screen has a direct route back to today's games", async () => {
+  const header = await sourceTree("src/components/Header.tsx");
+  const persistentTodayLink = links(header).find(node => attribute(node, "to") === "/today");
+  assert.ok(persistentTodayLink, "the persistent header exposes today's games from every authenticated screen");
+  assert.ok(attribute(persistentTodayLink, "aria-label"), "the icon-only header link has an accessible name");
+
+  const start = await sourceText("src/pages/Start.tsx");
+  assert.match(start, /next\?\.href\s*\?\?\s*["']\/today["']/, "finishing every game lands on Today, not Scores");
+  assert.doesNotMatch(start, /next\?\.href\s*\?\?\s*["']\/scores["']/);
+
+  for (const file of [
+    "src/components/DailyJourney.tsx",
+    "src/components/DailyQuiz.tsx",
+    "src/pages/League.tsx",
+    "src/pages/Leaderboard.tsx",
+    "src/pages/Practice.tsx",
+  ]) {
+    const tree = await sourceTree(file);
+    assert.ok(links(tree).some(node => attribute(node, "to") === "/today"), `${file} has an explicit Today return link`);
+    assert.equal(links(tree).filter(node => attribute(node, "to") === "/").length, 0, `${file} does not rely on the redirecting root route for Today navigation`);
+  }
+});
+
+test("App frame gives the quiz board and score history the wide desktop shell", async () => {
+  const tree = await sourceTree("src/routes/AppRouter.tsx");
+  const wide = visit(tree, ts.isVariableDeclaration).find(node => node.name.getText(tree) === "wide");
+  assert.ok(wide?.initializer, "the AppFrame wide-route allowlist exists");
+  const routes = wide.initializer.getText(tree);
+  assert.match(routes, /["']\/quiz["']/);
+  assert.match(routes, /["']\/scores\/history["']/);
+});
+
+test("current quiz board hides played cards and keeps the remaining choices compact and responsive", async () => {
+  const tree = await sourceTree("src/pages/Quiz.tsx");
+  const availableCards = visit(tree, ts.isVariableDeclaration).find(node => node.name.getText(tree) === "availableCards");
+  assert.ok(availableCards?.initializer, "the board derives a list of cards that remain playable");
+  assert.match(availableCards.initializer.getText(tree), /board\?\.cards\.filter\([^)]*!\s*card\.answered/);
+
+  const boardGrid = elements(tree).find(node => /availableCards\.map/.test(node.getText(tree)) && attribute(node, "className")?.split(/\s+/).includes("grid"));
+  assert.ok(boardGrid, "only available cards are mapped into the board");
+  const boardClasses = attribute(boardGrid, "className").split(/\s+/);
+  assert.ok(boardClasses.includes("grid-cols-2"));
+  assert.ok(boardClasses.includes("gap-2"), "the board avoids oversized gaps");
+  assert.ok(boardClasses.includes("min-[760px]:grid-cols-3"), "the wide shell uses three compact columns");
+  assert.doesNotMatch(boardGrid.getText(tree), /board\.cards\.map/);
+  const cardButton = elements(boardGrid).find(node => elementTag(node, tree) === "button");
+  assert.ok(cardButton);
+  assert.match(cardButton.getText(tree), /min-h-24/, "unplayed cards no longer reserve the old 128px height");
+  assert.doesNotMatch(cardButton.getText(tree), /min-h-32/);
+
+  const answers = elements(tree).find(node => attribute(node, "aria-label") === "Answer choices");
+  assert.ok(answers, "answer choices form an accessible group");
+  const answerClasses = attribute(answers, "className").split(/\s+/);
+  assert.ok(answerClasses.includes("grid-cols-[repeat(2,minmax(0,1fr))]"));
+  assert.ok(answerClasses.includes("auto-rows-fr"));
+  const answerButton = elements(answers).find(node => elementTag(node, tree) === "button");
+  assert.ok(answerButton);
+  const answerMarkup = answerButton.getText(tree);
+  assert.match(answerMarkup, /min-w-0/);
+  assert.match(answerMarkup, /whitespace-normal/);
+  assert.match(answerMarkup, /\[overflow-wrap:anywhere\]/);
+  assert.doesNotMatch(answerMarkup, /\b(?:truncate|text-ellipsis|whitespace-nowrap|line-clamp-\d+)\b/);
+});
+
+test("large-print Wordle row controls retain visible high-contrast direction glyphs when disabled", async () => {
+  const tree = await sourceTree("src/pages/Wordle.tsx");
+  const previous = elements(tree).find(node => attribute(node, "aria-label") === "Show previous guess row");
+  const next = elements(tree).find(node => attribute(node, "aria-label") === "Show next guess row");
+  assert.ok(previous);
+  assert.ok(next);
+  assert.match(previous.getText(tree), /↑|&#8593;|&uarr;/, "the previous-row control has an unmistakable up glyph");
+  assert.match(next.getText(tree), /↓|&#8595;|&darr;/, "the next-row control has an unmistakable down glyph");
+
+  const declaration = visit(tree, ts.isVariableDeclaration).find(node => node.name.getText(tree) === "rowControlButtonClass");
+  const classes = declaration?.initializer?.getText(tree) ?? "";
+  assert.doesNotMatch(classes, /disabled:text-slate-(?:[0-4]00)/, "disabled arrows are not rendered in near-white slate");
+  assert.match(classes, /disabled:text-slate-(?:[5-9]00|950)/, "disabled arrows preserve readable contrast");
+});
 
 test("Wordle structure: help lives in a modal, not an extra details row above the board", async () => {
   const tree = await sourceTree("src/pages/Wordle.tsx");
@@ -184,18 +275,59 @@ test("Map structure: tools and pin review sit outside the map viewport and use n
   }
 });
 
-test("Map CSS structure: default mobile height is larger and an expanded mode exists", async () => {
+function responsiveHeight(rule) {
+  const value = values([rule], "height").at(-1);
+  const match = value?.match(/^clamp\(([\d.]+)px,\s*([\d.]+)[sd]?vh,\s*([\d.]+)px\)$/);
+  return match ? { minimum: Number(match[1]), viewport: Number(match[2]), maximum: Number(match[3]) } : null;
+}
+
+function assertMeaningfulExpansion(normal, expanded, viewport) {
+  assert.ok(normal, `${viewport} default map height has bounded viewport-responsive sizing`);
+  assert.ok(expanded, `${viewport} expanded map height has bounded viewport-responsive sizing`);
+  assert.ok(expanded.minimum > normal.minimum, `${viewport} expansion increases the minimum height`);
+  assert.ok(expanded.viewport > normal.viewport, `${viewport} expansion uses more of the viewport`);
+  assert.ok(expanded.maximum > normal.maximum, `${viewport} expansion increases the maximum height`);
+}
+
+test("Map CSS structure: Larger map meaningfully expands mobile and desktop layouts", async () => {
   const css = await stylesheet();
-  const mapHeights = values(rulesFor(css, ".map-stage"), "height");
-  const mobileClamp = mapHeights[0]?.match(/^clamp\((\d+)px,\s*(\d+)[sd]vh,\s*(\d+)px\)$/);
-  assert.ok(mobileClamp, "default mobile map height has bounded viewport-responsive sizing");
-  assert.ok(Number(mobileClamp[1]) >= 300, "mobile map is at least 300px tall");
-  assert.ok(Number(mobileClamp[2]) >= 50, "mobile map uses at least half the viewport height where space allows");
-  const expanded = [];
-  css.walkRules(rule => { if (/\[data-expanded\s*=\s*["']?true["']?\].*\.map-stage/.test(rule.selector)) expanded.push(rule); });
-  assert.ok(values(expanded, "height").length, "Larger map has a dedicated size rule");
-  const desktopExpanded = expanded.filter(rule => rule.parent.type === "atrule" && rule.parent.params === "(min-width: 760px)");
-  assert.ok(values(desktopExpanded, "min-height").includes("620px"), "expanding a desktop map cannot shrink it on short screens");
+  const normalRules = rulesFor(css, ".map-stage");
+  const expandedRules = [];
+  css.walkRules(rule => { if (/\[data-expanded\s*=\s*["']?true["']?\].*\.map-stage/.test(rule.selector)) expandedRules.push(rule); });
+  const atViewport = (rule, query) => query
+    ? rule.parent.type === "atrule" && rule.parent.params === query
+    : rule.parent.type === "root";
+
+  assertMeaningfulExpansion(
+    responsiveHeight(normalRules.find(rule => atViewport(rule))),
+    responsiveHeight(expandedRules.find(rule => atViewport(rule))),
+    "mobile",
+  );
+  assertMeaningfulExpansion(
+    responsiveHeight(normalRules.find(rule => atViewport(rule, "(min-width: 760px)"))),
+    responsiveHeight(expandedRules.find(rule => atViewport(rule, "(min-width: 760px)"))),
+    "desktop",
+  );
+
+  assert.ok(normalRules.flatMap(rule => values([rule], "height")).every(value => value !== "620px"), "the default desktop map is not locked to 620px");
+  assert.ok(expandedRules.flatMap(rule => values([rule], "min-height")).every(value => value !== "620px"), "expanded mode does not retain the hard 620px minimum that made the toggle a no-op");
+});
+
+test("score guide connector arrows reserve at least their own width", async () => {
+  const tree = await sourceTree("src/pages/Leaderboard.tsx");
+  const quizConnectorArrow = elements(tree).find(node => elementTag(node, tree) === "ArrowRight"
+    && node.parent?.getText(tree).includes("min-h-[7.25rem]"));
+  assert.ok(quizConnectorArrow, "the quiz score guide includes connector arrows");
+  const wrapper = quizConnectorArrow.parent;
+  assert.ok(wrapper && (ts.isJsxElement(wrapper) || ts.isJsxSelfClosingElement(wrapper)));
+  const connectorClasses = attribute(wrapper, "className")?.split(/\s+/) ?? [];
+  assert.ok(connectorClasses.includes("shrink-0"), "grid pressure cannot shrink the connector wrapper");
+  assert.ok(connectorClasses.some(name => /^(?:min-)?w-(?:3\.5|4|5)$/.test(name)), "the wrapper is at least as wide as its 0.875rem arrow");
+
+  const guideGrid = elements(tree).find(node => /QUIZ_JOURNEY\.map/.test(node.getText(tree)) && attribute(node, "className")?.includes("grid-cols-["));
+  assert.ok(guideGrid);
+  const fixedRemTracks = [...attribute(guideGrid, "className").matchAll(/_([\d.]+)rem(?=_|\])/g)].map(match => Number(match[1]));
+  assert.ok(fixedRemTracks.every(width => width >= 0.875), "connector tracks are not narrower than the arrow");
 });
 
 test("Map structure: locking and changing a pin waits for pending lookups and clue reveals", async () => {

@@ -12,8 +12,6 @@ import {
 } from "react";
 import {
   BookOpen,
-  ChevronDown,
-  ChevronUp,
   CircleAlert,
   CircleHelp,
   Delete,
@@ -346,6 +344,7 @@ export function Wordle() {
   const [animationMessage, setAnimationMessage] = useState("");
   const [largeBoardWindowHeight, setLargeBoardWindowHeight] = useState<number | null>(null);
   const [rowWindowStartIndex, setRowWindowStartIndex] = useState(0);
+  const [largeViewportRowCount, setLargeViewportRowCount] = useState(2);
 
   const gameStatus = state?.result.status ?? "in_progress";
   const isComplete = gameStatus !== "in_progress";
@@ -355,7 +354,7 @@ export function Wordle() {
   const activeRowIndex = isComplete
     ? Math.max(0, guesses.length - 1)
     : Math.min(guesses.length, maxAttempts - 1);
-  const largeVisibleRowCount = Math.min(2, maxAttempts);
+  const largeVisibleRowCount = Math.min(largeViewportRowCount, maxAttempts);
   const maxStartRowIndex = Math.max(0, maxAttempts - largeVisibleRowCount);
   const defaultVisibleStartRowIndex = largePrint
     ? Math.min(maxStartRowIndex, Math.max(0, activeRowIndex - largeVisibleRowCount + 1))
@@ -383,6 +382,14 @@ export function Wordle() {
     return () => {
       mountedRef.current = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const tallViewport = window.matchMedia("(min-height: 680px)");
+    const syncVisibleRows = () => setLargeViewportRowCount(tallViewport.matches ? 3 : 2);
+    syncVisibleRows();
+    tallViewport.addEventListener("change", syncVisibleRows);
+    return () => tallViewport.removeEventListener("change", syncVisibleRows);
   }, []);
 
   useEffect(() => {
@@ -929,7 +936,7 @@ export function Wordle() {
 
   const statusTextClass = largePrint ? "text-lg" : "text-base";
   const rowControlButtonClass =
-    "flex h-10 w-full items-center justify-center text-slate-700 transition hover:bg-white hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:text-slate-300";
+    "flex h-10 w-full items-center justify-center bg-white text-slate-800 transition hover:bg-slate-100 hover:text-saints-red focus:outline-none focus:ring-4 focus:ring-saints-red/15 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 disabled:opacity-100";
   const controlBarClass =
     "mx-auto w-full max-w-[22rem] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm";
   const settingsRowClass = state
@@ -943,7 +950,7 @@ export function Wordle() {
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[15.25rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
-    ? "wordle-board-window h-[9.15rem] overflow-hidden rounded-md px-0.5 py-1.5"
+    ? `wordle-board-window ${largeVisibleRowCount >= 3 ? "h-[12.85rem]" : "h-[9.15rem]"} overflow-hidden rounded-md px-0.5 py-1.5`
     : "";
   const boardRowsKey = largePrint ? `visible-row-${visibleStartRowIndex}` : "all-rows";
   const boardRowsClass = largePrint ? "wordle-board-rows-replace" : "";
@@ -1076,7 +1083,7 @@ export function Wordle() {
                     aria-label="Show previous guess row"
                     className={rowControlButtonClass}
                   >
-                    <ChevronUp aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
+                    <span aria-hidden="true" className="text-[1.75rem] font-black leading-none">↑</span>
                   </button>
                   <span className="text-center text-[0.68rem] font-black uppercase tracking-normal text-slate-600">
                     Board rows
@@ -1088,7 +1095,7 @@ export function Wordle() {
                     aria-label="Show next guess row"
                     className={rowControlButtonClass}
                   >
-                    <ChevronDown aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
+                    <span aria-hidden="true" className="text-[1.75rem] font-black leading-none">↓</span>
                   </button>
                 </div>
               ) : null}
@@ -1332,13 +1339,13 @@ export function Wordle() {
 
       {showWinDialog ? <DialogPortal onClose={() => setWinDialogDismissed(true)}>
         <div
-          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
+          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="wordle-win-title"
           aria-describedby="wordle-win-description"
         >
-          <section className="wordle-win-modal max-h-[calc(100dvh_-_8.5rem_-_env(safe-area-inset-bottom))] w-full max-w-[350px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_7rem_-_env(safe-area-inset-bottom))]">
+          <section className="wordle-win-modal max-h-[calc(100dvh_-_5rem_-_env(safe-area-inset-bottom))] w-full max-w-[350px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_2rem_-_env(safe-area-inset-bottom))]">
             <div className="relative p-3">
               <button
                 type="button"
@@ -1422,13 +1429,13 @@ export function Wordle() {
 
       {showLossDialog ? <DialogPortal onClose={() => setLossDialogDismissed(true)}>
         <div
-          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
+          className="fixed inset-0 z-[80] flex items-start justify-center bg-saints-black/75 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-12 min-[540px]:items-center min-[540px]:pt-4"
           role="dialog"
           aria-modal="true"
           aria-labelledby="wordle-loss-title"
           aria-describedby="wordle-loss-description"
         >
-          <section className="wordle-win-modal max-h-[calc(100dvh_-_8.5rem_-_env(safe-area-inset-bottom))] w-full max-w-[350px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_7rem_-_env(safe-area-inset-bottom))]">
+          <section className="wordle-win-modal max-h-[calc(100dvh_-_5rem_-_env(safe-area-inset-bottom))] w-full max-w-[350px] overflow-y-auto rounded-lg bg-white text-slate-950 shadow-2xl min-[540px]:max-h-[calc(100dvh_-_2rem_-_env(safe-area-inset-bottom))]">
             <div className="relative p-3">
               <button
                 type="button"

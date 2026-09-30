@@ -59,7 +59,7 @@ function AppFrame({
     measure();
     return () => observer.disconnect();
   }, [reviewMode]);
-  const wide = ["/", "/today", "/map", "/scores"].includes(pathname);
+  const wide = ["/", "/today", "/map", "/quiz", "/scores", "/scores/history"].includes(pathname);
   return (
     <div ref={frameRef} style={{ "--shell-width": wide ? "960px" : "430px" } as CSSProperties} className={`app-frame mx-auto flex min-h-dvh w-full ${wide ? "max-w-[960px]" : "max-w-[430px]"} flex-col bg-saints-paper shadow-2xl ring-1 ring-white/10`}>
       <div ref={headerRef} className="top-shell">

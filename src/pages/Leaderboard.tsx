@@ -1,5 +1,6 @@
 import {
   ArrowDown,
+  ArrowLeft,
   ArrowRight,
   Check,
   CalendarDays,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router-dom";
 import { Card } from "../components/Card";
 import { useAuth } from "../context/AuthContext";
 import { api, type LeaderboardPlayer, type LeaderboardResponse } from "../lib/api";
@@ -193,6 +195,13 @@ export function Leaderboard() {
 
   return (
     <section className="page-fade space-y-3 pb-2" aria-label="Scores">
+      <Link
+        to="/today"
+        className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-black text-slate-800 saints-focus"
+      >
+        <ArrowLeft aria-hidden="true" className="h-4 w-4" />
+        Today's games
+      </Link>
       {error && board !== null ? (
         <ScoresError
           message={error}
@@ -685,7 +694,7 @@ function ScoreGuide() {
 
         <section className="space-y-4">
           <GuideSectionTitle icon={CircleHelp} title="Quiz" />
-          <div className="grid grid-cols-[minmax(0,1fr)_0.55rem_minmax(0,1fr)_0.55rem_minmax(0,1fr)_0.55rem_minmax(0,1fr)] items-stretch gap-x-1">
+          <div className="grid grid-cols-[minmax(0,1fr)_1rem_minmax(0,1fr)_1rem_minmax(0,1fr)_1rem_minmax(0,1fr)] items-stretch gap-x-0.5">
             {QUIZ_JOURNEY.map((step, index) => (
               <QuizJourneyCard
                 key={step.label}
@@ -847,8 +856,8 @@ function QuizJourneyCard({
         </p>
       </div>
       {!isLast ? (
-        <div className="flex min-h-[7.25rem] items-center justify-center text-slate-500">
-          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.4} />
+        <div className="flex min-h-[7.25rem] min-w-4 shrink-0 items-center justify-center text-slate-700">
+          <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={3} />
         </div>
       ) : null}
     </>

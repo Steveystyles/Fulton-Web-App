@@ -4,8 +4,6 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import {
   Check,
-  ChevronLeft,
-  ChevronRight,
   CircleAlert,
   LoaderCircle,
   Layers,
@@ -511,7 +509,7 @@ function MapCanvas({
         <span aria-hidden="true" className="map-crosshair pointer-events-none absolute left-1/2 top-1/2 z-[600] flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-black/70 text-white"><svg viewBox="0 0 24 24" className="block h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg></span>
       </> : null}
       </div>
-      <div className="map-tools" role="group" aria-label="Map tools">
+      <div className="map-tools" data-tool-count={level.submitted ? 2 : 3} role="group" aria-label="Map tools">
         {!level.submitted ? <button type="button" disabled={selectionBusy || measuring} className="map-tool saints-focus" onClick={() => {
           const map = mapRef.current;
           if (map) { const centre = map.getCenter(); onMapPick({ lat: centre.lat, lng: centre.lng }, map.getZoom()); }
@@ -581,9 +579,9 @@ function MapCanvas({
                   aria-label="Previous nearby place"
                   onClick={() => onCycleDraft(-1)}
                   disabled={selectionBusy}
-                  className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-800 saints-focus disabled:opacity-50"
                 >
-                  <ChevronLeft aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
+                  <span aria-hidden="true" className="text-[1.75rem] font-black leading-none">←</span>
                 </button>
                 <p className="min-w-0 text-center text-sm text-slate-600">Choose a nearby place</p>
                 <button
@@ -591,12 +589,12 @@ function MapCanvas({
                   aria-label="Next nearby place"
                   onClick={() => onCycleDraft(1)}
                   disabled={selectionBusy}
-                  className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-800 saints-focus disabled:opacity-50"
                 >
-                  <ChevronRight aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
+                  <span aria-hidden="true" className="text-[1.75rem] font-black leading-none">→</span>
                 </button>
               </div>
-            ) : null}
+            ) : <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs font-bold text-slate-600">Only nearby match</p>}
             <div className="grid grid-cols-[2.75rem_minmax(0,1fr)] gap-2">
               <button
                 type="button"
