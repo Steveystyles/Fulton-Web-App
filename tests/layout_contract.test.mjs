@@ -226,6 +226,10 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.equal((html.match(/data-state="available"/g) ?? []).length, 4);
   assert.match(html, /Pick 1 · Done/);
   assert.match(html, /Pick 2 · In play/);
+  assert.match(html, /Pick me/, "Daily cards invite the next pick");
+  assert.match(html, /to-rose-50/, "Football cards have a warm subject treatment");
+  assert.match(html, /to-amber-50/, "General Knowledge cards have a distinct warm treatment");
+  assert.doesNotMatch(html, /Football · Question 1/, "Daily cards do not repeat the subject in their teaser");
 
   const practice = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, mode: "practice", busy: false, locked: false, onSelect: () => {} }));
   assert.equal((practice.match(/<button\b/g) ?? []).length, 6, "Practice also keeps all six choices visible");
@@ -235,6 +239,11 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.match(practice, /Pick 1 · Done/);
   assert.match(practice, /Question 1/);
   assert.doesNotMatch(practice, /Football · Question 1/, "grouped Practice cards do not repeat the subject in their teaser");
+
+  const quizSource = await sourceText("src/pages/Quiz.tsx");
+  assert.match(quizSource, /Pick four\. Make them count\./);
+  assert.match(quizSource, /from-saints-red via-red-700 to-saints-black/);
+  assert.match(quizSource, /gridTemplateColumns: `repeat\(\$\{board\.pickCount\}/, "Daily progress marks each pick");
 
   const answers = elements(tree).find(node => attribute(node, "aria-label") === "Answer choices");
   assert.ok(answers, "answer choices form an accessible group");
