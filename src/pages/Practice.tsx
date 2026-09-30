@@ -34,6 +34,6 @@ export function Practice() {
     {dates.length ? <div className="grid grid-cols-2 gap-3"><label className="text-sm font-bold">Past round<select className="mt-1 min-h-12 w-full rounded-xl border bg-white p-2" value={date} onChange={event => setDate(event.target.value)}>{dates.map(value => <option key={value}>{value}</option>)}</select></label><label className="text-sm font-bold">Quiz type<select className="mt-1 min-h-12 w-full rounded-xl border bg-white p-2" value={category} onChange={event => setCategory(event.target.value === "general" ? "general" : "football")}><option value="football">Football</option><option value="general">General knowledge</option></select></label></div> : !loading ? <p>{error?.message ?? "No past published rounds are available yet. Today's games will join the archive after their day ends."}</p> : <p role="status">Finding past rounds…</p>}
     {date ? <DailyQuiz key={`${date}:${category}:${version}`} practice category={category} storageScope={user?.id ?? 0} quizDate={data?.date} questions={data?.[category] ?? []} loading={loading} error={error} serverResult={null} serverAnswers={[]} onRefresh={() => setVersion(value => value + 1)} /> : null}
     {error && !date ? <button className={secondaryClass} onClick={() => setVersion(value => value + 1)}>Retry archive</button> : null}
-    <Link className={secondaryClass} to="/">Back to Today</Link>
+    <Link className={secondaryClass} to="/today">Back to Today</Link>
   </section>;
 }

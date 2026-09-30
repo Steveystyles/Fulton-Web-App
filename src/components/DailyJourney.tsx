@@ -51,7 +51,7 @@ export function DailyJourney({ current, summary }: { current: ActivityId; summar
   return <div className="mt-4 space-y-3 border-t border-slate-200 pt-4 text-left">
     <p className="font-black text-slate-950">{allDone ? "That's your daily round complete. Nicely played." : "Fancy another challenge?"}</p>
     <div className="flex flex-wrap gap-2">
-      {next ? <Link className={actionClass} to={next.href}>{next.status === "continue" ? "Continue" : "Play"} {next.title}</Link> : <Link className={actionClass} to="/">Back to Today</Link>}
+      {next ? <Link className={actionClass} to={next.href}>{next.status === "continue" ? "Continue" : "Play"} {next.title}</Link> : <Link className={actionClass} to="/today">Back to Today</Link>}
       <Link className={secondaryClass} to="/scores">View weekly league</Link>
     </div>
     {error ? <button className="min-h-11 text-sm underline saints-focus" onClick={refresh}>Refresh daily progress</button> : null}

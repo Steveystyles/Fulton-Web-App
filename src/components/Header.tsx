@@ -1,4 +1,4 @@
-import { LogOut, ShieldCheck, Trophy } from "lucide-react";
+import { House, LogOut, ShieldCheck, Trophy } from "lucide-react";
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
@@ -25,6 +25,11 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
       </div>
       {!reviewMode ? (
         <div className="flex shrink-0 items-center gap-1">
+          <NavLink
+            to="/today"
+            aria-label="Today's games"
+            className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]"].join(" ")}
+          ><House aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink>
           <NavLink
             to="/scores"
             aria-label="Scores"

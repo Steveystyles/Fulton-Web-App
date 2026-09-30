@@ -75,7 +75,7 @@ export function DailyQuiz({ category, storageScope, quizDate, questions, loading
     } finally { inFlight.current = false; setSaving(false); }
   }
   if (loading) return <Card><p role="status" className="p-4 text-center font-bold">Loading today's quiz…</p></Card>;
-  if (error || !questions.length) return <Card><h2 className="font-black">Quiz not ready</h2><p className="mt-2 text-sm">{error?.message ?? "Today's questions are not available yet. Try another game while we get them ready."}</p><div className="mt-3 flex flex-wrap gap-2"><button className={secondaryClass} onClick={onRefresh}>Check again</button><Link className={actionClass} to="/">Choose another game</Link></div></Card>;
+  if (error || !questions.length) return <Card><h2 className="font-black">Quiz not ready</h2><p className="mt-2 text-sm">{error?.message ?? "Today's questions are not available yet. Try another game while we get them ready."}</p><div className="mt-3 flex flex-wrap gap-2"><button className={secondaryClass} onClick={onRefresh}>Check again</button><Link className={actionClass} to="/today">Choose another game</Link></div></Card>;
   if (result) return <Card>
     <p className="text-xs font-bold uppercase text-saints-red">{quizDate} · {category === "football" ? "Football" : "General knowledge"}</p>
     <h2 ref={heading} tabIndex={-1} className="mt-3 text-2xl font-black">{result.correctCount === questions.length ? "A perfect round!" : result.correctCount ? "A little more knowledge." : "A few discoveries for tomorrow."}</h2>
@@ -94,7 +94,7 @@ export function DailyQuiz({ category, storageScope, quizDate, questions, loading
         {answer.interestingReason && answer.interestingReason !== answer.explanation && <p className="mt-2 text-sm leading-relaxed text-slate-700"><span className="font-bold">Did you know? </span>{answer.interestingReason}</p>}
       </details>;
     })}</div>
-    {practice ? <div className="mt-4 flex flex-wrap gap-2"><button className={secondaryClass} onClick={() => { setAnswers([]); setResult(null); setChoice(""); }}>Try again</button><Link className={actionClass} to="/">Back to today's games</Link></div> : <DailyJourney current="quiz" summary={`Fulton's Quiz · ${quizDate}\n${category === "football" ? "Football" : "General knowledge"}: ${result.correctCount}/${questions.length} correct · ${result.score} game points`} />}
+    {practice ? <div className="mt-4 flex flex-wrap gap-2"><button className={secondaryClass} onClick={() => { setAnswers([]); setResult(null); setChoice(""); }}>Try again</button><Link className={actionClass} to="/today">Back to today's games</Link></div> : <DailyJourney current="quiz" summary={`Fulton's Quiz · ${quizDate}\n${category === "football" ? "Football" : "General knowledge"}: ${result.correctCount}/${questions.length} correct · ${result.score} game points`} />}
   </Card>;
   if (!question) return <Card><p>Your answers are ready to save.</p><button disabled={saving} className={`${secondaryClass} mt-3`} onClick={() => {
     if (!quizDate || inFlight.current) return;
