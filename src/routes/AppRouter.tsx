@@ -1,10 +1,10 @@
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { lazy, Suspense, useEffect, useRef, type ReactNode, type CSSProperties } from "react";
 import { Header } from "../components/Header";
+import { GameNavigation } from "../components/GameNavigation";
 import { useAuth } from "../context/AuthContext";
 
 const Account = lazy(() => import("../pages/Account").then((module) => ({ default: module.Account })));
-const Today = lazy(() => import("../pages/Today").then((module) => ({ default: module.Today })));
 const Start = lazy(() => import("../pages/Start").then((module) => ({ default: module.Start })));
 const League = lazy(() => import("../pages/League").then((module) => ({ default: module.League })));
 const Admin = lazy(() => import("../pages/Admin").then((module) => ({ default: module.Admin })));
@@ -59,7 +59,8 @@ function AppFrame({
     measure();
     return () => observer.disconnect();
   }, [reviewMode]);
-  const wide = ["/", "/today", "/map", "/quiz", "/scores", "/scores/history"].includes(pathname);
+  const wide = ["/", "/map", "/quiz", "/scores", "/scores/history"].includes(pathname);
+  const gameRoute = ["/wordle", "/quiz", "/map"].includes(pathname);
   return (
     <div ref={frameRef} style={{ "--shell-width": wide ? "960px" : "430px" } as CSSProperties} className={`app-frame mx-auto flex min-h-dvh w-full ${wide ? "max-w-[960px]" : "max-w-[430px]"} flex-col bg-saints-paper shadow-2xl ring-1 ring-white/10`}>
       <div ref={headerRef} className="top-shell">
@@ -71,11 +72,13 @@ function AppFrame({
         data-review={reviewMode}
         className={[
           "app-main flex-1 px-3 sm:px-4",
+          gameRoute ? "pb-24" : "",
           compact ? "pt-2" : "pt-4",
         ].join(" ")}
       >
         {children}
       </main>
+      {!reviewMode && gameRoute ? <GameNavigation /> : null}
     </div>
   );
 }
@@ -170,7 +173,7 @@ export function AppRouter() {
             path="/"
             element={<AppFrame><Start /></AppFrame>}
           />
-          <Route path="/today" element={<AppFrame><Today /></AppFrame>} />
+          <Route path="/today" element={<Navigate to="/" replace />} />
           <Route path="/practice" element={<Navigate to="/quiz" replace />} />
           <Route path="/scores" element={<AppFrame><League /></AppFrame>} />
           <Route

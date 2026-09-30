@@ -1,12 +1,17 @@
-import { House, LogOut, ShieldCheck, Trophy } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { House, LogOut, ShieldCheck } from "lucide-react";
+import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { ScoresDialog } from "./ScoresDialog";
+import type { ActivityId } from "../lib/api";
 
 const headerButtonClass =
   "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white transition hover:bg-white/[0.16] active:bg-saints-red active:text-white saints-focus";
 
 export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
   const { logout, user } = useAuth();
+  const { pathname } = useLocation();
+  const currentGame = pathname.slice(1) as ActivityId;
+  const inGame = ["wordle", "quiz", "map"].includes(currentGame);
 
   return (
     <header className="saints-stripe-edge flex min-h-16 items-center gap-3 bg-saints-black px-4 pb-1 text-white">
@@ -25,16 +30,12 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
       </div>
       {!reviewMode ? (
         <div className="flex shrink-0 items-center gap-1">
-          <NavLink
-            to="/today"
-            aria-label="Today's games"
+          {!inGame ? <NavLink
+            to="/"
+            aria-label="Go to games"
             className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]"].join(" ")}
-          ><House aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink>
-          <NavLink
-            to="/scores"
-            aria-label="Scores"
-            className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]"].join(" ")}
-          ><Trophy aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink>
+          ><House aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink> : null}
+          <ScoresDialog currentGame={inGame ? currentGame : undefined} />
           {user?.role === "admin" ? (
             <NavLink
               to="/admin"

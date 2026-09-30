@@ -129,15 +129,19 @@ function links(tree) {
   return elements(tree).filter(node => ["Link", "NavLink"].includes(elementTag(node, tree)));
 }
 
-test("navigation structure: every authenticated screen has a direct route back to today's games", async () => {
+test("navigation structure: the Today hub is not a separate screen", async () => {
   const header = await sourceTree("src/components/Header.tsx");
-  const persistentTodayLink = links(header).find(node => attribute(node, "to") === "/today");
-  assert.ok(persistentTodayLink, "the persistent header exposes today's games from every authenticated screen");
-  assert.ok(attribute(persistentTodayLink, "aria-label"), "the icon-only header link has an accessible name");
+  const persistentGameLink = links(header).find(node => attribute(node, "to") === "/");
+  assert.ok(persistentGameLink, "the persistent header starts the game flow");
+  assert.ok(attribute(persistentGameLink, "aria-label"), "the icon-only header link has an accessible name");
 
   const start = await sourceText("src/pages/Start.tsx");
-  assert.match(start, /next\?\.href\s*\?\?\s*["']\/today["']/, "finishing every game lands on Today, not Scores");
+  assert.match(start, /next\?\.href\s*\?\?\s*["']\/wordle["']/, "the start route always chooses a playable game");
   assert.doesNotMatch(start, /next\?\.href\s*\?\?\s*["']\/scores["']/);
+
+  const router = await sourceText("src/routes/AppRouter.tsx");
+  assert.match(router, /path="\/today" element=\{<Navigate to="\/" replace \/>\}/);
+  assert.doesNotMatch(router, /<Today\s*\/>/);
 
   for (const file of [
     "src/components/DailyJourney.tsx",
@@ -147,9 +151,33 @@ test("navigation structure: every authenticated screen has a direct route back t
     "src/pages/Practice.tsx",
   ]) {
     const tree = await sourceTree(file);
-    assert.ok(links(tree).some(node => attribute(node, "to") === "/today"), `${file} has an explicit Today return link`);
-    assert.equal(links(tree).filter(node => attribute(node, "to") === "/").length, 0, `${file} does not rely on the redirecting root route for Today navigation`);
+    assert.equal(links(tree).filter(node => attribute(node, "to") === "/today").length, 0, `${file} does not link to the removed hub`);
   }
+});
+
+test("game screens have persistent previous and next game arrows", async () => {
+  const router = await sourceText("src/routes/AppRouter.tsx");
+  assert.match(router, /!reviewMode\s*&&\s*gameRoute\s*\?\s*<GameNavigation\s*\/>/);
+  const navigation = await sourceText("src/components/GameNavigation.tsx");
+  assert.match(navigation, /aria-label="Game navigation"/);
+  assert.match(navigation, /aria-label=\{`Previous game:/);
+  assert.match(navigation, /aria-label=\{`Next game:/);
+  assert.match(navigation, /<ArrowLeft/);
+  assert.match(navigation, /<ArrowRight/);
+  assert.match(navigation, /fixed inset-x-0 bottom-0/);
+  assert.match(navigation, /item\.status !== "unavailable"/, "unavailable Map days do not lead to a dead game");
+});
+
+test("header Scores button opens a current-game dialog rather than navigating away", async () => {
+  const header = await sourceText("src/components/Header.tsx");
+  assert.match(header, /<ScoresDialog currentGame=/);
+  assert.doesNotMatch(header, /to="\/scores"/);
+  const scores = await sourceText("src/components/ScoresDialog.tsx");
+  assert.match(scores, /aria-haspopup="dialog"/);
+  assert.match(scores, /<DialogPortal/);
+  assert.match(scores, /role="dialog"/);
+  assert.match(scores, /setFilter\(currentGame \?\? "all"\)/);
+  assert.match(scores, /api\.league\(\)/);
 });
 
 test("App frame gives the quiz board and score history the wide desktop shell", async () => {
