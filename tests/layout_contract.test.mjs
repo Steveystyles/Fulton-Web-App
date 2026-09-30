@@ -202,7 +202,7 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.ok(boardClasses.includes("grid-cols-2"));
   assert.ok(boardClasses.includes("gap-2"), "the board avoids oversized gaps");
   assert.ok(boardClasses.includes("min-[760px]:grid-cols-3"), "the wide shell uses three compact columns");
-  const cardButton = elements(boardGrid).find(node => elementTag(node, tree) === "button");
+  const cardButton = elements(tree).find(node => elementTag(node, tree) === "button" && node.getText(tree).includes("data-state="));
   assert.ok(cardButton);
   assert.match(cardButton.getText(tree), /data-state=/);
   assert.match(cardButton.getText(tree), /aria-pressed=/);
@@ -213,7 +213,7 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
     subject: index % 2 ? "general" : "football",
     difficulty: "easy",
     points: 1,
-    teaser: `Question ${index + 1}`,
+    teaser: `${index % 2 ? "General knowledge" : "Football"} · Question ${index + 1}`,
     source: "new",
     appearances: 1,
     selectedOrder: index < 2 ? index + 1 : null,
@@ -226,6 +226,15 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.equal((html.match(/data-state="available"/g) ?? []).length, 4);
   assert.match(html, /Pick 1 · Done/);
   assert.match(html, /Pick 2 · In play/);
+
+  const practice = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, mode: "practice", busy: false, locked: false, onSelect: () => {} }));
+  assert.equal((practice.match(/<button\b/g) ?? []).length, 6, "Practice also keeps all six choices visible");
+  assert.match(practice, /aria-label="Football practice cards"/);
+  assert.match(practice, /aria-label="General knowledge practice cards"/);
+  assert.match(practice, /Play this/);
+  assert.match(practice, /Pick 1 · Done/);
+  assert.match(practice, /Question 1/);
+  assert.doesNotMatch(practice, /Football · Question 1/, "grouped Practice cards do not repeat the subject in their teaser");
 
   const answers = elements(tree).find(node => attribute(node, "aria-label") === "Answer choices");
   assert.ok(answers, "answer choices form an accessible group");
