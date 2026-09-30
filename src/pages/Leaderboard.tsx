@@ -196,11 +196,11 @@ export function Leaderboard() {
   return (
     <section className="page-fade space-y-3 pb-2" aria-label="Scores">
       <Link
-        to="/today"
+        to="/"
         className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-black text-slate-800 saints-focus"
       >
         <ArrowLeft aria-hidden="true" className="h-4 w-4" />
-        Today's games
+        Back to games
       </Link>
       {error && board !== null ? (
         <ScoresError

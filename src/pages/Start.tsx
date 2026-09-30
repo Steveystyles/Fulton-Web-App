@@ -13,7 +13,7 @@ export function Start() {
       if (!active) return;
       const next = data.activities.find(item => item.status === "continue")
         ?? data.activities.find(item => item.status === "ready");
-      setTarget(next?.href ?? "/today");
+      setTarget(next?.href ?? "/wordle");
     }).catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "Daily games could not be loaded."); });
     return () => { active = false; };
   }, [version]);
