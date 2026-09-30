@@ -46,21 +46,23 @@ function AppFrame({
   const { pathname } = useLocation();
   const frameRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const wide = ["/", "/map", "/quiz", "/scores", "/scores/history"].includes(pathname);
+  const gameRoute = ["/wordle", "/quiz", "/map"].includes(pathname);
   useEffect(() => {
     const frame = frameRef.current;
     const header = headerRef.current;
     if (!frame || !header) return;
     const measure = () => {
       frame.style.setProperty("--app-header-height", `${header.getBoundingClientRect().height}px`);
-      frame.style.setProperty("--app-nav-height", "0px");
+      frame.style.setProperty("--app-nav-height", pathname === "/map" ? "0px" : `${navRef.current?.getBoundingClientRect().height ?? 0}px`);
     };
     const observer = new ResizeObserver(measure);
     observer.observe(header);
+    if (navRef.current) observer.observe(navRef.current);
     measure();
     return () => observer.disconnect();
-  }, [reviewMode]);
-  const wide = ["/", "/map", "/quiz", "/scores", "/scores/history"].includes(pathname);
-  const gameRoute = ["/wordle", "/quiz", "/map"].includes(pathname);
+  }, [reviewMode, pathname]);
   return (
     <div ref={frameRef} style={{ "--shell-width": wide ? "960px" : "430px" } as CSSProperties} className={`app-frame mx-auto flex min-h-dvh w-full ${wide ? "max-w-[960px]" : "max-w-[430px]"} flex-col bg-saints-paper shadow-2xl ring-1 ring-white/10`}>
       <div ref={headerRef} className="top-shell">
@@ -72,13 +74,12 @@ function AppFrame({
         data-review={reviewMode}
         className={[
           "app-main flex-1 px-3 sm:px-4",
-          gameRoute ? "pb-24" : "",
           compact ? "pt-2" : "pt-4",
         ].join(" ")}
       >
         {children}
       </main>
-      {!reviewMode && gameRoute ? <GameNavigation /> : null}
+      {!reviewMode && gameRoute ? <GameNavigation navRef={navRef} /> : null}
     </div>
   );
 }

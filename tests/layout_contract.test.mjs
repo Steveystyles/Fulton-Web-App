@@ -159,7 +159,7 @@ test("navigation structure: the Today hub is not a separate screen", async () =>
 
 test("game screens have persistent previous and next game arrows", async () => {
   const router = await sourceText("src/routes/AppRouter.tsx");
-  assert.match(router, /!reviewMode\s*&&\s*gameRoute\s*\?\s*<GameNavigation\s*\/>/);
+  assert.match(router, /!reviewMode\s*&&\s*gameRoute\s*\?\s*<GameNavigation\s+navRef=\{navRef\}\s*\/>/);
   const navigation = await sourceText("src/components/GameNavigation.tsx");
   assert.match(navigation, /aria-label="Game navigation"/);
   assert.match(navigation, /aria-label=\{`Previous game:/);
@@ -167,6 +167,9 @@ test("game screens have persistent previous and next game arrows", async () => {
   assert.match(navigation, /<ArrowLeft/);
   assert.match(navigation, /<ArrowRight/);
   assert.match(navigation, /fixed inset-x-0 bottom-0/);
+  assert.match(navigation, /pathname === "\/map" \? "relative"/, "Map arrows sit after the controls instead of covering them");
+  assert.match(router, /pathname === "\/map" \? "0px" : `\$\{navRef\.current\?\.getBoundingClientRect\(\)\.height/, "fixed bars reserve their measured height");
+  assert.match(router, /observer\.observe\(navRef\.current\)/, "safe-area and size changes update the reserved space");
   assert.match(navigation, /item\.status !== "unavailable"/, "unavailable Map days do not lead to a dead game");
 });
 
