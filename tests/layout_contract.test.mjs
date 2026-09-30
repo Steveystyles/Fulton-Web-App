@@ -13,6 +13,7 @@ import ts from "typescript";
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 let vite;
 let DailyQuiz;
+let QuizBoardGrid;
 let Card;
 let HelpButton;
 const originalFetch = globalThis.fetch;
@@ -26,6 +27,7 @@ before(async () => {
     appType: "custom",
   });
   ({ DailyQuiz } = await vite.ssrLoadModule("/src/components/DailyQuiz.tsx"));
+  ({ QuizBoardGrid } = await vite.ssrLoadModule("/src/pages/Quiz.tsx"));
   ({ Card } = await vite.ssrLoadModule("/src/components/Card.tsx"));
   ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
 });
@@ -189,23 +191,38 @@ test("App frame gives the quiz board and score history the wide desktop shell", 
   assert.match(routes, /["']\/scores\/history["']/);
 });
 
-test("current quiz board hides played cards and keeps the remaining choices compact and responsive", async () => {
+test("quiz board keeps six fixed, responsive choices after each answer", async () => {
   const tree = await sourceTree("src/pages/Quiz.tsx");
-  const availableCards = visit(tree, ts.isVariableDeclaration).find(node => node.name.getText(tree) === "availableCards");
-  assert.ok(availableCards?.initializer, "the board derives a list of cards that remain playable");
-  assert.match(availableCards.initializer.getText(tree), /board\?\.cards\.filter\([^)]*!\s*card\.answered/);
-
-  const boardGrid = elements(tree).find(node => /availableCards\.map/.test(node.getText(tree)) && attribute(node, "className")?.split(/\s+/).includes("grid"));
-  assert.ok(boardGrid, "only available cards are mapped into the board");
+  const boardGrid = elements(tree).find(node => /cards\.map/.test(node.getText(tree)) && attribute(node, "className")?.split(/\s+/).includes("grid"));
+  assert.ok(boardGrid, "all six cards are mapped into the board");
   const boardClasses = attribute(boardGrid, "className").split(/\s+/);
   assert.ok(boardClasses.includes("grid-cols-2"));
   assert.ok(boardClasses.includes("gap-2"), "the board avoids oversized gaps");
   assert.ok(boardClasses.includes("min-[760px]:grid-cols-3"), "the wide shell uses three compact columns");
-  assert.doesNotMatch(boardGrid.getText(tree), /board\.cards\.map/);
   const cardButton = elements(boardGrid).find(node => elementTag(node, tree) === "button");
   assert.ok(cardButton);
-  assert.match(cardButton.getText(tree), /min-h-24/, "unplayed cards no longer reserve the old 128px height");
-  assert.doesNotMatch(cardButton.getText(tree), /min-h-32/);
+  assert.match(cardButton.getText(tree), /data-state=/);
+  assert.match(cardButton.getText(tree), /aria-pressed=/);
+  assert.match(cardButton.getText(tree), /state !== "available"/, "played choices remain visible but cannot be picked again");
+
+  const cards = Array.from({ length: 6 }, (_, index) => ({
+    id: `card-${index + 1}`,
+    subject: index % 2 ? "general" : "football",
+    difficulty: "easy",
+    points: 1,
+    teaser: `Question ${index + 1}`,
+    source: "new",
+    appearances: 1,
+    selectedOrder: index < 2 ? index + 1 : null,
+    answered: index === 0,
+  }));
+  const html = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, busy: false, locked: true, onSelect: () => {} }));
+  assert.equal((html.match(/<button\b/g) ?? []).length, 6, "answering does not remove a card");
+  assert.match(html, /data-state="done"[^>]*aria-pressed="true"[^>]*disabled=""/);
+  assert.match(html, /data-state="active"[^>]*aria-pressed="true"[^>]*disabled=""/);
+  assert.equal((html.match(/data-state="available"/g) ?? []).length, 4);
+  assert.match(html, /Pick 1 · Done/);
+  assert.match(html, /Pick 2 · In play/);
 
   const answers = elements(tree).find(node => attribute(node, "aria-label") === "Answer choices");
   assert.ok(answers, "answer choices form an accessible group");
