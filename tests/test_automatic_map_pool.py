@@ -203,6 +203,18 @@ class AutomaticPoolTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM automatic_map_entries').fetchone()[0], 0)
 
+    def test_clue_format_failure_does_not_blacklist_source_resolved_place(self):
+        place = {'id': 'q123', 'canonical_name': 'Viable landmark'}
+        failed = {'status': 'failed', 'error': 'Clues must be concise single-line plain text.',
+                  'model_output': {'place_id': 'q123'}, 'resolved_candidates': [place], 'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed):
+            first = pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock())
+        self.assertEqual(first['status'], 'failed')
+        self.assertEqual(first['failed_names'], [])
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock())
+        self.assertNotIn('Viable landmark', discover.call_args.kwargs['excluded_names'])
+
     def test_initial_reserve_is_one_time_and_missing_key_does_not_burn_budget(self):
         with patch.dict(os.environ, {}, clear=True):
             first = pool.maintain(self.database, self.root)

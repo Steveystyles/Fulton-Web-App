@@ -275,10 +275,9 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     outcome['failed_names'] = [item.get('title', '') for item in report.get('rejections', []) if isinstance(item, dict)]
     if outcome['status'] != 'added' and report.get('candidate'):
         outcome['failed_names'].append(report['candidate']['canonical_name'])
-    elif outcome['status'] != 'added':
-        selected_id = report.get('model_output', {}).get('place_id')
-        outcome['failed_names'].extend(p['canonical_name'] for p in report.get('resolved_candidates', [])
-                                       if p['id'] == selected_id)
+    # A source-resolved place is not a bad place merely because the clue model
+    # returned invalid wording. Only a fully assembled candidate that failed
+    # independent verification is temporarily excluded.
     outcome['report_path'] = report.get('report_path')
     budget.complete(outcome['status'], outcome)
     return outcome
