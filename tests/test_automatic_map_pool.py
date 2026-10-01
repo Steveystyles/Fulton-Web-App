@@ -51,6 +51,7 @@ class AutomaticPoolTests(unittest.TestCase):
     def test_budget_is_by_actual_day_not_future_game_date_and_survives_restart(self):
         for index in range(4):
             budget = pool.Budget(self.database, f'2026-10-{index+1:02d}')
+            self.assertEqual(budget.attempt_number, index + 1)
             for _ in range(3):
                 budget.spend('model')
             with self.assertRaisesRegex(ValueError, 'budget exhausted'):
@@ -62,7 +63,9 @@ class AutomaticPoolTests(unittest.TestCase):
             row = conn.execute('SELECT day,attempts,model_requests FROM automatic_map_usage').fetchone()
             self.assertEqual(tuple(row), ('2026-09-08', 4, 12))
         self.clock += timedelta(days=1)
-        self.assertEqual(pool.Budget(self.database, '2026-12-01').budget_day, '2026-09-09')
+        next_day = pool.Budget(self.database, '2026-12-01')
+        self.assertEqual(next_day.budget_day, '2026-09-09')
+        self.assertEqual(next_day.attempt_number, 1)
 
     def test_live_lease_prevents_parallel_replenishment_and_expired_lease_keeps_usage(self):
         first = pool.Budget(self.database, '2026-09-08')

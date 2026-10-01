@@ -33,6 +33,12 @@ MAX_RESPONSE_BYTES = 2_000_000
 PLACE_TYPES = ('castle', 'bridge', 'monument', 'museum', 'religious_site', 'historic_site',
                'island', 'garden', 'tower', 'engineering', 'natural_landmark')
 USER_AGENT = 'FultonsMapSelector/1.0 (https://fultons-quiz.co.uk)'
+PROPOSAL_FOCUSES = (
+    ('North America', 'South America', 'Oceania'),
+    ('East Asia', 'South Asia', 'Southeast Asia'),
+    ('North Africa', 'sub-Saharan Africa', 'the Middle East'),
+    ('Northern Europe', 'Eastern Europe', 'the Mediterranean'),
+)
 
 
 def normalized(text: str) -> str:
@@ -49,6 +55,14 @@ def reject_excluded_place(names: list[str], excluded: list[str]) -> None:
     blocked = {exclusion_key(name) for name in excluded if name}
     if any(exclusion_key(name) in blocked for name in names if name):
         raise ValueError('Place was rejected recently; choose a new candidate.')
+
+
+def proposal_focus(budget: RunBudget) -> tuple[str, str, str]:
+    """Rotate positive search lanes across attempts and days instead of repeating famous sites."""
+    budget_day = getattr(budget, 'budget_day', budget.day)
+    attempt_number = int(getattr(budget, 'attempt_number', 1))
+    index = (date.fromisoformat(budget_day).toordinal() + attempt_number - 1) % len(PROPOSAL_FOCUSES)
+    return PROPOSAL_FOCUSES[index]
 
 
 def plain(value: Any, maximum: int = 600) -> str:
@@ -439,8 +453,12 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
     try:
         recent = history(source_db, puzzle_date)
         existing = (controlled.load_catalog(catalog) if catalog is not None else []) + (excluded_places or [])
+        focus = proposal_focus(budget)
         prompt = ('Propose exactly THREE varied, interesting, currently existing, precisely pinnable landmarks '
-                  'outside the exclusions. Use different countries and different place types. No stadiums, broad regions, '
+                  'outside the exclusions. For this attempt, propose one landmark from EACH of these three '
+                  f'geographic search lanes: {focus[0]}, {focus[1]}, and {focus[2]}. '
+                  'Use different countries and different place types. Do not repeat a landmark named in the '
+                  'exclusions even under an alternate spelling or article title. No stadiums, broad regions, '
                   'private homes, demolished structures, or generic fame. Prefer a memorable place-owned story or '
                   'engineering idea. Never disguise a stadium as engineering. Prefer source-rich landmarks with a famous incident, '
                   'not geological age, building material or a superlative. For each give exact English Wikipedia article titles for the target, its city/town '
