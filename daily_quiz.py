@@ -3979,6 +3979,19 @@ def generate_slot_two_stage(
     accepted_answer_keys = {
         normalize_answer(question["correct_answer"]) for question in accepted_recent
     }
+    recent_answer_names: list[str] = []
+    seen_recent_answers: set[str] = set()
+    recent_answer_chars = 0
+    for question in accepted_recent:
+        answer = str(question["correct_answer"]).strip()
+        key = normalize_answer(answer)
+        if not key or key in seen_recent_answers:
+            continue
+        if len(recent_answer_names) >= 100 or recent_answer_chars + len(answer) > 3000:
+            break
+        seen_recent_answers.add(key)
+        recent_answer_names.append(answer)
+        recent_answer_chars += len(answer)
     current_answer_keys = {
         normalize_answer(question["correct_answer"]) for question in current_questions
     }
@@ -4361,8 +4374,13 @@ def generate_slot_two_stage(
                 subject=subject,
                 difficulty=difficulty,
             ),
-            limit=24,
+            limit=23 if recent_answer_names else 24,
         )
+        if recent_answer_names:
+            discovery_feedback.append(
+                "Do not propose these correct answers already used recently in this subject: "
+                + json.dumps(recent_answer_names, ensure_ascii=True)
+            )
         try:
             payload = discovery_provider.discover_candidates(
                 subject=subject,
@@ -5937,6 +5955,32 @@ def replenish_quiz_pool(
             or "Quiz pool generation deferred before all six slots were verified."
         )
         inventory = quiz_pool_status(conn)
+        if result.get("status") == "failed":
+            exhausted_work_date = (
+                failed_attempt_count(conn, work_quiz_date)
+                >= config.max_failed_attempts_per_date
+            )
+            _fail_quiz_pool_job(conn, job, last_reason)
+            inventory = quiz_pool_status(conn)
+            if inventory["provider_circuits"]:
+                return {
+                    "status": "capped",
+                    "target": target_ready,
+                    "added": added,
+                    "attempted": attempted,
+                    "reason": last_reason,
+                    **inventory,
+                }
+            if exhausted_work_date:
+                continue
+            return {
+                "status": "failed",
+                "target": target_ready,
+                "added": added,
+                "attempted": attempted,
+                "reason": last_reason,
+                **inventory,
+            }
         if inventory["provider_circuits"]:
             conn.execute(
                 """
@@ -5949,19 +5993,6 @@ def replenish_quiz_pool(
             commit_if_needed(conn)
             return {
                 "status": "capped",
-                "target": target_ready,
-                "added": added,
-                "attempted": attempted,
-                "reason": last_reason,
-                **inventory,
-            }
-        if result.get("status") == "failed":
-            _fail_quiz_pool_job(conn, job, last_reason)
-            inventory = quiz_pool_status(conn)
-            if "failed-attempt safety budget" in last_reason.casefold():
-                continue
-            return {
-                "status": "failed",
                 "target": target_ready,
                 "added": added,
                 "attempted": attempted,

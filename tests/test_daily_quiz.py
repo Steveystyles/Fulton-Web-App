@@ -1087,6 +1087,14 @@ class DailyQuizTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "Blocked Football Answer" in entry
+                and "already used recently" in entry
+                for entry in provider.discovery_feedback_calls[0]
+            ),
+            "the first discovery call must know recent answer exclusions",
+        )
+        self.assertTrue(
+            any(
+                "Blocked Football Answer" in entry
                 for entry in provider.discovery_feedback_calls[1]
             )
         )
@@ -3134,6 +3142,72 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(job_after["id"], job_before["id"])
         self.assertEqual(job_after["work_quiz_date"], job_before["work_quiz_date"])
         self.assertEqual(job_after["state"], "ready")
+
+    def test_quiz_pool_retires_exhausted_work_date_even_with_provider_circuit(self) -> None:
+        job = daily_quiz._create_quiz_pool_job(self.conn)
+        work_date = job["work_quiz_date"]
+        self.conn.execute(
+            """INSERT INTO daily_quiz_attempts
+               (quiz_date, subject, difficulty, attempt_number, provider,
+                generated_json, passed, failure_reason, created_at)
+               VALUES (?, 'football', 'medium', 1, 'test-provider', '{}', 0,
+                       'Repeated answer', ?)""",
+            (work_date, daily_quiz.utc_now()),
+        )
+        self.conn.execute(
+            """INSERT INTO daily_quiz_provider_circuits
+               (provider_key, blocked_until, failure_reason, opened_at, updated_at)
+               VALUES ('test-provider', ?, 'Quota exhausted', ?, ?)""",
+            ((datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+             daily_quiz.utc_now(), daily_quiz.utc_now()),
+        )
+        self.conn.commit()
+
+        result = daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=replace(config(), max_failed_attempts_per_date=1),
+            target_ready=1,
+            max_batch_attempts=2,
+            provider=PassingProvider("test-provider"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(result["status"], "capped")
+        self.assertEqual(result["generating"], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
+        ).fetchone()[0], "failed")
+        self.assertEqual(daily_quiz.failed_attempt_count(self.conn, work_date), 0)
+
+    def test_quiz_pool_moves_to_fresh_work_date_after_exhausted_budget(self) -> None:
+        job = daily_quiz._create_quiz_pool_job(self.conn)
+        self.conn.execute(
+            """INSERT INTO daily_quiz_attempts
+               (quiz_date, subject, difficulty, attempt_number, provider,
+                generated_json, passed, failure_reason, created_at)
+               VALUES (?, 'football', 'medium', 1, 'test-provider', '{}', 0,
+                       'Repeated answer', ?)""",
+            (job["work_quiz_date"], daily_quiz.utc_now()),
+        )
+        self.conn.commit()
+
+        result = daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=replace(config(), max_failed_attempts_per_date=1),
+            target_ready=1,
+            max_batch_attempts=2,
+            provider=PassingProvider("test-provider"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(result["status"], "stocked")
+        self.assertEqual(result["ready"], 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
+        ).fetchone()[0], "failed")
+        self.assertNotEqual(self.conn.execute(
+            "SELECT work_quiz_date FROM daily_quiz_pool_batches WHERE state='ready'"
+        ).fetchone()[0], job["work_quiz_date"])
 
     def test_quiz_pool_claim_rolls_back_if_publication_fails(self) -> None:
         daily_quiz.replenish_quiz_pool(
