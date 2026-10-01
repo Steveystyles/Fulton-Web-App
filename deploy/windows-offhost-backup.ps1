@@ -7,11 +7,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+Add-Type -AssemblyName System.Security
 
 $Repository = Split-Path -Parent $PSScriptRoot
 $BackupManager = Join-Path $PSScriptRoot 'backup_manager.py'
 $SevenZip = 'C:\Program Files (x86)\Universal Extractor\bin\7z.exe'
-$RemoteRoot = '/disk2/backups/fultons-quiz'
+$RemoteRoot = '/srv/storage/backups/fultons-quiz'
 $TempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $Work = Join-Path $TempRoot ('fultons-offhost-' + [Guid]::NewGuid().ToString('N'))
 $Restore = Join-Path $TempRoot ('fultons-offhost-restore-' + [Guid]::NewGuid().ToString('N'))
@@ -75,9 +76,15 @@ try {
     & python $BackupManager verify $Downloaded
     Assert-NativeSuccess 'Downloaded-backup verification'
 
-    $Password = [Convert]::ToHexString(
-        [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
-    ).ToLowerInvariant()
+    $PasswordBytes = New-Object byte[] 32
+    $Random = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $Random.GetBytes($PasswordBytes)
+    }
+    finally {
+        $Random.Dispose()
+    }
+    $Password = -join ($PasswordBytes | ForEach-Object { $_.ToString('x2') })
     $Stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
     $Base = "fultons-offhost-$Stamp-$BackupName"
     $StagedArchive = Join-Path $Work ($Base + '.7z')

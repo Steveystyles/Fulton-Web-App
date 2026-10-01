@@ -116,7 +116,12 @@ class AlertMonitorTests(unittest.TestCase):
 
     def test_windows_offhost_backup_is_encrypted_and_restore_verified(self) -> None:
         script = WINDOWS_BACKUP_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("RandomNumberGenerator]::GetBytes(32)", script)
+        self.assertIn("$RemoteRoot = '/srv/storage/backups/fultons-quiz'", script)
+        self.assertNotIn("$RemoteRoot = '/disk2/backups/fultons-quiz'", script)
+        self.assertIn("RandomNumberGenerator]::Create()", script)
+        self.assertIn("$Random.GetBytes($PasswordBytes)", script)
+        self.assertIn("$Random.Dispose()", script)
+        self.assertIn("Add-Type -AssemblyName System.Security", script)
         self.assertIn("-mhe=on", script)
         self.assertIn("DataProtectionScope]::CurrentUser", script)
         self.assertIn("$SevenZip x -y", script)
