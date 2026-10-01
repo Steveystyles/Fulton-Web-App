@@ -15,7 +15,7 @@ class QuizBoardTests(unittest.TestCase):
         self.conn.execute("INSERT INTO users (id, username) VALUES (1, 'player')")
         daily_quiz.initialize_database(self.conn)
         quiz_board.initialize_database(self.conn)
-        for day in ("2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"):
+        for day in ("2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06"):
             self._seed_day(day)
 
     def _seed_day(self, day):
@@ -39,6 +39,10 @@ class QuizBoardTests(unittest.TestCase):
         board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
         public = quiz_board.board_payload(self.conn, board)
         self.assertEqual(len(public["cards"]), 6)
+        self.assertEqual(
+            {(card["subject"], card["difficulty"]) for card in public["cards"]},
+            {(subject, difficulty) for subject in ("football", "general") for difficulty in ("easy", "medium", "hard")},
+        )
         self.assertNotIn("question", public["cards"][0])
         for _ in range(4):
             card = next(item for item in public["cards"] if item["selectedOrder"] is None)
@@ -50,7 +54,7 @@ class QuizBoardTests(unittest.TestCase):
             public = response["board"]
             board = self.conn.execute("SELECT * FROM quiz_boards WHERE id=?", (board["id"],)).fetchone()
         self.assertEqual(public["status"], "completed")
-        self.assertEqual(public["maxScore"], 23)
+        self.assertEqual(public["maxScore"], 19)
         self.assertEqual(public["bonusPoints"], 3)
 
     def test_two_unpicked_cards_roll_once_to_next_daily_board(self):
@@ -69,6 +73,113 @@ class QuizBoardTests(unittest.TestCase):
         carries = [item for item in next_public["cards"] if item["source"] == "carry"]
         self.assertEqual(len(carries), 2)
         self.assertEqual({item["appearances"] for item in carries}, {2})
+
+    def test_practice_board_has_one_card_per_subject_and_difficulty(self):
+        board = quiz_board.ensure_board(self.conn, 1, "2026-09-30", "practice", "now")
+        cards = quiz_board.board_payload(self.conn, board)["cards"]
+        self.assertEqual(len(cards), 6)
+        self.assertEqual(
+            {(card["subject"], card["difficulty"]) for card in cards},
+            {(subject, difficulty) for subject in ("football", "general") for difficulty in ("easy", "medium", "hard")},
+        )
+
+    def test_existing_balanced_board_updates_the_obsolete_maximum(self):
+        board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
+        self.conn.execute("UPDATE quiz_boards SET max_score = 23 WHERE id = ?", (board["id"],))
+        current = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "later")
+        self.assertEqual(quiz_board.board_payload(self.conn, current)["maxScore"], 19)
+
+    def test_existing_unplayed_board_repairs_duplicate_difficulty_on_reload(self):
+        board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
+        hard_card = self.conn.execute(
+            """SELECT c.id FROM quiz_board_cards c JOIN daily_quiz_questions q ON q.id = c.question_id
+               WHERE c.board_id = ? AND q.subject = 'football' AND q.difficulty = 'hard'""",
+            (board["id"],),
+        ).fetchone()
+        duplicate_easy = self.conn.execute(
+            """SELECT q.id FROM daily_quiz_questions q JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+               WHERE s.quiz_date = '2026-09-30' AND q.subject = 'football' AND q.difficulty = 'easy'"""
+        ).fetchone()
+        self.conn.execute(
+            "UPDATE quiz_board_cards SET question_id = ? WHERE id = ?",
+            (duplicate_easy["id"], hard_card["id"]),
+        )
+        repaired = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "later")
+        cards = quiz_board.board_payload(self.conn, repaired)["cards"]
+        self.assertEqual(len({(card["subject"], card["difficulty"]) for card in cards}), 6)
+        self.assertEqual(sum(card["difficulty"] == "hard" for card in cards), 2)
+        self.assertEqual(quiz_board.board_payload(self.conn, repaired)["maxScore"], 19)
+
+    def test_repair_preserves_an_answered_card_and_replaces_only_unplayed_duplicates(self):
+        board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
+        public = quiz_board.board_payload(self.conn, board)
+        played = public["cards"][0]
+        public = quiz_board.select_card(self.conn, board, played["id"], "now")
+        answer = next(card for card in public["cards"] if card.get("question"))["question"]["answers"][0]["id"]
+        quiz_board.answer_card(self.conn, board, played["id"], answer, "now")
+        hard_card = self.conn.execute(
+            """SELECT c.id FROM quiz_board_cards c JOIN daily_quiz_questions q ON q.id = c.question_id
+               WHERE c.board_id = ? AND q.subject = 'football' AND q.difficulty = 'hard'""",
+            (board["id"],),
+        ).fetchone()
+        duplicate_easy = self.conn.execute(
+            """SELECT q.id FROM daily_quiz_questions q JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+               WHERE s.quiz_date = '2026-09-30' AND q.subject = 'football' AND q.difficulty = 'easy'"""
+        ).fetchone()
+        self.conn.execute("UPDATE quiz_board_cards SET question_id = ? WHERE id = ?", (duplicate_easy["id"], hard_card["id"]))
+        current = self.conn.execute("SELECT * FROM quiz_boards WHERE id = ?", (board["id"],)).fetchone()
+        repaired = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "later")
+        cards = quiz_board.board_payload(self.conn, repaired)["cards"]
+        self.assertEqual(len({(card["subject"], card["difficulty"]) for card in cards}), 6)
+        self.assertEqual(sum(card["answered"] for card in cards), 1)
+        self.assertTrue(next(card for card in cards if card["id"] == played["id"])["answered"])
+        self.assertEqual(current["status"], "in_progress")
+
+    def test_duplicate_carryover_slot_waits_in_bucket_for_a_later_board(self):
+        board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
+        public = quiz_board.board_payload(self.conn, board)
+        for card in public["cards"][:4]:
+            public = quiz_board.select_card(self.conn, board, card["id"], "now")
+            active = next(item for item in public["cards"] if item.get("question"))
+            public = quiz_board.answer_card(
+                self.conn, board, active["id"], active["question"]["answers"][0]["id"], "now"
+            )["board"]
+            board = self.conn.execute("SELECT * FROM quiz_boards WHERE id = ?", (board["id"],)).fetchone()
+        skipped_card = self.conn.execute(
+            """SELECT c.id FROM quiz_board_cards c JOIN daily_quiz_questions q ON q.id = c.question_id
+               WHERE c.board_id = ? AND q.subject = 'general_knowledge' AND q.difficulty = 'hard'""",
+            (board["id"],),
+        ).fetchone()
+        duplicate_question = self.conn.execute(
+            """SELECT q.id FROM daily_quiz_questions q JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+               WHERE s.quiz_date = '2026-09-30' AND q.subject = 'football' AND q.difficulty = 'hard'"""
+        ).fetchone()
+        self.conn.execute(
+            "UPDATE quiz_board_cards SET question_id = ? WHERE id = ?",
+            (duplicate_question["id"], skipped_card["id"]),
+        )
+        next_board = quiz_board.ensure_board(self.conn, 1, "2026-09-30", "daily", "later")
+        next_cards = quiz_board.board_payload(self.conn, next_board)["cards"]
+        self.assertEqual(len({(card["subject"], card["difficulty"]) for card in next_cards}), 6)
+        self.assertEqual(sum(card["source"] == "carry" for card in next_cards), 1)
+        carried = next(card for card in next_cards if card["source"] == "carry")
+        selected = quiz_board.select_card(self.conn, next_board, carried["id"], "later")
+        active = next(card for card in selected["cards"] if card.get("question"))
+        quiz_board.answer_card(self.conn, next_board, active["id"], active["question"]["answers"][0]["id"], "later")
+        later_board = quiz_board.ensure_board(self.conn, 1, "2026-10-01", "daily", "later still")
+        later_questions = self.conn.execute(
+            "SELECT question_id FROM quiz_board_cards WHERE board_id = ? AND source_kind = 'carry'",
+            (later_board["id"],),
+        ).fetchall()
+        self.assertIn(duplicate_question["id"], {row["question_id"] for row in later_questions})
+
+    def test_missing_difficulty_slot_fails_instead_of_showing_another_easy_card(self):
+        self.conn.execute(
+            """DELETE FROM daily_quiz_questions WHERE subject = 'general_knowledge' AND difficulty = 'hard'"""
+        )
+        with self.assertRaisesRegex(LookupError, "one per subject and difficulty"):
+            quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM quiz_boards").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

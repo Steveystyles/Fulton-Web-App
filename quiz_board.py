@@ -1,7 +1,6 @@
 """Per-player daily and practice quiz boards built from verified quiz questions."""
 from __future__ import annotations
 
-from datetime import date, timedelta
 import json
 import sqlite3
 from typing import Any
@@ -12,10 +11,15 @@ import daily_quiz
 POINTS = {"easy": 1, "medium": 3, "hard": 5}
 DAILY_CARD_COUNT = 6
 DAILY_PICK_COUNT = 4
-DAILY_MAX_SCORE = 23
+DAILY_MAX_SCORE = 19
 PERFECT_BONUS = 3
 MAX_APPEARANCES = 7
 LAUNCH_RESERVE_CARDS = 34
+BOARD_SLOTS = tuple(
+    (subject, difficulty)
+    for difficulty in ("easy", "medium", "hard")
+    for subject in ("football", "general_knowledge")
+)
 
 
 def initialize_database(conn: sqlite3.Connection) -> None:
@@ -28,7 +32,7 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             mode TEXT NOT NULL CHECK (mode IN ('daily', 'practice')),
             status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready', 'in_progress', 'completed')),
             score INTEGER NOT NULL DEFAULT 0,
-            max_score INTEGER NOT NULL DEFAULT 23,
+            max_score INTEGER NOT NULL DEFAULT 19,
             correct_count INTEGER NOT NULL DEFAULT 0,
             bonus_points INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
@@ -141,6 +145,119 @@ def _candidate_rows(conn: sqlite3.Connection, game_date: str, *, practice: bool,
     ).fetchall()
 
 
+def _slot(row: sqlite3.Row) -> tuple[str, str]:
+    return str(row["subject"]), str(row["difficulty"])
+
+
+def _carryover_rows(conn: sqlite3.Connection, user_id: int, game_date: str) -> list[sqlite3.Row]:
+    """Keep the latest unused appearance eligible, including older skipped leftovers."""
+    history = conn.execute(
+        """
+        SELECT c.question_id, c.appearances, c.selected_order, c.answered_at,
+               c.position, b.game_date, q.subject, q.difficulty
+        FROM quiz_board_cards c
+        JOIN quiz_boards b ON b.id = c.board_id
+        JOIN daily_quiz_questions q ON q.id = c.question_id
+        WHERE b.user_id = ? AND b.mode = 'daily' AND b.game_date < ?
+        ORDER BY b.game_date DESC, c.id DESC
+        """,
+        (user_id, game_date),
+    ).fetchall()
+    seen: set[int] = set()
+    eligible = []
+    for row in history:
+        question_id = int(row["question_id"])
+        if question_id in seen:
+            continue
+        seen.add(question_id)
+        if row["selected_order"] is None and row["answered_at"] is None and int(row["appearances"]) < MAX_APPEARANCES:
+            eligible.append(row)
+    return sorted(eligible, key=lambda row: (-int(row["appearances"]), str(row["game_date"]), int(row["position"])))
+
+
+def _board_choices(
+    conn: sqlite3.Connection,
+    user_id: int,
+    game_date: str,
+    mode: str,
+    existing_cards: list[sqlite3.Row] | None = None,
+) -> dict[tuple[str, str], tuple[int, str, int]]:
+    chosen: dict[tuple[str, str], tuple[int, str, int]] = {}
+    used: set[int] = set()
+    for card in existing_cards or []:
+        slot = _slot(card)
+        question_id = int(card["question_id"])
+        if slot in BOARD_SLOTS and slot not in chosen and question_id not in used:
+            chosen[slot] = (question_id, str(card["source_kind"]), int(card["appearances"]))
+            used.add(question_id)
+
+    if mode == "daily":
+        carry_count = sum(source == "carry" for _, source, _ in chosen.values())
+        for row in _carryover_rows(conn, user_id, game_date):
+            if carry_count >= 2:
+                break
+            slot = _slot(row)
+            question_id = int(row["question_id"])
+            if slot in BOARD_SLOTS and slot not in chosen and question_id not in used:
+                chosen[slot] = (question_id, "carry", int(row["appearances"]) + 1)
+                used.add(question_id)
+                carry_count += 1
+
+    source = "practice" if mode == "practice" else "new"
+    for row in _candidate_rows(conn, game_date, practice=mode == "practice", user_id=user_id):
+        slot = _slot(row)
+        question_id = int(row["id"])
+        if slot in BOARD_SLOTS and slot not in chosen and question_id not in used:
+            chosen[slot] = (question_id, source, MAX_APPEARANCES if mode == "practice" else 1)
+            used.add(question_id)
+            if len(chosen) == DAILY_CARD_COUNT:
+                break
+    if len(chosen) != DAILY_CARD_COUNT:
+        raise LookupError("Six verified quiz cards, one per subject and difficulty, are not available yet.")
+    return chosen
+
+
+def _rebalance_existing_board(conn: sqlite3.Connection, board: sqlite3.Row, now: str) -> None:
+    cards = conn.execute(
+        """SELECT c.*, q.subject, q.difficulty FROM quiz_board_cards c
+           JOIN daily_quiz_questions q ON q.id = c.question_id
+           WHERE c.board_id = ? ORDER BY c.position""",
+        (board["id"],),
+    ).fetchall()
+    slots = [_slot(card) for card in cards]
+    if len(cards) == DAILY_CARD_COUNT and set(slots) == set(BOARD_SLOTS):
+        if int(board["max_score"]) != DAILY_MAX_SCORE:
+            conn.execute("UPDATE quiz_boards SET max_score = ? WHERE id = ?", (DAILY_MAX_SCORE, board["id"]))
+        return
+    if board["status"] == "completed":
+        return
+    selected = [card for card in cards if card["selected_order"] is not None]
+    if len({_slot(card) for card in selected}) != len(selected):
+        # A played duplicate cannot be replaced without discarding the player's answer.
+        return
+    # Keep played cards first, then retain as many still-valid unplayed cards as possible.
+    choices = _board_choices(
+        conn, int(board["user_id"]), str(board["game_date"]), str(board["mode"]),
+        selected + [card for card in cards if card["selected_order"] is None],
+    )
+    selected_by_slot = {_slot(card): card for card in selected}
+    conn.execute("DELETE FROM quiz_board_cards WHERE board_id = ? AND selected_order IS NULL", (board["id"],))
+    for card in selected:
+        conn.execute("UPDATE quiz_board_cards SET position = ? WHERE id = ?", (-int(card["id"]), card["id"]))
+    for position, slot in enumerate(BOARD_SLOTS):
+        if slot in selected_by_slot:
+            conn.execute("UPDATE quiz_board_cards SET position = ? WHERE id = ?", (position, selected_by_slot[slot]["id"]))
+        else:
+            question_id, source_kind, appearances = choices[slot]
+            conn.execute(
+                """INSERT INTO quiz_board_cards
+                   (board_id, question_id, position, source_kind, appearances)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (board["id"], question_id, position, source_kind, appearances),
+            )
+    conn.execute("UPDATE quiz_boards SET max_score = ?, updated_at = ? WHERE id = ?", (DAILY_MAX_SCORE, now, board["id"]))
+
+
 def ensure_board(conn: sqlite3.Connection, user_id: int, game_date: str, mode: str, now: str) -> sqlite3.Row:
     if mode not in {"daily", "practice"}:
         raise ValueError("Quiz mode must be daily or practice.")
@@ -149,7 +266,8 @@ def ensure_board(conn: sqlite3.Connection, user_id: int, game_date: str, mode: s
         (user_id, game_date, mode),
     ).fetchone()
     if existing is not None:
-        return existing
+        _rebalance_existing_board(conn, existing, now)
+        return conn.execute("SELECT * FROM quiz_boards WHERE id = ?", (existing["id"],)).fetchone()
     if mode == "daily":
         reserve_count = conn.execute(
             """SELECT COUNT(*) FROM daily_quiz_questions q
@@ -168,35 +286,13 @@ def ensure_board(conn: sqlite3.Connection, user_id: int, game_date: str, mode: s
         (user_id, game_date, mode, DAILY_MAX_SCORE, now, now),
     )
     board_id = int(cursor.lastrowid)
-    chosen: list[tuple[int, str, int]] = []
-    if mode == "daily":
-        yesterday = (date.fromisoformat(game_date) - timedelta(days=1)).isoformat()
-        leftovers = conn.execute(
-            """
-            SELECT c.question_id, c.appearances
-            FROM quiz_board_cards c JOIN quiz_boards b ON b.id=c.board_id
-            WHERE b.user_id=? AND b.game_date=? AND b.mode='daily'
-              AND c.selected_order IS NULL AND c.appearances < ?
-            ORDER BY c.position LIMIT 2
-            """,
-            (user_id, yesterday, MAX_APPEARANCES),
-        ).fetchall()
-        chosen.extend((int(row["question_id"]), "carry", int(row["appearances"]) + 1) for row in leftovers)
-    candidates = _candidate_rows(conn, game_date, practice=mode == "practice", user_id=user_id)
-    used = {item[0] for item in chosen}
-    source = "practice" if mode == "practice" else "new"
-    for row in candidates:
-        question_id = int(row["id"])
-        if question_id in used:
-            continue
-        chosen.append((question_id, source, MAX_APPEARANCES if mode == "practice" else 1))
-        used.add(question_id)
-        if len(chosen) == DAILY_CARD_COUNT:
-            break
-    if len(chosen) < DAILY_CARD_COUNT:
+    try:
+        choices = _board_choices(conn, user_id, game_date, mode)
+    except LookupError:
         conn.execute("DELETE FROM quiz_boards WHERE id=?", (board_id,))
-        raise LookupError("Six verified quiz cards are not available yet.")
-    for position, (question_id, source_kind, appearances) in enumerate(chosen):
+        raise
+    for position, slot in enumerate(BOARD_SLOTS):
+        question_id, source_kind, appearances = choices[slot]
         conn.execute(
             """INSERT INTO quiz_board_cards
                (board_id, question_id, position, source_kind, appearances)
