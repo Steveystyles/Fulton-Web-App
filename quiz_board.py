@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from typing import Any
 
@@ -13,7 +14,6 @@ DAILY_CARD_COUNT = 6
 DAILY_PICK_COUNT = 4
 DAILY_MAX_SCORE = 19
 PERFECT_BONUS = 3
-MAX_APPEARANCES = 7
 LAUNCH_RESERVE_CARDS = 34
 BOARD_SLOTS = tuple(
     (subject, difficulty)
@@ -135,15 +135,23 @@ def _candidate_rows(conn: sqlite3.Connection, game_date: str, *, practice: bool,
         return rows + [row for row in fallback_rows if int(row["id"]) not in unused_ids]
     return conn.execute(
         """
-        SELECT q.* FROM daily_quiz_questions q
+        SELECT q.*,
+               (SELECT COUNT(*) FROM quiz_board_cards prior
+                JOIN quiz_boards previous ON previous.id = prior.board_id
+                WHERE previous.user_id = ? AND previous.mode = 'daily'
+                  AND previous.game_date < ? AND prior.question_id = q.id) AS prior_appearances
+        FROM daily_quiz_questions q
         JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
-        WHERE s.status = 'published' AND s.quiz_date >= ?
-        ORDER BY CASE WHEN s.quiz_date = ? THEN 0 ELSE 1 END,
-                 s.quiz_date ASC,
-                 CASE q.difficulty WHEN 'easy' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-                 q.subject ASC, q.id ASC
+        WHERE s.status = 'published'
+          AND NOT EXISTS (
+            SELECT 1 FROM quiz_board_cards used
+            JOIN quiz_boards played ON played.id = used.board_id
+            WHERE played.user_id = ? AND used.question_id = q.id
+              AND (used.selected_order IS NOT NULL OR used.answered_at IS NOT NULL)
+          )
+        ORDER BY q.id ASC
         """,
-        (game_date, game_date),
+        (user_id, game_date, user_id),
     ).fetchall()
 
 
@@ -151,30 +159,14 @@ def _slot(row: sqlite3.Row) -> tuple[str, str]:
     return str(row["subject"]), str(row["difficulty"])
 
 
-def _carryover_rows(conn: sqlite3.Connection, user_id: int, game_date: str) -> list[sqlite3.Row]:
-    """Keep the latest unused appearance eligible, including older skipped leftovers."""
-    history = conn.execute(
-        """
-        SELECT c.question_id, c.appearances, c.selected_order, c.answered_at,
-               c.position, b.game_date, q.subject, q.difficulty
-        FROM quiz_board_cards c
-        JOIN quiz_boards b ON b.id = c.board_id
-        JOIN daily_quiz_questions q ON q.id = c.question_id
-        WHERE b.user_id = ? AND b.mode = 'daily' AND b.game_date < ?
-        ORDER BY b.game_date DESC, c.id DESC
-        """,
+def daily_board_available(conn: sqlite3.Connection, user_id: int, game_date: str) -> bool:
+    existing = conn.execute(
+        "SELECT 1 FROM quiz_boards WHERE user_id=? AND game_date=? AND mode='daily'",
         (user_id, game_date),
-    ).fetchall()
-    seen: set[int] = set()
-    eligible = []
-    for row in history:
-        question_id = int(row["question_id"])
-        if question_id in seen:
-            continue
-        seen.add(question_id)
-        if row["selected_order"] is None and row["answered_at"] is None and int(row["appearances"]) < MAX_APPEARANCES:
-            eligible.append(row)
-    return sorted(eligible, key=lambda row: (-int(row["appearances"]), str(row["game_date"]), int(row["position"])))
+    ).fetchone()
+    return bool(existing) or set(BOARD_SLOTS).issubset({
+        _slot(row) for row in _candidate_rows(conn, game_date, practice=False, user_id=user_id)
+    })
 
 
 def _board_choices(
@@ -193,24 +185,19 @@ def _board_choices(
             chosen[slot] = (question_id, str(card["source_kind"]), int(card["appearances"]))
             used.add(question_id)
 
+    candidates = _candidate_rows(conn, game_date, practice=mode == "practice", user_id=user_id)
     if mode == "daily":
-        carry_count = sum(source == "carry" for _, source, _ in chosen.values())
-        for row in _carryover_rows(conn, user_id, game_date):
-            if carry_count >= 2:
-                break
-            slot = _slot(row)
-            question_id = int(row["question_id"])
-            if slot in BOARD_SLOTS and slot not in chosen and question_id not in used:
-                chosen[slot] = (question_id, "carry", int(row["appearances"]) + 1)
-                used.add(question_id)
-                carry_count += 1
-
-    source = "practice" if mode == "practice" else "new"
-    for row in _candidate_rows(conn, game_date, practice=mode == "practice", user_id=user_id):
+        # A stable pseudorandom rank gives every unused question in a slot the
+        # same chance, regardless of when it was published or last displayed.
+        candidates.sort(key=lambda row: hashlib.sha256(
+            f"{user_id}:{game_date}:{row['subject']}:{row['difficulty']}:{row['id']}".encode()
+        ).digest())
+    for row in candidates:
         slot = _slot(row)
         question_id = int(row["id"])
         if slot in BOARD_SLOTS and slot not in chosen and question_id not in used:
-            chosen[slot] = (question_id, source, MAX_APPEARANCES if mode == "practice" else 1)
+            prior = int(row["prior_appearances"]) if mode == "daily" else 0
+            chosen[slot] = (question_id, "practice" if mode == "practice" else "carry" if prior else "new", prior + 1)
             used.add(question_id)
             if len(chosen) == DAILY_CARD_COUNT:
                 break
@@ -270,17 +257,6 @@ def ensure_board(conn: sqlite3.Connection, user_id: int, game_date: str, mode: s
     if existing is not None:
         _rebalance_existing_board(conn, existing, now)
         return conn.execute("SELECT * FROM quiz_boards WHERE id = ?", (existing["id"],)).fetchone()
-    if mode == "daily":
-        reserve_count = conn.execute(
-            """SELECT COUNT(*) FROM daily_quiz_questions q
-               JOIN daily_quiz_sets s ON s.id=q.quiz_set_id
-               WHERE s.status='published' AND s.quiz_date >= ?""",
-            (game_date,),
-        ).fetchone()[0]
-        if int(reserve_count) < LAUNCH_RESERVE_CARDS:
-            raise LookupError(
-                f"The new quiz is preparing its verified reserve ({reserve_count}/{LAUNCH_RESERVE_CARDS} cards)."
-            )
     cursor = conn.execute(
         """INSERT INTO quiz_boards
            (user_id, game_date, mode, status, score, max_score, correct_count, bonus_points, created_at, updated_at)

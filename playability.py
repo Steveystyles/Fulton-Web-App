@@ -1,7 +1,7 @@
 """Read-only daily hub and balanced league projections. Original scores never change."""
 from datetime import date, datetime, time, timedelta, timezone
 import json
-import daily_quiz
+import quiz_board
 
 
 def map_day(game_date):
@@ -29,15 +29,7 @@ def today_payload(conn, user_id, game_date, tz=timezone.utc):
         "SELECT answers_json FROM daily_quiz_progress WHERE user_id=? AND game_date=?",
         (user_id, game_date),
     ).fetchall()
-    try:
-        available = len(daily_quiz.quiz_payload(conn, game_date)["questions"]) >= 6 and conn.execute(
-            """SELECT COUNT(*) FROM daily_quiz_questions q
-               JOIN daily_quiz_sets s ON s.id=q.quiz_set_id
-               WHERE s.status='published' AND s.quiz_date >= ?""",
-            (game_date,),
-        ).fetchone()[0] >= 34
-    except (LookupError, ValueError):
-        available = False
+    available = quiz_board.daily_board_available(conn, user_id, game_date)
     activities.append({"id": "quiz", "title": "Quiz", "href": "/quiz",
                        "status": "completed" if (board and board["status"] == "completed") or legacy_results else "continue" if (board and board["status"] == "in_progress") or any(json.loads(row["answers_json"] or "[]") for row in legacy_progress) else "ready" if available else "unavailable",
                        "score": board["score"] if board and board["status"] == "completed" else sum(row["score"] for row in legacy_results) if legacy_results else None})
