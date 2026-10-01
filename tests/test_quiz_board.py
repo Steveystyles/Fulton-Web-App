@@ -83,6 +83,37 @@ class QuizBoardTests(unittest.TestCase):
             {(subject, difficulty) for subject in ("football", "general") for difficulty in ("easy", "medium", "hard")},
         )
 
+    def test_practice_replays_an_answered_question_when_one_slot_has_no_unused_questions(self):
+        answered_ids = []
+        for day in ("2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"):
+            question_id = self.conn.execute(
+                """SELECT q.id FROM daily_quiz_questions q JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+                   WHERE s.quiz_date = ? AND q.subject = 'general_knowledge' AND q.difficulty = 'hard'""",
+                (day,),
+            ).fetchone()["id"]
+            board_id = self.conn.execute(
+                """INSERT INTO quiz_boards (user_id, game_date, mode, status, created_at, updated_at)
+                   VALUES (1, ?, 'daily', 'completed', 'now', 'now')""",
+                (day,),
+            ).lastrowid
+            self.conn.execute(
+                """INSERT INTO quiz_board_cards
+                   (board_id, question_id, position, source_kind, selected_order, answered_at)
+                   VALUES (?, ?, 0, 'new', 1, 'now')""",
+                (board_id, question_id),
+            )
+            answered_ids.append(question_id)
+
+        board = quiz_board.ensure_board(self.conn, 1, "2026-10-06", "practice", "now")
+        cards = quiz_board.board_payload(self.conn, board)["cards"]
+        self.assertEqual(len({(card["subject"], card["difficulty"]) for card in cards}), 6)
+        replayed = next(card for card in cards if card["subject"] == "general" and card["difficulty"] == "hard")
+        replayed_question_id = self.conn.execute(
+            "SELECT question_id FROM quiz_board_cards WHERE id = ?",
+            (int(replayed["id"].removeprefix("card_")),),
+        ).fetchone()["question_id"]
+        self.assertIn(replayed_question_id, answered_ids)
+
     def test_existing_balanced_board_updates_the_obsolete_maximum(self):
         board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
         self.conn.execute("UPDATE quiz_boards SET max_score = 23 WHERE id = ?", (board["id"],))

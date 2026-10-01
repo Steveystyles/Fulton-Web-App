@@ -120,9 +120,9 @@ def _candidate_rows(conn: sqlite3.Connection, game_date: str, *, practice: bool,
             """,
             (game_date, user_id),
         ).fetchall()
-        if len(rows) >= DAILY_CARD_COUNT:
+        if len({_slot(row) for row in rows}) == DAILY_CARD_COUNT:
             return rows
-        return conn.execute(
+        fallback_rows = conn.execute(
             """
             SELECT q.* FROM daily_quiz_questions q
             JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
@@ -131,6 +131,8 @@ def _candidate_rows(conn: sqlite3.Connection, game_date: str, *, practice: bool,
             """,
             (game_date,),
         ).fetchall()
+        unused_ids = {int(row["id"]) for row in rows}
+        return rows + [row for row in fallback_rows if int(row["id"]) not in unused_ids]
     return conn.execute(
         """
         SELECT q.* FROM daily_quiz_questions q
