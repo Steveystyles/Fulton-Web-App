@@ -240,7 +240,7 @@ def history(source_db: Path, puzzle_date: str) -> list[dict]:
 def proposal_schema() -> dict:
     fields = {k: {'type': 'string'} for k in ('title', 'city_title', 'local_title', 'reason')}
     fields['place_type'] = {'type': 'string', 'enum': list(PLACE_TYPES)}
-    return {'type': 'object', 'properties': {'candidates': {'type': 'array', 'minItems': 3, 'maxItems': 3,
+    return {'type': 'object', 'properties': {'candidates': {'type': 'array', 'minItems': 6, 'maxItems': 6,
             'items': {'type': 'object', 'properties': fields, 'required': list(fields), 'additionalProperties': False}}},
             'required': ['candidates'], 'additionalProperties': False}
 
@@ -454,10 +454,11 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         recent = history(source_db, puzzle_date)
         existing = (controlled.load_catalog(catalog) if catalog is not None else []) + (excluded_places or [])
         focus = proposal_focus(budget)
-        prompt = ('Propose exactly THREE varied, interesting, currently existing, precisely pinnable landmarks '
-                  'outside the exclusions. For this attempt, propose one landmark from EACH of these three '
+        prompt = ('Propose exactly SIX distinct, varied, interesting, currently existing, precisely pinnable landmarks '
+                  'outside the exclusions. For this attempt, propose two landmarks from EACH of these three '
                   f'geographic search lanes: {focus[0]}, {focus[1]}, and {focus[2]}. '
-                  'Use different countries and different place types. Do not repeat a landmark named in the '
+                  'Use different countries and varied place types. All six article titles must be different. '
+                  'Do not repeat a landmark named in the '
                   'exclusions even under an alternate spelling or article title. No stadiums, broad regions, '
                   'private homes, demolished structures, or generic fame. Prefer a memorable place-owned story or '
                   'engineering idea. Never disguise a stadium as engineering. Prefer source-rich landmarks with a famous incident, '
@@ -475,18 +476,27 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         proposed = provider.call_with_fallback(model_attr='generator_model', prompt=prompt, schema=proposal_schema())
         proposals = proposed.get('candidates', [])
         report['proposals'] = proposals
-        if len(proposals) != 3:
-            raise ValueError('Exactly three proposals are required.')
+        if len(proposals) != 6:
+            raise ValueError('Exactly six proposals are required.')
         candidates = []
+        seen_titles: set[str] = set()
         for proposal in proposals:
             try:
-                reject_excluded_place([str(proposal.get('title', ''))], excluded_names or [])
+                proposed_title = str(proposal.get('title', ''))
+                title_key = exclusion_key(proposed_title)
+                if title_key in seen_titles:
+                    raise ValueError('Place was repeated in this proposal batch.')
+                seen_titles.add(title_key)
+                reject_excluded_place([proposed_title], excluded_names or [])
                 candidate = resolve(proposal, sources, recent, [*existing, *candidates])
                 reject_excluded_place([candidate['canonical_name'], *candidate['acceptable_aliases']], excluded_names or [])
                 evidence_excerpt(candidate)
                 if any(c['country_code'] == candidate['country_code'] or c['place_type'] == candidate['place_type'] for c in candidates):
                     raise ValueError('Batch country or place type is repetitive.')
                 candidates.append(candidate)
+                # One fully source-resolved place is enough for the independent
+                # clue generator and verifier; preserve the request budget.
+                break
             except (ValueError, KeyError, TypeError) as error:
                 report['rejections'].append({'title': str(proposal.get('title', ''))[:160], 'reason': str(error)[:300]})
         report['resolved_candidates'] = candidates
@@ -519,7 +529,7 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'return place_id="none"; do not fabricate.\n'
                   'STYLE EXAMPLE (do not reuse these facts): hard="Built for Expo 58, this landmark represents '
                   'an iron crystal enlarged 165 billion times, turning an atomic structure into a building." '
-                  'medium="The landmark is in Brussels, the capital of Belgium." easy="In northern Brussels, '
+                  'medium="Look in Brussels, Belgium, the city that hosted this landmark during Expo 58." easy="In northern Brussels, '
                   'the landmark stands in the Heysel district, near Heysel/Heizel metro station." '
                   'Notice the answer is absent, the medium names the city and country, and the easy starts '
                   'with the city sector then names a useful local feature.\nRETRIEVED CANDIDATES:\n' + json.dumps(evidence)
