@@ -92,6 +92,40 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(source, 'request', side_effect=response):
             self.assertIn('Local Park', source.page('Example')['text'])
 
+    def test_source_distinguishes_missing_and_ambiguous_articles(self):
+        source = discovery.WikimediaSource(self.budget())
+        for page, message in (({'missing': True}, 'Missing source page'),
+                              ({'ns': 0, 'pageprops': {'disambiguation': ''}}, 'Ambiguous source page')):
+            with self.subTest(message=message), patch.object(source, 'request', return_value={'query': {'pages': [page]}}):
+                with self.assertRaisesRegex(ValueError, message):
+                    source.page('Example')
+
+    def test_title_retry_is_bounded_and_never_uses_fuzzy_or_unsourced_matches(self):
+        source = Mock()
+        pages = {'Corcovado': {'title': 'Corcovado'},
+                 'Millennium Bridge, London': {'title': 'Millennium Bridge, London'}}
+        def page(name):
+            if name in pages:
+                return pages[name]
+            if name == 'Corcovado (mountain)' or name == 'Himeji Park':
+                raise ValueError('Missing source page.')
+            raise ValueError('Ambiguous source page.')
+        source.page.side_effect = page
+        self.assertEqual(discovery.resolved_page(source, 'Corcovado (mountain)')['title'], 'Corcovado')
+        self.assertEqual(discovery.resolved_page(source, 'Millennium Bridge', city_hint='London')['title'],
+                         'Millennium Bridge, London')
+        self.assertEqual(source.page.call_args_list[-1].args[0], 'Millennium Bridge, London')
+        before = source.page.call_count
+        with self.assertRaisesRegex(ValueError, 'Missing source page'):
+            discovery.resolved_page(source, 'Himeji Park', city_hint='Himeji')
+        self.assertEqual(source.page.call_count, before + 1)
+        source.page.side_effect = ValueError('Source has no unique Earth coordinate.')
+        with self.assertRaisesRegex(ValueError, 'unique Earth coordinate'):
+            discovery.resolved_page(source, 'Wrong Point', city_hint='London')
+        self.assertEqual(source.page.call_count, before + 2)
+        self.assertEqual(discovery.anchor_name(pages['Millennium Bridge, London'], 'Millennium Bridge',
+                                               'The target overlooks Millennium Bridge.'), 'Millennium Bridge')
+
     def test_country_fetch_limits_claims_and_caches_result(self):
         source = discovery.WikimediaSource(self.budget())
         def response(host, params):
@@ -262,6 +296,15 @@ class DiscoveryTests(unittest.TestCase):
         medium, easy = candidate['anchors']
         distance = discovery.daily_map_game.haversine_m(medium['lat'], medium['lng'], easy['lat'], easy['lng'])
         self.assertLess(distance + easy['radius_m'], medium['radius_m'])
+
+    def test_resolve_reports_which_source_article_failed(self):
+        source, _, _, proposal = self.source_fixture()
+        source.page.side_effect = lambda name: (_ for _ in ()).throw(ValueError('Missing source page.')) if name == 'Park' else {
+            'Target': {'title': 'Target', 'entity': 'Q100', 'lat': 50, 'lng': 1, 'text': 'City and Park', 'url': 'x'},
+            'City': {'title': 'City', 'entity': 'Q101', 'lat': 50.04, 'lng': 1, 'text': 'city', 'url': 'y'},
+        }[name]
+        with self.assertRaisesRegex(ValueError, 'Local feature article: Missing source page'):
+            discovery.resolve(proposal, source, [], [])
 
     def test_coordinate_disagreement_duplicate_alias_and_recent_type_fail(self):
         source, entity, _, proposal = self.source_fixture()
