@@ -21,6 +21,12 @@ SPEC.loader.exec_module(monitor)
 
 
 class AlertMonitorTests(unittest.TestCase):
+    def test_monitor_checks_the_current_verified_backup_root(self) -> None:
+        self.assertEqual(
+            monitor.DEFAULT_BACKUP_ROOT,
+            Path("/srv/storage/backups/fultons-quiz"),
+        )
+
     def test_alert_url_requires_https_without_credentials(self) -> None:
         self.assertEqual(
             monitor.validate_alert_url("https://ntfy.sh/private-topic"),
