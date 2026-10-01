@@ -6,25 +6,20 @@ import { api, type QuizBoard, type QuizCardAdjudication } from "../lib/api";
 
 type Mode = "daily" | "practice";
 
-export function QuizBoardGrid({ cards, mode = "daily", busy, locked, onSelect }: {
+export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCardId, onSelect }: {
   cards: QuizBoard["cards"];
   mode?: Mode;
   busy: boolean;
   locked: boolean;
+  pendingCardId?: string | null;
   onSelect: (cardId: string) => void;
 }) {
   const renderCard = (card: QuizBoard["cards"][number]) => {
-      const state = card.answered ? "done" : card.selectedOrder !== null ? "active" : "available";
-      const status = card.answered ? `Pick ${card.selectedOrder} · Done` : state === "active" ? `Pick ${card.selectedOrder} · In play` : mode === "practice" ? "Play this" : "Pick me";
-      const palette = state === "done"
-        ? "border-emerald-700 bg-emerald-700 text-white shadow-inner"
-        : state === "active"
-          ? "border-saints-red bg-red-50 text-slate-950 ring-2 ring-saints-red/25"
-          : card.source === "carry"
-            ? "border-amber-300 bg-amber-50 text-slate-950 hover:border-amber-500"
-            : mode === "practice"
-              ? card.subject === "football" ? "border-rose-200 bg-rose-50/70 text-slate-950 hover:border-saints-red hover:bg-rose-50" : "border-sky-200 bg-sky-50/70 text-slate-950 hover:border-sky-500 hover:bg-sky-50"
-              : card.subject === "football" ? "border-rose-200 bg-gradient-to-br from-white to-rose-50 text-slate-950 hover:border-saints-red" : "border-amber-200 bg-gradient-to-br from-white to-amber-50 text-slate-950 hover:border-amber-500";
+      const state = card.answered ? "done" : card.selectedOrder !== null ? "active" : pendingCardId === card.id ? "pressing" : "available";
+      const status = card.answered ? `Pick ${card.selectedOrder} · Done` : state === "active" ? `Pick ${card.selectedOrder} · In play` : state === "pressing" ? "Opening…" : mode === "practice" ? "Play this" : "Pick me";
+      const palette = card.subject === "football"
+        ? "border-rose-200 bg-gradient-to-br from-white to-rose-50 text-slate-950"
+        : "border-amber-200 bg-gradient-to-br from-white to-amber-50 text-slate-950";
       return <button
         key={card.id}
         type="button"
@@ -32,15 +27,15 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, onSelect }:
         aria-pressed={state !== "available"}
         disabled={busy || locked || state !== "available"}
         onClick={() => onSelect(card.id)}
-        className={`saints-focus flex min-h-28 min-w-0 flex-col rounded-2xl border-2 p-3 text-left shadow-sm transition ${palette} ${state === "available" ? "active:scale-[0.98]" : "cursor-default"}`}
+        className={`quiz-push-card saints-focus flex min-h-32 min-w-0 flex-col rounded-2xl border-2 p-3 text-left ${palette} ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
       >
         <span className="flex w-full flex-wrap items-start justify-between gap-1 text-[0.7rem] font-black uppercase tracking-wide">
           <span>{mode === "practice" ? `${card.points} ${card.points === 1 ? "point" : "points"}` : card.subject === "football" ? "Football" : "General"}</span>
-          <span className={`rounded-full px-2 py-0.5 text-[0.65rem] ${state === "done" ? "bg-white/20 text-white" : state === "active" ? "bg-saints-red text-white" : "bg-slate-100 text-slate-700"}`}>{status}</span>
+          <span className={`rounded-full px-2 py-0.5 text-[0.65rem] ${state === "available" ? "bg-white/90 text-slate-700" : "bg-saints-red text-white"}`}>{status}</span>
         </span>
         <strong className="mt-2 block text-base capitalize leading-tight">{card.difficulty}{mode === "daily" ? ` · ${card.points} ${card.points === 1 ? "pt" : "pts"}` : ""}</strong>
-        <span className={`mt-1 block text-xs leading-snug [overflow-wrap:anywhere] ${state === "done" ? "text-white/75" : "text-slate-600"}`}>{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
-        {card.source === "carry" && state === "available" ? <span className="mt-auto pt-2 text-xs font-bold text-amber-800">Back from yesterday · {card.appearances}/7</span> : null}
+        <span className="mt-1 block text-xs leading-snug text-slate-600 [overflow-wrap:anywhere]">{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
+        <span aria-hidden="true" className="mt-auto pt-2 text-right text-base font-black text-saints-red">{state === "available" ? "↗" : "✓"}</span>
       </button>;
   };
 
@@ -80,13 +75,14 @@ export function Quiz() {
   const [reveal, setReveal] = useState<QuizCardAdjudication | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loadVersion, setLoadVersion] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let active = true;
-    setLoading(true); setError(""); setReveal(null); setBoard(null); setChoice("");
+    setLoading(true); setError(""); setReveal(null); setBoard(null); setChoice(""); setPendingCardId(null);
     void api.quizBoard(mode).then(value => { if (active) setBoard(value); })
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "Quiz board failed to load."); })
       .finally(() => { if (active) setLoading(false); });
@@ -117,10 +113,10 @@ export function Quiz() {
 
   async function selectCard(cardId: string) {
     if (busy || activeCard) return;
-    setBusy(true); setError("");
+    setBusy(true); setPendingCardId(cardId); setError("");
     try { setBoard(await api.selectQuizCard(mode, cardId)); setChoice(""); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Card could not be selected."); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setPendingCardId(null); }
   }
 
   async function answer() {
@@ -209,7 +205,7 @@ export function Quiz() {
             />
           </Card>}
 
-          <QuizBoardGrid cards={board.cards} mode={mode} busy={busy} locked={Boolean(activeCard || reveal || board.status === "completed")} onSelect={cardId => void selectCard(cardId)} />
+          <QuizBoardGrid cards={board.cards} mode={mode} busy={busy} pendingCardId={pendingCardId} locked={Boolean(activeCard || reveal || board.status === "completed")} onSelect={cardId => void selectCard(cardId)} />
           {!remainingCards.length && !activeCard && !reveal && board.status !== "completed" ? (
             <Card>
               <p role="alert">No playable cards are available. Reload the board to continue.</p>
@@ -303,7 +299,7 @@ export function Quiz() {
               </>
             ) : (
               <p className="mt-3 text-sm text-slate-600">
-                Practice only — no league points or rollover changes.
+                Practice only — your league score stays untouched.
               </p>
             )}
           </Card>

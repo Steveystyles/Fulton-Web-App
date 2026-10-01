@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sqlite3
 import unittest
 
@@ -57,7 +58,7 @@ class QuizBoardTests(unittest.TestCase):
         self.assertEqual(public["maxScore"], 19)
         self.assertEqual(public["bonusPoints"], 3)
 
-    def test_two_unpicked_cards_roll_once_to_next_daily_board(self):
+    def test_unpicked_cards_return_to_equal_chance_pool(self):
         board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
         public = quiz_board.board_payload(self.conn, board)
         for _ in range(4):
@@ -68,11 +69,28 @@ class QuizBoardTests(unittest.TestCase):
                 self.conn, board, active["id"], active["question"]["answers"][0]["id"], "now"
             )["board"]
             board = self.conn.execute("SELECT * FROM quiz_boards WHERE id=?", (board["id"],)).fetchone()
+        candidates = quiz_board._candidate_rows(self.conn, "2026-09-30", practice=False, user_id=1)
+        unused = self.conn.execute(
+            "SELECT question_id FROM quiz_board_cards WHERE board_id=? AND selected_order IS NULL", (board["id"],)
+        ).fetchall()
+        candidate_ids = {row["id"] for row in candidates}
+        self.assertTrue({row["question_id"] for row in unused}.issubset(candidate_ids))
+        self.assertTrue(all(row["prior_appearances"] == 1 for row in candidates if row["id"] in {item["question_id"] for item in unused}))
+        self.assertTrue(all(row["id"] not in candidate_ids for row in self.conn.execute(
+            "SELECT question_id AS id FROM quiz_board_cards WHERE board_id=? AND selected_order IS NOT NULL", (board["id"],)
+        )))
         next_board = quiz_board.ensure_board(self.conn, 1, "2026-09-30", "daily", "later")
-        next_public = quiz_board.board_payload(self.conn, next_board)
-        carries = [item for item in next_public["cards"] if item["source"] == "carry"]
-        self.assertEqual(len(carries), 2)
-        self.assertEqual({item["appearances"] for item in carries}, {2})
+        expected = {}
+        for row in candidates:
+            slot = (row["subject"], row["difficulty"])
+            rank = hashlib.sha256(f"1:2026-09-30:{row['subject']}:{row['difficulty']}:{row['id']}".encode()).digest()
+            if slot not in expected or rank < expected[slot][0]:
+                expected[slot] = (rank, row["id"])
+        actual = {tuple(row[key] for key in ("subject", "difficulty")): row["question_id"] for row in self.conn.execute(
+            """SELECT q.subject, q.difficulty, c.question_id FROM quiz_board_cards c
+               JOIN daily_quiz_questions q ON q.id=c.question_id WHERE c.board_id=?""", (next_board["id"],)
+        )}
+        self.assertEqual(actual, {slot: item[1] for slot, item in expected.items()})
 
     def test_practice_board_has_one_card_per_subject_and_difficulty(self):
         board = quiz_board.ensure_board(self.conn, 1, "2026-09-30", "practice", "now")
@@ -166,43 +184,20 @@ class QuizBoardTests(unittest.TestCase):
         self.assertTrue(next(card for card in cards if card["id"] == played["id"])["answered"])
         self.assertEqual(current["status"], "in_progress")
 
-    def test_duplicate_carryover_slot_waits_in_bucket_for_a_later_board(self):
-        board = quiz_board.ensure_board(self.conn, 1, "2026-09-29", "daily", "now")
-        public = quiz_board.board_payload(self.conn, board)
-        for card in public["cards"][:4]:
-            public = quiz_board.select_card(self.conn, board, card["id"], "now")
-            active = next(item for item in public["cards"] if item.get("question"))
-            public = quiz_board.answer_card(
-                self.conn, board, active["id"], active["question"]["answers"][0]["id"], "now"
-            )["board"]
-            board = self.conn.execute("SELECT * FROM quiz_boards WHERE id = ?", (board["id"],)).fetchone()
-        skipped_card = self.conn.execute(
-            """SELECT c.id FROM quiz_board_cards c JOIN daily_quiz_questions q ON q.id = c.question_id
-               WHERE c.board_id = ? AND q.subject = 'general_knowledge' AND q.difficulty = 'hard'""",
-            (board["id"],),
-        ).fetchone()
-        duplicate_question = self.conn.execute(
-            """SELECT q.id FROM daily_quiz_questions q JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
-               WHERE s.quiz_date = '2026-09-30' AND q.subject = 'football' AND q.difficulty = 'hard'"""
-        ).fetchone()
-        self.conn.execute(
-            "UPDATE quiz_board_cards SET question_id = ? WHERE id = ?",
-            (duplicate_question["id"], skipped_card["id"]),
-        )
-        next_board = quiz_board.ensure_board(self.conn, 1, "2026-09-30", "daily", "later")
-        next_cards = quiz_board.board_payload(self.conn, next_board)["cards"]
-        self.assertEqual(len({(card["subject"], card["difficulty"]) for card in next_cards}), 6)
-        self.assertEqual(sum(card["source"] == "carry" for card in next_cards), 1)
-        carried = next(card for card in next_cards if card["source"] == "carry")
-        selected = quiz_board.select_card(self.conn, next_board, carried["id"], "later")
-        active = next(card for card in selected["cards"] if card.get("question"))
-        quiz_board.answer_card(self.conn, next_board, active["id"], active["question"]["answers"][0]["id"], "later")
-        later_board = quiz_board.ensure_board(self.conn, 1, "2026-10-01", "daily", "later still")
-        later_questions = self.conn.execute(
-            "SELECT question_id FROM quiz_board_cards WHERE board_id = ? AND source_kind = 'carry'",
-            (later_board["id"],),
-        ).fetchall()
-        self.assertIn(duplicate_question["id"], {row["question_id"] for row in later_questions})
+    def test_many_prior_unplayed_appearances_do_not_expire_a_question(self):
+        question_id = self.conn.execute("SELECT id FROM daily_quiz_questions LIMIT 1").fetchone()["id"]
+        for day in ("2026-09-20", "2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"):
+            board_id = self.conn.execute(
+                """INSERT INTO quiz_boards (user_id, game_date, mode, created_at, updated_at)
+                   VALUES (1, ?, 'daily', 'now', 'now')""", (day,),
+            ).lastrowid
+            self.conn.execute(
+                """INSERT INTO quiz_board_cards (board_id, question_id, position, source_kind, appearances)
+                   VALUES (?, ?, 0, 'carry', 1)""", (board_id, question_id),
+            )
+        candidates = quiz_board._candidate_rows(self.conn, "2026-09-30", practice=False, user_id=1)
+        returned = next(row for row in candidates if row["id"] == question_id)
+        self.assertEqual(returned["prior_appearances"], 8)
 
     def test_missing_difficulty_slot_fails_instead_of_showing_another_easy_card(self):
         self.conn.execute(

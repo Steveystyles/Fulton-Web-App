@@ -229,6 +229,11 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.match(html, /Pick me/, "Daily cards invite the next pick");
   assert.match(html, /to-rose-50/, "Football cards have a warm subject treatment");
   assert.match(html, /to-amber-50/, "General Knowledge cards have a distinct warm treatment");
+  assert.doesNotMatch(html, /Back from yesterday|rollover/, "unused questions are not called out as rollover cards");
+  const pressing = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, busy: true, locked: false, pendingCardId: "card-3", onSelect: () => {} }));
+  assert.match(pressing, /data-state="pressing"[^>]*aria-pressed="true"[^>]*disabled=""/, "a tapped card visibly presses before the server responds");
+  assert.match(pressing, /Opening…/);
+  assert.match(html, /quiz-push-card/, "cards use the raised push-button treatment");
   assert.doesNotMatch(html, /Football · Question 1/, "Daily cards do not repeat the subject in their teaser");
 
   const practice = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, mode: "practice", busy: false, locked: false, onSelect: () => {} }));
