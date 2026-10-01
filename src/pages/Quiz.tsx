@@ -27,15 +27,18 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
         aria-pressed={state !== "available"}
         disabled={busy || locked || state !== "available"}
         onClick={() => onSelect(card.id)}
-        className={`quiz-push-card saints-focus flex min-h-32 min-w-0 flex-col rounded-2xl border-2 p-3 text-left ${palette} ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
+        className={`quiz-push-card saints-focus flex min-h-40 min-w-0 flex-col rounded-2xl border-2 p-3 text-left ${palette} ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
       >
-        <span className="flex w-full flex-wrap items-start justify-between gap-1 text-[0.7rem] font-black uppercase tracking-wide">
-          <span>{mode === "practice" ? `${card.points} ${card.points === 1 ? "point" : "points"}` : card.subject === "football" ? "Football" : "General"}</span>
-          <span className={`rounded-full px-2 py-0.5 text-[0.65rem] ${state === "available" ? "bg-white/90 text-slate-700" : "bg-saints-red text-white"}`}>{status}</span>
+        <span className="flex w-full items-start justify-between gap-2">
+          <span className="text-[0.7rem] font-black uppercase tracking-wider text-slate-700">{card.subject === "football" ? "Football" : "General"}</span>
+          <span className="quiz-push-card__points" aria-label={`${card.points} ${card.points === 1 ? "point" : "points"}`}>{card.points} <span aria-hidden="true">{card.points === 1 ? "pt" : "pts"}</span></span>
         </span>
-        <strong className="mt-2 block text-base capitalize leading-tight">{card.difficulty}{mode === "daily" ? ` · ${card.points} ${card.points === 1 ? "pt" : "pts"}` : ""}</strong>
+        <strong className="mt-2 block text-lg capitalize leading-tight">{card.difficulty}</strong>
         <span className="mt-1 block text-xs leading-snug text-slate-600 [overflow-wrap:anywhere]">{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
-        <span aria-hidden="true" className="mt-auto pt-2 text-right text-base font-black text-saints-red">{state === "available" ? "↗" : "✓"}</span>
+        <span className="quiz-push-card__action mt-auto flex w-full items-center justify-between gap-1 pt-3 text-xs font-black">
+          <span>{status}</span>
+          <span aria-hidden="true" className="text-lg leading-none">{state === "available" ? "↓" : "✓"}</span>
+        </span>
       </button>;
   };
 
