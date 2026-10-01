@@ -67,6 +67,9 @@ class Budget:
                                    (self.budget_day, DAILY_ATTEMPTS, DAILY_MODEL_REQUESTS, DAILY_SOURCE_REQUESTS))
             if claimed.rowcount != 1:
                 raise ValueError('Automatic map daily budget exhausted.')
+            self.attempt_number = int(conn.execute(
+                'SELECT attempts FROM automatic_map_usage WHERE day=?', (self.budget_day,)
+            ).fetchone()[0])
             conn.execute('INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status) VALUES(?,?,?,?,?)',
                          (self.id, self.budget_day, self.day, now().isoformat(), 'running'))
             conn.commit()

@@ -29,6 +29,16 @@ class DiscoveryTests(unittest.TestCase):
     def budget(self):
         return discovery.RunBudget(self.root / 'budget.db', '2026-09-10')
 
+    def test_proposal_focus_rotates_geographic_lanes_without_more_model_requests(self):
+        focuses = [
+            discovery.proposal_focus(Mock(day='2026-10-02', budget_day='2026-10-01', attempt_number=number))
+            for number in range(1, 5)
+        ]
+        self.assertEqual(len(set(focuses)), 4)
+        self.assertEqual(set(focuses), set(discovery.PROPOSAL_FOCUSES))
+        next_day = discovery.proposal_focus(Mock(day='2026-10-02', budget_day='2026-10-02', attempt_number=1))
+        self.assertNotEqual(next_day, focuses[0])
+
     def test_budget_survives_restart_and_counts_attempt_before_transport(self):
         budget = self.budget()
         budget.spend('model')
@@ -272,12 +282,13 @@ class DiscoveryTests(unittest.TestCase):
         proposals = {'candidates': [{'title': 'Atomium'}] * 3}
         before = controlled.DEFAULT_CATALOG.read_bytes()
         with patch.object(discovery, 'history', return_value=[]), patch.object(discovery, 'resolve', return_value=self.place), \
-             patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, self.payload]):
+             patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, self.payload]) as request:
             report = discovery.discover(source_db=self.root / 'unused.db', catalog=controlled.DEFAULT_CATALOG,
                                         puzzle_date='2026-09-10', output_dir=self.root, budget=budget,
                                         provider=provider, sources=Mock())
         self.assertEqual(report['status'], 'needs_source_review')
         self.assertEqual(report['request_counts']['model_requests'], 2)
+        self.assertTrue(all(region in request.call_args_list[0].args[1] for region in discovery.proposal_focus(budget)))
         self.assertEqual(len(report['rejections']), 2)
         self.assertFalse(report['production_modified'])
         self.assertFalse((self.root / 'unused.db').exists())
