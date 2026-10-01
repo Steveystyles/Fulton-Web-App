@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 
 DEFAULT_STATE = Path.home() / ".local/state/fultons-alert/state.json"
-DEFAULT_BACKUP_ROOT = Path("/disk2/backups/fultons-quiz")
+DEFAULT_BACKUP_ROOT = Path("/srv/storage/backups/fultons-quiz")
 DEFAULT_JELLYFIN_SUCCESS = Path.home() / ".local/state/jellyfin-backup/last-success"
 DEFAULT_BACKUP_MANAGER = Path.home() / "fulton-web-app/deploy/backup_manager.py"
 
