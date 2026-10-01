@@ -3143,6 +3143,37 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(job_after["work_quiz_date"], job_before["work_quiz_date"])
         self.assertEqual(job_after["state"], "ready")
 
+    def test_quiz_pool_retries_when_fallback_remains_available(self) -> None:
+        self.conn.execute(
+            """INSERT INTO daily_quiz_provider_circuits
+               (provider_key, blocked_until, failure_reason, opened_at, updated_at)
+               VALUES ('primary', ?, 'Primary quota exhausted', ?, ?)""",
+            ((datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+             daily_quiz.utc_now(), daily_quiz.utc_now()),
+        )
+        self.conn.commit()
+        providers = daily_quiz.FallbackQuizProvider([
+            AlwaysFailingProvider("primary"), PassingProvider("fallback")
+        ])
+        with patch.object(
+            daily_quiz,
+            "generate_daily_quiz",
+            return_value={"status": "generating", "failure_reason": "Candidate batch deferred"},
+        ):
+            result = daily_quiz.replenish_quiz_pool(
+                self.conn,
+                config=config(),
+                target_ready=1,
+                max_batch_attempts=1,
+                provider=providers,
+                log=lambda _: None,
+            )
+
+        self.assertEqual(result["status"], "deferred")
+        self.assertIsNone(result["retry_at"])
+        self.assertEqual(result["generating"], 1)
+        self.assertEqual(len(result["provider_circuits"]), 1)
+
     def test_quiz_pool_retires_exhausted_work_date_even_with_provider_circuit(self) -> None:
         job = daily_quiz._create_quiz_pool_job(self.conn)
         work_date = job["work_quiz_date"]

@@ -5884,6 +5884,22 @@ def _promote_quiz_pool_job(conn: sqlite3.Connection, job: sqlite3.Row) -> None:
     commit_if_needed(conn)
 
 
+def _quiz_pool_waits_for_provider_reset(
+    conn: sqlite3.Connection,
+    config: QuizConfig,
+    provider: QuizAIProvider | None,
+    inventory: dict[str, Any],
+) -> bool:
+    if not inventory["provider_circuits"]:
+        return False
+    try:
+        configured = provider if provider is not None else provider_chain_from_config(config)
+    except ValueError:
+        return True
+    available, _blocked = provider_with_available_circuits(conn, configured)
+    return available is None
+
+
 def replenish_quiz_pool(
     conn: sqlite3.Connection,
     *,
@@ -5962,7 +5978,7 @@ def replenish_quiz_pool(
             )
             _fail_quiz_pool_job(conn, job, last_reason)
             inventory = quiz_pool_status(conn)
-            if inventory["provider_circuits"]:
+            if _quiz_pool_waits_for_provider_reset(conn, config, provider, inventory):
                 return {
                     "status": "capped",
                     "target": target_ready,
@@ -5980,8 +5996,9 @@ def replenish_quiz_pool(
                 "attempted": attempted,
                 "reason": last_reason,
                 **inventory,
+                "retry_at": None,
             }
-        if inventory["provider_circuits"]:
+        if _quiz_pool_waits_for_provider_reset(conn, config, provider, inventory):
             conn.execute(
                 """
                 UPDATE daily_quiz_pool_batches
@@ -6015,6 +6032,7 @@ def replenish_quiz_pool(
             "attempted": attempted,
             "reason": last_reason,
             **inventory,
+            "retry_at": None,
         }
 
     inventory = quiz_pool_status(conn)
@@ -6025,6 +6043,11 @@ def replenish_quiz_pool(
         "attempted": attempted,
         "reason": last_reason,
         **inventory,
+        "retry_at": (
+            inventory["retry_at"]
+            if _quiz_pool_waits_for_provider_reset(conn, config, provider, inventory)
+            else None
+        ),
     }
 
 
