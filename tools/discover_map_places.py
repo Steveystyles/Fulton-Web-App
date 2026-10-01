@@ -179,8 +179,10 @@ class WikimediaSource:
         if len(pages) != 1:
             raise ValueError('Source title did not resolve uniquely.')
         page = pages[0]
-        if page.get('missing') or page.get('ns') != 0 or 'disambiguation' in page.get('pageprops', {}):
-            raise ValueError('Missing or ambiguous source page.')
+        if page.get('missing'):
+            raise ValueError('Missing source page.')
+        if page.get('ns') != 0 or 'disambiguation' in page.get('pageprops', {}):
+            raise ValueError('Ambiguous source page.')
         coordinates = page.get('coordinates', [])
         if len(coordinates) != 1 or coordinates[0].get('globe') != 'earth':
             raise ValueError('Source has no unique Earth coordinate.')
@@ -245,6 +247,32 @@ def proposal_schema() -> dict:
             'required': ['candidates'], 'additionalProperties': False}
 
 
+def resolved_page(sources: WikimediaSource, name: str, *, city_hint: str = '') -> dict:
+    """Try one deterministic article-title correction, never a fuzzy search."""
+    requested = title(name)
+    try:
+        return sources.page(requested)
+    except ValueError as error:
+        alternate = ''
+        if str(error) == 'Missing source page.' and re.search(r' \([^)]+\)$', requested):
+            alternate = requested.rsplit(' (', 1)[0]
+        elif str(error) == 'Ambiguous source page.' and city_hint and ',' not in requested:
+            alternate = f'{requested}, {title(city_hint)}'
+        if not alternate:
+            raise
+        try:
+            return sources.page(title(alternate))
+        except ValueError as retry_error:
+            raise ValueError(f'Exact title and one bounded alternative did not resolve: {retry_error}') from retry_error
+
+
+def anchor_name(page: dict, proposed_name: str, target_text: str) -> str:
+    """Keep an article-supported short name when the source has a city suffix."""
+    canonical = page['title'].split(' (')[0]
+    proposed = title(proposed_name)
+    return proposed if re.search(re.escape(proposed), target_text, re.I) else canonical
+
+
 def selection_schema() -> dict:
     fact = {'type': 'object', 'properties': {'text': {'type': 'string'},
             'source_ids': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1, 'maxItems': 3}},
@@ -262,15 +290,24 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
         raise ValueError('Unsupported place type; broad regions and stadiums are excluded.')
     if any(r['type'] == kind and r['date'] >= (date.fromisoformat(sources.budget.day) - timedelta(days=2)).isoformat() for r in recent):
         raise ValueError('Place type was used in the last two days.')
-    target = sources.page(proposal.get('title'))
+    try:
+        target = resolved_page(sources, proposal.get('title'), city_hint=proposal.get('city_title', ''))
+    except ValueError as error:
+        raise ValueError(f'Target article: {error}') from error
     # Check source identity, not merely the model's category label.
     intro = target['text'][:700]
     if re.search(r'\b(stadium|stadion|sports arena|football ground)\b', target['title'], re.I) or re.search(
         r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I
     ):
         raise ValueError('Source identifies a stadium, which automatic discovery excludes.')
-    city = sources.page(proposal.get('city_title'))
-    local = sources.page(proposal.get('local_title'))
+    try:
+        city = resolved_page(sources, proposal.get('city_title'))
+    except ValueError as error:
+        raise ValueError(f'City article: {error}') from error
+    try:
+        local = resolved_page(sources, proposal.get('local_title'), city_hint=proposal.get('city_title', ''))
+    except ValueError as error:
+        raise ValueError(f'Local feature article: {error}') from error
     if len({p['entity'] for p in (target, city, local)}) != 3:
         raise ValueError('Target and both search areas must be different places.')
     entity = sources.entities([target['entity']])[target['entity']]
@@ -309,8 +346,9 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     medium_radius = math.ceil(max(6000, between + easy_radius + 1000, city_distance + 1000))
     if medium_radius > 30000:
         raise ValueError('Search area is too broad for the quiz.')
-    anchors = [{'name': p['title'].split(' (')[0], 'lat': p['lat'], 'lng': p['lng'], 'radius_m': radius, 'min_hint_count': count}
-               for p, radius, count in ((city, medium_radius, 1), (local, easy_radius, 2))]
+    anchors = [{'name': anchor_name(p, proposed, target['text']), 'lat': p['lat'], 'lng': p['lng'], 'radius_m': radius, 'min_hint_count': count}
+               for p, proposed, radius, count in ((city, proposal.get('city_title'), medium_radius, 1),
+                                                  (local, proposal.get('local_title'), easy_radius, 2))]
     if any(daily_map_game.mask_answer_name(a['name'], target['title']) != a['name'] for a in anchors):
         raise ValueError('A search area name exposes the answer.')
     return {'id': target['entity'].lower(), 'canonical_name': target['title'], 'acceptable_aliases': sorted(set(aliases)),
