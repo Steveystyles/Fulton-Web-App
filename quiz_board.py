@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import sqlite3
 from typing import Any
 
@@ -287,7 +288,12 @@ def _teaser(row: sqlite3.Row) -> str:
         choices = json.loads(row["choices_json"] or "[]")
     except (TypeError, json.JSONDecodeError):
         choices = []
-    if question and not daily_quiz.answer_is_given_away(question, choices, answer):
+    normalized_answer = daily_quiz.normalize_answer(answer)
+    answer_in_question = (
+        len(normalized_answer) >= 2
+        and re.search(rf"\b{re.escape(normalized_answer)}\b", daily_quiz.normalize_text(question)) is not None
+    )
+    if question and not answer_in_question and not daily_quiz.answer_is_given_away(question, choices, answer):
         if len(question) > 92:
             question = question[:89].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
         return question
@@ -296,7 +302,7 @@ def _teaser(row: sqlite3.Row) -> str:
     except (TypeError, json.JSONDecodeError):
         tags = []
     safe_tag = next(
-        (tag for tag in tags if 2 <= len(tag) <= 32 and daily_quiz.normalize_text(answer) not in daily_quiz.normalize_text(tag)),
+        (tag for tag in tags if 2 <= len(tag) <= 32 and normalized_answer not in daily_quiz.normalize_text(tag)),
         "",
     )
     return f"A question about {safe_tag.lower()}" if safe_tag else "A mystery question"
