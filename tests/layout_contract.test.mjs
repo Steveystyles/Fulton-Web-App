@@ -265,6 +265,7 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   const css = await sourceText("src/styles/index.css");
   assert.match(css, /\.quiz-choice\[data-state="done"\][^}]*background: #e9f3ed/, "answered choices have a clear settled state");
   assert.match(css, /\.quiz-choice\s*\{[^}]*min-height: 4\.55rem/s, "phone rows are compact enough for the whole board");
+  assert.match(css, /\.quiz-choice\s*\{[^}]*padding: 0\.2rem 0\.65rem/s, "phone rows leave room above fixed navigation");
   assert.doesNotMatch(css, /\.quiz-push-card/, "the previous raised-card styling is removed");
   assert.match(html, /Which event is question 1 about\?/, "Daily cards preview the question instead of repeating its subject");
 

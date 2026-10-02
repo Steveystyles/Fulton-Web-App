@@ -769,7 +769,7 @@ input[type="date"] {
 
 .quiz-board__heading strong { color: #151a23; font-size: 1rem; }
 
-.quiz-choice-list { display: grid; gap: 0.35rem; }
+.quiz-choice-list { display: grid; gap: 0.3rem; }
 
 .quiz-choice {
   --subject-color: #ad1831;
@@ -783,7 +783,7 @@ input[type="date"] {
   border: 1px solid #e4dadb;
   border-left: 0.22rem solid var(--subject-color);
   border-radius: 0.3rem;
-  padding: 0.45rem 0.65rem;
+  padding: 0.2rem 0.65rem;
   color: #19202a;
   background: var(--subject-surface);
   text-align: left;
