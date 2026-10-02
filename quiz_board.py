@@ -302,10 +302,26 @@ def _teaser(row: sqlite3.Row) -> str:
     except (TypeError, json.JSONDecodeError):
         tags = []
     safe_tag = next(
-        (tag for tag in tags if 2 <= len(tag) <= 32 and normalized_answer not in daily_quiz.normalize_text(tag)),
+        (
+            tag for tag in tags
+            if 2 <= len(tag) <= 32
+            and not daily_quiz.is_generic_topic_tag(tag)
+            and not re.search(
+                rf"\b{re.escape(normalized_answer)}\b",
+                daily_quiz.normalize_text(tag),
+            )
+        ),
         "",
     )
-    return f"A question about {safe_tag.lower()}" if safe_tag else "A mystery question"
+    if safe_tag:
+        topic = safe_tag.casefold()
+        if topic.endswith(" football"):
+            place = safe_tag[: -len(" football")].strip()
+            return f"A story from the {place} game" if place else "A football story"
+        if topic.endswith(" final"):
+            return f"A {safe_tag.lower().replace(' final', '-final')} moment"
+        return f"Explore {safe_tag.lower()}"
+    return "A football mystery" if row["subject"] == "football" else "A general-knowledge mystery"
 
 
 def _public_question(row: sqlite3.Row) -> dict[str, Any]:
