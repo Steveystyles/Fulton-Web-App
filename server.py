@@ -5821,7 +5821,15 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
 
             if path.startswith("/api/admin/"):
-                if user["role"] != "admin":
+                player_management_route = (
+                    path == "/api/admin/users" and method in {"GET", "POST"}
+                ) or (
+                    method == "DELETE"
+                    and re.fullmatch(r"/api/admin/users/\d+", path) is not None
+                )
+                if user["role"] != "admin" and not (
+                    player_management_route and user_can_manage_players(user)
+                ):
                     self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
                     return
                 self.handle_admin(conn, user, method, path)

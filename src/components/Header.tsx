@@ -36,7 +36,7 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
             className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]"].join(" ")}
           ><House aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink> : null}
           <ScoresDialog currentGame={inGame ? currentGame : undefined} />
-          {user?.role === "admin" ? (
+          {user?.role === "admin" || user?.role === "mod" ? (
             <NavLink
               to="/admin"
               aria-label={user.role === "admin" ? "Admin" : "Players"}

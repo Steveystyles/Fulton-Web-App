@@ -2984,6 +2984,123 @@ class ProductionServerHardeningTests(unittest.TestCase):
             server.DATA_DIR = original_data_dir
             server.DB_PATH = original_db_path
 
+    def test_moderator_can_reach_only_player_management_admin_routes(self) -> None:
+        import server
+
+        reached: list[tuple[str, str]] = []
+        denied: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def handle_admin(self, _conn: object, _user: object, method: str, path: str) -> None:
+                reached.append((method, path))
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                denied.append((status, message))
+
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1, "role": "user", "is_moderator": 1}),
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            handler = DummyHandler()
+            for method, path in (
+                ("GET", "/api/admin/users"),
+                ("POST", "/api/admin/users"),
+                ("DELETE", "/api/admin/users/2"),
+                ("POST", "/api/admin/users/2/reset-password"),
+                ("GET", "/api/admin/product-report"),
+                ("POST", "/api/admin/regenerate-question"),
+            ):
+                server.FultonsHandler.route_api(handler, method, path, "")  # type: ignore[arg-type]
+
+        self.assertEqual(reached, [
+            ("GET", "/api/admin/users"),
+            ("POST", "/api/admin/users"),
+            ("DELETE", "/api/admin/users/2"),
+        ])
+        self.assertEqual(denied, [
+            (HTTPStatus.FORBIDDEN, "Admin access required."),
+            (HTTPStatus.FORBIDDEN, "Admin access required."),
+            (HTTPStatus.FORBIDDEN, "Admin access required."),
+        ])
+
+    def test_regular_player_cannot_reach_player_management(self) -> None:
+        import server
+
+        denied: list[tuple[HTTPStatus, str]] = []
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                denied.append((status, message))
+
+            def handle_admin(self, *_args: object) -> None:
+                raise AssertionError("A regular player must never reach admin handling")
+
+        with (
+            patch("server.connect_db") as connect_db,
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1, "role": "user", "is_moderator": 0}),
+        ):
+            connect_db.return_value.__enter__.return_value = object()
+            server.FultonsHandler.route_api(
+                DummyHandler(), "GET", "/api/admin/users", "",  # type: ignore[arg-type]
+            )
+
+        self.assertEqual(denied, [(HTTPStatus.FORBIDDEN, "Admin access required.")])
+
+    def test_moderator_can_remove_players_but_not_privileged_accounts(self) -> None:
+        import server
+
+        db_path = Path(self.temp_dir.name) / "moderators.db"
+        with (
+            patch.object(server, "DATA_DIR", db_path.parent),
+            patch.object(server, "DB_PATH", db_path),
+            patch.object(server, "SEED_DEMO_USERS", False),
+        ):
+            server.initialize_database()
+            with closing(server.connect_db()) as conn, conn:
+                now = server.utc_now()
+                conn.executemany(
+                    "INSERT INTO users (username,password_hash,role,is_moderator,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+                    [
+                        ("owner", "hash", "admin", 0, now, now),
+                        ("helper", "hash", "user", 1, now, now),
+                        ("player", "hash", "user", 0, now, now),
+                    ],
+                )
+                rows = {row["username"]: row for row in conn.execute("SELECT * FROM users")}
+                responses: list[tuple[HTTPStatus, object]] = []
+                errors: list[tuple[HTTPStatus, str]] = []
+
+                class DummyHandler:
+                    def read_json(self) -> dict[str, str]:
+                        return {"username": "newadmin", "password": "a-long-test-password", "role": "admin"}
+
+                    def send_json(self, status: HTTPStatus, payload: object) -> None:
+                        responses.append((status, payload))
+
+                    def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                        errors.append((status, message))
+
+                    def client_ip(self) -> str:
+                        return "127.0.0.1"
+
+                handler = DummyHandler()
+                moderator = rows["helper"]
+                server.FultonsHandler.handle_admin(handler, conn, moderator, "POST", "/api/admin/users")  # type: ignore[arg-type]
+                server.FultonsHandler.handle_admin(handler, conn, moderator, "DELETE", f"/api/admin/users/{rows['owner']['id']}")  # type: ignore[arg-type]
+                server.FultonsHandler.handle_admin(handler, conn, moderator, "DELETE", f"/api/admin/users/{rows['player']['id']}")  # type: ignore[arg-type]
+
+                self.assertEqual([status for status, _ in errors], [HTTPStatus.FORBIDDEN, HTTPStatus.FORBIDDEN])
+                self.assertEqual([status for status, _ in responses], [HTTPStatus.OK])
+                self.assertIsNotNone(conn.execute("SELECT 1 FROM users WHERE id=?", (rows["owner"]["id"],)).fetchone())
+                self.assertIsNone(conn.execute("SELECT 1 FROM users WHERE id=?", (rows["player"]["id"],)).fetchone())
+
     def test_news_classifier_does_not_mark_routine_stories_as_breaking(self) -> None:
         import server
 
