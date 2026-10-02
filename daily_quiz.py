@@ -760,6 +760,8 @@ class GeminiProvider:
         code = str(error_payload.get("code") or "").strip()
         message = str(error_payload.get("message") or "").strip()
         detail = " ".join(part for part in (status, code, message) if part)
+        if is_daily_quota_failure(json.dumps(error_payload)) and not is_daily_quota_failure(detail):
+            detail = f"{detail} daily quota exceeded".strip()
         return detail[:700]
 
     def _request(

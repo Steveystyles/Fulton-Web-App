@@ -3637,6 +3637,35 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
         sleep.assert_not_called()
 
+    def test_gemini_daily_quota_on_final_attempt_opens_circuit(self) -> None:
+        provider = daily_quiz.GeminiProvider(
+            daily_quiz.QuizConfig(
+                **{**config().__dict__, "transient_retries": 0, "request_delay_sec": 0},
+            )
+        )
+        error = HTTPError(
+            "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent",
+            429,
+            "Too Many Requests",
+            hdrs={},
+            fp=BytesIO(json.dumps({"error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "Free tier exhausted",
+                "details": [{"metric": "free_tier_requests"}],
+            }}).encode("utf-8")),
+        )
+        tracked = daily_quiz.CircuitTrackingProvider(self.conn, provider)
+        with (
+            patch("daily_quiz.urlopen", side_effect=error) as request,
+            self.assertRaisesRegex(RuntimeError, "daily quota exceeded"),
+        ):
+            tracked.generate_question(
+                subject="general_knowledge", difficulty="easy", recent_questions=[], feedback=[],
+            )
+
+        self.assertEqual(request.call_count, 1)
+        self.assertIsNotNone(daily_quiz.active_provider_circuit(self.conn, "gemini:test-generator"))
+
     def test_openrouter_daily_quota_does_not_retry(self) -> None:
         provider = daily_quiz.OpenAICompatibleProvider(
             daily_quiz.QuizConfig(**{
