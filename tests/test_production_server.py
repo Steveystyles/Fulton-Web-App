@@ -575,6 +575,23 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(sent, [(HTTPStatus.OK, summary)])
         internal_ops_summary.assert_called_once_with()
 
+    def test_ops_map_readiness_skips_off_days_but_flags_missing_scheduled_rounds(self) -> None:
+        import server
+
+        friday = server.ops_map_readiness_test("today_map", "2026-10-02", "Today map", {"status": "missing"})
+        self.assertEqual(friday["status"], "pass")
+        self.assertIn("Not scheduled", friday["detail"])
+
+        saturday_missing = server.ops_map_readiness_test("tomorrow_map", "2026-10-03", "Tomorrow map", {"status": "missing"})
+        self.assertEqual(saturday_missing["status"], "fail")
+
+        saturday_ready = server.ops_map_readiness_test("tomorrow_map", "2026-10-03", "Tomorrow map", {"status": "published", "acceptedLevels": 1})
+        self.assertEqual(saturday_ready["status"], "pass")
+        self.assertIn("published / accepted 1", saturday_ready["detail"])
+
+        wednesday_missing = server.ops_map_readiness_test("today_map", "2026-10-07", "Today map", {"status": "missing"})
+        self.assertEqual(wednesday_missing["status"], "fail")
+
     def test_local_generate_quiz_action_uses_https_not_ssh(self) -> None:
         import ops_monitor
 
