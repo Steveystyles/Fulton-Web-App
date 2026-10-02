@@ -5775,9 +5775,50 @@ def _fail_quiz_pool_job(
     conn: sqlite3.Connection,
     job: sqlite3.Row,
     reason: str,
+    *,
+    carry_verified: bool = False,
 ) -> None:
     conn.execute("SAVEPOINT fail_quiz_pool_job")
     try:
+        if carry_verified:
+            source = conn.execute(
+                "SELECT id FROM daily_quiz_sets WHERE quiz_date = ?",
+                (job["work_quiz_date"],),
+            ).fetchone()
+            verified = [] if source is None else [
+                row for row in conn.execute(
+                    "SELECT * FROM daily_quiz_questions WHERE quiz_set_id = ?",
+                    (source["id"],),
+                ).fetchall()
+                if verification_payload_passed(row["verification_json"])
+            ]
+            # A full set rejected by the promotion gate must not be recycled.
+            if 0 < len(verified) < len(REQUIRED_SLOTS):
+                next_date = _next_quiz_pool_work_date(conn)
+                next_id = uuid4().hex
+                conn.execute(
+                    """INSERT INTO daily_quiz_pool_batches
+                       (id, state, work_quiz_date, pipeline_version, generation_mode, created_at)
+                       VALUES (?, 'generating', ?, ?, 'pool', ?)""",
+                    (next_id, next_date, job["pipeline_version"], utc_now()),
+                )
+                next_set = conn.execute(
+                    "INSERT INTO daily_quiz_sets (quiz_date, status) VALUES (?, 'generating')",
+                    (next_date,),
+                )
+                for row in verified:
+                    conn.execute(
+                        """INSERT INTO daily_quiz_questions
+                           (quiz_set_id, subject, difficulty, question, choices_json,
+                            correct_answer, explanation, interesting_reason, tags_json,
+                            evidence_json, verification_json, normalized_question, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (next_set.lastrowid, row["subject"], row["difficulty"],
+                         row["question"], row["choices_json"], row["correct_answer"],
+                         row["explanation"], row["interesting_reason"], row["tags_json"],
+                         row["evidence_json"], row["verification_json"],
+                         row["normalized_question"], row["created_at"]),
+                    )
         conn.execute(
             """
             UPDATE daily_quiz_pool_batches
@@ -5976,7 +6017,7 @@ def replenish_quiz_pool(
                 failed_attempt_count(conn, work_quiz_date)
                 >= config.max_failed_attempts_per_date
             )
-            _fail_quiz_pool_job(conn, job, last_reason)
+            _fail_quiz_pool_job(conn, job, last_reason, carry_verified=True)
             inventory = quiz_pool_status(conn)
             if _quiz_pool_waits_for_provider_reset(conn, config, provider, inventory):
                 return {
