@@ -119,6 +119,15 @@ class QuizBoardTests(unittest.TestCase):
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
         self.assertEqual(quiz_board._teaser(row), "A question about dutch football")
 
+    def test_card_preview_hides_short_answer_even_when_generator_check_would_allow_it(self):
+        question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
+        self.conn.execute(
+            "UPDATE daily_quiz_questions SET question=?, correct_answer=?, tags_json=? WHERE id=?",
+            ("Did FC win this match?", "FC", json.dumps(["FC", "cup final"]), question_id),
+        )
+        row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
+        self.assertEqual(quiz_board._teaser(row), "A question about cup final")
+
     def test_practice_replays_an_answered_question_when_one_slot_has_no_unused_questions(self):
         answered_ids = []
         for day in ("2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"):
