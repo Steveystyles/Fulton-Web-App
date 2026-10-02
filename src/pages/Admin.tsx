@@ -46,12 +46,14 @@ export function Admin() {
     }
 
     void load();
-    void api.adminProductReport().then(value => { if (active) setReport(value); }).catch(() => undefined);
+    if (isAdmin) {
+      void api.adminProductReport().then(value => { if (active) setReport(value); }).catch(() => undefined);
+    }
 
     return () => {
       active = false;
     };
-  }, []);
+  }, [isAdmin]);
 
   async function handleAddUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

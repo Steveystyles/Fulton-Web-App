@@ -182,6 +182,15 @@ test("navigation structure: the Today hub is not a separate screen", async () =>
   }
 });
 
+test("moderators can open player management without admin-only product data", async () => {
+  const router = await sourceText("src/routes/AppRouter.tsx");
+  const header = await sourceText("src/components/Header.tsx");
+  const admin = await sourceText("src/pages/Admin.tsx");
+  assert.match(router, /user\.role === "admin" \|\| user\.role === "mod"/, "moderators can reach the Players page");
+  assert.match(header, /user\?\.role === "admin" \|\| user\?\.role === "mod"/, "moderators see its navigation button");
+  assert.match(admin, /if \(isAdmin\) \{\s*void api\.adminProductReport\(\)/, "moderators do not request admin-only reports");
+});
+
 test("game screens have persistent previous and next game arrows", async () => {
   const router = await sourceText("src/routes/AppRouter.tsx");
   assert.match(router, /!reviewMode\s*&&\s*gameRoute\s*\?\s*<GameNavigation\s+navRef=\{navRef\}\s*\/>/);
