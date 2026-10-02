@@ -732,7 +732,7 @@ input[type="date"] {
   content: "";
   position: absolute;
   inset: 0 0 auto;
-  height: 0.35rem;
+  height: 0.25rem;
   background: var(--quiz-accent);
 }
 
@@ -764,8 +764,8 @@ input[type="date"] {
 
 .quiz-push-card__indicator {
   display: grid;
-  width: 1.6rem;
-  height: 1.6rem;
+  width: 1.4rem;
+  height: 1.4rem;
   flex: none;
   place-items: center;
   border-radius: 999px;
@@ -797,9 +797,16 @@ input[type="date"] {
 }
 
 .quiz-push-card[data-state="done"] {
-  --quiz-accent: #047857;
   --quiz-accent-soft: #ecfdf5;
   border-color: #047857;
+}
+
+.quiz-push-card[data-state="done"] .quiz-push-card__action {
+  color: #047857;
+}
+
+.quiz-push-card[data-state="done"] .quiz-push-card__indicator {
+  background: #047857;
 }
 
 .quiz-push-card[data-state="pressing"] .quiz-push-card__indicator,

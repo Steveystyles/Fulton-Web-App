@@ -944,9 +944,9 @@ export function Wordle() {
     : "grid grid-cols-[minmax(0,1fr)_2.75rem_3.25rem] divide-x divide-slate-200";
   const rowControlShellClass =
     "grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center divide-x divide-slate-200 border-t border-slate-200 bg-slate-50";
-  const cardPaddingClass = largePrint ? "p-2" : "p-3";
+  const cardPaddingClass = "p-2";
   const cardOverflowClass = largePrint ? "overflow-visible" : "overflow-hidden";
-  const formSpacingClass = largePrint ? "space-y-1.5" : "space-y-3";
+  const formSpacingClass = largePrint ? "space-y-1.5" : "space-y-2";
   const boardWidthClass = largePrint ? "max-w-full" : "max-w-[15.25rem]";
   const boardGapClass = largePrint ? "gap-1.5" : "gap-1.5";
   const boardFrameClass = largePrint
@@ -960,7 +960,7 @@ export function Wordle() {
   const keyboardMiddleRowPaddingClass = largePrint ? "px-2" : "px-3";
   const keyClass = largePrint ? "wordle-key--large" : "";
   const actionKeyClass = largePrint ? "wordle-key--large" : "";
-  const validationClass = largePrint ? "min-h-1 text-xs leading-none" : "min-h-5 text-sm";
+  const validationClass = largePrint ? "min-h-1 text-xs leading-none" : "min-h-1 text-sm leading-tight";
   const messageClass = largePrint ? "text-base" : "text-sm";
   const definitionEyebrowClass = largePrint ? "text-xs" : "text-[0.68rem]";
   const nextLevel = Math.min(maxWordleLevel, (state?.game.difficulty ?? 1) + 1);
@@ -1296,7 +1296,7 @@ export function Wordle() {
         ) : null}
       </section>
 
-      <p className="mt-3 text-center text-sm font-bold">{isComplete ? `${guesses.length} guesses played` : `Guess ${Math.min(guesses.length + 1, maxAttempts)} of ${maxAttempts}`}</p>
+      <p className="mt-1 text-center text-sm font-bold">{isComplete ? `${guesses.length} guesses played` : `Guess ${Math.min(guesses.length + 1, maxAttempts)} of ${maxAttempts}`}</p>
       <p className="sr-only" aria-live="polite" aria-atomic="true">{!isAnimatingReveal && guesses.length ? guesses[guesses.length - 1].feedback.map((tile, index) => `Position ${index + 1}: ${tile.letter}, ${tile.color === "green" ? "correct position" : tile.color === "yellow" ? "different position" : "absent or no further copies"}`).join(". ") : ""}</p>
       {largePrint && guesses.length > 0 && !isAnimatingReveal ? <details className="mt-3 rounded-xl border border-slate-200 bg-white p-3"><summary className="cursor-pointer font-bold saints-focus">All previous guesses ({guesses.length})</summary><div className="mt-3 space-y-3">{guesses.map((row, index) => <div key={row.attemptNumber}><p className="mb-1 text-sm font-bold">Guess {index + 1}</p><div className="grid grid-cols-5 gap-1">{row.feedback.map((tile, position) => <div key={position} className={`rounded-lg border p-2 text-center text-xl font-black ${tile.color === "green" ? "bg-emerald-100" : tile.color === "yellow" ? "bg-amber-100" : "bg-slate-100"}`}><span>{tile.letter.toUpperCase()}</span><span className="block text-base" aria-label={tile.color === "green" ? "correct position" : tile.color === "yellow" ? "different position" : "absent or no further copies"}>{tile.color === "green" ? "✓" : tile.color === "yellow" ? "↔" : "×"}</span></div>)}</div></div>)}</div></details> : null}
       {isComplete && !isAnimatingReveal && state ? <DailyJourney current="wordle" summary={`Fulton's Quiz · ${state.game.date}\nWordle ${state.result.status === "won" ? `${state.result.attemptsUsed}/6` : "X/6"} · ${state.result.score} game points\n${guesses.map(row => row.feedback.map(tile => tile.color === "green" ? "🟩" : tile.color === "yellow" ? "🟨" : "⬛").join("")).join("\n")}`} /> : null}
