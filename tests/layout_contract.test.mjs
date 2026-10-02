@@ -16,6 +16,7 @@ let DailyQuiz;
 let QuizBoardGrid;
 let Card;
 let HelpButton;
+let canApplyUpdateWithoutInterrupting;
 const originalFetch = globalThis.fetch;
 
 before(async () => {
@@ -30,6 +31,7 @@ before(async () => {
   ({ QuizBoardGrid } = await vite.ssrLoadModule("/src/pages/Quiz.tsx"));
   ({ Card } = await vite.ssrLoadModule("/src/components/Card.tsx"));
   ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
+  ({ canApplyUpdateWithoutInterrupting } = await vite.ssrLoadModule("/src/components/AppUpdateReloader.tsx"));
 });
 
 after(async () => {
@@ -40,6 +42,29 @@ after(async () => {
 function classesFrom(tag) {
   return new Set((tag.match(/\bclass="([^"]*)"/)?.[1] ?? "").split(/\s+/));
 }
+
+test("new releases apply on idle screens without discarding games or form entries", () => {
+  const emptyPage = {
+    activeElement: null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  assert.equal(canApplyUpdateWithoutInterrupting("/", emptyPage), true);
+  assert.equal(canApplyUpdateWithoutInterrupting("/scores", emptyPage), true);
+  for (const path of ["/wordle", "/quiz", "/map", "/account", "/admin", "/ops"]) {
+    assert.equal(canApplyUpdateWithoutInterrupting(path, emptyPage), false, path);
+  }
+  const username = { value: "admin", isContentEditable: false };
+  assert.equal(canApplyUpdateWithoutInterrupting("/", {
+    ...emptyPage, querySelectorAll: () => [username],
+  }), false, "a filled login field must survive an update");
+  assert.equal(canApplyUpdateWithoutInterrupting("/", {
+    ...emptyPage, activeElement: username, querySelectorAll: () => [username],
+  }), false, "a focused input must not reload while the user is typing");
+  assert.equal(canApplyUpdateWithoutInterrupting("/", {
+    ...emptyPage, querySelector: () => ({}),
+  }), false, "an open dialog must not be interrupted");
+});
 
 test("help starts as a compact button with no instructions in the game layout", () => {
   const html = renderToStaticMarkup(createElement(HelpButton, { title: "Game help", compact: true }, "Hidden instructions"));

@@ -2,6 +2,9 @@ FROM node:22-alpine AS frontend
 
 WORKDIR /app
 
+ARG FULTONS_BUILD_COMMIT=unknown
+ENV VITE_FULTONS_BUILD_COMMIT="${FULTONS_BUILD_COMMIT}"
+
 COPY package.json package-lock.json ./
 RUN npm ci
 
