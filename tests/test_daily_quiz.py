@@ -3607,6 +3607,93 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         retry.assert_called_once_with(0)
 
+    def test_gemini_daily_quota_does_not_sleep_or_retry(self) -> None:
+        provider = daily_quiz.GeminiProvider(
+            daily_quiz.QuizConfig(
+                **{**config().__dict__, "transient_retries": 3, "request_delay_sec": 0},
+            )
+        )
+        error = HTTPError(
+            "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent",
+            429,
+            "Too Many Requests",
+            hdrs={},
+            fp=BytesIO(json.dumps({"error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "Free tier exhausted",
+                "details": [
+                    {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "metric": "free_tier_requests"},
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "28800s"},
+                ],
+            }}).encode("utf-8")),
+        )
+        with (
+            patch("daily_quiz.urlopen", side_effect=error) as request,
+            patch("daily_quiz.time.sleep") as sleep,
+            self.assertRaisesRegex(RuntimeError, "daily quota exceeded"),
+        ):
+            provider._request("test-model", "Return a decision.", {})
+
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_gemini_daily_quota_on_final_attempt_opens_circuit(self) -> None:
+        provider = daily_quiz.GeminiProvider(
+            daily_quiz.QuizConfig(
+                **{**config().__dict__, "transient_retries": 0, "request_delay_sec": 0},
+            )
+        )
+        error = HTTPError(
+            "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent",
+            429,
+            "Too Many Requests",
+            hdrs={},
+            fp=BytesIO(json.dumps({"error": {
+                "status": "RESOURCE_EXHAUSTED",
+                "message": "Free tier exhausted",
+                "details": [{"metric": "free_tier_requests"}],
+            }}).encode("utf-8")),
+        )
+        tracked = daily_quiz.CircuitTrackingProvider(self.conn, provider)
+        with (
+            patch("daily_quiz.urlopen", side_effect=error) as request,
+            self.assertRaisesRegex(RuntimeError, "daily quota exceeded"),
+        ):
+            tracked.generate_question(
+                subject="general_knowledge", difficulty="easy", recent_questions=[], feedback=[],
+            )
+
+        self.assertEqual(request.call_count, 1)
+        self.assertIsNotNone(daily_quiz.active_provider_circuit(self.conn, "gemini:test-generator"))
+
+    def test_openrouter_daily_quota_does_not_retry(self) -> None:
+        provider = daily_quiz.OpenAICompatibleProvider(
+            daily_quiz.QuizConfig(**{
+                **config().__dict__,
+                "provider": "openrouter",
+                "generator_model": "openrouter/free",
+                "critic_model": "openrouter/free",
+                "compatible_api_key": "test-key",
+                "compatible_base_url": "https://openrouter.ai/api/v1",
+                "transient_retries": 3,
+                "request_delay_sec": 0,
+            })
+        )
+        error = HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            hdrs=None,
+            fp=BytesIO(json.dumps({"error": {"message": "free-models-per-day limit reached"}}).encode("utf-8")),
+        )
+        with (
+            patch("daily_quiz.urlopen", side_effect=error) as request,
+            self.assertRaisesRegex(RuntimeError, "free-models-per-day"),
+        ):
+            provider._request("openrouter/free", "Return a decision.")
+
+        self.assertEqual(request.call_count, 1)
+
     def test_provider_chain_reuses_primary_gemini_key_for_gemini_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(
             daily_quiz.QuizConfig(
@@ -3682,6 +3769,34 @@ class DailyQuizTests(unittest.TestCase):
             provider._defer_retry(0, RateLimitError())  # type: ignore[arg-type]
 
         self.assertEqual(provider._next_request_at, 128.0)
+
+    def test_provider_retry_delays_are_bounded(self) -> None:
+        gemini = daily_quiz.GeminiProvider(
+            daily_quiz.QuizConfig(**{**config().__dict__, "request_delay_sec": 0})
+        )
+        openrouter = daily_quiz.OpenAICompatibleProvider(
+            daily_quiz.QuizConfig(**{
+                **config().__dict__,
+                "provider": "openrouter",
+                "generator_model": "openrouter/free",
+                "critic_model": "openrouter/free",
+                "compatible_api_key": "test-key",
+                "compatible_base_url": "https://openrouter.ai/api/v1",
+                "request_delay_sec": 0,
+            })
+        )
+        class LongRetryError:
+            headers = {"Retry-After": "28800"}
+
+            def read(self, _limit: int) -> bytes:
+                return b"{}"
+
+        with patch("daily_quiz.time.monotonic", return_value=100.0):
+            gemini._defer_retry(0, LongRetryError())  # type: ignore[arg-type]
+            openrouter._defer_retry(0, LongRetryError())  # type: ignore[arg-type]
+
+        self.assertEqual(gemini._next_request_at, 160.0)
+        self.assertEqual(openrouter._next_request_at, 160.0)
 
 
 if __name__ == "__main__":

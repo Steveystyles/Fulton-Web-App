@@ -705,6 +705,10 @@ class GeminiProvider:
                 label="Gemini error",
             )
             error_payload = json.loads(body.decode(charset))
+            if is_daily_quota_failure(json.dumps(error_payload)):
+                raise RuntimeError(
+                    f"Gemini request failed with HTTP {error.code}: daily quota exceeded."
+                )
             details = error_payload.get("error", {}).get("details", [])
             retry_info = next(
                 (
@@ -730,7 +734,7 @@ class GeminiProvider:
     def _defer_transient_retry(self, attempt: int, *, retry_after_sec: float = 0.0) -> None:
         delay = max(
             self.config.request_delay_sec,
-            retry_after_sec,
+            min(retry_after_sec, 60.0),
             min(60.0, 5.0 * (2**attempt)),
         )
         self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
@@ -756,6 +760,8 @@ class GeminiProvider:
         code = str(error_payload.get("code") or "").strip()
         message = str(error_payload.get("message") or "").strip()
         detail = " ".join(part for part in (status, code, message) if part)
+        if is_daily_quota_failure(json.dumps(error_payload)) and not is_daily_quota_failure(detail):
+            detail = f"{detail} daily quota exceeded".strip()
         return detail[:700]
 
     def _request(
@@ -949,7 +955,7 @@ class OpenAICompatibleProvider:
                 retry_after_sec = 0.0
         delay = max(
             self.config.request_delay_sec,
-            retry_after_sec,
+            min(retry_after_sec, 60.0),
             min(60.0, 5.0 * (2**attempt)),
         )
         self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
@@ -1041,13 +1047,19 @@ class OpenAICompatibleProvider:
             except HTTPError as error:
                 status_code = error.code
                 try:
+                    detail = self._http_error_detail(error) if status_code == 429 else ""
+                    if is_daily_quota_failure(detail):
+                        raise RuntimeError(
+                            f"{self.name} request failed with HTTP {status_code}: {detail}"
+                        ) from error
                     if (
                         status_code in {408, 429, 500, 502, 503, 504}
                         and attempt < self.config.transient_retries
                     ):
                         self._defer_retry(attempt, error)
                         continue
-                    detail = self._http_error_detail(error)
+                    if not detail:
+                        detail = self._http_error_detail(error)
                 finally:
                     error.close()
                 suffix = f": {detail}" if detail else "."
