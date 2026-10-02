@@ -101,6 +101,24 @@ class QuizBoardTests(unittest.TestCase):
             {(subject, difficulty) for subject in ("football", "general") for difficulty in ("easy", "medium", "hard")},
         )
 
+    def test_card_previews_use_question_text_instead_of_generic_tags(self):
+        question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
+        self.conn.execute(
+            "UPDATE daily_quiz_questions SET question=?, tags_json=? WHERE id=?",
+            ("Which Dutch club played its home matches at De Meer Stadium?", json.dumps(["Dutch-Football", "Football"]), question_id),
+        )
+        row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
+        self.assertEqual(quiz_board._teaser(row), "Which Dutch club played its home matches at De Meer Stadium?")
+
+    def test_card_preview_hides_answer_when_question_contains_it(self):
+        question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
+        self.conn.execute(
+            "UPDATE daily_quiz_questions SET question=?, correct_answer=?, tags_json=? WHERE id=?",
+            ("Did Ajax win this match?", "Ajax", json.dumps(["Ajax", "Dutch-Football"]), question_id),
+        )
+        row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
+        self.assertEqual(quiz_board._teaser(row), "A question about dutch football")
+
     def test_practice_replays_an_answered_question_when_one_slot_has_no_unused_questions(self):
         answered_ids = []
         for day in ("2026-09-29", "2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05"):

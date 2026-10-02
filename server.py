@@ -807,13 +807,13 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         ("today_map", "Today map", today_map),
         ("tomorrow_map", "Tomorrow map", tomorrow_map),
     ):
-        status = str(map_status.get("status") or "missing")
+        map_test = ops_map_readiness_test(test_id, today_date if test_id == "today_map" else tomorrow_date, label, map_status)
         tests.append(
             {
-                "id": test_id,
-                "label": label,
-                "status": "pass" if status == "published" else "fail",
-                "detail": f"{status} / accepted {map_status.get('acceptedLevels', 0)}",
+                "id": map_test["id"],
+                "label": map_test["label"],
+                "status": map_test["status"],
+                "detail": map_test["detail"],
             }
         )
     return {
@@ -6288,6 +6288,23 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         safe_log(f"{self.address_string()} - {format % args}")
+
+
+def ops_map_readiness_test(test_id: str, game_date: str, label: str, map_status: dict[str, Any]) -> dict[str, str]:
+    if date.fromisoformat(game_date).weekday() not in {2, 5}:
+        return {
+            "id": test_id,
+            "label": label,
+            "status": "pass",
+            "detail": "Not scheduled (Wednesday and Saturday only)",
+        }
+    status = str(map_status.get("status") or "missing")
+    return {
+        "id": test_id,
+        "label": label,
+        "status": "pass" if status == "published" else "fail",
+        "detail": f"{status} / accepted {map_status.get('acceptedLevels', 0)}",
+    }
 
 
 def run() -> None:
