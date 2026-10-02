@@ -117,7 +117,7 @@ class QuizBoardTests(unittest.TestCase):
             ("Did Ajax win this match?", "Ajax", json.dumps(["Ajax", "Dutch-Football"]), question_id),
         )
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
-        self.assertEqual(quiz_board._teaser(row), "A question about dutch football")
+        self.assertEqual(quiz_board._teaser(row), "A story from the Dutch game")
 
     def test_card_preview_hides_short_answer_even_when_generator_check_would_allow_it(self):
         question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
@@ -126,7 +126,25 @@ class QuizBoardTests(unittest.TestCase):
             ("Did FC win this match?", "FC", json.dumps(["FC", "cup final"]), question_id),
         )
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
-        self.assertEqual(quiz_board._teaser(row), "A question about cup final")
+        self.assertEqual(quiz_board._teaser(row), "A cup-final moment")
+
+    def test_card_preview_skips_generic_tags_and_does_not_expose_answer(self):
+        question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
+        self.conn.execute(
+            "UPDATE daily_quiz_questions SET question=?, correct_answer=?, tags_json=? WHERE id=?",
+            ("Did Ajax win this match?", "Ajax", json.dumps(["Football", "Ajax", "Dutch-Football"]), question_id),
+        )
+        row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
+        self.assertEqual(quiz_board._teaser(row), "A story from the Dutch game")
+
+    def test_card_preview_uses_subject_fallback_when_only_unsafe_tags_exist(self):
+        question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
+        self.conn.execute(
+            "UPDATE daily_quiz_questions SET question=?, correct_answer=?, tags_json=? WHERE id=?",
+            ("Did Ajax win this match?", "Ajax", json.dumps(["Football", "Ajax"]), question_id),
+        )
+        row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
+        self.assertEqual(quiz_board._teaser(row), "A football mystery")
 
     def test_practice_replays_an_answered_question_when_one_slot_has_no_unused_questions(self):
         answered_ids = []
