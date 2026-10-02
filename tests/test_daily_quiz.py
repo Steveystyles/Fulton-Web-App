@@ -3240,6 +3240,58 @@ class DailyQuizTests(unittest.TestCase):
             "SELECT work_quiz_date FROM daily_quiz_pool_batches WHERE state='ready'"
         ).fetchone()[0], job["work_quiz_date"])
 
+    def test_quiz_pool_carries_verified_partial_batch_after_attempt_budget(self) -> None:
+        job = daily_quiz._create_quiz_pool_job(self.conn)
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, job["work_quiz_date"])
+        carried = []
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS[:-1]:
+            question = valid_question(subject, difficulty)
+            evidence = supporting_evidence(question)
+            daily_quiz.save_question(
+                self.conn,
+                quiz_set_id=int(quiz_set["id"]),
+                question=question,
+                evidence=evidence,
+                verification=passing_verification(evidence),
+            )
+            carried.append((subject, difficulty, question["question"]))
+        self.conn.execute(
+            """INSERT INTO daily_quiz_attempts
+               (quiz_date, subject, difficulty, attempt_number, provider,
+                generated_json, passed, failure_reason, created_at)
+               VALUES (?, 'football', 'medium', 1, 'test-provider', '{}', 0,
+                       'Repeated answer', ?)""",
+            (job["work_quiz_date"], daily_quiz.utc_now()),
+        )
+        self.conn.commit()
+
+        result = daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=replace(config(), max_failed_attempts_per_date=1),
+            target_ready=1,
+            max_batch_attempts=2,
+            provider=PassingProvider("test-provider"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(result["status"], "stocked")
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
+        ).fetchone()[0], "failed")
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE batch_id != ?",
+            (job["id"],),
+        ).fetchone()[0], 6)
+        self.assertEqual(
+            [tuple(row) for row in self.conn.execute(
+                """SELECT subject, difficulty, question FROM daily_quiz_pool_questions
+                   WHERE batch_id != ? ORDER BY subject, difficulty""",
+                (job["id"],),
+            ) if (row[0], row[1], row[2]) in carried],
+            sorted(carried),
+        )
+        self.assertEqual(daily_quiz.failed_attempt_count(self.conn, job["work_quiz_date"]), 0)
+
     def test_quiz_pool_claim_rolls_back_if_publication_fails(self) -> None:
         daily_quiz.replenish_quiz_pool(
             self.conn,
