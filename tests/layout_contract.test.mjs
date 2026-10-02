@@ -193,8 +193,10 @@ test("game screens have persistent previous and next game arrows", async () => {
   assert.match(navigation, /<ArrowRight/);
   assert.match(navigation, /fixed inset-x-0 bottom-0/);
   assert.match(navigation, /pathname === "\/map" \? "relative"/, "Map arrows sit after the controls instead of covering them");
-  assert.match(navigation, /min-h-11/, "phone navigation keeps a compact 44px touch target");
-  assert.match(navigation, /env\(safe-area-inset-bottom\)/, "compact navigation still clears the iPhone home indicator");
+  assert.match(navigation, /sameDestination = previous\.id === next\.id/, "one shared destination label replaces duplicate game names");
+  const navCss = await sourceText("src/styles/index.css");
+  assert.match(navCss, /\.game-navigation__link\s*\{[^}]*min-height: 2\.75rem/s, "arrow links retain a 44px touch target");
+  assert.match(navCss, /\.game-navigation\s*\{[^}]*env\(safe-area-inset-bottom\)/s, "navigation still clears the iPhone home indicator");
   assert.match(router, /pathname === "\/map" \? "0px" : `\$\{navRef\.current\?\.getBoundingClientRect\(\)\.height/, "fixed bars reserve their measured height");
   assert.match(router, /observer\.observe\(navRef\.current\)/, "safe-area and size changes update the reserved space");
   assert.match(navigation, /item\.status !== "unavailable"/, "unavailable Map days do not lead to a dead game");
@@ -223,12 +225,8 @@ test("App frame gives the quiz board and score history the wide desktop shell", 
 
 test("quiz board keeps six fixed, responsive choices after each answer", async () => {
   const tree = await sourceTree("src/pages/Quiz.tsx");
-  const boardGrid = elements(tree).find(node => /cards\.map/.test(node.getText(tree)) && attribute(node, "className")?.split(/\s+/).includes("grid"));
-  assert.ok(boardGrid, "all six cards are mapped into the board");
-  const boardClasses = attribute(boardGrid, "className").split(/\s+/);
-  assert.ok(boardClasses.includes("grid-cols-2"));
-  assert.ok(boardClasses.includes("gap-2"), "the board avoids oversized gaps");
-  assert.ok(boardClasses.includes("min-[760px]:grid-cols-3"), "the wide shell uses three compact columns");
+  const boardList = elements(tree).find(node => /cards\.map/.test(node.getText(tree)) && attribute(node, "className") === "quiz-choice-list");
+  assert.ok(boardList, "all six questions are mapped into one continuous board");
   const cardButton = elements(tree).find(node => elementTag(node, tree) === "button" && node.getText(tree).includes("data-state="));
   assert.ok(cardButton);
   assert.match(cardButton.getText(tree), /data-state=/);
@@ -253,33 +251,30 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.equal((html.match(/data-state="available"/g) ?? []).length, 4);
   assert.match(html, /Pick 1 · Done/);
   assert.match(html, /Pick 2 · In play/);
-  assert.match(html, /Pick me/, "Daily cards invite the next pick");
-  assert.match(html, /quiz-push-card__points/, "points have a prominent badge on every card");
-  assert.match(html, /quiz-push-card__action/, "the press affordance stays visible after a choice");
-  assert.match(html, /data-subject="football"/, "Football cards keep their own accent");
-  assert.match(html, /data-subject="general"/, "General Knowledge cards keep their own accent");
-  assert.match(html, /quiz-push-card__indicator/, "every card has a physical press indicator");
+  assert.match(html, /Choose/, "available questions invite the next choice");
+  assert.match(html, /quiz-choice__points/, "points remain visible on each row");
+  assert.match(html, /quiz-choice__status/, "played status remains visible after a choice");
+  assert.match(html, /data-subject="football"/, "Football questions retain their accent");
+  assert.match(html, /data-subject="general"/, "General Knowledge questions retain their accent");
+  assert.match(html, /quiz-choice__number/, "questions have stable scan-friendly numbers");
   assert.doesNotMatch(html, /Back from yesterday|rollover/, "unused questions are not called out as rollover cards");
   const pressing = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, busy: true, locked: false, pendingCardId: "card-3", onSelect: () => {} }));
   assert.match(pressing, /data-state="pressing"[^>]*aria-pressed="true"[^>]*disabled=""/, "a tapped card visibly presses before the server responds");
   assert.match(pressing, /Opening…/);
-  assert.match(html, /quiz-push-card/, "cards use the raised push-button treatment");
+  assert.match(html, /quiz-choice-list/, "the raised card grid has been replaced by a question list");
   const css = await sourceText("src/styles/index.css");
-  assert.match(css, /\.quiz-push-card\[data-state="active"\][\s\S]*?transform: translateY\(5px\)/, "chosen cards sit physically lower than unchosen cards");
-  assert.match(css, /\.quiz-push-card\[data-state="done"\][^}]*border-color: #047857/, "answered cards have a distinct settled state");
-  assert.match(css, /\.quiz-push-card\[data-state="done"\] \.quiz-push-card__indicator\s*\{\s*background: #047857/, "the green check communicates completion without replacing the subject accent");
-  assert.doesNotMatch(css, /\.quiz-push-card\[data-state="done"\]\s*\{[^}]*--quiz-accent:/, "done cards retain their Football or General subject color");
-  assert.match(cardButton.getText(tree), /min-h-\[8\.75rem\]/, "phone cards are compact enough for the board to fit");
+  assert.match(css, /\.quiz-choice\[data-state="done"\][^}]*background: #e9f3ed/, "answered choices have a clear settled state");
+  assert.match(css, /\.quiz-choice\s*\{[^}]*min-height: 4\.55rem/s, "phone rows are compact enough for the whole board");
+  assert.doesNotMatch(css, /\.quiz-push-card/, "the previous raised-card styling is removed");
   assert.doesNotMatch(html, /Football · Question 1/, "Daily cards do not repeat the subject in their teaser");
 
   const practice = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, mode: "practice", busy: false, locked: false, onSelect: () => {} }));
   assert.equal((practice.match(/<button\b/g) ?? []).length, 6, "Practice also keeps all six choices visible");
-  assert.match(practice, /aria-label="Football practice cards"/);
-  assert.match(practice, /aria-label="General knowledge practice cards"/);
-  assert.match(practice, /Play this/);
+  assert.match(practice, /aria-label="Choose a practice question"/);
+  assert.match(practice, /Choose/);
   assert.match(practice, /Pick 1 · Done/);
   assert.match(practice, /Question 1/);
-  assert.doesNotMatch(practice, /Football · Question 1/, "grouped Practice cards do not repeat the subject in their teaser");
+  assert.doesNotMatch(practice, /Football · Question 1/, "Practice choices do not repeat the subject in their teaser");
 
   const quizSource = await sourceText("src/pages/Quiz.tsx");
   assert.match(quizSource, /board && !activeCard && !reveal && board\.status !== "completed"/, "the six-card board is hidden while a question or result is shown");
@@ -288,16 +283,12 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
 
   const answers = elements(tree).find(node => attribute(node, "aria-label") === "Answer choices");
   assert.ok(answers, "answer choices form an accessible group");
-  const answerClasses = attribute(answers, "className").split(/\s+/);
-  assert.ok(answerClasses.includes("grid-cols-[repeat(2,minmax(0,1fr))]"));
-  assert.ok(answerClasses.includes("auto-rows-fr"));
+  assert.equal(attribute(answers, "className"), "quiz-answer-grid");
   const answerButton = elements(answers).find(node => elementTag(node, tree) === "button");
   assert.ok(answerButton);
   const answerMarkup = answerButton.getText(tree);
-  assert.match(answerMarkup, /min-w-0/);
-  assert.match(answerMarkup, /whitespace-normal/);
-  assert.match(answerMarkup, /\[overflow-wrap:anywhere\]/);
-  assert.doesNotMatch(answerMarkup, /\b(?:truncate|text-ellipsis|whitespace-nowrap|line-clamp-\d+)\b/);
+  assert.match(answerMarkup, /className="quiz-answer saints-focus"/);
+  assert.match(css, /\.quiz-answer\s*\{[^}]*overflow-wrap: anywhere/s, "full answer text remains readable");
 });
 
 test("Map opens on the game, without a demo video or oversized introduction", async () => {

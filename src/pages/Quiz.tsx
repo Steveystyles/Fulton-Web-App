@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Card } from "../components/Card";
-import { DailyJourney, actionClass, secondaryClass } from "../components/DailyJourney";
+import { DailyJourney, secondaryClass } from "../components/DailyJourney";
 import { GameFeedback } from "../components/GameFeedback";
 import { api, type QuizBoard, type QuizCardAdjudication } from "../lib/api";
 
@@ -14,9 +14,10 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
   pendingCardId?: string | null;
   onSelect: (cardId: string) => void;
 }) {
-  const renderCard = (card: QuizBoard["cards"][number]) => {
+  return <div className="quiz-choice-list" role="group" aria-label={mode === "practice" ? "Choose a practice question" : "Choose a quiz question"}>
+    {cards.map((card, index) => {
       const state = card.answered ? "done" : card.selectedOrder !== null ? "active" : pendingCardId === card.id ? "pressing" : "available";
-      const status = card.answered ? `Pick ${card.selectedOrder} · Done` : state === "active" ? `Pick ${card.selectedOrder} · In play` : state === "pressing" ? "Opening…" : mode === "practice" ? "Play this" : "Pick me";
+      const status = card.answered ? `Pick ${card.selectedOrder} · Done` : state === "active" ? `Pick ${card.selectedOrder} · In play` : state === "pressing" ? "Opening…" : "Choose";
       return <button
         key={card.id}
         type="button"
@@ -25,47 +26,20 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
         aria-pressed={state !== "available"}
         disabled={busy || locked || state !== "available"}
         onClick={() => onSelect(card.id)}
-        className={`quiz-push-card saints-focus flex min-h-[8.75rem] min-w-0 flex-col rounded-2xl border-2 p-2.5 text-left text-slate-950 min-[760px]:min-h-40 min-[760px]:p-3 ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
+        className="quiz-choice saints-focus"
       >
-        <span className="flex w-full items-start justify-between gap-2">
-          <span className="quiz-push-card__subject text-[0.7rem] font-black uppercase tracking-wider">{card.subject === "football" ? "Football" : "General"}</span>
-          <span className="quiz-push-card__points" aria-label={`${card.points} ${card.points === 1 ? "point" : "points"}`}>{card.points} <span aria-hidden="true">{card.points === 1 ? "pt" : "pts"}</span></span>
+        <span className="quiz-choice__number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+        <span className="quiz-choice__copy">
+          <span className="quiz-choice__subject">{card.subject === "football" ? "Football" : "General knowledge"}</span>
+          <strong className="quiz-choice__title">{card.difficulty}</strong>
+          <span className="quiz-choice__topic">{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
         </span>
-        <strong className="mt-2 block text-lg capitalize leading-tight min-[760px]:text-xl">{card.difficulty}</strong>
-        <span className="mt-1 block text-xs leading-snug text-slate-600 [overflow-wrap:anywhere]">{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
-        <span className="quiz-push-card__action mt-auto flex w-full items-center justify-between gap-1 pt-2 text-xs font-black">
-          <span>{status}</span>
-          <span aria-hidden="true" className="quiz-push-card__indicator">{state === "available" ? "↓" : "✓"}</span>
+        <span className="quiz-choice__aside">
+          <span className="quiz-choice__points" aria-label={`${card.points} ${card.points === 1 ? "point" : "points"}`}>{card.points} <small>{card.points === 1 ? "pt" : "pts"}</small></span>
+          <span className="quiz-choice__status">{state === "done" ? <span aria-hidden="true">✓ </span> : null}{status}</span>
         </span>
       </button>;
-  };
-
-  if (mode === "practice") {
-    return <div className="space-y-4" aria-label="Practice quiz choices">
-      {([
-        { subject: "football", title: "Football", hint: "A little club knowledge" },
-        { subject: "general", title: "General knowledge", hint: "Something beyond the pitch" },
-      ] as const).map(group => {
-        const groupCards = cards.filter(card => card.subject === group.subject);
-        if (!groupCards.length) return null;
-        return <section key={group.subject} aria-label={`${group.title} practice cards`} className="space-y-2">
-          <div className="flex items-end justify-between gap-2 px-1">
-            <div>
-              <h2 className="text-lg font-black text-slate-950">{group.title}</h2>
-              <p className="text-xs font-medium text-slate-600">{group.hint}</p>
-            </div>
-            <span className="text-xs font-bold text-slate-500">{groupCards.length} {groupCards.length === 1 ? "card" : "cards"}</span>
-          </div>
-          <div className="grid grid-cols-2 auto-rows-fr gap-2 min-[760px]:grid-cols-3" role="group" aria-label={`Choose a ${group.title} practice card`}>
-            {groupCards.map(renderCard)}
-          </div>
-        </section>;
-      })}
-    </div>;
-  }
-
-  return <div className="grid grid-cols-2 auto-rows-fr gap-2 min-[760px]:grid-cols-3" role="group" aria-label="Choose a quiz card">
-    {cards.map(renderCard)}
+    })}
   </div>;
 }
 
@@ -131,8 +105,8 @@ export function Quiz() {
   }
 
   return (
-    <section className="page-fade space-y-3" aria-label="Quiz">
-      {!activeCard && !reveal && board?.status !== "completed" ? <div className="mx-auto grid w-full max-w-md grid-cols-2 gap-2" role="group" aria-label="Quiz mode">
+    <section className="page-fade quiz-page" aria-label="Quiz">
+      {!activeCard && !reveal && board?.status !== "completed" ? <div className="quiz-mode-switch mx-auto w-full max-w-3xl" role="group" aria-label="Quiz mode">
         {(["daily", "practice"] as Mode[]).map(value => (
           <button
             key={value}
@@ -140,10 +114,9 @@ export function Quiz() {
             disabled={busy}
             onClick={() => setMode(value)}
             aria-pressed={mode === value}
-            className={`min-h-12 rounded-xl border px-2 py-1 text-center saints-focus ${mode === value ? value === "practice" ? "border-amber-300 bg-amber-100 text-amber-950 shadow-sm" : "border-saints-black bg-saints-black text-white" : "border-slate-200 bg-white text-slate-700"}`}
+            className="quiz-mode-switch__button saints-focus"
           >
-            <span className="block text-sm font-black capitalize">{value}</span>
-            <span className={`block text-[0.68rem] font-semibold ${mode === "daily" && value === "daily" ? "text-white/75" : "opacity-70"}`}>{value === "daily" ? "League game" : "Just for fun"}</span>
+            {value === "daily" ? "Daily" : "Practice"}
           </button>
         ))}
       </div> : null}
@@ -165,11 +138,11 @@ export function Quiz() {
       ) : null}
 
       {board && !activeCard && !reveal && board.status !== "completed" ? (
-        <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-3xl space-y-3 focus:outline-none">
-          <div className="flex items-center justify-between gap-3 px-1">
-            <h1 className="text-xl font-black text-slate-950">{mode === "daily" ? "Quiz" : "Practice quiz"}</h1>
-            <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-700 shadow-sm" aria-label={`${playedCount} of ${board.pickCount} questions answered`}>
-              {playedCount}/{board.pickCount} answered
+        <div ref={stageRef} tabIndex={-1} className="quiz-board mx-auto w-full max-w-3xl focus:outline-none">
+          <div className="quiz-board__heading">
+            <h1>{mode === "daily" ? "Quiz" : "Practice quiz"}</h1>
+            <span aria-label={`${playedCount} of ${board.pickCount} questions answered`}>
+              <strong>{playedCount}</strong> / {board.pickCount} played
             </span>
           </div>
           <QuizBoardGrid cards={board.cards} mode={mode} busy={busy} pendingCardId={pendingCardId} locked={false} onSelect={cardId => void selectCard(cardId)} />
@@ -190,26 +163,28 @@ export function Quiz() {
 
       {activeCard?.question && !reveal ? (
         <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-2xl focus:outline-none">
-          <Card className={mode === "daily" ? "border border-rose-200 bg-gradient-to-b from-white to-rose-50/60" : ""}>
-            <p className="text-xs font-black uppercase text-saints-red">
-              Pick {activeCard.selectedOrder} of {board?.pickCount ?? 4} · {activeCard.difficulty} · {activeCard.points} pts
-            </p>
-            <h1 className="mt-3 text-xl font-black [overflow-wrap:anywhere]">{activeCard.question.question}</h1>
+          <div className="quiz-question-stage">
+            <div className="quiz-question-stage__meta">
+              <span>Question {activeCard.selectedOrder} of {board?.pickCount ?? 4}</span>
+              <span>{activeCard.difficulty} · {activeCard.points} {activeCard.points === 1 ? "point" : "points"}</span>
+            </div>
+            <h1>{activeCard.question.question}</h1>
             <div
-              className="mt-4 grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] auto-rows-fr gap-2"
+              className="quiz-answer-grid"
               role="group"
               aria-label="Answer choices"
             >
-              {activeCard.question.answers.map(answerOption => (
+              {activeCard.question.answers.map((answerOption, index) => (
                 <button
                   key={answerOption.id}
                   type="button"
                   aria-pressed={choice === answerOption.id}
                   disabled={busy}
                   onClick={() => setChoice(answerOption.id)}
-                  className={`min-h-16 min-w-0 whitespace-normal rounded-xl border p-3 text-left font-bold leading-snug [overflow-wrap:anywhere] saints-focus ${choice === answerOption.id ? mode === "daily" ? "border-saints-red bg-saints-red text-white" : "bg-saints-black text-white" : "border-slate-200 bg-white hover:border-saints-red"}`}
+                  className="quiz-answer saints-focus"
                 >
-                  {answerOption.text}
+                  <span className="quiz-answer__letter" aria-hidden="true">{String.fromCharCode(65 + index)}</span>
+                  <span>{answerOption.text}</span>
                 </button>
               ))}
             </div>
@@ -217,42 +192,42 @@ export function Quiz() {
               type="button"
               disabled={!choice || busy}
               onClick={() => void answer()}
-              className={`${actionClass} mt-4 w-full disabled:opacity-50`}
+              className="quiz-submit saints-focus"
             >
               {busy ? "Checking…" : "Lock in answer"}
             </button>
-          </Card>
+          </div>
         </div>
       ) : null}
 
       {reveal ? (
         <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-2xl focus:outline-none">
-          <Card className={reveal.correct ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}>
-            <p className="text-sm font-black uppercase">
+          <div className="quiz-result-stage" data-correct={reveal.correct}>
+            <p className="quiz-result-stage__label">
               {reveal.correct ? `Correct · +${reveal.pointsAwarded}` : "Not this time"}
             </p>
-            {!reveal.correct ? <p className="mt-2 font-black">Correct answer: {reveal.correctAnswer}</p> : null}
-            <p className="mt-2 text-sm leading-relaxed">{reveal.explanation}</p>
+            {!reveal.correct ? <p className="quiz-result-stage__answer">Correct answer: {reveal.correctAnswer}</p> : null}
+            <p className="quiz-result-stage__explanation">{reveal.explanation}</p>
             {reveal.interestingReason && reveal.interestingReason !== reveal.explanation ? (
-              <p className="mt-2 text-sm"><strong>Did you know? </strong>{reveal.interestingReason}</p>
+              <p className="quiz-result-stage__fact"><strong>Did you know? </strong>{reveal.interestingReason}</p>
             ) : null}
             <button
               type="button"
-              className={`${actionClass} mt-4 w-full`}
+              className="quiz-submit saints-focus"
               onClick={() => setReveal(null)}
             >
               {board?.status === "completed" ? "See final score" : "Back to the board"}
             </button>
-          </Card>
+          </div>
         </div>
       ) : null}
 
       {board?.status === "completed" && !reveal ? (
         <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-2xl focus:outline-none">
-          <Card>
-            <p className="text-xs font-black uppercase text-saints-red">Round complete</p>
-            <h2 className="mt-2 text-3xl font-black">{board.score} / {board.maxScore}</h2>
-            <p className="mt-2">
+          <div className="quiz-result-stage">
+            <p className="quiz-result-stage__label">Round complete</p>
+            <h2 className="quiz-result-stage__score">{board.score} / {board.maxScore}</h2>
+            <p className="quiz-result-stage__explanation">
               {board.correctCount} of {board.pickCount} correct
               {board.bonusPoints ? ` · +${board.bonusPoints} perfect bonus` : ""}
             </p>
@@ -265,11 +240,11 @@ export function Quiz() {
                 />
               </>
             ) : (
-              <p className="mt-3 text-sm text-slate-600">
+              <p className="quiz-result-stage__fact">
                 Practice only — your league score stays untouched.
               </p>
             )}
-          </Card>
+          </div>
         </div>
       ) : null}
 
