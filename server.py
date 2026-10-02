@@ -703,23 +703,6 @@ def ops_quiz_preview(conn: sqlite3.Connection, quiz_date: str) -> dict[str, Any]
     return preview
 
 
-def ops_map_readiness_test(test_id: str, game_date: str, label: str, map_status: dict[str, Any]) -> dict[str, str]:
-    if date.fromisoformat(game_date).weekday() not in {2, 5}:
-        return {
-            "id": test_id,
-            "label": label,
-            "status": "pass",
-            "detail": "Not scheduled (Wednesday and Saturday only)",
-        }
-    status = str(map_status.get("status") or "missing")
-    return {
-        "id": test_id,
-        "label": label,
-        "status": "pass" if status == "published" else "fail",
-        "detail": f"{status} / accepted {map_status.get('acceptedLevels', 0)}",
-    }
-
-
 def internal_ops_summary_payload() -> dict[str, Any]:
     tz = server_timezone()
     local_now = datetime.now(tz)
@@ -820,11 +803,19 @@ def internal_ops_summary_payload() -> dict[str, Any]:
             "detail": f"{tomorrow_status} / accepted {tomorrow_quiz.get('acceptedQuestions', 0)}",
         }
     )
-    for test_id, game_date, label, map_status in (
-        ("today_map", today_date, "Today map", today_map),
-        ("tomorrow_map", tomorrow_date, "Tomorrow map", tomorrow_map),
+    for test_id, label, map_status in (
+        ("today_map", "Today map", today_map),
+        ("tomorrow_map", "Tomorrow map", tomorrow_map),
     ):
-        tests.append(ops_map_readiness_test(test_id, game_date, label, map_status))
+        map_test = ops_map_readiness_test(test_id, today_date if test_id == "today_map" else tomorrow_date, label, map_status)
+        tests.append(
+            {
+                "id": map_test["id"],
+                "label": map_test["label"],
+                "status": map_test["status"],
+                "detail": map_test["detail"],
+            }
+        )
     return {
         "ok": bool(storage["ok"]),
         "generatedAt": utc_now(),
@@ -6297,6 +6288,23 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         safe_log(f"{self.address_string()} - {format % args}")
+
+
+def ops_map_readiness_test(test_id: str, game_date: str, label: str, map_status: dict[str, Any]) -> dict[str, str]:
+    if date.fromisoformat(game_date).weekday() not in {2, 5}:
+        return {
+            "id": test_id,
+            "label": label,
+            "status": "pass",
+            "detail": "Not scheduled (Wednesday and Saturday only)",
+        }
+    status = str(map_status.get("status") or "missing")
+    return {
+        "id": test_id,
+        "label": label,
+        "status": "pass" if status == "published" else "fail",
+        "detail": f"{status} / accepted {map_status.get('acceptedLevels', 0)}",
+    }
 
 
 def run() -> None:

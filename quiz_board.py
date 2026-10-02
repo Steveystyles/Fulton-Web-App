@@ -281,13 +281,25 @@ def ensure_board(conn: sqlite3.Connection, user_id: int, game_date: str, mode: s
 
 
 def _teaser(row: sqlite3.Row) -> str:
+    question = " ".join(daily_quiz.display_text(row["question"]).split())
+    answer = daily_quiz.display_text(row["correct_answer"])
     try:
-        tags = [str(tag).replace("_", " ").strip() for tag in json.loads(row["tags_json"] or "[]")]
+        choices = json.loads(row["choices_json"] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        choices = []
+    if question and not daily_quiz.answer_is_given_away(question, choices, answer):
+        if len(question) > 92:
+            question = question[:89].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
+        return question
+    try:
+        tags = [str(tag).replace("_", " ").replace("-", " ").strip() for tag in json.loads(row["tags_json"] or "[]")]
     except (TypeError, json.JSONDecodeError):
         tags = []
-    safe_tag = next((tag for tag in tags if 2 <= len(tag) <= 32), "")
-    subject = "Football" if row["subject"] == "football" else "General knowledge"
-    return f"{subject} · {safe_tag.title()}" if safe_tag else f"{subject} · A fresh challenge"
+    safe_tag = next(
+        (tag for tag in tags if 2 <= len(tag) <= 32 and daily_quiz.normalize_text(answer) not in daily_quiz.normalize_text(tag)),
+        "",
+    )
+    return f"A question about {safe_tag.lower()}" if safe_tag else "A mystery question"
 
 
 def _public_question(row: sqlite3.Row) -> dict[str, Any]:

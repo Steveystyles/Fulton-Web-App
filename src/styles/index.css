@@ -812,7 +812,7 @@ input[type="date"] {
 .quiz-choice__copy { display: grid; min-width: 0; gap: 0.05rem; }
 .quiz-choice__subject { color: var(--subject-color); font-size: 0.64rem; font-weight: 850; letter-spacing: 0.07em; text-transform: uppercase; }
 .quiz-choice__title { color: #18202b; font-size: 1rem; font-weight: 850; line-height: 1.1; text-transform: capitalize; }
-.quiz-choice__topic { color: #626a73; font-size: 0.72rem; font-weight: 550; line-height: 1.2; overflow-wrap: anywhere; }
+.quiz-choice__topic { color: #56616c; font-size: 0.76rem; font-weight: 550; line-height: 1.25; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .quiz-choice__aside { display: grid; justify-items: end; gap: 0.35rem; min-width: 4.3rem; }
 .quiz-choice__points { color: #171e28; font-size: 1rem; font-weight: 850; line-height: 1; white-space: nowrap; }
 .quiz-choice__points small { font-size: 0.65rem; font-weight: 750; }

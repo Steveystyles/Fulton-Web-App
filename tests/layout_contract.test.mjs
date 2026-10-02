@@ -238,7 +238,7 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
     subject: index % 2 ? "general" : "football",
     difficulty: "easy",
     points: 1,
-    teaser: `${index % 2 ? "General knowledge" : "Football"} · Question ${index + 1}`,
+    teaser: `Which event is question ${index + 1} about?`,
     source: "new",
     appearances: 1,
     selectedOrder: index < 2 ? index + 1 : null,
@@ -266,15 +266,14 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.match(css, /\.quiz-choice\[data-state="done"\][^}]*background: #e9f3ed/, "answered choices have a clear settled state");
   assert.match(css, /\.quiz-choice\s*\{[^}]*min-height: 4\.55rem/s, "phone rows are compact enough for the whole board");
   assert.doesNotMatch(css, /\.quiz-push-card/, "the previous raised-card styling is removed");
-  assert.doesNotMatch(html, /Football · Question 1/, "Daily cards do not repeat the subject in their teaser");
+  assert.match(html, /Which event is question 1 about\?/, "Daily cards preview the question instead of repeating its subject");
 
   const practice = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, mode: "practice", busy: false, locked: false, onSelect: () => {} }));
   assert.equal((practice.match(/<button\b/g) ?? []).length, 6, "Practice also keeps all six choices visible");
   assert.match(practice, /aria-label="Choose a practice question"/);
   assert.match(practice, /Choose/);
   assert.match(practice, /Pick 1 · Done/);
-  assert.match(practice, /Question 1/);
-  assert.doesNotMatch(practice, /Football · Question 1/, "Practice choices do not repeat the subject in their teaser");
+  assert.match(practice, /Which event is question 1 about\?/);
 
   const quizSource = await sourceText("src/pages/Quiz.tsx");
   assert.match(quizSource, /board && !activeCard && !reveal && board\.status !== "completed"/, "the six-card board is hidden while a question or result is shown");

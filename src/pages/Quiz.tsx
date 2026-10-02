@@ -32,7 +32,7 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
         <span className="quiz-choice__copy">
           <span className="quiz-choice__subject">{card.subject === "football" ? "Football" : "General knowledge"}</span>
           <strong className="quiz-choice__title">{card.difficulty}</strong>
-          <span className="quiz-choice__topic">{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
+          <span className="quiz-choice__topic">{card.teaser}</span>
         </span>
         <span className="quiz-choice__aside">
           <span className="quiz-choice__points" aria-label={`${card.points} ${card.points === 1 ? "point" : "points"}`}>{card.points} <small>{card.points === 1 ? "pt" : "pts"}</small></span>
