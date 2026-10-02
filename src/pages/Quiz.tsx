@@ -25,15 +25,15 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
         aria-pressed={state !== "available"}
         disabled={busy || locked || state !== "available"}
         onClick={() => onSelect(card.id)}
-        className={`quiz-push-card saints-focus flex min-h-40 min-w-0 flex-col rounded-2xl border-2 p-3 text-left text-slate-950 ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
+        className={`quiz-push-card saints-focus flex min-h-[8.75rem] min-w-0 flex-col rounded-2xl border-2 p-2.5 text-left text-slate-950 min-[760px]:min-h-40 min-[760px]:p-3 ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
       >
         <span className="flex w-full items-start justify-between gap-2">
           <span className="quiz-push-card__subject text-[0.7rem] font-black uppercase tracking-wider">{card.subject === "football" ? "Football" : "General"}</span>
           <span className="quiz-push-card__points" aria-label={`${card.points} ${card.points === 1 ? "point" : "points"}`}>{card.points} <span aria-hidden="true">{card.points === 1 ? "pt" : "pts"}</span></span>
         </span>
-        <strong className="mt-3 block text-xl capitalize leading-tight">{card.difficulty}</strong>
+        <strong className="mt-2 block text-lg capitalize leading-tight min-[760px]:text-xl">{card.difficulty}</strong>
         <span className="mt-1 block text-xs leading-snug text-slate-600 [overflow-wrap:anywhere]">{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
-        <span className="quiz-push-card__action mt-auto flex w-full items-center justify-between gap-1 pt-3 text-xs font-black">
+        <span className="quiz-push-card__action mt-auto flex w-full items-center justify-between gap-1 pt-2 text-xs font-black">
           <span>{status}</span>
           <span aria-hidden="true" className="quiz-push-card__indicator">{state === "available" ? "↓" : "✓"}</span>
         </span>
@@ -140,7 +140,7 @@ export function Quiz() {
             disabled={busy}
             onClick={() => setMode(value)}
             aria-pressed={mode === value}
-            className={`min-h-14 rounded-xl border px-2 py-2 text-center saints-focus ${mode === value ? value === "practice" ? "border-amber-300 bg-amber-100 text-amber-950 shadow-sm" : "border-saints-black bg-saints-black text-white" : "border-slate-200 bg-white text-slate-700"}`}
+            className={`min-h-12 rounded-xl border px-2 py-1 text-center saints-focus ${mode === value ? value === "practice" ? "border-amber-300 bg-amber-100 text-amber-950 shadow-sm" : "border-saints-black bg-saints-black text-white" : "border-slate-200 bg-white text-slate-700"}`}
           >
             <span className="block text-sm font-black capitalize">{value}</span>
             <span className={`block text-[0.68rem] font-semibold ${mode === "daily" && value === "daily" ? "text-white/75" : "opacity-70"}`}>{value === "daily" ? "League game" : "Just for fun"}</span>

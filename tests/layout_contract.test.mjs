@@ -193,6 +193,8 @@ test("game screens have persistent previous and next game arrows", async () => {
   assert.match(navigation, /<ArrowRight/);
   assert.match(navigation, /fixed inset-x-0 bottom-0/);
   assert.match(navigation, /pathname === "\/map" \? "relative"/, "Map arrows sit after the controls instead of covering them");
+  assert.match(navigation, /min-h-11/, "phone navigation keeps a compact 44px touch target");
+  assert.match(navigation, /env\(safe-area-inset-bottom\)/, "compact navigation still clears the iPhone home indicator");
   assert.match(router, /pathname === "\/map" \? "0px" : `\$\{navRef\.current\?\.getBoundingClientRect\(\)\.height/, "fixed bars reserve their measured height");
   assert.match(router, /observer\.observe\(navRef\.current\)/, "safe-area and size changes update the reserved space");
   assert.match(navigation, /item\.status !== "unavailable"/, "unavailable Map days do not lead to a dead game");
@@ -264,7 +266,10 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.match(html, /quiz-push-card/, "cards use the raised push-button treatment");
   const css = await sourceText("src/styles/index.css");
   assert.match(css, /\.quiz-push-card\[data-state="active"\][\s\S]*?transform: translateY\(5px\)/, "chosen cards sit physically lower than unchosen cards");
-  assert.match(css, /\.quiz-push-card\[data-state="done"\][\s\S]*?--quiz-accent: #047857/, "answered cards have a distinct settled state");
+  assert.match(css, /\.quiz-push-card\[data-state="done"\][^}]*border-color: #047857/, "answered cards have a distinct settled state");
+  assert.match(css, /\.quiz-push-card\[data-state="done"\] \.quiz-push-card__indicator\s*\{\s*background: #047857/, "the green check communicates completion without replacing the subject accent");
+  assert.doesNotMatch(css, /\.quiz-push-card\[data-state="done"\]\s*\{[^}]*--quiz-accent:/, "done cards retain their Football or General subject color");
+  assert.match(cardButton.getText(tree), /min-h-\[8\.75rem\]/, "phone cards are compact enough for the board to fit");
   assert.doesNotMatch(html, /Football · Question 1/, "Daily cards do not repeat the subject in their teaser");
 
   const practice = renderToStaticMarkup(createElement(QuizBoardGrid, { cards, mode: "practice", busy: false, locked: false, onSelect: () => {} }));
