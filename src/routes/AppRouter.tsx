@@ -18,9 +18,6 @@ const LocalOps = lazy(() =>
 const MapGame = lazy(() =>
   import("../pages/MapGame").then((module) => ({ default: module.MapGame })),
 );
-const MapGamePromo = lazy(() =>
-  import("../pages/MapGamePromo").then((module) => ({ default: module.MapGamePromo })),
-);
 const Quiz = lazy(() => import("../pages/Quiz").then((module) => ({ default: module.Quiz })));
 const Wordle = lazy(() => import("../pages/Wordle").then((module) => ({ default: module.Wordle })));
 
@@ -99,24 +96,12 @@ export function AppRouter() {
   const hostname =
     typeof window === "undefined" ? "" : window.location.hostname.toLowerCase();
   const localOpsMode = pathname === "/ops";
-  const promoReviewMode = pathname === "/promo";
   const mapTestMode = isMapTestHostname(hostname);
 
   if (localOpsMode) {
     return (
       <Suspense fallback={<PageLoading />}>
         <LocalOps />
-      </Suspense>
-    );
-  }
-
-  if (promoReviewMode) {
-    return (
-      <Suspense fallback={<PageLoading />}>
-      <MapGamePromo
-        reviewMode
-        playHref={mapTestMode ? "/map" : "https://fultons-quiz.co.uk/map"}
-      />
       </Suspense>
     );
   }
