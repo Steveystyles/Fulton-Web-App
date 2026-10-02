@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -41,7 +41,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -50,6 +50,18 @@ from urllib.request import urlopen
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def map_readiness_test(test_id: str, label: str, game_date: str, preview: dict[str, Any]) -> dict[str, str]:
+    if date.fromisoformat(game_date).weekday() not in {2, 5}:
+        return {"id": test_id, "label": label, "status": "pass", "detail": "Not scheduled (Wednesday and Saturday only)"}
+    status = str(preview.get("status") or "missing")
+    return {
+        "id": test_id,
+        "label": label,
+        "status": "pass" if status == "published" else "fail",
+        "detail": f"{status} / accepted {preview.get('acceptedLevels', 0)}",
+    }
 
 
 def run_command(command: list[str], timeout: int = 12) -> dict[str, Any]:
@@ -782,19 +794,11 @@ def main() -> None:
         }
     )
 
-    for test_id, label, map_preview in (
-        ("today_map", "Today map", sqlite.get("todayMap") or {}),
-        ("tomorrow_map", "Tomorrow map", sqlite.get("tomorrowMap") or {}),
+    for test_id, label, game_date, map_preview in (
+        ("today_map", "Today map", today_date, sqlite.get("todayMap") or {}),
+        ("tomorrow_map", "Tomorrow map", tomorrow_date, sqlite.get("tomorrowMap") or {}),
     ):
-        map_status = str(map_preview.get("status") or "missing")
-        tests.append(
-            {
-                "id": test_id,
-                "label": label,
-                "status": "pass" if map_status == "published" else "fail",
-                "detail": f"{map_status} / accepted {map_preview.get('acceptedLevels', 0)}",
-            }
-        )
+        tests.append(map_readiness_test(test_id, label, game_date, map_preview))
 
     tomorrow_quiz = sqlite.get("tomorrowQuiz") or {}
     tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
@@ -1454,6 +1458,13 @@ def london_dates() -> tuple[str, str]:
     today = now.date()
     tomorrow = today + timedelta(days=1)
     return today.isoformat(), tomorrow.isoformat()
+
+
+def map_is_scheduled(game_date: str) -> bool:
+    try:
+        return date.fromisoformat(game_date).weekday() in {2, 5}
+    except ValueError:
+        return True
 
 
 def is_retryable_ssh_error(message: str) -> bool:
@@ -2570,10 +2581,14 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
         alerts.append(f"Tomorrow quiz is {quiz_status} with {accepted}/6 approved questions.")
 
     map_payload = remote.get("map") if isinstance(remote.get("map"), dict) else {}
-    for label, key in (("Today", "today"), ("Tomorrow", "tomorrow")):
+    today_date, tomorrow_date = london_dates()
+    for label, key, fallback_date in (("Today", "today", today_date), ("Tomorrow", "tomorrow", tomorrow_date)):
         map_preview = map_payload.get(key) if isinstance(map_payload, dict) else {}
         if not isinstance(map_preview, dict):
             map_preview = {}
+        game_date = str(map_preview.get("date") or fallback_date)
+        if not map_is_scheduled(game_date):
+            continue
         map_status = str(map_preview.get("status") or "missing")
         if map_status != "published":
             alerts.append(f"{label} map is {map_status}.")
