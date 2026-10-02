@@ -10,7 +10,6 @@ import {
   MapPinned,
   Maximize2,
   Minimize2,
-  PlayCircle,
   RotateCcw,
   Ruler,
   Trophy,
@@ -24,7 +23,6 @@ import { DailyJourney } from "../components/DailyJourney";
 import { GameFeedback } from "../components/GameFeedback";
 import { layoutMapLabels, type LabelBox } from "../lib/mapLabels";
 import { useAuth } from "../context/AuthContext";
-import { MapGamePromo } from "./MapGamePromo";
 import {
   ApiError,
   api,
@@ -649,14 +647,9 @@ function MapCanvas({
 }
 
 export function MapGame() {
-  const { availableAnnouncements } = useAuth();
   const [searchParams] = useSearchParams();
   const requestedDate = searchParams.get("date")?.trim() || undefined;
   const [game, setGame] = useState<DailyMapGameResponse | null>(null);
-  const [showPromoReplay, setShowPromoReplay] = useState(false);
-  const mapPromoAvailable = availableAnnouncements.some(
-    (announcement) => announcement.kind === "daily-map-promo",
-  );
   const [selectedLevelId, setSelectedLevelId] = useState<number | null>(null);
   const [draftSelection, setDraftSelection] = useState<DailyMapSnapSelection | null>(null);
   const [loading, setLoading] = useState(true);
@@ -952,54 +945,13 @@ export function MapGame() {
 
   return (
     <>
-      {showPromoReplay && mapPromoAvailable ? (
-        <MapGamePromo
-          primaryLabel="Back to map"
-          onDismiss={() => setShowPromoReplay(false)}
-          onPlay={() => setShowPromoReplay(false)}
-        />
-      ) : null}
       <section className="min-w-0 space-y-3 pb-2" aria-label="Daily map game">
       <Card className="map-game-card p-0">
-        <div className="bg-saints-black px-4 py-3 text-white">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div className="min-w-0">
-              <p className="flex items-center gap-1.5 text-[0.68rem] font-black uppercase tracking-normal text-white/65">
-                <MapPinned aria-hidden="true" className="h-3.5 w-3.5 text-saints-red" />
-                Daily map
-              </p>
-              <h1 className="mt-1 text-2xl font-black leading-tight">Pin the place</h1>
-            </div>
-            <div className="flex shrink-0 items-stretch gap-2">
-              {mapPromoAvailable ? (
-                <button
-                  type="button"
-                  onClick={() => setShowPromoReplay(true)}
-                  className="saints-focus flex h-12 w-14 flex-col items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/15"
-                  aria-label="Replay map introduction"
-                  title="Replay map introduction"
-                >
-                  <PlayCircle aria-hidden="true" className="h-5 w-5" strokeWidth={2.6} />
-                  <span className="mt-0.5 text-[0.58rem] font-black uppercase">Intro</span>
-                </button>
-              ) : null}
-              <div className="rounded-lg bg-white/10 px-3 py-2 text-right">
-                <p className="text-[0.62rem] font-black uppercase tracking-normal text-white/60">
-                  {shortDate(game.date)}
-                </p>
-                <p className="mt-0.5 text-xl font-black leading-none">
-                  {totalScore}
-                  <span className="text-sm text-white/55">/{game.maxScore}</span>
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/15">
-            <div
-              className="h-full rounded-full bg-saints-red"
-              style={{ width: `${Math.round((completed / Math.max(1, levels.length)) * 100)}%` }}
-            />
-          </div>
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
+          <h1 className="text-xl font-black text-slate-950">Map</h1>
+          <span className="text-xs font-bold text-slate-600">
+            {shortDate(game.date)} · {completed}/{levels.length} places · {totalScore}/{game.maxScore} pts
+          </span>
         </div>
 
         <div className="min-w-0 space-y-3 p-2 sm:p-3">

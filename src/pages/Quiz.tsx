@@ -132,7 +132,7 @@ export function Quiz() {
 
   return (
     <section className="page-fade space-y-3" aria-label="Quiz">
-      <div className="mx-auto grid w-full max-w-md grid-cols-2 gap-2" role="group" aria-label="Quiz mode">
+      {!activeCard && !reveal && board?.status !== "completed" ? <div className="mx-auto grid w-full max-w-md grid-cols-2 gap-2" role="group" aria-label="Quiz mode">
         {(["daily", "practice"] as Mode[]).map(value => (
           <button
             key={value}
@@ -146,7 +146,7 @@ export function Quiz() {
             <span className={`block text-[0.68rem] font-semibold ${mode === "daily" && value === "daily" ? "text-white/75" : "opacity-70"}`}>{value === "daily" ? "League game" : "Just for fun"}</span>
           </button>
         ))}
-      </div>
+      </div> : null}
 
       {loading ? <Card className="mx-auto max-w-2xl"><p role="status">Building your board…</p></Card> : null}
       {error ? (
@@ -164,50 +164,16 @@ export function Quiz() {
         </Card>
       ) : null}
 
-      {board ? (
-        <div ref={!activeCard && !reveal && board.status !== "completed" ? stageRef : undefined} tabIndex={-1} className="mx-auto w-full max-w-3xl space-y-3 focus:outline-none">
-          {mode === "daily" ? <Card className="relative isolate border border-red-800 bg-gradient-to-br from-saints-red via-red-700 to-saints-black text-white shadow-lg">
-            <div aria-hidden="true" className="pointer-events-none absolute -right-12 -top-16 h-40 w-40 rounded-full border-[20px] border-white/10" />
-            <div className="relative">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-black uppercase tracking-widest text-white/75">Today&apos;s quiz</p>
-                  <h1 className="mt-2 text-2xl font-black leading-tight">{board.status === "completed" ? "Your four picks" : "Pick four. Make them count."}</h1>
-                </div>
-                <span className="shrink-0 rounded-full border border-white/30 bg-white/15 px-3 py-1 text-xs font-black">
-                  {playedCount}/{board.pickCount} played
-                </span>
-              </div>
-              <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/90">Six cards, four picks. Mix Football and General Knowledge however you like. Each answer brings you closer to your final score.</p>
-              <progress aria-label="Quiz cards played" value={playedCount} max={board.pickCount} className="sr-only" />
-              <div className="mt-4 grid gap-2" style={{ gridTemplateColumns: `repeat(${board.pickCount}, minmax(0, 1fr))` }} aria-hidden="true">
-                {Array.from({ length: board.pickCount }, (_, index) => <span key={index} className={`h-2 rounded-full ${index < playedCount ? "bg-white" : "bg-white/30"}`} />)}
-              </div>
-            </div>
-          </Card> : <Card className="border border-amber-200 bg-gradient-to-br from-amber-50 via-orange-50 to-white text-slate-950">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-xs font-bold uppercase text-amber-800">A no-pressure run</p>
-                <h1 className="mt-1 text-2xl font-black">Take your pick</h1>
-              </div>
-              <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-black text-amber-900">
-                {playedCount} of {board.pickCount} done
-              </span>
-            </div>
-            <p className="mt-2 text-sm text-slate-700">
-              Choose {board.pickCount} of the six cards. Try Football, General Knowledge, or a mix. Your picks stay here when done.
-            </p>
-            <p className="mt-2 text-xs font-bold text-amber-900">No pressure — your league score stays untouched.</p>
-            <progress
-              aria-label="Quiz cards played"
-              value={playedCount}
-              max={board.pickCount}
-              className="mt-3 block h-1.5 w-full accent-red-600"
-            />
-          </Card>}
-
-          <QuizBoardGrid cards={board.cards} mode={mode} busy={busy} pendingCardId={pendingCardId} locked={Boolean(activeCard || reveal || board.status === "completed")} onSelect={cardId => void selectCard(cardId)} />
-          {!remainingCards.length && !activeCard && !reveal && board.status !== "completed" ? (
+      {board && !activeCard && !reveal && board.status !== "completed" ? (
+        <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-3xl space-y-3 focus:outline-none">
+          <div className="flex items-center justify-between gap-3 px-1">
+            <h1 className="text-xl font-black text-slate-950">{mode === "daily" ? "Quiz" : "Practice quiz"}</h1>
+            <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-slate-700 shadow-sm" aria-label={`${playedCount} of ${board.pickCount} questions answered`}>
+              {playedCount}/{board.pickCount} answered
+            </span>
+          </div>
+          <QuizBoardGrid cards={board.cards} mode={mode} busy={busy} pendingCardId={pendingCardId} locked={false} onSelect={cardId => void selectCard(cardId)} />
+          {!remainingCards.length ? (
             <Card>
               <p role="alert">No playable cards are available. Reload the board to continue.</p>
               <button
@@ -307,7 +273,7 @@ export function Quiz() {
         </div>
       ) : null}
 
-      {mode === "practice" ? (
+      {mode === "practice" && !activeCard && !reveal ? (
         <button type="button" disabled={busy} className={secondaryClass} onClick={() => setMode("daily")}>
           Back to Daily
         </button>

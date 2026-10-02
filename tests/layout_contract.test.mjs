@@ -277,9 +277,9 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.doesNotMatch(practice, /Football · Question 1/, "grouped Practice cards do not repeat the subject in their teaser");
 
   const quizSource = await sourceText("src/pages/Quiz.tsx");
-  assert.match(quizSource, /Pick four\. Make them count\./);
-  assert.match(quizSource, /from-saints-red via-red-700 to-saints-black/);
-  assert.match(quizSource, /gridTemplateColumns: `repeat\(\$\{board\.pickCount\}/, "Daily progress marks each pick");
+  assert.match(quizSource, /board && !activeCard && !reveal && board\.status !== "completed"/, "the six-card board is hidden while a question or result is shown");
+  assert.match(quizSource, /ref=\{stageRef\}[\s\S]*?<QuizBoardGrid/, "the board is its own focused stage");
+  assert.doesNotMatch(quizSource, /Pick four\. Make them count\.|Six cards, four picks/, "the quiz starts with a compact title instead of an explainer panel");
 
   const answers = elements(tree).find(node => attribute(node, "aria-label") === "Answer choices");
   assert.ok(answers, "answer choices form an accessible group");
@@ -293,6 +293,14 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.match(answerMarkup, /whitespace-normal/);
   assert.match(answerMarkup, /\[overflow-wrap:anywhere\]/);
   assert.doesNotMatch(answerMarkup, /\b(?:truncate|text-ellipsis|whitespace-nowrap|line-clamp-\d+)\b/);
+});
+
+test("Map opens on the game, without a demo video or oversized introduction", async () => {
+  const mapSource = await sourceText("src/pages/MapGame.tsx");
+  const routes = await sourceText("src/routes/AppRouter.tsx");
+  assert.match(mapSource, /<h1 className="text-xl font-black text-slate-950">Map<\/h1>/);
+  assert.doesNotMatch(mapSource, /MapGamePromo|Replay map introduction|<h1[^>]*>Pin the place/);
+  assert.doesNotMatch(routes, /MapGamePromo|promoReviewMode/);
 });
 
 test("large-print Wordle row controls retain visible high-contrast direction glyphs when disabled", async () => {
