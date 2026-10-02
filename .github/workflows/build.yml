@@ -231,6 +231,10 @@ jobs:
           test "${actual_revision}" = "${EXPECTED_REVISION}"
           test "${actual_source}" = "${EXPECTED_SOURCE}"
 
+          # The browser must know its own revision to detect a stale open tab.
+          docker run --rm --entrypoint sh "${IMAGE_REF}" -c \
+            'grep -R -F -q "$FULTONS_BUILD_COMMIT" /app/dist/assets/*.js'
+
           docker run --rm --entrypoint python "${IMAGE_REF}" -c \
             "import importlib.util; assert importlib.util.find_spec('server') is not None"
 

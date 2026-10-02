@@ -1,5 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 
+const clientVersion = import.meta.env.VITE_FULTONS_BUILD_COMMIT as string | undefined;
+const autoReloadKey = "fultons-auto-update-version";
+const idleRoutes = new Set(["/", "/today", "/scores", "/scores/history", "/leaderboard"]);
+
+export function canApplyUpdateWithoutInterrupting(pathname: string, doc: Document): boolean {
+  if (!idleRoutes.has(pathname.replace(/\/+$/, "") || "/")) return false;
+  if (doc.querySelector('dialog[open], [role="dialog"]')) return false;
+  const fields = doc.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable="true"]');
+  for (const field of fields) {
+    if (field === doc.activeElement) return false;
+    if ("value" in field && typeof field.value === "string" && field.value.trim()) return false;
+    if ("isContentEditable" in field && field.isContentEditable && field.textContent?.trim()) return false;
+  }
+  return true;
+}
+
 /** Never interrupt a game, form or unsent selection with an automatic reload. */
 export function AppUpdateReloader() {
   const initialVersion = useRef<string | null>(null);
@@ -20,8 +36,22 @@ export function AppUpdateReloader() {
         const payload = await response.json();
         const version = payload?.build?.version;
         if (!disposed && typeof version === "string" && version) {
-          if (initialVersion.current === null) initialVersion.current = version;
-          else if (version !== initialVersion.current) setAvailable(true);
+          const loadedVersion = clientVersion && clientVersion !== "unknown" ? clientVersion : initialVersion.current;
+          if (loadedVersion === null) initialVersion.current = version;
+          else if (version !== loadedVersion) {
+            if (canApplyUpdateWithoutInterrupting(window.location.pathname, document)) {
+              try {
+                if (window.sessionStorage.getItem(autoReloadKey) !== version) {
+                  window.sessionStorage.setItem(autoReloadKey, version);
+                  window.location.reload();
+                  return;
+                }
+              } catch { /* If storage is unavailable, offer the manual update instead. */ }
+            }
+            setAvailable(true);
+          } else {
+            try { window.sessionStorage.removeItem(autoReloadKey); } catch { /* Storage may be unavailable. */ }
+          }
         }
       } catch { /* A failed update check must not block play. */ }
       finally { checking = false; window.clearTimeout(timeout); }
