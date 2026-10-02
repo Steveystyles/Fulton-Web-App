@@ -17,27 +17,25 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
   const renderCard = (card: QuizBoard["cards"][number]) => {
       const state = card.answered ? "done" : card.selectedOrder !== null ? "active" : pendingCardId === card.id ? "pressing" : "available";
       const status = card.answered ? `Pick ${card.selectedOrder} · Done` : state === "active" ? `Pick ${card.selectedOrder} · In play` : state === "pressing" ? "Opening…" : mode === "practice" ? "Play this" : "Pick me";
-      const palette = card.subject === "football"
-        ? "border-rose-200 bg-gradient-to-br from-white to-rose-50 text-slate-950"
-        : "border-amber-200 bg-gradient-to-br from-white to-amber-50 text-slate-950";
       return <button
         key={card.id}
         type="button"
         data-state={state}
+        data-subject={card.subject}
         aria-pressed={state !== "available"}
         disabled={busy || locked || state !== "available"}
         onClick={() => onSelect(card.id)}
-        className={`quiz-push-card saints-focus flex min-h-40 min-w-0 flex-col rounded-2xl border-2 p-3 text-left ${palette} ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
+        className={`quiz-push-card saints-focus flex min-h-40 min-w-0 flex-col rounded-2xl border-2 p-3 text-left text-slate-950 ${state === "available" ? "cursor-pointer" : "cursor-default"}`}
       >
         <span className="flex w-full items-start justify-between gap-2">
-          <span className="text-[0.7rem] font-black uppercase tracking-wider text-slate-700">{card.subject === "football" ? "Football" : "General"}</span>
+          <span className="quiz-push-card__subject text-[0.7rem] font-black uppercase tracking-wider">{card.subject === "football" ? "Football" : "General"}</span>
           <span className="quiz-push-card__points" aria-label={`${card.points} ${card.points === 1 ? "point" : "points"}`}>{card.points} <span aria-hidden="true">{card.points === 1 ? "pt" : "pts"}</span></span>
         </span>
-        <strong className="mt-2 block text-lg capitalize leading-tight">{card.difficulty}</strong>
+        <strong className="mt-3 block text-xl capitalize leading-tight">{card.difficulty}</strong>
         <span className="mt-1 block text-xs leading-snug text-slate-600 [overflow-wrap:anywhere]">{card.teaser.replace(/^(Football|General knowledge) · /, "")}</span>
         <span className="quiz-push-card__action mt-auto flex w-full items-center justify-between gap-1 pt-3 text-xs font-black">
           <span>{status}</span>
-          <span aria-hidden="true" className="text-lg leading-none">{state === "available" ? "↓" : "✓"}</span>
+          <span aria-hidden="true" className="quiz-push-card__indicator">{state === "available" ? "↓" : "✓"}</span>
         </span>
       </button>;
   };

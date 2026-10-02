@@ -3099,6 +3099,55 @@ class DailyQuizTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(batch), ("used", "2026-08-21"))
 
+    def test_exhausted_single_pool_slot_uses_verified_archive_without_replacing_new_work(self) -> None:
+        source = daily_quiz.get_or_create_quiz_set(self.conn, "2025-01-01")
+        job = daily_quiz._create_quiz_pool_job(self.conn)
+        work = daily_quiz.get_or_create_quiz_set(self.conn, job["work_quiz_date"])
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            question = valid_question(subject, difficulty)
+            evidence = supporting_evidence(question)
+            daily_quiz.save_question(
+                self.conn, quiz_set_id=int(source["id"]), question=question,
+                evidence=evidence, verification=passing_verification(evidence),
+            )
+            if (subject, difficulty) != ("football", "hard"):
+                fresh = {**question, "question": "Fresh: " + str(question["question"]),
+                         "correct_answer": "Fresh " + str(question["correct_answer"]),
+                         "choices": ["Fresh " + str(choice) for choice in question["choices"]]}
+                fresh_evidence = supporting_evidence(fresh)
+                daily_quiz.save_question(
+                    self.conn, quiz_set_id=int(work["id"]), question=fresh,
+                    evidence=fresh_evidence, verification=passing_verification(fresh_evidence),
+                )
+        daily_quiz.publish_quiz(self.conn, "2025-01-01")
+        for attempt in range(1, 4):
+            self.conn.execute(
+                """INSERT INTO daily_quiz_attempts
+                   (quiz_date, subject, difficulty, attempt_number, provider,
+                    generated_json, passed, created_at)
+                   VALUES (?, 'football', 'hard', ?, 'test', '{}', 0, 'now')""",
+                (job["work_quiz_date"], attempt),
+            )
+
+        with patch.object(daily_quiz, "generate_daily_quiz", side_effect=AssertionError("AI should not run")):
+            result = daily_quiz.replenish_quiz_pool(
+                self.conn, config=config(max_attempts=3), target_ready=1,
+                max_batch_attempts=1, provider=PassingProvider("unused"), log=lambda _: None,
+            )
+        self.assertEqual(result["status"], "stocked")
+        self.assertEqual(result["ready"], 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT generation_mode FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
+        ).fetchone()[0], "archive-assisted")
+        rows = self.conn.execute(
+            "SELECT subject, difficulty, question FROM daily_quiz_pool_questions WHERE batch_id=?",
+            (job["id"],),
+        ).fetchall()
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(sum(str(row["question"]).startswith("Fresh:") for row in rows), 5)
+        self.assertEqual(next(row["question"] for row in rows if (row["subject"], row["difficulty"]) == ("football", "hard")),
+                         valid_question("football", "hard")["question"])
+
     def test_quiz_pool_pauses_at_provider_cap_and_resumes_same_batch_after_reset(self) -> None:
         capped = daily_quiz.replenish_quiz_pool(
             self.conn,
