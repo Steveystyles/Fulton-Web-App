@@ -422,6 +422,10 @@ class DeploymentScriptStaticTests(unittest.TestCase):
         cls.jellyfin_service = JELLYFIN_BACKUP_SERVICE.read_text(encoding="utf-8")
         cls.jellyfin_timer = JELLYFIN_BACKUP_TIMER.read_text(encoding="utf-8")
 
+    def test_production_image_includes_map_clue_editor(self) -> None:
+        dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
+        self.assertRegex(dockerfile, r"COPY[^\n]*server\.py[^\n]*map_clue_editor\.py")
+
     def test_requires_full_sha_and_reviewed_reachability_override(self) -> None:
         self.assertIn("^[0-9a-f]{40}$", self.script)
         self.assertIn("merge-base --is-ancestor", self.script)
