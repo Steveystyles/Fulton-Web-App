@@ -45,6 +45,8 @@ class QuizBoardTests(unittest.TestCase):
             {(subject, difficulty) for subject in ("football", "general") for difficulty in ("easy", "medium", "hard")},
         )
         self.assertNotIn("question", public["cards"][0])
+        self.assertTrue(all("Question " not in card["teaser"] for card in public["cards"]))
+        self.assertTrue(all(len(card["teaser"]) <= 32 for card in public["cards"]))
         for _ in range(4):
             card = next(item for item in public["cards"] if item["selectedOrder"] is None)
             public = quiz_board.select_card(self.conn, board, card["id"], "now")
@@ -101,14 +103,14 @@ class QuizBoardTests(unittest.TestCase):
             {(subject, difficulty) for subject in ("football", "general") for difficulty in ("easy", "medium", "hard")},
         )
 
-    def test_card_previews_use_question_text_instead_of_generic_tags(self):
+    def test_card_previews_show_topic_not_question_fragment(self):
         question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
         self.conn.execute(
             "UPDATE daily_quiz_questions SET question=?, tags_json=? WHERE id=?",
             ("Which Dutch club played its home matches at De Meer Stadium?", json.dumps(["Dutch-Football", "Football"]), question_id),
         )
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
-        self.assertEqual(quiz_board._teaser(row), "Which Dutch club played its home matches at De Meer Stadium?")
+        self.assertEqual(quiz_board._teaser(row), "Stadiums & grounds")
 
     def test_card_preview_hides_answer_when_question_contains_it(self):
         question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
@@ -117,7 +119,7 @@ class QuizBoardTests(unittest.TestCase):
             ("Did Ajax win this match?", "Ajax", json.dumps(["Ajax", "Dutch-Football"]), question_id),
         )
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
-        self.assertEqual(quiz_board._teaser(row), "A story from the Dutch game")
+        self.assertEqual(quiz_board._teaser(row), "Football stories")
 
     def test_card_preview_hides_short_answer_even_when_generator_check_would_allow_it(self):
         question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
@@ -126,7 +128,7 @@ class QuizBoardTests(unittest.TestCase):
             ("Did FC win this match?", "FC", json.dumps(["FC", "cup final"]), question_id),
         )
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
-        self.assertEqual(quiz_board._teaser(row), "A cup-final moment")
+        self.assertEqual(quiz_board._teaser(row), "Cup competitions")
 
     def test_card_preview_skips_generic_tags_and_does_not_expose_answer(self):
         question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
@@ -135,7 +137,7 @@ class QuizBoardTests(unittest.TestCase):
             ("Did Ajax win this match?", "Ajax", json.dumps(["Football", "Ajax", "Dutch-Football"]), question_id),
         )
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
-        self.assertEqual(quiz_board._teaser(row), "A story from the Dutch game")
+        self.assertEqual(quiz_board._teaser(row), "Football stories")
 
     def test_card_preview_uses_subject_fallback_when_only_unsafe_tags_exist(self):
         question_id = self.conn.execute("SELECT id FROM daily_quiz_questions WHERE subject='football' LIMIT 1").fetchone()["id"]
@@ -144,7 +146,32 @@ class QuizBoardTests(unittest.TestCase):
             ("Did Ajax win this match?", "Ajax", json.dumps(["Football", "Ajax"]), question_id),
         )
         row = self.conn.execute("SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)).fetchone()
-        self.assertEqual(quiz_board._teaser(row), "A football mystery")
+        self.assertEqual(quiz_board._teaser(row), "Football stories")
+
+    def test_card_topics_describe_six_distinct_question_themes(self):
+        examples = (
+            ("football", "Which national team is nicknamed La Albiceleste?", ["National-Teams"], "Team nicknames"),
+            ("general_knowledge", "What facial feature is missing from Leonardo's famous portrait?", ["Art"], "Art & culture"),
+            ("football", "Which national team holds the record for the most appearances?", ["World Cup"], "International records"),
+            ("general_knowledge", "The Great Wall of China is a massive architectural feat, but why?", ["Landmarks"], "World landmarks"),
+            ("football", "Which stadium was designed by architect Claude Waterlow?", ["Stadiums"], "Stadiums & grounds"),
+            ("general_knowledge", "What was the first toy advertised on television?", ["Toys"], "Media & advertising"),
+        )
+        for subject, question, tags, expected in examples:
+            with self.subTest(question=question):
+                question_id = self.conn.execute(
+                    "SELECT id FROM daily_quiz_questions WHERE subject=? LIMIT 1", (subject,)
+                ).fetchone()["id"]
+                self.conn.execute(
+                    "UPDATE daily_quiz_questions SET question=?, tags_json=? WHERE id=?",
+                    (question, json.dumps(tags), question_id),
+                )
+                row = self.conn.execute(
+                    "SELECT * FROM daily_quiz_questions WHERE id=?", (question_id,)
+                ).fetchone()
+                label = quiz_board._teaser(row)
+                self.assertEqual(label, expected)
+                self.assertNotIn(question[:18], label)
 
     def test_practice_replays_an_answered_question_when_one_slot_has_no_unused_questions(self):
         answered_ids = []
