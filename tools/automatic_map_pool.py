@@ -134,6 +134,12 @@ def verify(report: dict, provider: discovery.DiscoveryProvider) -> dict:
               'Editorial requirements: place_type_correct is false for a stadium disguised as engineering. '
               'distinctive_hard_hook requires a memorable event/story or a recognisable surprising function; '
               'geological age, construction material, height, capacity, generic broadcast needs or a bare superlative fail. '
+              'Evaluate interest independently of factual support: a true but obscure procurement detail, decorative fitting, '
+              'or absence of an event is not a landmark-defining hook. For example, imported cement, a stage curtain design, '
+              'or a fortress never having been besieged are insufficient on their own. Reject a clue that could be replaced '
+              'by another minor fact about the building without changing why a player would want to discover this place. '
+              'The hook should be a specific story or surprising function that a well-informed visitor might associate '
+              'with the target, or a genuinely memorable fact that teaches why this particular place matters. '
               'unique_easy_target is false if the directions still fit several adjacent museums or landmarks. '
               'The whole ladder must be beatable by an adult general-knowledge player without specialist local knowledge.\n'
               + json.dumps({'place': candidate['canonical_name'], 'country': candidate['country_name'],
