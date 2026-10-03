@@ -690,6 +690,27 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertFalse(critic["passed"])
         self.assertTrue(any("too long" in reason for reason in critic["failure_reasons"]))
 
+    def test_local_map_clue_critic_rejects_dense_hard_and_prominent_filler(self) -> None:
+        hard = (
+            "Inside this cathedral, which sits on a high point above a river bend, "
+            "a photograph taken during a wartime air raid captured its dome rising "
+            "through smoke as a symbol of resilience for people who lived and worked "
+            "throughout the surrounding city."
+        )
+        self.assertGreater(len(hard), daily_map_game.MAP_GENERATED_CLUE_TEXT_LIMITS["hard"])
+        critic = daily_map_game.local_map_clue_critique(
+            {"canonical_name": "Sample Cathedral", "acceptable_aliases": [], "enforce_compact_clues": True},
+            {
+                "hard": hard,
+                "medium": "This landmark is one of the most prominent features of the city skyline.",
+                "easy": "Look beside the river crossing in the city centre.",
+                "reveal": "Sample Cathedral is a historic city landmark.",
+            },
+        )
+        self.assertFalse(critic["passed"])
+        self.assertTrue(any("too long" in reason for reason in critic["failure_reasons"]))
+        self.assertTrue(any("filler" in reason for reason in critic["failure_reasons"]))
+
     def test_local_map_clue_critic_does_not_impose_word_counts(self) -> None:
         place = {
             "canonical_name": "Alexandria",

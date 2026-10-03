@@ -5,7 +5,7 @@ import { ScoresDialog } from "./ScoresDialog";
 import type { ActivityId } from "../lib/api";
 
 const headerButtonClass =
-  "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white transition hover:bg-white/[0.16] active:bg-saints-red active:text-white saints-focus";
+  "inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white transition hover:bg-white/16 active:bg-saints-red active:text-white saints-focus";
 
 export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
   const { logout, user } = useAuth();
@@ -33,7 +33,7 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
           {!inGame ? <NavLink
             to="/"
             aria-label="Go to games"
-            className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/[0.08]"].join(" ")}
+            className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/8"].join(" ")}
           ><House aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink> : null}
           <ScoresDialog currentGame={inGame ? currentGame : undefined} />
           {user?.role === "admin" || user?.role === "mod" ? (
@@ -45,7 +45,7 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
                   headerButtonClass,
                   isActive
                     ? "bg-saints-red shadow-lg shadow-red-950/30"
-                    : "bg-white/[0.08]",
+                    : "bg-white/8",
                 ].join(" ")
               }
             >
@@ -56,7 +56,7 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
             type="button"
             aria-label="Sign out"
             onClick={() => void logout()}
-            className={`${headerButtonClass} bg-white/[0.08]`}
+            className={`${headerButtonClass} bg-white/8`}
           >
             <LogOut aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
           </button>

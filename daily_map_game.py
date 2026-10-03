@@ -136,6 +136,12 @@ MAP_CLUE_TEXT_LIMITS = {
     "easy": 220,
     "reveal": 240,
 }
+MAP_GENERATED_CLUE_TEXT_LIMITS = {
+    **MAP_CLUE_TEXT_LIMITS,
+    "hard": 220,
+    "medium": 180,
+    "easy": 180,
+}
 MAP_CLUE_COMPRESSION_FILLERS = (
     "historic",
     "grand",
@@ -646,7 +652,8 @@ MAP_HARD_SECONDARY_IDENTITY_SIGNALS = {
 }
 MAP_MEDIUM_FILLER_RE = re.compile(
     r"\b(?:(?:draws?|attracts?) (?:enormous|huge|large|many) crowds|"
-    r"(?:popular|prestigious|historic|iconic|famous) venue)\b",
+    r"(?:popular|prestigious|historic|iconic|famous) venue|"
+    r"one of the (?:most )?prominent features)\b",
     re.IGNORECASE,
 )
 MAP_MEDIUM_VAGUE_CULTURE_RE = re.compile(
@@ -2388,7 +2395,9 @@ Target place:
 Rules:
 - Each clue must add new information; do not repeat the same fact with more explicit wording.
 - Write for an adult player reading on a phone: concise, natural, concrete sentences without childish wording.
-- Prefer one clear sentence per field, but retain the information needed to make a clue fair.
+- Put the useful fact first. Aim for one short sentence per clue: no more than about 30 words for hard and 25 for medium or easy.
+- Keep each clue's main thought intact rather than interrupting it with a long "which" or "that" clause.
+- Retain the information needed to make a clue fair; do not compress it into cryptic fragments.
 - Avoid long clause chains, semicolons, and formal filler such as "serving as", "situated within", or "prominent".
 - Use only details supported by the target place's verified_facts, nearby_context, or validation_reasoning.
 - Do not invent landmarks, industries, products, museums, events, or historical claims absent from the target data.
@@ -3421,9 +3430,14 @@ def local_map_clue_critique(
             feedback.append("Make each clue level introduce a genuinely different verified hook.")
             break
 
+    text_limits = (
+        MAP_GENERATED_CLUE_TEXT_LIMITS
+        if place.get("enforce_compact_clues")
+        else MAP_CLUE_TEXT_LIMITS
+    )
     long_fields = [
         field
-        for field, limit in MAP_CLUE_TEXT_LIMITS.items()
+        for field, limit in text_limits.items()
         if len(ladder[field]) > limit
     ]
     if long_fields:
@@ -3700,6 +3714,7 @@ def generate_reviewed_clue_ladder(
         **place_payload,
         "required_hard_hook": str(required_hard_hook or "").strip(),
         "locality_name": str(locality_name or "").strip(),
+        "enforce_compact_clues": True,
     }
     generation_place["avoid_in_clues"] = generation_avoid_in_clues(generation_place)
     if generation_place["required_hard_hook"] and not hard_hook_is_qualifying_recognition_hook(

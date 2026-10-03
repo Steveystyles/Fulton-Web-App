@@ -16,7 +16,7 @@ export function PageContainer({ title, number, children }: PageContainerProps) {
           <div className="relative flex items-end justify-between gap-4">
             <h2
               id={headingId}
-              className="max-w-[12rem] text-3xl font-black leading-none tracking-normal"
+              className="max-w-48 text-3xl font-black leading-none tracking-normal"
             >
               {title}
             </h2>

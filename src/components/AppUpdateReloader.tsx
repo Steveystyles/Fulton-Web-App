@@ -63,7 +63,7 @@ export function AppUpdateReloader() {
     return () => { disposed = true; pending?.abort(); window.clearInterval(interval); window.removeEventListener("focus", focus); };
   }, []);
   if (!available || dismissed) return null;
-  return <aside role="status" className="fixed left-3 right-3 top-3 z-[2000] mx-auto max-w-md rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-950 shadow-xl">
+  return <aside role="status" className="fixed left-3 right-3 top-3 z-2000 mx-auto max-w-md rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-950 shadow-xl">
     <p className="font-black">An update is ready</p>
     <p className="mt-1">Finish and save your current game first. Updating reloads this page.</p>
     <div className="mt-3 flex gap-3">

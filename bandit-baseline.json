@@ -69,28 +69,28 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 3600,
+      "line_number": 3614,
       "line_range": [
-        3600,
-        3601,
-        3602,
-        3603,
-        3604,
-        3605,
-        3606,
-        3607,
-        3608,
-        3609,
-        3610,
-        3611,
-        3612,
-        3613,
         3614,
-        3615
+        3615,
+        3616,
+        3617,
+        3618,
+        3619,
+        3620,
+        3621,
+        3622,
+        3623,
+        3624,
+        3625,
+        3626,
+        3627,
+        3628,
+        3629
       ],
       "col_offset": 12,
       "end_col_offset": 8,
-      "code_sha256": "97422f970caa972b3e3ac2ac45cec6c342d53a7518a1c2f5be860ee269fe5949"
+      "code_sha256": "c51ee912334ed9afd0e8802fc16d7d40e624a07f0cacad07873c70d5a4740c7f"
     },
     {
       "filename": "daily_map_game.py",
@@ -100,13 +100,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4548,
+      "line_number": 4563,
       "line_range": [
-        4548
+        4563
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "650fdfd916f9229a3ef667988b2cb837bb37572963a17115e2dd293f5b18bc0f"
+      "code_sha256": "f21a0f779ecef5c990de150d5df048ab6559db19d5386413bad8f6631a3587af"
     },
     {
       "filename": "daily_map_game.py",
@@ -116,13 +116,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4603,
+      "line_number": 4618,
       "line_range": [
-        4603
+        4618
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "e6e92600f2686619d08b5750acc47547b02756e6a19d0fcde1642e57b0bfe3f6"
+      "code_sha256": "fbccc8ca75d6e570e72125e1b2138f3599a983c38f245faa0d7c0716d97c6b34"
     },
     {
       "filename": "daily_quiz.py",
