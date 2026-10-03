@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { KeyRound, Plus, ShieldCheck, Trash2, UsersRound } from "lucide-react";
 import { Card } from "../components/Card";
+import { MapClueEditor } from "../components/MapClueEditor";
 import { PageContainer } from "../components/PageContainer";
 import { useAuth } from "../context/AuthContext";
 import { api, type AdminProductReport, type AdminUser, type Role } from "../lib/api";
@@ -109,6 +110,7 @@ export function Admin() {
 
   return (
     <PageContainer title={isAdmin ? "ADMIN" : "PLAYERS"} number="A">
+      {isAdmin ? <MapClueEditor /> : null}
       {report ? <Card>
         <div className="flex items-center justify-between gap-3"><h2 className="text-xl font-black">Last 7 days</h2><span className={`rounded-full px-2 py-1 text-xs font-black ${report.reserve.cards >= report.reserve.launchTarget ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>Reserve {report.reserve.cards}/{report.reserve.launchTarget}</span></div>
         <div className="mt-3 grid grid-cols-3 gap-2 text-center"><div><strong className="block text-2xl">{report.quiz.started}</strong><span className="text-xs">Quiz starts</span></div><div><strong className="block text-2xl">{Math.round(report.quiz.completionRate * 100)}%</strong><span className="text-xs">Completed</span></div><div><strong className="block text-2xl">{report.quiz.averageScore}</strong><span className="text-xs">Avg score</span></div></div>

@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, quote, quote_plus, urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
-import daily_map_game
+import daily_map_game, map_clue_editor
 import daily_quiz
 import quiz_board
 from env_config import env_bool, env_int, env_ip_networks
@@ -5738,6 +5738,50 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     return
                 puzzle_date = str(params.get("date", [today_game_date()])[0]).strip()
                 self.send_json(HTTPStatus.OK, daily_map_game.puzzle_status(conn, puzzle_date))
+                return
+
+            if path == "/api/admin/daily-map-clues" and method in {"GET", "POST"}:
+                if user["role"] != "admin":
+                    self.send_error_json(HTTPStatus.FORBIDDEN, "Admin access required.")
+                    return
+                if method == "GET":
+                    puzzle_date = str(params.get("date", [today_game_date()])[0]).strip()
+                    try:
+                        result = map_clue_editor.admin_puzzle_clues(conn, puzzle_date)
+                    except ValueError as error:
+                        self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                        return
+                    self.send_json(HTTPStatus.OK, result)
+                    return
+                payload = self.read_json()
+                puzzle_date = str(payload.get("date") or today_game_date()).strip()
+                try:
+                    with DAILY_MAP_GAME_OPERATION_LOCK:
+                        result = map_clue_editor.revise_published_clues(
+                            conn,
+                            puzzle_date=puzzle_date,
+                            level_slug=payload.get("level"),
+                            expected_place_id=payload.get("expectedPlaceId"),
+                            clues=payload.get("clues"),
+                        )
+                except ValueError as error:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
+                    return
+                except LookupError as error:
+                    self.send_error_json(HTTPStatus.NOT_FOUND, str(error))
+                    return
+                except RuntimeError as error:
+                    conn.rollback()
+                    self.send_error_json(HTTPStatus.CONFLICT, str(error))
+                    return
+                record_audit_event(
+                    conn,
+                    "map.clues_revised.admin",
+                    actor_user_id=int(user["id"]),
+                    client_ip=self.client_ip(),
+                    details={"date": puzzle_date, "level": str(payload.get("level"))[:16]},
+                )
+                self.send_json(HTTPStatus.OK, result)
                 return
 
             if path == "/api/admin/question-attempts" and method == "GET":

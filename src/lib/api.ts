@@ -64,6 +64,18 @@ export type AdminUser = User & {
   losses: number;
 };
 
+export type AdminMapClueLevel = {
+  level: "easy" | "medium" | "hard";
+  placeId: number;
+  answer: string;
+  hard: string;
+  medium: string;
+  easy: string;
+  reveal: string;
+};
+
+export type AdminMapClues = { date: string; levels: AdminMapClueLevel[] };
+
 export type AdminOpsStatus = "healthy" | "degraded" | "offline" | "disabled";
 
 export type AdminOpsTest = {
@@ -748,6 +760,22 @@ export const api = {
   },
   adminProductReport() {
     return request<AdminProductReport>("/api/admin/product-report");
+  },
+
+  adminMapClues(date?: string) {
+    const query = date ? `?date=${encodeURIComponent(date)}` : "";
+    return request<AdminMapClues>(`/api/admin/daily-map-clues${query}`);
+  },
+  reviseMapClues(payload: {
+    date: string;
+    level: AdminMapClueLevel["level"];
+    expectedPlaceId: number;
+    clues: Pick<AdminMapClueLevel, "hard" | "medium" | "easy" | "reveal">;
+  }) {
+    return request<AdminMapClues>("/api/admin/daily-map-clues", {
+      method: "POST",
+      body: jsonBody(payload),
+    });
   },
 
   today() {

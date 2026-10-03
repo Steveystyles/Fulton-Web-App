@@ -282,6 +282,38 @@ class ProductionServerHardeningTests(unittest.TestCase):
 
         self.assertEqual(sent_errors, [(HTTPStatus.BAD_REQUEST, "rows must be a list.")])
 
+    def test_map_clue_editor_rejects_non_admin_before_reading_or_writing(self) -> None:
+        import server
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def __init__(self) -> None:
+                self.errors: list[tuple[HTTPStatus, str]] = []
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                self.errors.append((status, message))
+
+            def read_json(self) -> dict[str, object]:
+                raise AssertionError("Non-admin body must not be read")
+
+        for method in ("GET", "POST"):
+            handler = DummyHandler()
+            with (
+                patch("server.connect_db") as connect_db,
+                patch("server.get_cookie_value", return_value="token"),
+                patch("server.current_user", return_value={"id": 1, "role": "user"}),
+                patch("server.map_clue_editor.admin_puzzle_clues") as read_clues,
+                patch("server.map_clue_editor.revise_published_clues") as write_clues,
+            ):
+                connect_db.return_value.__enter__.return_value = object()
+                server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                    handler, method, "/api/admin/daily-map-clues", "",
+                )
+            self.assertEqual(handler.errors, [(HTTPStatus.FORBIDDEN, "Admin access required.")])
+            read_clues.assert_not_called()
+            write_clues.assert_not_called()
+
     def test_authenticated_player_server_does_not_expose_any_ops_monitor_route(self) -> None:
         import server
 

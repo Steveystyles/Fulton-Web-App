@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import daily_map_game
+import map_clue_editor
 from tools import install_map_reviewed_fallbacks
 
 
@@ -164,6 +165,78 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(preserved["canonical_name"], "Curated London")
         self.assertEqual(preserved["clue_text"], "Reviewed by an editor.")
         self.assertEqual(preserved["lat"], 51.6)
+
+    def test_admin_revises_published_clues_without_mutating_source_place(self) -> None:
+        level = self.publish_named_level("London")
+        before = map_clue_editor.admin_puzzle_clues(self.conn, "2026-07-13")
+        original = before["levels"][0]
+        revision = {
+            "hard": "A failed gunpowder plot is tied to the parliament here.",
+            "medium": "This is the capital of England.",
+            "easy": "Look beside the Thames in the central Westminster area.",
+            "reveal": "London is England's capital and home to Parliament.",
+        }
+
+        after = map_clue_editor.revise_published_clues(
+            self.conn,
+            puzzle_date="2026-07-13",
+            level_slug="easy",
+            expected_place_id=original["placeId"],
+            clues=revision,
+        )
+
+        self.assertNotEqual(after["levels"][0]["placeId"], original["placeId"])
+        self.assertEqual(after["levels"][0]["hard"], revision["hard"])
+        self.assertEqual(after["levels"][0]["easy"], revision["easy"])
+        player = daily_map_game.daily_bundle_payload(
+            self.conn, puzzle_date="2026-07-13", user_id=1
+        )
+        self.assertEqual(player["levels"][0]["clues"][0]["text"], revision["hard"])
+        source = self.conn.execute(
+            "SELECT clue_text, active FROM map_place_pool WHERE id = ?", (original["placeId"],)
+        ).fetchone()
+        self.assertEqual(source["clue_text"], original["hard"])
+        self.assertEqual(source["active"], 0)
+        current = self.conn.execute(
+            "SELECT place_id FROM daily_map_levels WHERE id = ?", (level["id"],)
+        ).fetchone()
+        self.assertEqual(current["place_id"], after["levels"][0]["placeId"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT active FROM map_place_pool WHERE id = ?",
+                (after["levels"][0]["placeId"],),
+            ).fetchone()["active"],
+            0,
+        )
+        with self.assertRaisesRegex(RuntimeError, "changed"):
+            map_clue_editor.revise_published_clues(
+                self.conn,
+                puzzle_date="2026-07-13",
+                level_slug="easy",
+                expected_place_id=original["placeId"],
+                clues=revision,
+            )
+
+    def test_admin_clue_revision_rejects_answer_leak(self) -> None:
+        self.publish_named_level("London")
+        original = map_clue_editor.admin_puzzle_clues(self.conn, "2026-07-13")["levels"][0]
+        with self.assertRaisesRegex(ValueError, "reveals the answer"):
+            map_clue_editor.revise_published_clues(
+                self.conn,
+                puzzle_date="2026-07-13",
+                level_slug="easy",
+                expected_place_id=original["placeId"],
+                clues={
+                    "hard": "This is London.",
+                    "medium": "It is in England.",
+                    "easy": "Look beside the Thames.",
+                    "reveal": "London is England's capital.",
+                },
+            )
+        self.assertEqual(
+            map_clue_editor.admin_puzzle_clues(self.conn, "2026-07-13")["levels"][0]["placeId"],
+            original["placeId"],
+        )
 
     def make_london_quality_ready(self, *, current_profile: bool = False) -> int:
         facts = [
