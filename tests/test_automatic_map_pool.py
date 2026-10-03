@@ -161,6 +161,9 @@ class AutomaticPoolTests(unittest.TestCase):
         provider = Mock()
         provider.call_with_fallback.return_value = verdict
         self.assertEqual(pool.verify(report, provider), verdict)
+        prompt = provider.call_with_fallback.call_args.kwargs['prompt']
+        self.assertIn('obscure procurement detail', prompt)
+        self.assertIn('absence of an event', prompt)
         for change in ('unsupported', 'citation', 'uncertain'):
             altered = deepcopy(verdict)
             if change == 'unsupported': altered['levels']['hard']['supported'] = False
