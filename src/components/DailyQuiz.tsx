@@ -112,8 +112,8 @@ export function DailyQuiz({ category, storageScope, quizDate, questions, loading
       <progress aria-label="Confirmed answers" value={answers.length} max={questions.length} className="mt-2 block h-1.5 w-full accent-red-600" />
     </div>
     <div className="min-w-0 space-y-3 p-3 sm:p-4">
-      <p className="text-[clamp(1rem,4.6vw,1.125rem)] font-black leading-snug [overflow-wrap:anywhere]">{question.question}</p>
-      <div className="grid min-w-0 grid-cols-[repeat(2,minmax(0,1fr))] auto-rows-fr gap-2" role="group" aria-label="Answer choices">
+      <p className="text-[clamp(1rem,4.6vw,1.125rem)] font-black leading-snug wrap-anywhere">{question.question}</p>
+      <div className="grid min-w-0 grid-cols-2 auto-rows-fr gap-2" role="group" aria-label="Answer choices">
         {question.answers.map((answer, index) => <button
           key={answer.id}
           type="button"
@@ -123,7 +123,7 @@ export function DailyQuiz({ category, storageScope, quizDate, questions, loading
           className={`flex min-h-20 min-w-0 items-start gap-1.5 rounded-xl border px-2 py-3 text-left text-[clamp(0.875rem,3.8vw,1rem)] font-bold leading-snug saints-focus disabled:opacity-60 sm:gap-2 sm:px-3 ${choice === answer.id ? "border-saints-black bg-saints-black text-white" : "border-slate-300 bg-white"}`}
         >
           <span aria-hidden="true" className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-current text-xs">{String.fromCharCode(65 + index)}</span>
-          <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">{answer.text}</span>
+          <span className="min-w-0 whitespace-normal wrap-anywhere">{answer.text}</span>
         </button>)}
       </div>
       <p className="text-xs leading-relaxed text-slate-600">Change your choice before {answers.length === questions.length - 1 ? "finishing" : "continuing"}. {practice ? "Practice doesn't affect your scores." : "Confirmed answers are saved."} Answers revealed at the end.</p>

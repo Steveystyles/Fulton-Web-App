@@ -90,7 +90,7 @@ export function LocalOps() {
   return (
     <main className="min-h-dvh bg-[radial-gradient(circle_at_top,rgba(215,25,32,0.14),transparent_28rem),linear-gradient(180deg,#09090b_0%,#111827_100%)] px-4 py-6 text-white">
       <div className="mx-auto max-w-7xl">
-        <section className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/6 shadow-[0_24px_64px_rgba(0,0,0,0.35)] backdrop-blur">
+        <section className="overflow-hidden rounded-4xl border border-white/10 bg-white/6 shadow-[0_24px_64px_rgba(0,0,0,0.35)] backdrop-blur">
           <div className="border-b border-white/10 px-5 py-5 sm:px-7">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
               <div>

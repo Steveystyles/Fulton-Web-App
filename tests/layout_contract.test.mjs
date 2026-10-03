@@ -106,7 +106,7 @@ test("quiz markup: four long answers are fully rendered in an equal two-column g
   assert.ok(group, "answer choices have an accessible group label");
   const gridClasses = classesFrom(group);
   assert.ok(gridClasses.has("grid"));
-  assert.ok(gridClasses.has("grid-cols-[repeat(2,minmax(0,1fr))]"), "both columns may shrink without horizontal overflow");
+  assert.ok(gridClasses.has("grid-cols-2"), "both columns may shrink without horizontal overflow");
   assert.ok(gridClasses.has("auto-rows-fr"), "both rows share available answer height");
 
   const options = [...html.matchAll(/<button\b[^>]*\baria-pressed="(?:true|false)"[^>]*>[\s\S]*?<\/button>/g)].map(match => match[0]);
@@ -117,7 +117,7 @@ test("quiz markup: four long answers are fully rendered in an equal two-column g
     assert.ok(classes.has("min-h-20"), "answer buttons retain at least an 80px minimum height");
     assert.ok(classes.has("min-w-0"));
     assert.ok(option.includes("whitespace-normal"));
-    assert.ok(option.includes("[overflow-wrap:anywhere]"));
+    assert.ok(option.includes("wrap-anywhere"));
     assert.match(option, /aria-pressed="false"/, "unselected answers expose their state");
     assert.doesNotMatch(option, /\b(?:truncate|text-ellipsis|whitespace-nowrap|line-clamp-\d+)\b/, "answer text is not clipped or clamped");
   });
@@ -431,7 +431,7 @@ test("Map CSS structure: Larger map meaningfully expands mobile and desktop layo
 test("score guide connector arrows reserve at least their own width", async () => {
   const tree = await sourceTree("src/pages/Leaderboard.tsx");
   const quizConnectorArrow = elements(tree).find(node => elementTag(node, tree) === "ArrowRight"
-    && node.parent?.getText(tree).includes("min-h-[7.25rem]"));
+    && node.parent?.getText(tree).includes("min-h-29"));
   assert.ok(quizConnectorArrow, "the quiz score guide includes connector arrows");
   const wrapper = quizConnectorArrow.parent;
   assert.ok(wrapper && (ts.isJsxElement(wrapper) || ts.isJsxSelfClosingElement(wrapper)));

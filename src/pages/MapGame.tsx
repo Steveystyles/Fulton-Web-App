@@ -504,7 +504,7 @@ function MapCanvas({
       />
       <p id="map-keyboard-help" className="sr-only">Focus the map and use arrow keys to move, plus and minus to zoom. Then use the Use centre button below the map to review a nearby place. Locking a place is final.</p>
       {!level.submitted && !measuring ? <>
-        <span aria-hidden="true" className="map-crosshair pointer-events-none absolute left-1/2 top-1/2 z-[600] flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-black/70 text-white"><svg viewBox="0 0 24 24" className="block h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg></span>
+        <span aria-hidden="true" className="map-crosshair pointer-events-none absolute left-1/2 top-1/2 z-600 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-black/70 text-white"><svg viewBox="0 0 24 24" className="block h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg></span>
       </> : null}
       </div>
       <div className="map-tools" data-tool-count={level.submitted ? 2 : 3} role="group" aria-label="Map tools">
@@ -555,11 +555,11 @@ function MapCanvas({
             <p className="text-[0.62rem] font-black uppercase tracking-normal text-saints-red">
               {draftSelection.snapped ? "Selected place" : "Selected point"}
             </p>
-            <p className="mt-0.5 text-lg font-black leading-tight text-slate-950 [overflow-wrap:anywhere]">
+            <p className="mt-0.5 text-lg font-black leading-tight text-slate-950 wrap-anywhere">
               {draftSelection.name}
             </p>
             {draftSelection.admin1 || draftSelection.countryCode ? (
-              <p className="mt-1 break-words text-sm font-bold leading-snug text-slate-500">
+              <p className="mt-1 wrap-break-word text-sm font-bold leading-snug text-slate-500">
                 {[draftSelection.admin1, draftSelection.countryCode].filter(Boolean).join(", ")}
               </p>
             ) : null}
@@ -637,7 +637,7 @@ function MapCanvas({
               visibleBoundary.kind === "guidance" ? "border-blue-700" : "border-emerald-700",
             ].join(" ")}
           />
-          <span className="min-w-0 [overflow-wrap:anywhere]">
+          <span className="min-w-0 wrap-anywhere">
             {visibleBoundary.name} {visibleBoundary.kind === "guidance" ? "search area" : "boundary"}
           </span>
         </div>
@@ -1019,7 +1019,7 @@ export function MapGame() {
                     Max {clue.maxPoints} pts
                   </p>
                 </div>
-                <p className="mt-1 text-base font-bold leading-snug text-slate-950 [overflow-wrap:anywhere]">
+                <p className="mt-1 text-base font-bold leading-snug text-slate-950 wrap-anywhere">
                   {clue.text}
                 </p>
               </div>
@@ -1131,7 +1131,7 @@ function ResultMetric({
     <div className="flex min-h-[4.4rem] min-w-0 flex-col items-center justify-center rounded-lg bg-slate-50 px-2 py-2">
       <div className="flex items-center justify-center gap-1 text-saints-red">
         {icon}
-        <p className="break-words text-lg font-black leading-tight text-slate-950">{value}</p>
+        <p className="wrap-break-word text-lg font-black leading-tight text-slate-950">{value}</p>
       </div>
       <p className="mt-1 text-[0.62rem] font-black uppercase tracking-normal text-slate-500">
         {label}

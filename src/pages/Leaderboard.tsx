@@ -576,7 +576,7 @@ function PlayerDetailDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/55 p-3 backdrop-blur-sm min-[540px]:items-center"
+      className="fixed inset-0 z-80 flex items-end justify-center bg-black/55 p-3 backdrop-blur-sm min-[540px]:items-center"
       onMouseDown={onClose}
     >
       <Card
@@ -594,7 +594,7 @@ function PlayerDetailDialog({
             </p>
             <h2
               id="player-stats-title"
-              className="mt-1 break-words text-2xl font-black leading-tight text-slate-950"
+              className="mt-1 wrap-break-word text-2xl font-black leading-tight text-slate-950"
             >
               {player.username}
             </h2>
@@ -718,28 +718,28 @@ function ScoreGuide() {
           <div className="grid grid-cols-2 gap-2">
             <JourneyInfoCard
               body="10 pts"
-              cardClassName="border-slate-200 bg-gradient-to-br from-white via-white to-slate-50"
+              cardClassName="border-slate-200 bg-linear-to-br from-white via-white to-slate-50"
               icon={Trophy}
               iconClassName="bg-slate-100 text-slate-950 ring-1 ring-slate-200"
               title="Hard clue"
             />
             <JourneyInfoCard
               body="7 pts"
-              cardClassName="border-red-200 bg-gradient-to-br from-white via-white to-red-50/70"
+              cardClassName="border-red-200 bg-linear-to-br from-white via-white to-red-50/70"
               icon={CircleHelp}
               iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
               title="Medium clue"
             />
             <JourneyInfoCard
               body="5 pts"
-              cardClassName="border-emerald-200 bg-gradient-to-br from-white via-white to-emerald-50/70"
+              cardClassName="border-emerald-200 bg-linear-to-br from-white via-white to-emerald-50/70"
               icon={MapPinned}
               iconClassName="bg-emerald-50 text-emerald-600 ring-1 ring-emerald-100"
               title="Easy clue"
             />
             <JourneyInfoCard
               body="2 pts"
-              cardClassName="border-amber-200 bg-gradient-to-br from-white via-white to-amber-50/70"
+              cardClassName="border-amber-200 bg-linear-to-br from-white via-white to-amber-50/70"
               icon={Info}
               iconClassName="bg-amber-50 text-amber-700 ring-1 ring-amber-100"
               title="Place name"
@@ -765,7 +765,7 @@ function ScoreGuide() {
           <div className="grid grid-cols-2 gap-2">
             <JourneyInfoCard
               body={"+2 per level"}
-              cardClassName="border-slate-200 bg-gradient-to-br from-white via-white to-slate-50"
+              cardClassName="border-slate-200 bg-linear-to-br from-white via-white to-slate-50"
               icon={Gift}
               iconClassName="bg-slate-100 text-slate-950 ring-1 ring-slate-200"
               title="Bonus"
@@ -773,7 +773,7 @@ function ScoreGuide() {
             <JourneyInfoCard
               body={"Win: up\nMiss: reset"}
               bodyClassName="text-[0.72rem] font-bold leading-snug text-slate-950 min-[390px]:text-[0.76rem]"
-              cardClassName="border-red-200 bg-gradient-to-br from-white via-white to-red-50/70"
+              cardClassName="border-red-200 bg-linear-to-br from-white via-white to-red-50/70"
               icon={TrendingUp}
               iconClassName="bg-red-50 text-saints-red ring-1 ring-red-100"
               title="Level"
@@ -829,10 +829,10 @@ function QuizJourneyCard({
     <>
       <div
         className={[
-          "grid min-h-[7.25rem] min-w-0 grid-rows-[2.75rem_2.25rem_1.25rem] justify-items-center rounded-xl border px-1 py-3 text-center shadow-sm",
+          "grid min-h-29 min-w-0 grid-rows-[2.75rem_2.25rem_1.25rem] justify-items-center rounded-xl border px-1 py-3 text-center shadow-sm",
           isPerfect
             ? "border-red-200 bg-red-50/50"
-            : "border-slate-200 bg-gradient-to-br from-white via-white to-slate-50",
+            : "border-slate-200 bg-linear-to-br from-white via-white to-slate-50",
         ].join(" ")}
       >
         <span
@@ -843,12 +843,12 @@ function QuizJourneyCard({
         >
           <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={isPerfect ? 2.4 : 2.6} />
         </span>
-        <p className="mx-auto max-w-[4.5rem] self-center text-[0.7rem] font-bold leading-tight text-slate-950 min-[390px]:text-[0.74rem]">
+        <p className="mx-auto max-w-18 self-center text-[0.7rem] font-bold leading-tight text-slate-950 min-[390px]:text-[0.74rem]">
           {label}
         </p>
         <p
           className={[
-            "mx-auto max-w-[4.5rem] self-start whitespace-nowrap text-[0.78rem] font-black leading-tight min-[390px]:text-[0.84rem]",
+            "mx-auto max-w-18 self-start whitespace-nowrap text-[0.78rem] font-black leading-tight min-[390px]:text-[0.84rem]",
             isPerfect ? "text-saints-red" : "text-slate-950",
           ].join(" ")}
         >
@@ -856,7 +856,7 @@ function QuizJourneyCard({
         </p>
       </div>
       {!isLast ? (
-        <div className="flex min-h-[7.25rem] min-w-4 shrink-0 items-center justify-center text-slate-700">
+        <div className="flex min-h-29 min-w-4 shrink-0 items-center justify-center text-slate-700">
           <ArrowRight aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={3} />
         </div>
       ) : null}
@@ -967,7 +967,7 @@ function JourneyInfoCard({
   return (
     <div
       className={[
-        "flex min-h-[6.75rem] min-w-0 flex-col items-center justify-center rounded-xl border px-2.5 py-3 text-center shadow-sm",
+        "flex min-h-27 min-w-0 flex-col items-center justify-center rounded-xl border px-2.5 py-3 text-center shadow-sm",
         cardClassName,
       ].join(" ")}
     >
@@ -975,9 +975,9 @@ function JourneyInfoCard({
         <Icon aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} />
       </span>
       <div className="mt-2 min-w-0">
-        <p className="break-words text-[0.82rem] font-black leading-tight text-slate-950 min-[390px]:text-[0.88rem]">{title}</p>
+        <p className="wrap-break-word text-[0.82rem] font-black leading-tight text-slate-950 min-[390px]:text-[0.88rem]">{title}</p>
         <span className="mx-auto mt-1.5 block h-1 w-7 rounded-full bg-saints-red" aria-hidden="true" />
-        <p className={["mt-1.5 whitespace-pre-line break-words", bodyClassName].join(" ")}>{body}</p>
+        <p className={["mt-1.5 whitespace-pre-line wrap-break-word", bodyClassName].join(" ")}>{body}</p>
       </div>
     </div>
   );
@@ -986,7 +986,7 @@ function JourneyInfoCard({
 function StatFigure({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="min-w-0 rounded-2xl bg-slate-50 px-3 py-3 text-center">
-      <p className="break-words text-2xl font-black leading-none text-slate-950">{value}</p>
+      <p className="wrap-break-word text-2xl font-black leading-none text-slate-950">{value}</p>
       <p className="mt-1 text-[0.72rem] font-black uppercase tracking-normal text-slate-600">
         {label}
       </p>
@@ -1013,9 +1013,9 @@ function DetailMetricRow({
       <div className="min-w-0 flex-1">
         <div className="flex flex-col gap-1 min-[360px]:flex-row min-[360px]:items-baseline min-[360px]:justify-between">
           <p className="text-sm font-black uppercase tracking-normal text-slate-600">{label}</p>
-          <p className="break-words text-xl font-black leading-tight text-slate-950">{value}</p>
+          <p className="wrap-break-word text-xl font-black leading-tight text-slate-950">{value}</p>
         </div>
-        <p className="mt-1 break-words text-sm font-semibold leading-snug text-slate-600">{detail}</p>
+        <p className="mt-1 wrap-break-word text-sm font-semibold leading-snug text-slate-600">{detail}</p>
       </div>
     </div>
   );

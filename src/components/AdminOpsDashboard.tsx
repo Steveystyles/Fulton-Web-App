@@ -431,7 +431,7 @@ export function AdminOpsDashboard({
             <p
               className={[
                 "mt-2 text-sm font-semibold text-white/75",
-                standalone ? "max-w-[34rem]" : "max-w-[18rem]",
+                standalone ? "max-w-136" : "max-w-[18rem]",
               ].join(" ")}
             >
               {standalone
@@ -1190,7 +1190,7 @@ export function AdminOpsDashboard({
             >
               <div className="min-w-0">
                 <p className="text-sm font-black text-slate-950">{test.label}</p>
-                <p className="mt-1 break-words text-xs font-semibold text-slate-600">
+                <p className="mt-1 wrap-break-word text-xs font-semibold text-slate-600">
                   {test.detail}
                 </p>
               </div>
