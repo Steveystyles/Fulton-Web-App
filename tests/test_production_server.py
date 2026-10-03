@@ -314,6 +314,83 @@ class ProductionServerHardeningTests(unittest.TestCase):
             read_clues.assert_not_called()
             write_clues.assert_not_called()
 
+    def test_admin_map_clue_save_updates_player_round_and_records_audit(self) -> None:
+        import daily_map_game
+        import server
+
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        conn.execute("INSERT INTO users (id, username) VALUES (1, 'editor')")
+        daily_map_game.initialize_database(conn)
+        puzzle = daily_map_game.get_or_create_puzzle(conn, "2026-07-13")
+        place = conn.execute(
+            "SELECT id FROM map_place_pool WHERE canonical_name = 'London'"
+        ).fetchone()
+        self.assertIsNotNone(place)
+        conn.execute(
+            """
+            INSERT INTO daily_map_levels (
+                puzzle_id, level_slug, place_id, max_points, lambda_km, created_at
+            ) VALUES (?, 'easy', ?, 10, 200, ?)
+            """,
+            (puzzle["id"], place["id"], daily_map_game.utc_now()),
+        )
+        daily_map_game.set_puzzle_status(conn, "2026-07-13", "published")
+
+        class DummyHandler:
+            headers = {"Cookie": "fultons_session=token"}
+
+            def __init__(self) -> None:
+                self.response: tuple[HTTPStatus, dict[str, object]] | None = None
+
+            def read_json(self) -> dict[str, object]:
+                return {
+                    "date": "2026-07-13",
+                    "level": "easy",
+                    "expectedPlaceId": place["id"],
+                    "clues": {
+                        "hard": "A gunpowder plot is tied to the parliament here.",
+                        "medium": "This is the capital of England.",
+                        "easy": "Follow the Thames towards central Westminster.",
+                        "reveal": "London is England's capital and home to Parliament.",
+                    },
+                }
+
+            def client_ip(self) -> str:
+                return "127.0.0.1"
+
+            def send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+                self.response = (status, payload)
+
+            def send_error_json(self, status: HTTPStatus, message: str) -> None:
+                raise AssertionError(f"Unexpected editor error: {status} {message}")
+
+        handler = DummyHandler()
+        with (
+            patch("server.connect_db", return_value=conn),
+            patch("server.get_cookie_value", return_value="token"),
+            patch("server.current_user", return_value={"id": 1, "role": "admin"}),
+            patch("server.record_audit_event") as audit,
+        ):
+            server.FultonsHandler.route_api(  # type: ignore[arg-type]
+                handler, "POST", "/api/admin/daily-map-clues", "",
+            )
+
+        self.assertIsNotNone(handler.response)
+        self.assertEqual(handler.response[0], HTTPStatus.OK)
+        self.assertEqual(handler.response[1]["levels"][0]["hard"],
+                         "A gunpowder plot is tied to the parliament here.")
+        audit.assert_called_once()
+        self.assertEqual(audit.call_args.args[1], "map.clues_revised.admin")
+        player = daily_map_game.daily_bundle_payload(
+            conn, puzzle_date="2026-07-13", user_id=1
+        )
+        self.assertEqual(player["levels"][0]["clues"][0]["text"],
+                         "A gunpowder plot is tied to the parliament here.")
+
     def test_authenticated_player_server_does_not_expose_any_ops_monitor_route(self) -> None:
         import server
 
