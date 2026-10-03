@@ -16,6 +16,7 @@ let DailyQuiz;
 let QuizBoardGrid;
 let Card;
 let HelpButton;
+let MapClueEditor;
 let canApplyUpdateWithoutInterrupting;
 const originalFetch = globalThis.fetch;
 
@@ -31,6 +32,7 @@ before(async () => {
   ({ QuizBoardGrid } = await vite.ssrLoadModule("/src/pages/Quiz.tsx"));
   ({ Card } = await vite.ssrLoadModule("/src/components/Card.tsx"));
   ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
+  ({ MapClueEditor } = await vite.ssrLoadModule("/src/components/MapClueEditor.tsx"));
   ({ canApplyUpdateWithoutInterrupting } = await vite.ssrLoadModule("/src/components/AppUpdateReloader.tsx"));
 });
 
@@ -71,6 +73,15 @@ test("help starts as a compact button with no instructions in the game layout", 
   assert.match(html, /aria-haspopup="dialog"/);
   assert.match(html, /aria-expanded="false"/);
   assert.doesNotMatch(html, /Hidden instructions|<details|role="dialog"/);
+});
+
+test("Map clue corrections live in the admin screen and begin with a date picker", async () => {
+  const html = renderToStaticMarkup(createElement(MapClueEditor));
+  assert.match(html, /Map clue editor/);
+  assert.match(html, /type="date"/);
+  assert.doesNotMatch(html, /Answer:/, "unloaded clues are not displayed by default");
+  const adminSource = (await readFile(new URL("../src/pages/Admin.tsx", import.meta.url), "utf8"));
+  assert.match(adminSource, /\{isAdmin \? <MapClueEditor \/> : null\}/);
 });
 
 test("Wordle Enter uses an accessible icon and map crosshair uses centred geometry", async () => {

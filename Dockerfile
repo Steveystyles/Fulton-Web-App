@@ -26,7 +26,7 @@ RUN apk upgrade --no-cache \
 LABEL org.opencontainers.image.revision="${FULTONS_BUILD_COMMIT}" \
       org.opencontainers.image.source="https://github.com/Steveystyles/Fulton-Web-App.git"
 
-COPY --chown=appuser:appuser server.py daily_quiz.py quiz_evidence.py daily_map_game.py env_config.py safe_http.py wordle_game.py ./
+COPY --chown=appuser:appuser server.py daily_quiz.py quiz_evidence.py daily_map_game.py map_clue_editor.py env_config.py safe_http.py wordle_game.py ./
 COPY --chown=appuser:appuser playability.py ./
 COPY --chown=appuser:appuser quiz_board.py ./
 COPY --chown=appuser:appuser games ./games

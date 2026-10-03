@@ -14,6 +14,7 @@
     "games/wordle/game.py",
     "local_ops_server.py",
     "local_ops_settings.py",
+    "map_clue_editor.py",
     "ops_monitor.py",
     "playability.py",
     "quiz_board.py",
