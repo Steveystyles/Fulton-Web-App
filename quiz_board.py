@@ -22,6 +22,41 @@ BOARD_SLOTS = tuple(
     for subject in ("football", "general_knowledge")
 )
 
+# Card labels are deliberately drawn from this fixed vocabulary. Generator tags
+# and question wording may inform the category, but neither is shown verbatim
+# before a player chooses a card.
+FOOTBALL_CARD_TOPICS = (
+    (re.compile(r"\b(nickname|nicknamed|nicknames)\b"), "Team nicknames"),
+    (re.compile(r"\b(stadium|stadiums|ground|grounds|arena|arenas|architect|stand)\b"), "Stadiums & grounds"),
+    (re.compile(r"\b(record|records|most appearances|all time|longest|highest)\b.*\b(national team|international|world cup|euros|copa)\b|\b(national team|international|world cup|euros|copa)\b.*\b(record|records|most appearances|all time|longest|highest)\b"), "International records"),
+    (re.compile(r"\b(record|records|most appearances|all time|longest|highest)\b"), "Football records"),
+    (re.compile(r"\b(world cup|euros|european championship|copa america|national team|national teams)\b"), "International football"),
+    (re.compile(r"\b(final|finals|cup competition|cup competitions)\b"), "Cup competitions"),
+    (re.compile(r"\b(club|clubs|derby|rival|rivalry)\b"), "Clubs & rivalries"),
+    (re.compile(r"\b(player|players|manager|managers|coach|captain|scorer)\b"), "Players & managers"),
+    (re.compile(r"\b(kit|kits|badge|badges|shirt|shirts|crest|jersey)\b"), "Kits & badges"),
+    (re.compile(r"\b(rule|rules|offside|penalty|penalties)\b"), "Rules of the game"),
+    (re.compile(r"\b(history|historic|historical)\b"), "Football history"),
+)
+
+GENERAL_CARD_TOPICS = (
+    (re.compile(r"\b(advertis\w*|television|broadcast\w*|commercial\w*)\b"), "Media & advertising"),
+    (re.compile(r"\b(toy|toys|board game|board games)\b"), "Toys & games"),
+    (re.compile(r"\b(portrait|portraits|painting|paintings|painter|artwork|sculpt\w*|leonardo|art)\b"), "Art & culture"),
+    (re.compile(r"\b(landmark|landmarks|monument|monuments|architectur\w*|great wall|cathedral|palace)\b"), "World landmarks"),
+    (re.compile(r"\b(myth\w*|legend\w*|goddess|gods?)\b"), "Myths & legends"),
+    (re.compile(r"\b(food|dish|dishes|cuisine|cook\w*|culinary)\b"), "Food & drink"),
+    (re.compile(r"\b(star|stars|planet|planets|astronom\w*|space|solar)\b"), "Space & astronomy"),
+    (re.compile(r"\b(animal|animals|plant|plants|nature|species|wildlife|biology)\b"), "Nature & wildlife"),
+    (re.compile(r"\b(invent\w*|technology|engineer\w*)\b"), "Inventions & technology"),
+    (re.compile(r"\b(geolog\w*|rock|rocks|earthquake|volcano|volcanoes)\b"), "Earth & geology"),
+    (re.compile(r"\b(music|song|songs|composer|band|album)\b"), "Music & performance"),
+    (re.compile(r"\b(book|books|novel|novels|author|writer|poem|literature)\b"), "Books & writers"),
+    (re.compile(r"\b(language|word|words|etymolog\w*|phrase|linguistic\w*)\b"), "Words & language"),
+    (re.compile(r"\b(country|countries|city|cities|capital|river|mountain|geography)\b"), "Places & geography"),
+    (re.compile(r"\b(history|historic|historical|ancient|century|war|empire)\b"), "History & events"),
+)
+
 
 def initialize_database(conn: sqlite3.Connection) -> None:
     conn.executescript(
@@ -282,46 +317,28 @@ def ensure_board(conn: sqlite3.Connection, user_id: int, game_date: str, mode: s
 
 
 def _teaser(row: sqlite3.Row) -> str:
-    question = " ".join(daily_quiz.display_text(row["question"]).split())
-    answer = daily_quiz.display_text(row["correct_answer"])
+    """Give a topic, never an excerpt from the unchosen question."""
+    question = daily_quiz.normalize_text(daily_quiz.display_text(row["question"]))
     try:
-        choices = json.loads(row["choices_json"] or "[]")
-    except (TypeError, json.JSONDecodeError):
-        choices = []
-    normalized_answer = daily_quiz.normalize_answer(answer)
-    answer_in_question = (
-        len(normalized_answer) >= 2
-        and re.search(rf"\b{re.escape(normalized_answer)}\b", daily_quiz.normalize_text(question)) is not None
-    )
-    if question and not answer_in_question and not daily_quiz.answer_is_given_away(question, choices, answer):
-        if len(question) > 92:
-            question = question[:89].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
-        return question
-    try:
-        tags = [str(tag).replace("_", " ").replace("-", " ").strip() for tag in json.loads(row["tags_json"] or "[]")]
+        tags = json.loads(row["tags_json"] or "[]")
     except (TypeError, json.JSONDecodeError):
         tags = []
-    safe_tag = next(
-        (
-            tag for tag in tags
-            if 2 <= len(tag) <= 32
-            and not daily_quiz.is_generic_topic_tag(tag)
-            and not re.search(
-                rf"\b{re.escape(normalized_answer)}\b",
-                daily_quiz.normalize_text(tag),
-            )
-        ),
-        "",
-    )
-    if safe_tag:
-        topic = safe_tag.casefold()
-        if topic.endswith(" football"):
-            place = safe_tag[: -len(" football")].strip()
-            return f"A story from the {place} game" if place else "A football story"
-        if topic.endswith(" final"):
-            return f"A {safe_tag.lower().replace(' final', '-final')} moment"
-        return f"Explore {safe_tag.lower()}"
-    return "A football mystery" if row["subject"] == "football" else "A general-knowledge mystery"
+    if not isinstance(tags, list):
+        tags = []
+    answer = daily_quiz.normalize_answer(daily_quiz.display_text(row["correct_answer"]))
+    safe_tags = [
+        normalized
+        for tag in tags
+        if isinstance(tag, str)
+        if (normalized := daily_quiz.normalize_text(tag))
+        and not (answer and re.search(rf"\b{re.escape(answer)}\b", normalized))
+    ]
+    source = " ".join((question, *safe_tags))
+    rules = FOOTBALL_CARD_TOPICS if row["subject"] == "football" else GENERAL_CARD_TOPICS
+    for pattern, label in rules:
+        if pattern.search(source):
+            return label
+    return "Football stories" if row["subject"] == "football" else "Curious facts"
 
 
 def _public_question(row: sqlite3.Row) -> dict[str, Any]:
