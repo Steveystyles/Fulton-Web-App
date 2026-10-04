@@ -219,6 +219,28 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'passage reference'):
             discovery.validate_selection(payload, [self.place])
 
+    def test_missing_anchor_citation_is_completed_only_for_an_anchored_clue(self):
+        self.place['evidence']['article']['text'] = (
+            self.place['facts']['hard']['text'] + ' ' +
+            self.place['facts']['medium']['text'] + ' ' +
+            'A separate source paragraph describes the exhibition. ' * 18 +
+            self.place['facts']['easy']['text']
+        )
+        payload = deepcopy(self.payload)
+        payload['facts']['easy'] = {
+            'text': self.place['facts']['easy']['text'],
+            'source_ids': ['article-0'],
+        }
+        units = {unit['id']: unit['text'] for unit in discovery.evidence_units(self.place)}
+        self.assertNotIn('Heysel', units['article-0'])
+        candidate, result = discovery.validate_selection(payload, [self.place])
+        self.assertIn('Heysel', ' '.join(candidate['facts']['easy']['supporting_quotes']))
+        self.assertTrue(result['automated_pass'])
+
+        payload['facts']['easy']['text'] = 'Look near the northern part of the city.'
+        with self.assertRaisesRegex(ValueError, 'quotation does not name its search area'):
+            discovery.validate_selection(payload, [self.place])
+
     def test_source_quote_does_not_override_existing_answer_leak_checks(self):
         payload = deepcopy(self.payload)
         payload['clues']['hard']['text'] = 'The Atomium was built to celebrate this striking scientific idea.'
