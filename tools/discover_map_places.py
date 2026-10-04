@@ -387,6 +387,17 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 raise ValueError('At most two additional supporting quotations are permitted.')
             quotes = [plain(item.get('quote'), 550), *[plain(q, 550) for q in extra]]
         text = plain(item.get('text'), 600)
+        if level in ('medium', 'easy') and 'source_ids' in item:
+            anchor_index = 0 if level == 'medium' else 1
+            anchor = selected['anchors'][anchor_index]['name']
+            if daily_map_game.normalized_place_name(anchor) not in daily_map_game.normalized_place_name(' '.join(quotes)):
+                # The target article has already established this search area. A model
+                # sometimes cites another valid passage while omitting the specific
+                # anchor passage; complete the citation, never the clue wording.
+                anchor_quote = units.get(f'article-anchor-{anchor_index}')
+                if (len(quotes) < 3 and anchor_quote and
+                        daily_map_game.normalized_place_name(anchor) in daily_map_game.normalized_place_name(text)):
+                    quotes.append(anchor_quote)
         if any(len(q) < 30 or normalized(q) not in selected['evidence']['article']['text'] for q in quotes):
             raise ValueError(f'{level} quotation is absent from the retrieved target article.')
         combined = ' '.join(quotes)
