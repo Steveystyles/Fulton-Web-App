@@ -186,6 +186,72 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(row[1], 'discovery')
             self.assertEqual(pool.publish(conn, puzzle_date='2026-09-08')['status'], 'published')
 
+    def test_recent_structural_failure_is_reverified_without_new_discovery(self):
+        old_report = {**self.report(), 'status': 'failed'}
+        report_dir = self.root / 'reports' / 'previous'
+        report_dir.mkdir(parents=True)
+        report_path = report_dir / 'discovery-2026-09-08.json'
+        report_path.write_text(json.dumps(old_report), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('old', '2026-09-08', '2026-09-08', self.clock.isoformat(), 'failed',
+                 json.dumps({'report_path': str(report_path)})),
+            )
+            conn.commit()
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.object(discovery, 'discover') as discover, patch.object(pool, 'verify', return_value=self.verdict):
+            outcome = pool.maintain(self.database, self.root / 'reports', seed_catalog=None,
+                                    provider_factory=factory)
+        self.assertEqual(outcome['status'], 'added')
+        self.assertEqual(outcome['retried_report_path'], str(report_path.resolve()))
+        discover.assert_not_called()
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM automatic_map_entries WHERE state='ready'").fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT source_requests FROM automatic_map_usage').fetchone()[0], 0)
+
+    def test_failed_report_reverification_is_attempted_only_once(self):
+        old_report = {**self.report(), 'status': 'failed'}
+        report_dir = self.root / 'reports' / 'previous'
+        report_dir.mkdir(parents=True)
+        report_path = report_dir / 'discovery-2026-09-08.json'
+        report_path.write_text(json.dumps(old_report), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('old', '2026-09-08', '2026-09-08', self.clock.isoformat(), 'failed',
+                 json.dumps({'report_path': str(report_path)})),
+            )
+            conn.commit()
+        with patch.object(discovery, 'discover') as discover, patch.object(
+            pool, 'verify', side_effect=ValueError('Weak place hook')
+        ):
+            first = pool.maintain(self.database, self.root / 'reports', seed_catalog=None,
+                                  provider_factory=Mock(return_value=Mock(requests=[])))
+            self.assertEqual(first['status'], 'failed')
+            self.assertEqual(first['retried_report_path'], str(report_path.resolve()))
+            discover.assert_not_called()
+        fresh_failure = {'status': 'failed', 'error': 'No source.', 'rejections': []}
+        with patch.object(discovery, 'discover', return_value=fresh_failure) as discover:
+            pool.maintain(self.database, self.root / 'reports', seed_catalog=None,
+                          provider_factory=Mock(return_value=Mock(requests=[])))
+        discover.assert_called_once()
+
+    def test_recovery_will_not_read_a_report_outside_its_private_directory(self):
+        outside = self.root / 'outside.json'
+        outside.write_text(json.dumps({**self.report(), 'status': 'failed'}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('old', '2026-09-08', '2026-09-08', self.clock.isoformat(), 'failed',
+                 json.dumps({'report_path': str(outside)})),
+            )
+            conn.commit()
+            self.assertIsNone(pool.recoverable_report(conn, self.root / 'reports', '2026-09-08'))
+
     def test_failed_discovery_never_enters_ready_pool_and_remembers_rejections(self):
         failed = {'status': 'failed', 'error': 'No source.', 'rejections': [{'title': 'Unresolved place'}]}
         with patch.object(discovery, 'discover', return_value=failed), patch.object(pool, 'verify') as verify:
