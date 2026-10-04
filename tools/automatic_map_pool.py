@@ -212,6 +212,48 @@ def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:
     return result
 
 
+def recoverable_report(conn: sqlite3.Connection, output_dir: Path, puzzle_date: str) -> dict | None:
+    """Retry a recent structural failure once, without reusing a rejected verifier verdict."""
+    root = output_dir.resolve()
+    cutoff = (now() - timedelta(days=2)).isoformat()
+    runs = []
+    for status, detail_text in conn.execute(
+        'SELECT status,detail FROM automatic_map_runs WHERE started_at>? '
+        'ORDER BY started_at DESC LIMIT 40', (cutoff,)
+    ):
+        try:
+            detail = json.loads(detail_text or '{}')
+        except (TypeError, ValueError):
+            continue
+        if isinstance(detail, dict):
+            runs.append((status, detail))
+    retried = {detail['retried_report_path'] for _, detail in runs
+               if isinstance(detail.get('retried_report_path'), str)}
+    for status, detail in runs:
+        if status != 'failed' or not isinstance(detail.get('report_path'), str):
+            continue
+        try:
+            path = Path(detail['report_path']).resolve(strict=True)
+            if not path.is_relative_to(root) or path.suffix != '.json' or path.stat().st_size > 2_000_000:
+                continue
+            if str(path) in retried:
+                continue
+            report = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(report, dict) or report.get('status') != 'failed':
+                continue
+            candidate, result = discovery.validate_selection(
+                report['model_output'], report['resolved_candidates']
+            )
+            if conn.execute('SELECT 1 FROM automatic_map_entries WHERE id=?', (candidate['id'],)).fetchone():
+                continue
+            controlled.eligible_places_in_database(conn, puzzle_date, [candidate])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+        return {**report, 'status': 'needs_source_review', 'candidate': candidate,
+                'result': result, 'report_path': str(path)}
+    return None
+
+
 def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = controlled.DEFAULT_CATALOG,
              provider_factory=None) -> dict:
     database = database.resolve(strict=True)
@@ -260,9 +302,14 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     try:
         provider = factory(budget)
         run_dir = output_dir / budget.id
-        report = discovery.discover(source_db=database, catalog=None, puzzle_date=target, output_dir=run_dir,
-                                    budget=budget, provider=provider, sources=discovery.WikimediaSource(budget),
-                                    excluded_places=exclusions, excluded_names=failed_names)
+        with closing(sqlite3.connect(database)) as conn:
+            report = recoverable_report(conn, output_dir, target) or {}
+        if report:
+            outcome['retried_report_path'] = report['report_path']
+        else:
+            report = discovery.discover(source_db=database, catalog=None, puzzle_date=target, output_dir=run_dir,
+                                        budget=budget, provider=provider, sources=discovery.WikimediaSource(budget),
+                                        excluded_places=exclusions, excluded_names=failed_names)
         if report['status'] != 'needs_source_review':
             raise ValueError('Discovery rejected: ' + str(report.get('error', 'no candidate'))[:400])
         verifier = factory(budget)
