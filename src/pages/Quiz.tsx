@@ -248,11 +248,6 @@ export function Quiz() {
         </div>
       ) : null}
 
-      {mode === "practice" && !activeCard && !reveal ? (
-        <button type="button" disabled={busy} className={secondaryClass} onClick={() => setMode("daily")}>
-          Back to Daily
-        </button>
-      ) : null}
     </section>
   );
 }
