@@ -57,6 +57,7 @@
     "tools/refresh_map_learning_profile.py",
     "tools/refresh_quiz_learning_profile.py",
     "tools/report_quiz_learning_impact.py",
+    "tools/review_map_queue.py",
     "tools/rewrite_map_clues_with_ai.py",
     "tools/training_data_store.py",
     "wordle_game.py"
