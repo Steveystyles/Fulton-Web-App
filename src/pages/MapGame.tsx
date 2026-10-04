@@ -85,17 +85,6 @@ function defaultMapZoom() {
   return 1;
 }
 
-function shortDate(value?: string) {
-  if (!value) {
-    return "";
-  }
-  const [year, month, day] = value.split("-").map(Number);
-  return new Intl.DateTimeFormat("en-GB", {
-    day: "numeric",
-    month: "short",
-  }).format(new Date(year, month - 1, day));
-}
-
 function markerIcon(kind: "guess" | "answer") {
   return L.divIcon({
     className: `daily-map-pin daily-map-pin--${kind}`,
@@ -149,6 +138,7 @@ type MapCanvasProps = {
   onRejectDraft: () => void;
   onCycleDraft: (direction: -1 | 1) => void;
   onDismissSelectionNotice: () => void;
+  helpControl: ReactNode;
 };
 
 function MapCanvas({
@@ -166,6 +156,7 @@ function MapCanvas({
   onRejectDraft,
   onCycleDraft,
   onDismissSelectionNotice,
+  helpControl,
 }: MapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -507,7 +498,7 @@ function MapCanvas({
         <span aria-hidden="true" className="map-crosshair pointer-events-none absolute left-1/2 top-1/2 z-600 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-black/70 text-white"><svg viewBox="0 0 24 24" className="block h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg></span>
       </> : null}
       </div>
-      <div className="map-tools" data-tool-count={level.submitted ? 2 : 3} role="group" aria-label="Map tools">
+      <div className="map-tools" data-tool-count={level.submitted ? 3 : 4} role="group" aria-label="Map tools">
         {!level.submitted ? <button type="button" disabled={selectionBusy || measuring} className="map-tool saints-focus" onClick={() => {
           const map = mapRef.current;
           if (map) { const centre = map.getCenter(); onMapPick({ lat: centre.lat, lng: centre.lng }, map.getZoom()); }
@@ -518,6 +509,7 @@ function MapCanvas({
         <button type="button" aria-label={expanded ? "Reduce map height" : "Enlarge map"} aria-pressed={expanded} onClick={() => setExpanded(current => !current)} className="map-tool saints-focus">
           {expanded ? <Minimize2 aria-hidden="true" className="h-4 w-4 shrink-0" /> : <Maximize2 aria-hidden="true" className="h-4 w-4 shrink-0" />}<span>{expanded ? "Smaller" : "Larger map"}</span>
         </button>
+        {helpControl}
       </div>
       {measuring ? <p role="status" className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-bold text-slate-800">
         {measuredDistance !== null ? `Distance: ${formatMeasuredDistance(measuredDistance)}. Tap to start a new measurement.` : measurementPoints.length === 1 ? "Tap the end point on the map." : "Tap the start point on the map."}
@@ -727,8 +719,6 @@ export function MapGame() {
     () => levels.find((level) => level.id === selectedLevelId) ?? levels[0],
     [levels, selectedLevelId],
   );
-  const totalScore = levels.reduce((total, level) => total + (level.result?.score ?? 0), 0);
-  const completed = levels.filter((level) => level.submitted).length;
   const currentRevealedHintCount = selectedLevel?.revealedHintCount ?? 0;
   const clues = selectedLevel?.clues ?? [];
   const visibleClues = clues;
@@ -946,59 +936,9 @@ export function MapGame() {
   return (
     <>
       <section className="min-w-0 space-y-3 pb-2" aria-label="Daily map game">
+      <h1 className="sr-only">Map</h1>
       <Card className="map-game-card p-0">
-        <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
-          <h1 className="text-xl font-black text-slate-950">Map</h1>
-          <span className="text-xs font-bold text-slate-600">
-            {shortDate(game.date)} · {completed}/{levels.length} places · {totalScore}/{game.maxScore} pts
-          </span>
-        </div>
-
         <div className="min-w-0 space-y-3 p-2 sm:p-3">
-          <HelpButton title="How to play & map options">
-          <p className="my-3 leading-relaxed">Read the clue, tap the map or select its centre, then check the named place. Choose Lock only when you're sure — it is your final answer. More clues reduce the available points: 10 → 7 → 5 → 2. Zoom in and tap close to the named town, city or landmark, not just its country. Snapping is deliberately precise. After locking, we'll show the accepted answer area.</p>
-          <div className="grid min-w-0 gap-2 min-[380px]:grid-cols-2">
-            <button
-              type="button"
-              aria-pressed={mapLabels}
-              aria-label={mapLabels ? "Turn map text off" : "Turn map text on"}
-              onClick={() => setMapLabels((current) => !current)}
-              className={[
-                "flex min-h-11 items-center justify-center gap-2 rounded-lg border px-3 text-base font-black leading-tight transition saints-focus",
-                mapLabels
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-slate-200 bg-white text-slate-500",
-              ].join(" ")}
-            >
-              <Type aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
-              <span>{mapLabels ? "Map text on" : "Map text off"}</span>
-            </button>
-            <div
-              className="grid grid-cols-2 rounded-lg border border-slate-200 bg-slate-50 p-1"
-              role="group"
-              aria-label="Map style"
-            >
-              {(["clear", "detail"] as const).map((style) => (
-                <button
-                  key={style}
-                  type="button"
-                  aria-pressed={mapStyle === style}
-                  onClick={() => setMapStyle(style)}
-                  className={[
-                    "flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-md px-2 text-sm font-black leading-tight transition saints-focus",
-                    mapStyle === style
-                      ? "bg-slate-950 text-white shadow-sm"
-                      : "text-slate-500",
-                  ].join(" ")}
-                >
-                  <Layers aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
-                  <span>{style === "clear" ? "Street" : "Terrain"}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          </HelpButton>
           <div className="map-play-layout">
           <div className="map-clues space-y-2" aria-label="Map game clues">
             {visibleClues.slice(-1).map((clue) => (
@@ -1053,6 +993,26 @@ export function MapGame() {
             onRejectDraft={rejectDraftSelection}
             onCycleDraft={cycleDraftSelection}
             onDismissSelectionNotice={dismissSelectionNotice}
+            helpControl={<HelpButton title="How to play & map options" compact>
+              <p className="my-3 leading-relaxed">Read the clue, tap the map or select its centre, then check the named place. Choose Lock only when you're sure — it is your final answer. More clues reduce the available points: 10 → 7 → 5 → 2. Zoom in and tap close to the named town, city or landmark, not just its country. Snapping is deliberately precise. After locking, we'll show the accepted answer area.</p>
+              <div className="grid min-w-0 gap-2 min-[380px]:grid-cols-2">
+                <button type="button" aria-pressed={mapLabels} aria-label={mapLabels ? "Turn map text off" : "Turn map text on"}
+                  onClick={() => setMapLabels((current) => !current)}
+                  className={`flex min-h-11 items-center justify-center gap-2 rounded-lg border px-3 text-base font-black saints-focus ${mapLabels ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-white text-slate-500"}`}>
+                  <Type aria-hidden="true" className="h-4 w-4" strokeWidth={2.6} />
+                  <span>{mapLabels ? "Map text on" : "Map text off"}</span>
+                </button>
+                <div className="grid grid-cols-2 rounded-lg border border-slate-200 bg-slate-50 p-1" role="group" aria-label="Map style">
+                  {(["clear", "detail"] as const).map((style) => (
+                    <button key={style} type="button" aria-pressed={mapStyle === style} onClick={() => setMapStyle(style)}
+                      className={`flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-md px-2 text-sm font-black saints-focus ${mapStyle === style ? "bg-slate-950 text-white shadow-sm" : "text-slate-500"}`}>
+                      <Layers aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.6} />
+                      <span>{style === "clear" ? "Street" : "Terrain"}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </HelpButton>}
           />
 
           {selectedLevel.result ? (

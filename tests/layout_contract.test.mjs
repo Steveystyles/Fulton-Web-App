@@ -311,12 +311,22 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.match(css, /\.quiz-answer\s*\{[^}]*overflow-wrap: anywhere/s, "full answer text remains readable");
 });
 
-test("Map opens on the game, without a demo video or oversized introduction", async () => {
+test("Map opens on the game without a header strip or help row above the clue", async () => {
   const mapSource = await sourceText("src/pages/MapGame.tsx");
   const routes = await sourceText("src/routes/AppRouter.tsx");
-  assert.match(mapSource, /<h1 className="text-xl font-black text-slate-950">Map<\/h1>/);
+  assert.match(mapSource, /<h1 className="sr-only">Map<\/h1>/);
+  assert.doesNotMatch(mapSource, /<h1 className="text-xl[^>]*>Map<\/h1>/);
+  assert.match(mapSource, /helpControl=\{<HelpButton title="How to play & map options" compact>/);
+  assert.match(mapSource, /\{helpControl\}\s*<\/div>/, "help is in the map tool row, not above the clue");
+  assert.match(routes, /path="\/map"[\s\S]*?<AppFrame compact>/, "Map uses the compact app frame");
   assert.doesNotMatch(mapSource, /MapGamePromo|Replay map introduction|<h1[^>]*>Pin the place/);
   assert.doesNotMatch(routes, /MapGamePromo|promoReviewMode/);
+});
+
+test("Practice quiz has no redundant Back to Daily button", async () => {
+  const quizSource = await sourceText("src/pages/Quiz.tsx");
+  assert.doesNotMatch(quizSource, /Back to Daily/);
+  assert.match(quizSource, /\{value === "daily" \? "Daily" : "Practice"\}/);
 });
 
 test("large-print Wordle row controls retain visible high-contrast direction glyphs when disabled", async () => {
@@ -436,6 +446,7 @@ test("Map CSS structure: Larger map meaningfully expands mobile and desktop layo
   );
 
   assert.ok(normalRules.flatMap(rule => values([rule], "height")).every(value => value !== "620px"), "the default desktop map is not locked to 620px");
+  assert.match(values([normalRules.find(rule => atViewport(rule))], "max-height").at(-1), /100svh - var\(--app-header-height/, "mobile map height reserves room for clues and controls");
   assert.ok(expandedRules.flatMap(rule => values([rule], "min-height")).every(value => value !== "620px"), "expanded mode does not retain the hard 620px minimum that made the toggle a no-op");
 });
 

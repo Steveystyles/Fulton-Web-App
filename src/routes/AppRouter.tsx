@@ -115,7 +115,7 @@ export function AppRouter() {
             <Route
               path="/map"
               element={
-                <AppFrame reviewMode>
+                <AppFrame compact reviewMode>
                   <MapGame />
                 </AppFrame>
               }
@@ -195,7 +195,7 @@ export function AppRouter() {
           <Route
             path="/map"
             element={
-              <AppFrame>
+              <AppFrame compact>
                 <MapGame />
               </AppFrame>
             }
