@@ -198,6 +198,24 @@ class AutomaticPoolTests(unittest.TestCase):
             pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock())
         self.assertIn('Unresolved place', discover.call_args.kwargs['excluded_names'])
 
+    def test_editorially_rejected_place_cannot_be_automatically_readmitted(self):
+        self.queue()
+        with closing(self.connect()) as conn:
+            row = conn.execute('SELECT verification FROM automatic_map_entries WHERE id=?', (self.place['id'],)).fetchone()
+            verification = json.loads(row[0])
+            verification['operator_rejection'] = {'reason': 'The place hook is not compelling.'}
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? WHERE id=?",
+                         (json.dumps(verification), self.place['id']))
+            conn.commit()
+            with self.assertRaisesRegex(ValueError, 'explicit operator review'):
+                pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries WHERE id=?',
+                                          (self.place['id'],)).fetchone()[0], 'rejected')
+        failed = {'status': 'failed', 'error': 'No source.', 'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock())
+        self.assertIn(self.place['id'], [place['id'] for place in discover.call_args.kwargs['excluded_places']])
+
     def test_failed_evidence_review_blocks_automatic_admission(self):
         with patch.object(discovery, 'discover', return_value=self.report()), patch.object(pool, 'verify', side_effect=ValueError('unsupported qualifier')):
             result = pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock(return_value=Mock(requests=[])))

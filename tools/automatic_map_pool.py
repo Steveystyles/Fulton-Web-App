@@ -160,6 +160,11 @@ def verify(report: dict, provider: discovery.DiscoveryProvider) -> dict:
 
 
 def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: dict, *, origin: str) -> None:
+    previous = conn.execute(
+        "SELECT state,verification FROM automatic_map_entries WHERE id=?", (candidate['id'],)
+    ).fetchone()
+    if previous and previous[0] == 'rejected' and json.loads(previous[1]).get('operator_rejection'):
+        raise ValueError('Editorially rejected map place requires an explicit operator review before reuse.')
     # Revalidate the actual saved clue text; publication never asks a model to rewrite it.
     payload = {'place_id': candidate['id'], 'selection_reason': result['selection_reason'],
                'clues': {level: {'text': result['clue_ladder'][level], 'fact_id': level} for level in controlled.LEVELS}}
@@ -229,7 +234,9 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
                         continue
             conn.execute("INSERT INTO automatic_map_meta(key,value) VALUES('bootstrap',?)", (now().isoformat(),))
         ready = eligible(conn, target)
-        exclusions = [json.loads(row[0]) for row in conn.execute("SELECT candidate FROM automatic_map_entries WHERE state='ready'")]
+        exclusions = [json.loads(candidate) for state, candidate, verification in conn.execute(
+            "SELECT state,candidate,verification FROM automatic_map_entries WHERE state IN ('ready','rejected')"
+        ) if state == 'ready' or json.loads(verification).get('operator_rejection')]
         failed_names = []
         for row in conn.execute('SELECT detail FROM automatic_map_runs WHERE started_at>? ORDER BY started_at DESC LIMIT 16', ((now()-timedelta(days=2)).isoformat(),)):
             try:
