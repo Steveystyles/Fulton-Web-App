@@ -651,6 +651,7 @@ export function MapGame() {
   const [submitting, setSubmitting] = useState(false);
   const [revealing, setRevealing] = useState(false);
   const submitInFlightRef = useRef(false);
+  const mapSectionRef = useRef<HTMLElement | null>(null);
   const [mapLabels, setMapLabels] = useState(() => {
     try {
       return window.localStorage.getItem("fultons:daily-map:labels") !== "off";
@@ -729,6 +730,51 @@ export function MapGame() {
         { title: "Place name", maxPoints: 2 },
       ][currentRevealedHintCount]
     : undefined;
+
+  useEffect(() => {
+    const section = mapSectionRef.current;
+    const stage = section?.querySelector<HTMLElement>(".map-stage");
+    if (!section || !stage) return;
+    const navigation = document.querySelector<HTMLElement>('[aria-label="Game navigation"]');
+    const header = document.querySelector<HTMLElement>(".top-shell");
+    let frame = 0;
+    const fit = () => {
+      if (window.innerWidth >= 760) {
+        stage.style.removeProperty("--map-fit-height");
+        return;
+      }
+      // Keep the controls in view as clues, pin review, or an inline notice
+      // changes height. The larger-map toggle remains an intentional scroll mode.
+      const sectionRect = section.getBoundingClientRect();
+      const stageHeight = stage.getBoundingClientRect().height;
+      const otherHeight = sectionRect.height - stageHeight;
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const navigationHeight = navigation?.getBoundingClientRect().height ?? 0;
+      const available = Math.floor(viewportHeight - sectionRect.top - navigationHeight - otherHeight - 24);
+      const next = `${Math.max(120, available)}px`;
+      if (stage.style.getPropertyValue("--map-fit-height") !== next) {
+        stage.style.setProperty("--map-fit-height", next);
+      }
+    };
+    const scheduleFit = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(fit);
+    };
+    const observer = new ResizeObserver(scheduleFit);
+    observer.observe(section);
+    if (navigation) observer.observe(navigation);
+    if (header) observer.observe(header);
+    window.addEventListener("resize", scheduleFit);
+    window.visualViewport?.addEventListener("resize", scheduleFit);
+    scheduleFit();
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      window.removeEventListener("resize", scheduleFit);
+      window.visualViewport?.removeEventListener("resize", scheduleFit);
+      stage.style.removeProperty("--map-fit-height");
+    };
+  }, [game?.date, selectedLevel?.id]);
 
   const pickPointForSelected = useCallback(
     async (point: MapPoint, zoom: number) => {
@@ -935,7 +981,7 @@ export function MapGame() {
 
   return (
     <>
-      <section className="min-w-0 space-y-3 pb-2" aria-label="Daily map game">
+      <section ref={mapSectionRef} className="min-w-0 space-y-3 pb-2" aria-label="Daily map game">
       <h1 className="sr-only">Map</h1>
       <Card className="map-game-card p-0">
         <div className="min-w-0 space-y-3 p-2 sm:p-3">
