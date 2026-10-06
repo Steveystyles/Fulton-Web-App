@@ -413,7 +413,7 @@ test("Map structure: tools and pin review sit outside the map viewport and use n
 
 function responsiveHeight(rule) {
   const value = values([rule], "height").at(-1);
-  const match = value?.match(/^clamp\(([\d.]+)px,\s*([\d.]+)[sd]?vh,\s*([\d.]+)px\)$/);
+  const match = value?.match(/(?:^|min\()clamp\(([\d.]+)px,\s*([\d.]+)[sd]?vh,\s*([\d.]+)px\)/);
   return match ? { minimum: Number(match[1]), viewport: Number(match[2]), maximum: Number(match[3]) } : null;
 }
 
@@ -439,6 +439,7 @@ test("Map CSS structure: Larger map meaningfully expands mobile and desktop layo
     responsiveHeight(expandedRules.find(rule => atViewport(rule))),
     "mobile",
   );
+  assert.match(values([normalRules.find(rule => atViewport(rule))], "height").at(-1), /--map-fit-height/);
   assertMeaningfulExpansion(
     responsiveHeight(normalRules.find(rule => atViewport(rule, "(min-width: 760px)"))),
     responsiveHeight(expandedRules.find(rule => atViewport(rule, "(min-width: 760px)"))),
