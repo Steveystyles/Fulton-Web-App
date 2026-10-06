@@ -352,7 +352,7 @@ class DiscoveryTests(unittest.TestCase):
             provider = discovery.DiscoveryProvider.from_map_env(budget)
         self.place['proposal_reason'] = 'A memorable structure.'
         second = self.second_place()
-        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(6)]}
+        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(discovery.PROPOSAL_COUNT)]}
         before = controlled.DEFAULT_CATALOG.read_bytes()
         with patch.object(discovery, 'history', return_value=[]), patch.object(discovery, 'resolve', side_effect=[self.place, second]), \
              patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, self.payload]) as request:
@@ -364,8 +364,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertTrue(all(region in request.call_args_list[0].args[1] for region in discovery.proposal_focus(budget)))
         self.assertEqual(len(report['rejections']), 0)
         self.assertEqual(len(report['resolved_candidates']), 2)
-        self.assertEqual(request.call_args_list[0].args[2]['properties']['candidates']['minItems'], 6)
-        self.assertIn('two landmarks from EACH', request.call_args_list[0].args[1])
+        self.assertEqual(request.call_args_list[0].args[2]['properties']['candidates']['minItems'], discovery.PROPOSAL_COUNT)
+        self.assertIn('four landmarks from EACH', request.call_args_list[0].args[1])
         self.assertIn('medium="Look in Brussels, Belgium, the city that hosted this landmark during Expo 58."',
                       request.call_args_list[1].args[1])
         self.assertFalse(report['production_modified'])
@@ -385,7 +385,7 @@ class DiscoveryTests(unittest.TestCase):
             'facts': {level: {'quote': fact['text'], 'text': fact['text']} for level, fact in second['facts'].items()},
             'clues': {level: {'text': fact['text'], 'fact_id': level} for level, fact in second['facts'].items()},
         }
-        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(6)]}
+        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(discovery.PROPOSAL_COUNT)]}
         with patch.object(discovery, 'history', return_value=[]), \
              patch.object(discovery, 'resolve', side_effect=[self.place, second]) as resolve, \
              patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, selected]) as request:
@@ -403,7 +403,7 @@ class DiscoveryTests(unittest.TestCase):
         budget = self.budget()
         with patch.dict(os.environ, {'MAP_AI_API_KEY': 'map-fixture'}, clear=True):
             provider = discovery.DiscoveryProvider.from_map_env(budget)
-        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(6)]}
+        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(discovery.PROPOSAL_COUNT)]}
         with patch.object(discovery, 'history', return_value=[]), \
              patch.object(discovery, 'resolve', side_effect=[self.place, ValueError('Source request budget exhausted.')]) as resolve, \
              patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, self.payload]):
@@ -422,22 +422,22 @@ class DiscoveryTests(unittest.TestCase):
             provider = discovery.DiscoveryProvider.from_map_env(budget)
         with patch.object(discovery, 'history', return_value=[]), \
              patch.object(discovery, 'resolve', side_effect=ValueError('Missing source evidence.')), \
-             patch.object(provider.clients[0].provider, '_request', return_value={'candidates': [{'title': f'Unknown {index}'} for index in range(6)]}) as request:
+             patch.object(provider.clients[0].provider, '_request', return_value={'candidates': [{'title': f'Unknown {index}'} for index in range(discovery.PROPOSAL_COUNT)]}) as request:
             report = discovery.discover(source_db=self.root / 'unused.db', catalog=controlled.DEFAULT_CATALOG,
                                         puzzle_date='2026-09-10', output_dir=self.root, budget=budget,
                                         provider=provider, sources=Mock())
         self.assertEqual(report['status'], 'failed')
         self.assertEqual(report['request_counts']['model_requests'], 1)
         self.assertEqual(request.call_count, 1)
-        self.assertEqual(len(report['rejections']), 6)
+        self.assertEqual(len(report['rejections']), discovery.PROPOSAL_COUNT)
         self.assertIn('No fallback', report['error'])
 
-    def test_six_proposals_can_reach_a_fresh_source_resolved_candidate_after_exclusions(self):
+    def test_twelve_proposals_can_reach_a_fresh_source_resolved_candidate_after_exclusions(self):
         budget = self.budget()
         with patch.dict(os.environ, {'MAP_AI_API_KEY': 'map-fixture'}, clear=True):
             provider = discovery.DiscoveryProvider.from_map_env(budget)
         self.place['proposal_reason'] = 'A memorable structure.'
-        rejected = [f'Old place {index}' for index in range(5)]
+        rejected = [f'Old place {index}' for index in range(discovery.PROPOSAL_COUNT - 1)]
         proposals = {'candidates': [{'title': name} for name in [*rejected, 'Fresh place']]}
         with patch.object(discovery, 'history', return_value=[]), patch.object(discovery, 'resolve', return_value=self.place) as resolve, \
              patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, self.payload]):
@@ -445,7 +445,7 @@ class DiscoveryTests(unittest.TestCase):
                                         puzzle_date='2026-09-10', output_dir=self.root, budget=budget,
                                         provider=provider, sources=Mock(), excluded_names=rejected)
         self.assertEqual(report['status'], 'needs_source_review')
-        self.assertEqual(len(report['rejections']), 5)
+        self.assertEqual(len(report['rejections']), discovery.PROPOSAL_COUNT - 1)
         self.assertEqual(report['request_counts']['model_requests'], 2)
         resolve.assert_called_once()
 
