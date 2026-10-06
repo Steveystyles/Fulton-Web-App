@@ -30,6 +30,7 @@ from tools import rewrite_map_clues_with_ai as rewriter
 MAX_MODEL_REQUESTS = 2
 MAX_SOURCE_REQUESTS = 16
 MAX_COMPARISON_CANDIDATES = 2
+PROPOSAL_COUNT = 12
 MAX_RESPONSE_BYTES = 2_000_000
 PLACE_TYPES = ('castle', 'bridge', 'monument', 'museum', 'religious_site', 'historic_site',
                'island', 'garden', 'tower', 'engineering', 'natural_landmark')
@@ -243,7 +244,7 @@ def history(source_db: Path, puzzle_date: str) -> list[dict]:
 def proposal_schema() -> dict:
     fields = {k: {'type': 'string'} for k in ('title', 'city_title', 'local_title', 'reason')}
     fields['place_type'] = {'type': 'string', 'enum': list(PLACE_TYPES)}
-    return {'type': 'object', 'properties': {'candidates': {'type': 'array', 'minItems': 6, 'maxItems': 6,
+    return {'type': 'object', 'properties': {'candidates': {'type': 'array', 'minItems': PROPOSAL_COUNT, 'maxItems': PROPOSAL_COUNT,
             'items': {'type': 'object', 'properties': fields, 'required': list(fields), 'additionalProperties': False}}},
             'required': ['candidates'], 'additionalProperties': False}
 
@@ -504,10 +505,10 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         recent = history(source_db, puzzle_date)
         existing = (controlled.load_catalog(catalog) if catalog is not None else []) + (excluded_places or [])
         focus = proposal_focus(budget)
-        prompt = ('Propose exactly SIX distinct, varied, interesting, currently existing, precisely pinnable landmarks '
-                  'outside the exclusions. For this attempt, propose two landmarks from EACH of these three '
+        prompt = ('Propose exactly TWELVE distinct, varied, interesting, currently existing, precisely pinnable landmarks '
+                  'outside the exclusions. For this attempt, propose four landmarks from EACH of these three '
                   f'geographic search lanes: {focus[0]}, {focus[1]}, and {focus[2]}. '
-                  'Use different countries and varied place types. All six article titles must be different. '
+                  'Use different countries and varied place types. All twelve article titles must be different. '
                   'Do not repeat a landmark named in the '
                   'exclusions even under an alternate spelling or article title. No stadiums, broad regions, '
                   'private homes, demolished structures, or generic fame. Prefer a memorable place-owned story or '
@@ -528,8 +529,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         proposed = provider.call_with_fallback(model_attr='generator_model', prompt=prompt, schema=proposal_schema())
         proposals = proposed.get('candidates', [])
         report['proposals'] = proposals
-        if len(proposals) != 6:
-            raise ValueError('Exactly six proposals are required.')
+        if len(proposals) != PROPOSAL_COUNT:
+            raise ValueError('Exactly twelve proposals are required.')
         candidates = []
         seen_titles: set[str] = set()
         for proposal in proposals:
