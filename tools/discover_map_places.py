@@ -553,9 +553,13 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                 if len(candidates) >= MAX_COMPARISON_CANDIDATES:
                     break
             except (ValueError, KeyError, TypeError) as error:
-                report['rejections'].append({'title': str(proposal.get('title', ''))[:160], 'reason': str(error)[:300]})
-                if candidates and 'budget exhausted' in str(error).casefold():
+                if 'budget exhausted' in str(error).casefold():
+                    # A request cap says nothing about this place's quality. Do not
+                    # blacklist it (or the proposals we never got to inspect) on
+                    # the next refill attempt.
+                    report['budget_exhausted_at_title'] = str(proposal.get('title', ''))[:160]
                     break
+                report['rejections'].append({'title': str(proposal.get('title', ''))[:160], 'reason': str(error)[:300]})
         report['resolved_candidates'] = candidates
         if not candidates:
             raise ValueError('No proposal passed source, identity, history and map-area checks. No fallback substituted.')
