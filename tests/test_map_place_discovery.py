@@ -414,7 +414,24 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report['candidate']['id'], self.place['id'])
         self.assertEqual(len(report['resolved_candidates']), 1)
         self.assertEqual(resolve.call_count, 2)
-        self.assertEqual(len(report['rejections']), 1)
+        self.assertEqual(report['rejections'], [])
+        self.assertEqual(report['budget_exhausted_at_title'], 'Proposal 1')
+
+    def test_source_budget_exhaustion_does_not_blacklist_unchecked_proposals(self):
+        budget = self.budget()
+        with patch.dict(os.environ, {'MAP_AI_API_KEY': 'map-fixture'}, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(discovery.PROPOSAL_COUNT)]}
+        with patch.object(discovery, 'history', return_value=[]), \
+             patch.object(discovery, 'resolve', side_effect=ValueError('Automatic map request budget exhausted.')) as resolve, \
+             patch.object(provider.clients[0].provider, '_request', return_value=proposals):
+            report = discovery.discover(source_db=self.root / 'unused.db', catalog=None,
+                                        puzzle_date='2026-09-10', output_dir=self.root, budget=budget,
+                                        provider=provider, sources=Mock())
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(report['rejections'], [])
+        self.assertEqual(report['budget_exhausted_at_title'], 'Proposal 0')
+        resolve.assert_called_once()
 
     def test_no_resolved_places_stops_before_second_model_call_and_reports_failure(self):
         budget = self.budget()

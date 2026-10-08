@@ -264,6 +264,25 @@ class AutomaticPoolTests(unittest.TestCase):
             pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock())
         self.assertIn('Unresolved place', discover.call_args.kwargs['excluded_names'])
 
+    def test_legacy_budget_exhaustion_does_not_exclude_unchecked_places(self):
+        report_dir = self.root / 'reports' / 'run1'
+        report_dir.mkdir(parents=True)
+        report_path = report_dir / 'discovery.json'
+        report_path.write_text(json.dumps({'rejections': [
+            {'title': 'Bad source', 'reason': 'Missing source page.'},
+            {'title': 'Unexamined place', 'reason': 'Target article: Automatic map request budget exhausted.'},
+        ]}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('run1', '2026-09-08', '2026-09-08', self.clock.isoformat(), 'failed',
+                 json.dumps({'failed_names': ['Bad source', 'Unexamined place'],
+                             'report_path': str(report_path)})),
+            )
+            conn.commit()
+            self.assertEqual(pool.recent_failed_names(conn, self.root / 'reports'), ['Bad source'])
+
     def test_editorially_rejected_place_cannot_be_automatically_readmitted(self):
         self.queue()
         with closing(self.connect()) as conn:

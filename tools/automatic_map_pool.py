@@ -254,6 +254,41 @@ def recoverable_report(conn: sqlite3.Connection, output_dir: Path, puzzle_date: 
     return None
 
 
+def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
+    """Exclude genuine source failures, not legacy request-cap casualties."""
+    root = output_dir.resolve()
+    cutoff = (now() - timedelta(days=2)).isoformat()
+    names: list[str] = []
+    for detail_text, in conn.execute(
+        'SELECT detail FROM automatic_map_runs WHERE started_at>? ORDER BY started_at DESC LIMIT 16',
+        (cutoff,),
+    ):
+        try:
+            detail = json.loads(detail_text or '{}')
+            failed = detail.get('failed_names', [])
+            if not isinstance(failed, list):
+                continue
+            budget_limited: set[str] = set()
+            report_name = detail.get('report_path')
+            if isinstance(report_name, str):
+                try:
+                    path = Path(report_name).resolve(strict=True)
+                    if path.is_relative_to(root) and path.suffix == '.json' and path.stat().st_size <= 2_000_000:
+                        report = json.loads(path.read_text(encoding='utf-8'))
+                        if isinstance(report, dict):
+                            budget_limited = {
+                                item['title'] for item in report.get('rejections', [])
+                                if isinstance(item, dict) and isinstance(item.get('title'), str)
+                                and 'budget exhausted' in str(item.get('reason', '')).casefold()
+                            }
+                except (OSError, ValueError, TypeError):
+                    pass
+            names.extend(name for name in failed if isinstance(name, str) and name not in budget_limited)
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return names
+
+
 def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = controlled.DEFAULT_CATALOG,
              provider_factory=None) -> dict:
     database = database.resolve(strict=True)
@@ -279,13 +314,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         exclusions = [json.loads(candidate) for state, candidate, verification in conn.execute(
             "SELECT state,candidate,verification FROM automatic_map_entries WHERE state IN ('ready','rejected')"
         ) if state == 'ready' or json.loads(verification).get('operator_rejection')]
-        failed_names = []
-        for row in conn.execute('SELECT detail FROM automatic_map_runs WHERE started_at>? ORDER BY started_at DESC LIMIT 16', ((now()-timedelta(days=2)).isoformat(),)):
-            try:
-                detail = json.loads(row[0] or '{}')
-                failed_names.extend(detail.get('failed_names', []))
-            except (ValueError, AttributeError):
-                continue
+        failed_names = recent_failed_names(conn, output_dir)
         conn.commit()
     if len(ready) >= TARGET_READY:
         return {'status': 'stocked', 'ready': len(ready)}
