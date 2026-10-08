@@ -46,6 +46,14 @@ class DiscoveryTests(unittest.TestCase):
         next_day = discovery.proposal_focus(Mock(day='2026-10-02', budget_day='2026-10-02', attempt_number=1))
         self.assertNotEqual(next_day, focuses[0])
 
+    def test_exclusion_keys_keep_non_latin_places_distinct(self):
+        self.assertEqual(discovery.exclusion_key('St. Paul'), discovery.exclusion_key('Saint Paul'))
+        self.assertEqual(discovery.exclusion_key('故宫'), '故宫')
+        self.assertNotEqual(discovery.exclusion_key('故宫'), discovery.exclusion_key('東京塔'))
+        discovery.reject_excluded_place(['東京塔'], ['故宫'])
+        with self.assertRaisesRegex(ValueError, 'rejected recently'):
+            discovery.reject_excluded_place(['故宫'], ['故宫'])
+
     def test_budget_survives_restart_and_counts_attempt_before_transport(self):
         budget = self.budget()
         budget.spend('model')

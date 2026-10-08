@@ -255,7 +255,7 @@ def recoverable_report(conn: sqlite3.Connection, output_dir: Path, puzzle_date: 
 
 
 def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
-    """Exclude genuine source failures, not legacy request-cap casualties."""
+    """Keep unique first-hand failures, not unchecked or inherited rejections."""
     root = output_dir.resolve()
     cutoff = (now() - timedelta(days=2)).isoformat()
     names: list[str] = []
@@ -268,7 +268,7 @@ def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]
             failed = detail.get('failed_names', [])
             if not isinstance(failed, list):
                 continue
-            budget_limited: set[str] = set()
+            not_examined: set[str] = set()
             report_name = detail.get('report_path')
             if isinstance(report_name, str):
                 try:
@@ -276,17 +276,27 @@ def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]
                     if path.is_relative_to(root) and path.suffix == '.json' and path.stat().st_size <= 2_000_000:
                         report = json.loads(path.read_text(encoding='utf-8'))
                         if isinstance(report, dict):
-                            budget_limited = {
+                            not_examined = {
                                 item['title'] for item in report.get('rejections', [])
                                 if isinstance(item, dict) and isinstance(item.get('title'), str)
-                                and 'budget exhausted' in str(item.get('reason', '')).casefold()
+                                and (
+                                    'budget exhausted' in str(item.get('reason', '')).casefold()
+                                    or str(item.get('reason', '')).casefold().startswith('place was rejected recently')
+                                )
                             }
                 except (OSError, ValueError, TypeError):
                     pass
-            names.extend(name for name in failed if isinstance(name, str) and name not in budget_limited)
+            names.extend(name for name in failed if isinstance(name, str) and name not in not_examined)
         except (OSError, ValueError, TypeError, AttributeError):
             continue
-    return names
+    # The discovery prompt has a bounded exclusion list. Repeated failures
+    # should not hide distinct names beyond that bound.
+    unique: dict[str, str] = {}
+    for name in names:
+        key = discovery.exclusion_key(name)
+        if key:
+            unique.setdefault(key, name)
+    return list(unique.values())
 
 
 def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = controlled.DEFAULT_CATALOG,

@@ -50,7 +50,7 @@ def normalized(text: str) -> str:
 def exclusion_key(text: str) -> str:
     text = ''.join(c for c in unicodedata.normalize('NFKD', text.casefold()) if not unicodedata.combining(c))
     text = re.sub(r'\bst[.]?\b', 'saint', text)
-    return re.sub(r'[^a-z0-9]', '', text)
+    return ''.join(c for c in text if c.isalnum()) or text.strip()
 
 
 def reject_excluded_place(names: list[str], excluded: list[str]) -> None:
