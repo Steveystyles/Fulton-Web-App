@@ -373,15 +373,6 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
         previous_names += previous.get('acceptable_aliases', [])
         if names.intersection(daily_map_game.normalized_place_name(n) for n in previous_names) or daily_map_game.haversine_m(lat, lng, previous['lat'], previous['lng']) < 500:
             raise ValueError('Candidate duplicates a recent answer or existing catalogue place.')
-    countries = claim_values(entity, 'P17')
-    if len(countries) != 1:
-        raise ValueError('Country identity is ambiguous.')
-    country_id = countries[0]['id']
-    country = sources.country(country_id)
-    codes = claim_values(country, 'P297')
-    if len(codes) != 1 or not re.fullmatch('[A-Z]{2}', codes[0]):
-        raise ValueError('Missing country code.')
-    country_name = plain(country['labels']['en']['value'], 100)
     # Build nested circles from retrieved coordinates, never model geometry.
     local_distance = daily_map_game.haversine_m(lat, lng, local['lat'], local['lng'])
     city_distance = daily_map_game.haversine_m(lat, lng, city['lat'], city['lng'])
@@ -397,6 +388,18 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
                                                   (local, proposal.get('local_title'), easy_radius, 2))]
     if any(daily_map_game.mask_answer_name(a['name'], target['title']) != a['name'] for a in anchors):
         raise ValueError('A search area name exposes the answer.')
+    # These checks need only the already-retrieved articles and coordinates.
+    # Reject weak map routes before spending two more requests on country metadata.
+    evidence_excerpt({'evidence': {'article': target}, 'anchors': anchors})
+    countries = claim_values(entity, 'P17')
+    if len(countries) != 1:
+        raise ValueError('Country identity is ambiguous.')
+    country_id = countries[0]['id']
+    country = sources.country(country_id)
+    codes = claim_values(country, 'P297')
+    if len(codes) != 1 or not re.fullmatch('[A-Z]{2}', codes[0]):
+        raise ValueError('Missing country code.')
+    country_name = plain(country['labels']['en']['value'], 100)
     return {'id': target['entity'].lower(), 'canonical_name': target['title'], 'acceptable_aliases': sorted(set(aliases)),
             'place_type': kind, 'lat': lat, 'lng': lng, 'country_code': codes[0], 'country_name': country_name,
             'locality_name': anchors[0]['name'], 'anchors': anchors, 'proposal_reason': plain(proposal.get('reason')),

@@ -352,7 +352,7 @@ class DiscoveryTests(unittest.TestCase):
     def source_fixture(self):
         source = Mock()
         source.budget.day = '2026-09-10'
-        pages = {'Target': {'title': 'Target', 'entity': 'Q100', 'lat': 50, 'lng': 1, 'text': 'evidence', 'url': 'https://en.wikipedia.org/?oldid=100'},
+        pages = {'Target': {'title': 'Target', 'entity': 'Q100', 'lat': 50, 'lng': 1, 'text': 'The Target is in City, beside Park.', 'url': 'https://en.wikipedia.org/?oldid=100'},
                  'City': {'title': 'City', 'entity': 'Q101', 'lat': 50.04, 'lng': 1, 'text': 'city', 'url': 'https://en.wikipedia.org/?oldid=101'},
                  'Park': {'title': 'Park', 'entity': 'Q102', 'lat': 50.01, 'lng': 1, 'text': 'park', 'url': 'https://en.wikipedia.org/?oldid=102'}}
         source.page.side_effect = lambda name: pages[name]
@@ -374,6 +374,20 @@ class DiscoveryTests(unittest.TestCase):
         medium, easy = candidate['anchors']
         distance = discovery.daily_map_game.haversine_m(medium['lat'], medium['lng'], easy['lat'], easy['lng'])
         self.assertLess(distance + easy['radius_m'], medium['radius_m'])
+
+    def test_invalid_map_routes_do_not_spend_country_source_requests(self):
+        source, _, pages, proposal = self.source_fixture()
+        pages['Park']['lat'] = pages['Target']['lat']
+        pages['Park']['lng'] = pages['Target']['lng']
+        with self.assertRaisesRegex(ValueError, 'Search area centres'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
+
+        source, _, pages, proposal = self.source_fixture()
+        pages['Target']['text'] = 'The Target is in City, with a different nearby feature.'
+        with self.assertRaisesRegex(ValueError, 'does not mention the supplied search area'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
 
     def test_resolve_uses_area_batch_only_after_full_target_fetch(self):
         fixture, _, _, proposal = self.source_fixture()
