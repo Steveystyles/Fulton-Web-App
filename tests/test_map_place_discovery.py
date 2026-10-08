@@ -107,6 +107,47 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(source, 'request', side_effect=response):
             self.assertIn('Local Park', source.page('Example')['text'])
 
+    def test_area_intro_batch_saves_a_request_without_truncating_target_evidence(self):
+        source = discovery.WikimediaSource(self.budget())
+        def page(name, entity, text):
+            return {'ns': 0, 'title': name, 'lastrevid': 123, 'extract': text,
+                    'pageprops': {'wikibase_item': entity},
+                    'coordinates': [{'lat': 50, 'lon': 1, 'globe': 'earth'}]}
+        area_text = 'This settlement has a documented location and history. ' * 4
+        area_result = {'query': {
+            'normalized': [{'from': 'city_name', 'to': 'City name'}],
+            'redirects': [{'from': 'Old Park', 'to': 'Park'}],
+            'pages': [page('City name', 'Q101', area_text), page('Park', 'Q102', area_text)],
+        }}
+        target_text = 'A full target article with distinct historical evidence. ' * 4
+        with patch.object(source, 'request', side_effect=[area_result, {'query': {'pages': [
+                page('Old Park', 'Q102', target_text)]}}]) as request:
+            source.prefetch_area_pages(['city_name', 'Old Park'])
+            self.assertEqual(source.area_page('city_name')['title'], 'City name')
+            self.assertEqual(source.area_page('Old Park')['title'], 'Park')
+            self.assertEqual(request.call_count, 1)
+            self.assertEqual(source.page('Old Park')['text'], discovery.normalized(target_text))
+            self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args_list[0].args[1]['exlimit'], 2)
+        self.assertEqual(request.call_args_list[0].args[1]['exintro'], 1)
+        self.assertNotIn('exintro', request.call_args_list[1].args[1])
+
+    def test_short_area_intro_falls_back_to_full_article_validation(self):
+        source = discovery.WikimediaSource(self.budget())
+        def page(name, entity, text):
+            return {'ns': 0, 'title': name, 'lastrevid': 123, 'extract': text,
+                    'pageprops': {'wikibase_item': entity},
+                    'coordinates': [{'lat': 50, 'lon': 1, 'globe': 'earth'}]}
+        long_text = 'A sufficiently detailed article about this named location. ' * 4
+        with patch.object(source, 'request', side_effect=[
+                {'query': {'pages': [page('City', 'Q101', long_text), page('Park', 'Q102', 'Short')]}},
+                {'query': {'pages': [page('Park', 'Q102', long_text)]}},
+        ]) as request:
+            source.prefetch_area_pages(['City', 'Park'])
+            self.assertEqual(source.area_page('City')['title'], 'City')
+            self.assertEqual(source.area_page('Park')['title'], 'Park')
+            self.assertEqual(request.call_count, 2)
+
     def test_source_distinguishes_missing_and_ambiguous_articles(self):
         source = discovery.WikimediaSource(self.budget())
         for page, message in (({'missing': True}, 'Missing source page'),
@@ -333,6 +374,20 @@ class DiscoveryTests(unittest.TestCase):
         medium, easy = candidate['anchors']
         distance = discovery.daily_map_game.haversine_m(medium['lat'], medium['lng'], easy['lat'], easy['lng'])
         self.assertLess(distance + easy['radius_m'], medium['radius_m'])
+
+    def test_resolve_uses_area_batch_only_after_full_target_fetch(self):
+        fixture, _, _, proposal = self.source_fixture()
+        source = discovery.WikimediaSource(self.budget())
+        with patch.object(source, 'page', side_effect=fixture.page.side_effect) as full_page, \
+             patch.object(source, 'area_page', side_effect=fixture.page.side_effect) as area_page, \
+             patch.object(source, 'prefetch_area_pages') as prefetch, \
+             patch.object(source, 'entities', side_effect=fixture.entities.side_effect), \
+             patch.object(source, 'country', return_value=fixture.country.return_value):
+            candidate = discovery.resolve(proposal, source, [], [])
+        self.assertEqual(candidate['canonical_name'], 'Target')
+        full_page.assert_called_once_with('Target')
+        prefetch.assert_called_once_with(['City', 'Park'])
+        self.assertEqual([call.args[0] for call in area_page.call_args_list], ['City', 'Park'])
 
     def test_resolve_reports_which_source_article_failed(self):
         source, _, _, proposal = self.source_fixture()
