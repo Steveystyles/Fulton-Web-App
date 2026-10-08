@@ -170,6 +170,10 @@ class DailyMapGameTests(unittest.TestCase):
         level = self.publish_named_level("London")
         before = map_clue_editor.admin_puzzle_clues(self.conn, "2026-07-13")
         original = before["levels"][0]
+        self.conn.execute(
+            "UPDATE map_place_pool SET verified_facts_json = ? WHERE id = ?",
+            (json.dumps(["An old fact that must not describe the revised clue."]), original["placeId"]),
+        )
         revision = {
             "hard": "A failed gunpowder plot is tied to the parliament here.",
             "medium": "This is the capital of England.",
@@ -197,6 +201,13 @@ class DailyMapGameTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(source["clue_text"], original["hard"])
         self.assertEqual(source["active"], 0)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT verified_facts_json FROM map_place_pool WHERE id = ?",
+                (after["levels"][0]["placeId"],),
+            ).fetchone()["verified_facts_json"],
+            "[]",
+        )
         current = self.conn.execute(
             "SELECT place_id FROM daily_map_levels WHERE id = ?", (level["id"],)
         ).fetchone()
