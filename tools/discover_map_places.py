@@ -148,6 +148,7 @@ class WikimediaSource:
     def __init__(self, budget: RunBudget):
         self.budget = budget
         self.cache: dict[str, dict] = {}
+        self.area_cache: dict[str, dict] = {}
 
     def request(self, host: str, params: dict) -> dict:
         if host not in ('en.wikipedia.org', 'www.wikidata.org'):
@@ -171,16 +172,8 @@ class WikimediaSource:
         finally:
             conn.close()
 
-    def page(self, name: str) -> dict:
-        name = title(name)
-        if name in self.cache:
-            return self.cache[name]
-        data = self.request('en.wikipedia.org', {'action': 'query', 'titles': name, 'redirects': 1,
-                            'prop': 'extracts|coordinates|pageprops|info', 'explaintext': 1, 'exlimit': 1})
-        pages = data.get('query', {}).get('pages', [])
-        if len(pages) != 1:
-            raise ValueError('Source title did not resolve uniquely.')
-        page = pages[0]
+    @staticmethod
+    def parsed_page(page: dict) -> dict:
         if page.get('missing'):
             raise ValueError('Missing source page.')
         if page.get('ns') != 0 or 'disambiguation' in page.get('pageprops', {}):
@@ -199,8 +192,56 @@ class WikimediaSource:
         result = {'title': page['title'], 'text': text[:100000], 'lat': lat, 'lng': lng, 'entity': entity,
                   'url': f"https://en.wikipedia.org/w/index.php?oldid={int(page['lastrevid'])}",
                   'revision': int(page['lastrevid']), 'license': 'CC BY-SA 4.0; Wikipedia contributors'}
+        return result
+
+    def page(self, name: str) -> dict:
+        name = title(name)
+        if name in self.cache:
+            return self.cache[name]
+        data = self.request('en.wikipedia.org', {'action': 'query', 'titles': name, 'redirects': 1,
+                            'prop': 'extracts|coordinates|pageprops|info', 'explaintext': 1, 'exlimit': 1})
+        pages = data.get('query', {}).get('pages', [])
+        if len(pages) != 1:
+            raise ValueError('Source title did not resolve uniquely.')
+        result = self.parsed_page(pages[0])
         self.cache[name] = result
         return result
+
+    def prefetch_area_pages(self, names: list[str]) -> None:
+        """Fetch two area intros together, without truncating the target article."""
+        requested = list(dict.fromkeys(title(name) for name in names))
+        if len(requested) != 2 or any(name in self.cache or name in self.area_cache for name in requested):
+            return
+        data = self.request('en.wikipedia.org', {'action': 'query', 'titles': '|'.join(requested),
+                            'redirects': 1, 'prop': 'extracts|coordinates|pageprops|info',
+                            'explaintext': 1, 'exintro': 1, 'exlimit': 2})
+        query = data.get('query', {})
+        redirects = {}
+        for kind in ('normalized', 'redirects'):
+            for item in query.get(kind, []):
+                if isinstance(item, dict) and isinstance(item.get('from'), str) and isinstance(item.get('to'), str):
+                    redirects[item['from']] = item['to']
+        pages = {item['title']: item for item in query.get('pages', [])
+                 if isinstance(item, dict) and isinstance(item.get('title'), str)}
+        for name in requested:
+            resolved = name
+            seen = set()
+            while resolved in redirects and resolved not in seen:
+                seen.add(resolved)
+                resolved = redirects[resolved]
+            page = pages.get(resolved)
+            if page is None:
+                continue
+            try:
+                self.area_cache[name] = self.parsed_page(page)
+            except (ValueError, KeyError, TypeError):
+                # An intro may be too short; the normal full-page request will
+                # still validate that area rather than accepting weak evidence.
+                continue
+
+    def area_page(self, name: str) -> dict:
+        name = title(name)
+        return self.area_cache.get(name) or self.page(name)
 
     def entities(self, ids: list[str]) -> dict:
         if not ids or len(ids) > 3 or any(not re.fullmatch(r'Q[1-9][0-9]*', item) for item in ids):
@@ -249,11 +290,12 @@ def proposal_schema() -> dict:
             'required': ['candidates'], 'additionalProperties': False}
 
 
-def resolved_page(sources: WikimediaSource, name: str, *, city_hint: str = '') -> dict:
+def resolved_page(sources: WikimediaSource, name: str, *, city_hint: str = '', area: bool = False) -> dict:
     """Try one deterministic article-title correction, never a fuzzy search."""
     requested = title(name)
+    fetch = sources.area_page if area and isinstance(sources, WikimediaSource) else sources.page
     try:
-        return sources.page(requested)
+        return fetch(requested)
     except ValueError as error:
         alternate = ''
         if str(error) == 'Missing source page.' and re.search(r' \([^)]+\)$', requested):
@@ -263,7 +305,7 @@ def resolved_page(sources: WikimediaSource, name: str, *, city_hint: str = '') -
         if not alternate:
             raise
         try:
-            return sources.page(title(alternate))
+            return fetch(title(alternate))
         except ValueError as retry_error:
             raise ValueError(f'Exact title and one bounded alternative did not resolve: {retry_error}') from retry_error
 
@@ -302,12 +344,14 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
         r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I
     ):
         raise ValueError('Source identifies a stadium, which automatic discovery excludes.')
+    if isinstance(sources, WikimediaSource):
+        sources.prefetch_area_pages([proposal.get('city_title'), proposal.get('local_title')])
     try:
-        city = resolved_page(sources, proposal.get('city_title'))
+        city = resolved_page(sources, proposal.get('city_title'), area=True)
     except ValueError as error:
         raise ValueError(f'City article: {error}') from error
     try:
-        local = resolved_page(sources, proposal.get('local_title'), city_hint=proposal.get('city_title', ''))
+        local = resolved_page(sources, proposal.get('local_title'), city_hint=proposal.get('city_title', ''), area=True)
     except ValueError as error:
         raise ValueError(f'Local feature article: {error}') from error
     if len({p['entity'] for p in (target, city, local)}) != 3:
