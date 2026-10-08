@@ -18,6 +18,7 @@ let Card;
 let HelpButton;
 let MapClueEditor;
 let canApplyUpdateWithoutInterrupting;
+let AppRecoveryBoundary;
 const originalFetch = globalThis.fetch;
 
 before(async () => {
@@ -34,6 +35,7 @@ before(async () => {
   ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
   ({ MapClueEditor } = await vite.ssrLoadModule("/src/components/MapClueEditor.tsx"));
   ({ canApplyUpdateWithoutInterrupting } = await vite.ssrLoadModule("/src/components/AppUpdateReloader.tsx"));
+  ({ AppRecoveryBoundary } = await vite.ssrLoadModule("/src/components/AppRecoveryBoundary.tsx"));
 });
 
 after(async () => {
@@ -66,6 +68,17 @@ test("new releases apply on idle screens without discarding games or form entrie
   assert.equal(canApplyUpdateWithoutInterrupting("/", {
     ...emptyPage, querySelector: () => ({}),
   }), false, "an open dialog must not be interrupted");
+});
+
+test("a failed lazy route offers a visible reload instead of a blank page", () => {
+  const boundary = new AppRecoveryBoundary({ children: createElement("p", null, "Loaded route") });
+  assert.match(renderToStaticMarkup(boundary.render()), /Loaded route/);
+  boundary.state = AppRecoveryBoundary.getDerivedStateFromError(new Error("Missing chunk"));
+  const html = renderToStaticMarkup(boundary.render());
+  assert.match(html, /role="alert"/);
+  assert.match(html, /Couldn&#x27;t open this screen/);
+  assert.match(html, /Reload page/);
+  assert.doesNotMatch(html, /Missing chunk/);
 });
 
 test("help starts as a compact button with no instructions in the game layout", () => {
