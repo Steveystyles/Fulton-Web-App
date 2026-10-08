@@ -107,10 +107,10 @@ def revise_published_clues(
             ?, canonical_name, country_code, country_name, continent, admin1,
             place_type, difficulty, lat, lng, coordinate_precision,
             suggested_map_zoom, map_search_anchors_json, ?, ?, ?, ?, acceptable_aliases,
-            nearby_context, verified_facts_json, sources_json,
+            nearby_context, '[]', sources_json,
             coordinate_source_name, coordinate_source_url, avoid_in_clues,
             deconflict_group, fact_stability, 'approved',
-            'Admin revised published clue text.',
+            'Admin revised published clue text; prior verified facts do not apply to this revision.',
             ?, 'admin-edit', '', 'admin-review', NULL,
             'Published clue wording revised by an admin.',
             scoring_radius_m, 0, cooldown_until, ?
