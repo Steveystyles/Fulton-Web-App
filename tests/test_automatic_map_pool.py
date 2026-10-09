@@ -36,7 +36,7 @@ class AutomaticPoolTests(unittest.TestCase):
         self.payload = {'place_id': self.place['id'], 'selection_reason': 'A memorable scientific idea with sourced local map placement.',
                         'clues': {k: {'text': v['text'], 'fact_id': k} for k, v in self.place['facts'].items()}}
         self.result = controlled.validate_result(self.payload, [self.place])
-        self.verdict = {k: True for k in pool.CHECKS}
+        self.verdict = {**{k: True for k in pool.CHECKS}, 'interesting_hook_score': 5}
 
     def connect(self):
         conn = sqlite3.connect(self.database)
@@ -127,6 +127,46 @@ class AutomaticPoolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'checked payload'):
                 pool.publish(conn, puzzle_date='2026-09-08')
 
+    def test_legacy_ready_round_must_pass_interest_audit_before_publication(self):
+        with closing(self.connect()) as conn:
+            pool.add(conn, self.place, self.result,
+                     {k: True for k in pool.CHECKS}, origin='discovery')
+            conn.commit()
+            with self.assertRaisesRegex(ValueError, 'No eligible'):
+                pool.publish(conn, puzzle_date='2026-09-08')
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {
+            'interesting_hook_score': 5, 'reason': 'A striking scientific idea.',
+        }
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        self.assertEqual(outcome['ready'], 1)
+        self.assertIn('past_editorial_corrections',
+                      provider.call_with_fallback.call_args.kwargs['prompt'])
+        with closing(self.connect()) as conn:
+            self.assertEqual(pool.publish(conn, puzzle_date='2026-09-08')['status'], 'published')
+
+    def test_legacy_weak_round_is_rejected_and_cannot_reenter_queue(self):
+        with closing(self.connect()) as conn:
+            pool.add(conn, self.place, self.result,
+                     {k: True for k in pool.CHECKS}, origin='discovery')
+            conn.commit()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {
+            'interesting_hook_score': 2, 'reason': 'Only an ordinary design detail.',
+        }
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        self.assertEqual(outcome['ready'], 0)
+        with closing(self.connect()) as conn:
+            row = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(row[0], 'rejected')
+            self.assertTrue(json.loads(row[1])['editorial_rejection'])
+            with self.assertRaisesRegex(ValueError, 'Editorially rejected'):
+                pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
+
     def test_published_round_keeps_saved_clues_and_hides_answer_at_each_stage(self):
         self.queue()
         with closing(self.connect()) as conn:
@@ -164,6 +204,7 @@ class AutomaticPoolTests(unittest.TestCase):
         prompt = provider.call_with_fallback.call_args.kwargs['prompt']
         self.assertIn('obscure procurement detail', prompt)
         self.assertIn('absence of an event', prompt)
+        self.assertIn('editorial discovery hook', prompt)
         for change in ('unsupported', 'citation', 'uncertain'):
             altered = deepcopy(verdict)
             if change == 'unsupported': altered['levels']['hard']['supported'] = False
@@ -172,6 +213,52 @@ class AutomaticPoolTests(unittest.TestCase):
             provider.call_with_fallback.return_value = altered
             with self.subTest(change=change), self.assertRaises(ValueError):
                 pool.verify(report, provider)
+
+    def test_published_editorial_replacement_teaches_automatic_queue(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            pool.publish(conn, puzzle_date='2026-09-08')
+            conn.execute(
+                "UPDATE map_place_pool SET clue_text=?,clue_generation_source='admin-edit' "
+                "WHERE id=(SELECT place_id FROM daily_map_levels LIMIT 1)",
+                ('A much more memorable, place-defining scientific story.',),
+            )
+            conn.commit()
+            feedback = pool.editorial_corrections(conn)
+        self.assertEqual(len(feedback), 1)
+        self.assertEqual(feedback[0]['rejected_hook'], self.result['clue_ladder']['hard'])
+        self.assertIn('memorable', feedback[0]['replacement_hook'])
+
+        report = self.report()
+        provider = Mock()
+        with self.assertRaisesRegex(ValueError, 'editor rejected'):
+            pool.verify(report, provider, editorial_feedback=feedback)
+        provider.call_with_fallback.assert_not_called()
+
+        changed = deepcopy(report)
+        changed['model_output'] = deepcopy(report['model_output'])
+        changed['model_output']['facts']['hard']['text'] = 'A different supported and memorable hard hook.'
+        # A new candidate is allowed through the model, which sees both sides of the correction.
+        with patch.object(discovery, 'validate_selection', return_value=(
+            report['candidate'], {'clue_ladder': {**report['result']['clue_ladder'],
+                                                'hard': 'A different supported and memorable hard hook.'}}
+        )):
+            ids = [p['id'] for p in discovery.evidence_units(report['resolved_candidates'][0])]
+            provider.call_with_fallback.return_value = {
+                **self.verdict,
+                'levels': {k: {'supported': True, 'source_ids': ids} for k in controlled.LEVELS},
+                'reason': 'A strong place-defining hook.',
+            }
+            pool.verify(changed, provider, editorial_feedback=feedback)
+        prompt = provider.call_with_fallback.call_args.kwargs['prompt']
+        self.assertIn(feedback[0]['rejected_hook'], prompt)
+        self.assertIn(feedback[0]['replacement_hook'], prompt)
+        provider.call_with_fallback.return_value['interesting_hook_score'] = 2
+        with patch.object(discovery, 'validate_selection', return_value=(
+            report['candidate'], {'clue_ladder': {**report['result']['clue_ladder'],
+                                                'hard': 'A different supported and memorable hard hook.'}}
+        )), self.assertRaisesRegex(ValueError, 'insufficiently interesting'):
+            pool.verify(changed, provider, editorial_feedback=feedback)
 
     def test_empty_pool_replenishes_without_any_static_catalogue_or_human_promotion(self):
         report = self.report()
