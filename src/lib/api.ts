@@ -74,7 +74,11 @@ export type AdminMapClueLevel = {
   reveal: string;
 };
 
-export type AdminMapClues = { date: string; levels: AdminMapClueLevel[] };
+export type AdminMapClues = {
+  date: string;
+  levels: AdminMapClueLevel[];
+  learning?: { ok: boolean; feedbackRows?: number; message?: string };
+};
 
 export type AdminOpsStatus = "healthy" | "degraded" | "offline" | "disabled";
 
@@ -771,6 +775,7 @@ export const api = {
     level: AdminMapClueLevel["level"];
     expectedPlaceId: number;
     clues: Pick<AdminMapClueLevel, "hard" | "medium" | "easy" | "reveal">;
+    reason: string;
   }) {
     return request<AdminMapClues>("/api/admin/daily-map-clues", {
       method: "POST",

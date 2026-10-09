@@ -956,25 +956,30 @@ export function MapGame() {
   }
 
   if (selectedLevel === undefined || game === null) {
+    const scheduledOffDay = error.includes("available on Wednesdays and Saturdays");
     return (
       <section className="page-fade space-y-3" aria-label="Daily map game">
         <Card className="space-y-3">
           <p className="text-sm font-bold text-slate-600">
-            Today&apos;s map game is not available yet.
+            {scheduledOffDay
+              ? "Map is played on Wednesdays and Saturdays."
+              : "Today’s Map round could not be loaded."}
           </p>
-          {error ? (
+          {error && !scheduledOffDay ? (
             <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-bold text-saints-red">
               {error}
             </p>
           ) : null}
-          <button
+          {scheduledOffDay ? (
+            <p className="text-sm text-slate-600">The next round opens at midnight UK time on the next Map day.</p>
+          ) : <button
             type="button"
             onClick={() => void loadGame()}
             className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-saints-black px-4 text-sm font-black text-white saints-focus"
           >
             <RotateCcw aria-hidden="true" className="h-4 w-4" />
             Try again
-          </button>
+          </button>}
         </Card>
       </section>
     );

@@ -408,13 +408,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 734,
+      "line_number": 756,
       "line_range": [
-        734
+        756
       ],
       "col_offset": 35,
       "end_col_offset": 65,
-      "code_sha256": "e0657db1e2f7b9b2e4a1209e9a69f2efb2b504729dcce43f516fa28a788ef145"
+      "code_sha256": "ea2667d7f66629dca71b543595988c88ecabd83a917e5441c581ce2e7f12fb3c"
     },
     {
       "filename": "server.py",
@@ -424,19 +424,19 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 1777,
+      "line_number": 1799,
       "line_range": [
-        1777,
-        1778,
-        1779,
-        1780,
-        1781,
-        1782,
-        1783
+        1799,
+        1800,
+        1801,
+        1802,
+        1803,
+        1804,
+        1805
       ],
       "col_offset": 12,
       "end_col_offset": 14,
-      "code_sha256": "882404ea73d06df5dcbad7fb07f356fe5e6dbb7ae20c9856c666d5a4659377ec"
+      "code_sha256": "28a4b97b4990261b1dddd94e4c675a3f398cf017a808e1ae1f9271e6f2fb1a63"
     },
     {
       "filename": "server.py",
@@ -446,13 +446,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 2407,
+      "line_number": 2429,
       "line_range": [
-        2407
+        2429
       ],
       "col_offset": 13,
       "end_col_offset": 66,
-      "code_sha256": "a07fbb1d20f09f1b3f39f4fa02b0f9ac0c1461d336209c93ef713f1e016656fa"
+      "code_sha256": "da44369a5a8fda29ed5165bf3ddd4f06d4ca4c942711a111772c632ead617e53"
     },
     {
       "filename": "server.py",
@@ -462,13 +462,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 2508,
+      "line_number": 2530,
       "line_range": [
-        2508
+        2530
       ],
       "col_offset": 9,
       "end_col_offset": 73,
-      "code_sha256": "a1113640e8935007bdb4738a49124e56fc45e5466d6a196fd157ea229ed04736"
+      "code_sha256": "a25b0ad3f08529b6d79fda2ccc9bfcfbcfd743ae297d9e6663d5e8712fb313e6"
     },
     {
       "filename": "server.py",
@@ -478,19 +478,19 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 3404,
+      "line_number": 3426,
       "line_range": [
-        3404,
-        3405,
-        3406,
-        3407,
-        3408,
-        3409,
-        3410
+        3426,
+        3427,
+        3428,
+        3429,
+        3430,
+        3431,
+        3432
       ],
       "col_offset": 12,
       "end_col_offset": 8,
-      "code_sha256": "d0d199c7772dd6644176e57689d6aff4099e85a30b81ea7f3741ebb844321ac3"
+      "code_sha256": "207ce38f286f985d3a2b86daa4561e3ff0e6ff0f334fe2aabace033c3c22430b"
     },
     {
       "filename": "server.py",
@@ -500,13 +500,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 3665,
+      "line_number": 3687,
       "line_range": [
-        3665
+        3687
       ],
       "col_offset": 9,
       "end_col_offset": 37,
-      "code_sha256": "f6ce7906e5478bfc4c37f885d58490bc518812a68a5fdee311dbe01f47a011b3"
+      "code_sha256": "1b4dd302c874692b2297018d5fcfc8398ab7252ac983ace34c1b2b2e11ce0176"
     },
     {
       "filename": "server.py",
@@ -516,13 +516,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called",
       "cwe_id": 20,
-      "line_number": 3672,
+      "line_number": 3694,
       "line_range": [
-        3672
+        3694
       ],
       "col_offset": 11,
       "end_col_offset": 42,
-      "code_sha256": "1c22197147c09e1ad893328f2549538ed1d041ec6bf2ec5209f29f6e79164026"
+      "code_sha256": "4db14b2ab1c453e8ad20e9c3e5ef981cf8b9f69a71847c6173164e7b1cce497b"
     },
     {
       "filename": "tools/export_reviewed_football_training_data.py",

@@ -336,6 +336,7 @@ SQLITE_WAL_INITIALIZE_LOCK = threading.Lock()
 SQLITE_WAL_INITIALIZED_PATHS: set[str] = set()
 DAILY_QUIZ_OPERATION_LOCK = threading.Lock()
 DAILY_MAP_GAME_OPERATION_LOCK = threading.Lock()
+MAP_LEARNING_REFRESH_LOCK = threading.Lock()
 DAILY_MAP_AUTOMATIC_RETRY_AT: datetime | None = None
 
 sys.path.insert(0, str(PROJECT_DIR))
@@ -479,6 +480,27 @@ def refresh_map_learning_after_review(training_dir: Path) -> dict[str, Any]:
         "generationProfilePath": generation_profile_path,
         "generationProfileValidation": generation_profile_validation,
     }
+
+
+def refresh_map_learning_from_corrections() -> dict[str, Any]:
+    """Replay durable admin corrections into training and rebuild the Map profiles."""
+    with MAP_LEARNING_REFRESH_LOCK:
+        with closing(connect_db()) as conn:
+            rows = map_clue_editor.correction_feedback_rows(conn)
+            conn.commit()
+        if not rows:
+            return {"ok": True, "feedbackRows": 0}
+        training_dir = DATA_DIR / "training"
+        training_data_store.merge_map_place_review_feedback_rows(
+            training_data_store.consolidated_map_place_review_feedback_file(training_dir),
+            rows,
+            source_file="admin-map-clue-corrections",
+        )
+        summary = refresh_map_learning_after_review(training_dir)
+        validation = summary.get("generationProfileValidation") or {}
+        if not validation.get("passed"):
+            raise RuntimeError("Map generation profile did not pass validation.")
+        return {"ok": True, "feedbackRows": len(rows)}
 
 
 def is_loopback_ip(value: str) -> bool:
@@ -5210,11 +5232,13 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 ),
                 encoding="utf-8",
             )
-            consolidated_path = training_data_store.write_consolidated_map_place_review_feedback(
-                output_dir
-            )
+            consolidated_path = training_data_store.consolidated_map_place_review_feedback_file(output_dir)
             try:
-                training_summary = refresh_map_learning_after_review(output_dir)
+                with MAP_LEARNING_REFRESH_LOCK:
+                    consolidated_path = training_data_store.write_consolidated_map_place_review_feedback(
+                        output_dir
+                    )
+                    training_summary = refresh_map_learning_after_review(output_dir)
             except Exception as error:
                 safe_log(f"Map review was saved but model refresh failed: {error}")
                 training_summary = {
@@ -5763,6 +5787,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                             level_slug=payload.get("level"),
                             expected_place_id=payload.get("expectedPlaceId"),
                             clues=payload.get("clues"),
+                            reason=payload.get("reason"),
                         )
                 except ValueError as error:
                     self.send_error_json(HTTPStatus.BAD_REQUEST, str(error))
@@ -5781,6 +5806,12 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                     client_ip=self.client_ip(),
                     details={"date": puzzle_date, "level": str(payload.get("level"))[:16]},
                 )
+                conn.commit()
+                try:
+                    result["learning"] = refresh_map_learning_from_corrections()
+                except Exception as error:
+                    safe_log(f"Map clues saved but learning refresh failed: {error}")
+                    result["learning"] = {"ok": False, "message": "Learning refresh is pending."}
                 self.send_json(HTTPStatus.OK, result)
                 return
 
@@ -6388,6 +6419,15 @@ def run() -> None:
         f"updated={len(fallback_seed['updated'])}, "
         f"existing={len(fallback_seed['existing'])}"
     )
+    try:
+        correction_learning = refresh_map_learning_from_corrections()
+        if correction_learning["feedbackRows"]:
+            safe_log(
+                "Map admin correction learning refreshed: "
+                f"{correction_learning['feedbackRows']} feedback row(s)."
+            )
+    except Exception as error:
+        safe_log(f"Map admin correction learning refresh pending: {error}")
     assert_runtime_storage_ready("after database initialization")
     start_daily_quiz_scheduler()
     start_daily_map_game_scheduler()

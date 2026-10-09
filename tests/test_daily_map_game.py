@@ -187,6 +187,7 @@ class DailyMapGameTests(unittest.TestCase):
             level_slug="easy",
             expected_place_id=original["placeId"],
             clues=revision,
+            reason="The opening hook was too vague to make the place interesting.",
         )
 
         self.assertNotEqual(after["levels"][0]["placeId"], original["placeId"])
@@ -219,6 +220,24 @@ class DailyMapGameTests(unittest.TestCase):
             ).fetchone()["active"],
             0,
         )
+        feedback = map_clue_editor.correction_feedback_rows(self.conn)
+        self.assertEqual(len(feedback), 1)
+        self.assertEqual(feedback[0]["clues"]["hard"], original["hard"])
+        self.assertEqual(feedback[0]["clue_scores"], {
+            "hard": "fail", "medium": "fail", "easy": "fail",
+        })
+        self.assertEqual(feedback[0]["hard_review"]["better_direction"], revision["hard"])
+        self.assertNotIn("overall_review", feedback[0])
+        with tempfile.TemporaryDirectory() as training_tmp:
+            feedback_path = Path(training_tmp) / "corrections.jsonl"
+            feedback_path.write_text(json.dumps(feedback[0]) + "\n", encoding="utf-8")
+            from tools.refresh_map_learning_profile import place_review_failure_records
+
+            failures = place_review_failure_records([feedback_path])
+        self.assertEqual({failure["difficulty"] for failure in failures},
+                         {"hard", "medium", "easy"})
+        self.assertTrue(all(failure["status"] == "human_rejected" for failure in failures))
+        self.assertTrue(all("too vague" in failure["failure_reason"] for failure in failures))
         with self.assertRaisesRegex(RuntimeError, "changed"):
             map_clue_editor.revise_published_clues(
                 self.conn,
@@ -226,7 +245,27 @@ class DailyMapGameTests(unittest.TestCase):
                 level_slug="easy",
                 expected_place_id=original["placeId"],
                 clues=revision,
+                reason="The opening hook was too vague to make the place interesting.",
             )
+
+    def test_admin_clue_revision_requires_reason(self) -> None:
+        self.publish_named_level("London")
+        original = map_clue_editor.admin_puzzle_clues(self.conn, "2026-07-13")["levels"][0]
+        with self.assertRaisesRegex(ValueError, "Explain what was wrong"):
+            map_clue_editor.revise_published_clues(
+                self.conn,
+                puzzle_date="2026-07-13",
+                level_slug="easy",
+                expected_place_id=original["placeId"],
+                clues={
+                    "hard": "A gunpowder plot is tied to the parliament here.",
+                    "medium": original["medium"],
+                    "easy": original["easy"],
+                    "reveal": original["reveal"],
+                },
+                reason="",
+            )
+        self.assertEqual(map_clue_editor.correction_feedback_rows(self.conn), [])
 
     def test_admin_clue_revision_rejects_answer_leak(self) -> None:
         self.publish_named_level("London")
@@ -243,6 +282,7 @@ class DailyMapGameTests(unittest.TestCase):
                     "easy": "Look beside the Thames.",
                     "reveal": "London is England's capital.",
                 },
+                reason="The previous clue gave away the answer.",
             )
         self.assertEqual(
             map_clue_editor.admin_puzzle_clues(self.conn, "2026-07-13")["levels"][0]["placeId"],
