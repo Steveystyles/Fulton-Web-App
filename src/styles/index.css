@@ -828,6 +828,13 @@ input[type="date"] {
 .quiz-choice__status { color: #4f5963; font-size: 0.65rem; font-weight: 750; white-space: nowrap; }
 .quiz-choice[data-state="done"] .quiz-choice__status { color: #176548; }
 
+@media (max-width: 759px) and (max-height: 720px) {
+  .quiz-page { gap: 0.5rem; }
+  .quiz-board { gap: 0.4rem; }
+  .quiz-choice-list { gap: 0.25rem; }
+  .quiz-choice { min-height: 4.15rem; }
+}
+
 .quiz-question-stage,
 .quiz-result-stage {
   display: grid;
