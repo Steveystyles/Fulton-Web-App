@@ -17,6 +17,7 @@ export function MapClueEditor() {
   const [puzzle, setPuzzle] = useState<AdminMapClues | null>(null);
   const [selectedLevel, setSelectedLevel] = useState<AdminMapClueLevel["level"] | "">("");
   const [draft, setDraft] = useState<AdminMapClueLevel | null>(null);
+  const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -27,6 +28,7 @@ export function MapClueEditor() {
     setRequestedDate(result.date);
     setSelectedLevel(chosen?.level ?? "");
     setDraft(chosen ? { ...chosen } : null);
+    setReason("");
   }
 
   useEffect(() => {
@@ -57,6 +59,7 @@ export function MapClueEditor() {
     const selected = puzzle?.levels.find((item) => item.level === level);
     setSelectedLevel(level);
     setDraft(selected ? { ...selected } : null);
+    setReason("");
     setError("");
     setMessage("");
   }
@@ -72,9 +75,12 @@ export function MapClueEditor() {
         level: draft.level,
         expectedPlaceId: draft.placeId,
         clues: { hard: draft.hard, medium: draft.medium, easy: draft.easy, reveal: draft.reveal },
+        reason: reason.trim(),
       });
       chooseLevel(result, draft.level);
-      setMessage("Clues saved. Players will see the revised wording when they load this round.");
+      setMessage(result.learning?.ok === false
+        ? "Clues saved for players, but the learning update is pending and will be retried."
+        : "Clues saved. The original wording was added to Map learning feedback.");
     } catch (caughtError) {
       setError(caughtError instanceof Error ? caughtError.message : "Map clues were not saved.");
     } finally {
@@ -129,11 +135,19 @@ export function MapClueEditor() {
                 <span className="block text-right text-xs font-semibold text-slate-500">{draft[field].length}/{LIMITS[field]}</span>
               </label>
             ))}
+            <label className="block text-sm font-black text-slate-800">
+              What was wrong with the original clue?
+              <textarea value={reason} maxLength={240} rows={2}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder="For example: the opening hook was too generic to make the place memorable."
+                className="mt-1 w-full rounded-xl border border-slate-300 bg-white p-3 text-base font-medium normal-case text-slate-950 focus:border-saints-red focus:outline-none focus:ring-2 focus:ring-saints-red/20" />
+              <span className="block text-right text-xs font-semibold text-slate-500">This teaches future Map generation; it is not shown to players. {reason.trim().length}/240</span>
+            </label>
             {changed ? (
-              <button type="button" onClick={() => setDraft(original ? { ...original } : null)}
+              <button type="button" onClick={() => { setDraft(original ? { ...original } : null); setReason(""); }}
                 className="text-sm font-bold text-slate-600 underline underline-offset-4">Discard unsaved changes</button>
             ) : null}
-            <button type="button" onClick={() => void save()} disabled={busy || !changed || FIELDS.some((field) => !draft[field].trim())}
+            <button type="button" onClick={() => void save()} disabled={busy || !changed || reason.trim().length < 12 || FIELDS.some((field) => !draft[field].trim())}
               className="min-h-12 w-full rounded-xl bg-saints-red px-4 text-base font-black text-white disabled:bg-slate-300">
               {busy ? "Saving…" : "Save revised clues"}
             </button>

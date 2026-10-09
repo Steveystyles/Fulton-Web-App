@@ -19,6 +19,43 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
 
+    def test_admin_map_corrections_refresh_training_once_and_retry_safely(self) -> None:
+        import server
+        from tools import training_data_store
+
+        training_dir = Path(self.temp_dir.name) / "training"
+        row = {
+            "candidate_id": "admin-map-clue-correction-1",
+            "place": "Sample Place",
+            "type": "landmark",
+            "clues": {"hard": "A generic old hook."},
+            "clue_scores": {"hard": "fail"},
+            "clue_reviews": {"hard": {
+                "clue": "A generic old hook.",
+                "pass_fail": "fail",
+                "reason": "The hook gave no memorable event or story.",
+                "better_direction": "A specific replacement hook.",
+            }},
+        }
+        with (
+            patch.object(server, "DATA_DIR", Path(self.temp_dir.name)),
+            patch("server.connect_db", side_effect=lambda: sqlite3.connect(":memory:")),
+            patch("server.map_clue_editor.correction_feedback_rows", return_value=[row]),
+            patch("server.refresh_map_learning_after_review", return_value={
+                "generationProfileValidation": {"passed": True},
+            }) as rebuild,
+        ):
+            first = server.refresh_map_learning_from_corrections()
+            second = server.refresh_map_learning_from_corrections()
+
+        feedback_path = training_data_store.consolidated_map_place_review_feedback_file(training_dir)
+        saved = training_data_store.read_map_place_review_feedback_rows([feedback_path])
+        self.assertEqual(first, {"ok": True, "feedbackRows": 1})
+        self.assertEqual(second, first)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["clue_reviews"]["hard"]["pass_fail"], "fail")
+        self.assertEqual(rebuild.call_count, 2)
+
     def test_password_policy_requires_longer_passwords(self) -> None:
         import server
 
@@ -351,6 +388,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
                     "date": "2026-07-13",
                     "level": "easy",
                     "expectedPlaceId": place["id"],
+                    "reason": "The old opening hook was too generic to remember.",
                     "clues": {
                         "hard": "A gunpowder plot is tied to the parliament here.",
                         "medium": "This is the capital of England.",
@@ -374,6 +412,7 @@ class ProductionServerHardeningTests(unittest.TestCase):
             patch("server.get_cookie_value", return_value="token"),
             patch("server.current_user", return_value={"id": 1, "role": "admin"}),
             patch("server.record_audit_event") as audit,
+            patch("server.refresh_map_learning_from_corrections", return_value={"ok": True, "feedbackRows": 1}) as refresh_learning,
         ):
             server.FultonsHandler.route_api(  # type: ignore[arg-type]
                 handler, "POST", "/api/admin/daily-map-clues", "",
@@ -384,7 +423,9 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(handler.response[1]["levels"][0]["hard"],
                          "A gunpowder plot is tied to the parliament here.")
         audit.assert_called_once()
+        refresh_learning.assert_called_once()
         self.assertEqual(audit.call_args.args[1], "map.clues_revised.admin")
+        self.assertEqual(handler.response[1]["learning"], {"ok": True, "feedbackRows": 1})
         player = daily_map_game.daily_bundle_payload(
             conn, puzzle_date="2026-07-13", user_id=1
         )
