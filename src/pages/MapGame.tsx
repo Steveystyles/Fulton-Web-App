@@ -498,7 +498,7 @@ function MapCanvas({
         <span aria-hidden="true" className="map-crosshair pointer-events-none absolute left-1/2 top-1/2 z-600 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-black/70 text-white"><svg viewBox="0 0 24 24" className="block h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg></span>
       </> : null}
       </div>
-      <div className="map-tools" data-tool-count={level.submitted ? 3 : 4} role="group" aria-label="Map tools">
+      {draftSelection === null ? <div className="map-tools" data-tool-count={level.submitted ? 3 : 4} role="group" aria-label="Map tools">
         {!level.submitted ? <button type="button" disabled={selectionBusy || measuring} className="map-tool saints-focus" onClick={() => {
           const map = mapRef.current;
           if (map) { const centre = map.getCenter(); onMapPick({ lat: centre.lat, lng: centre.lng }, map.getZoom()); }
@@ -510,7 +510,7 @@ function MapCanvas({
           {expanded ? <Minimize2 aria-hidden="true" className="h-4 w-4 shrink-0" /> : <Maximize2 aria-hidden="true" className="h-4 w-4 shrink-0" />}<span>{expanded ? "Smaller" : "Larger map"}</span>
         </button>
         {helpControl}
-      </div>
+      </div> : null}
       {measuring ? <p role="status" className="rounded-lg bg-slate-100 px-3 py-2 text-sm font-bold text-slate-800">
         {measuredDistance !== null ? `Distance: ${formatMeasuredDistance(measuredDistance)}. Tap to start a new measurement.` : measurementPoints.length === 1 ? "Tap the end point on the map." : "Tap the start point on the map."}
       </p> : null}
@@ -540,30 +540,28 @@ function MapCanvas({
       {draftSelection !== null && !level.submitted ? (
         <div
           ref={selectionPanelRef}
-          className="map-pin-review min-w-0 rounded-xl border border-slate-200 bg-white p-3"
+          className="map-pin-review min-w-0 rounded-xl border border-slate-200 bg-white p-2.5"
           aria-live="polite"
         >
-          <div className="min-w-0">
-            <p className="text-[0.62rem] font-black uppercase tracking-normal text-saints-red">
-              {draftSelection.snapped ? "Selected place" : "Selected point"}
-            </p>
-            <p className="mt-0.5 text-lg font-black leading-tight text-slate-950 wrap-anywhere">
-              {draftSelection.name}
-            </p>
-            {draftSelection.admin1 || draftSelection.countryCode ? (
-              <p className="mt-1 wrap-break-word text-sm font-bold leading-snug text-slate-500">
-                {[draftSelection.admin1, draftSelection.countryCode].filter(Boolean).join(", ")}
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-[0.62rem] font-black uppercase tracking-normal text-saints-red">
+                {draftSelection.snapped ? "Selected place" : "Selected point"}
+                {(draftSelection.alternatives?.length ?? 0) > 1
+                  ? ` · ${(draftSelection.selectedIndex ?? 0) + 1} of ${draftSelection.alternatives?.length} nearby`
+                  : ""}
               </p>
-            ) : null}
-            {(draftSelection.alternatives?.length ?? 0) > 1 ? (
-              <p className="mt-1 text-[0.68rem] font-black uppercase tracking-normal text-slate-400">
-                {(draftSelection.selectedIndex ?? 0) + 1}/{draftSelection.alternatives?.length}
+              <p className="mt-0.5 text-base font-black leading-tight text-slate-950 wrap-anywhere">
+                {draftSelection.name}
               </p>
-            ) : null}
-          </div>
-          <div className="mt-3 space-y-2">
+              {draftSelection.admin1 || draftSelection.countryCode ? (
+                <p className="mt-0.5 wrap-break-word text-xs font-bold leading-snug text-slate-500">
+                  {[draftSelection.admin1, draftSelection.countryCode].filter(Boolean).join(", ")}
+                </p>
+              ) : null}
+            </div>
             {(draftSelection.alternatives?.length ?? 0) > 1 ? (
-              <div className="grid grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2">
+              <div className="flex shrink-0 gap-1" role="group" aria-label="Nearby places">
                 <button
                   type="button"
                   aria-label="Previous nearby place"
@@ -571,9 +569,8 @@ function MapCanvas({
                   disabled={selectionBusy}
                   className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-800 saints-focus disabled:opacity-50"
                 >
-                  <span aria-hidden="true" className="text-[1.75rem] font-black leading-none">←</span>
+                  <span aria-hidden="true" className="text-xl font-black leading-none">←</span>
                 </button>
-                <p className="min-w-0 text-center text-sm text-slate-600">Choose a nearby place</p>
                 <button
                   type="button"
                   aria-label="Next nearby place"
@@ -581,19 +578,21 @@ function MapCanvas({
                   disabled={selectionBusy}
                   className="inline-flex h-11 w-11 items-center justify-center rounded-lg border border-slate-300 bg-white text-slate-800 saints-focus disabled:opacity-50"
                 >
-                  <span aria-hidden="true" className="text-[1.75rem] font-black leading-none">→</span>
+                  <span aria-hidden="true" className="text-xl font-black leading-none">→</span>
                 </button>
               </div>
-            ) : <p className="rounded-lg bg-slate-50 px-3 py-2 text-center text-xs font-bold text-slate-600">Only nearby match</p>}
-            <div className="grid grid-cols-[2.75rem_minmax(0,1fr)] gap-2">
+            ) : null}
+          </div>
+          <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)] gap-2">
               <button
                 type="button"
-                aria-label="Reject selected place"
+                aria-label="Change selected place"
                 onClick={onRejectDraft}
                 disabled={selectionBusy}
-                className="inline-flex min-h-11 w-11 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 saints-focus"
+                className="inline-flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2 text-sm font-black text-slate-700 saints-focus"
               >
-                <X aria-hidden="true" className="h-6 w-6" strokeWidth={3} />
+                <X aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={3} />
+                <span>Change pin</span>
               </button>
               <button
                 type="button"
@@ -609,7 +608,6 @@ function MapCanvas({
                 )}
                 <span>Lock for {level.clues[level.clues.length - 1]?.maxPoints ?? 0} pts</span>
               </button>
-            </div>
           </div>
         </div>
       ) : null}
@@ -746,11 +744,14 @@ export function MapGame() {
       // Keep the controls in view as clues, pin review, or an inline notice
       // changes height. The larger-map toggle remains an intentional scroll mode.
       const sectionRect = section.getBoundingClientRect();
+      // A selected pin can scroll into view. Use the section's page position,
+      // otherwise that scroll makes the map grow and pushes the review/nav away.
+      const sectionTop = sectionRect.top + window.scrollY;
       const stageHeight = stage.getBoundingClientRect().height;
       const otherHeight = sectionRect.height - stageHeight;
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
       const navigationHeight = navigation?.getBoundingClientRect().height ?? 0;
-      const available = Math.floor(viewportHeight - sectionRect.top - navigationHeight - otherHeight - 24);
+      const available = Math.floor(viewportHeight - sectionTop - navigationHeight - otherHeight - 24);
       const next = `${Math.max(120, available)}px`;
       if (stage.style.getPropertyValue("--map-fit-height") !== next) {
         stage.style.setProperty("--map-fit-height", next);
