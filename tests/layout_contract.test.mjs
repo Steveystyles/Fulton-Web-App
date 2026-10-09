@@ -424,6 +424,14 @@ test("Map structure: tools and pin review sit outside the map viewport and use n
   }
 });
 
+test("Map fit calculation stays anchored when selected-pin review scrolls into view", async () => {
+  const source = await readFile(new URL("../src/pages/MapGame.tsx", import.meta.url), "utf8");
+  assert.match(source, /const sectionTop = sectionRect\.top \+ window\.scrollY;/);
+  assert.match(source, /viewportHeight - sectionTop - navigationHeight - otherHeight/);
+  assert.match(source, /draftSelection === null \? <div className="map-tools"/);
+  assert.match(source, /aria-label="Change selected place"/);
+});
+
 function responsiveHeight(rule) {
   const value = values([rule], "height").at(-1);
   const match = value?.match(/(?:^|min\()clamp\(([\d.]+)px,\s*([\d.]+)[sd]?vh,\s*([\d.]+)px\)/);
