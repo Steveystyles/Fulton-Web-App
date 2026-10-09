@@ -1744,8 +1744,10 @@ def subject_prompt_guidance(subject: str, difficulty: str) -> str:
         else:
             lines.extend(
                 [
-                    "- Hard questions should be specialist but fair: the hook must be distinctive, documented, and interesting even when the answer is not known.",
+                    "- Hard questions should reward a less obvious, documented connection that a curious adult could reason through; the hook must still be interesting when the answer is not known.",
+                    "- Prefer a specific event, discovery, consequence, or human story over naming an obscure technical term or species.",
                     "- Avoid foundational textbook concepts presented as hard and avoid microscopic dates, terminology, or statistics with no story.",
+                    "- Check every date, attribution, superlative, and premise before using it; if a detail is uncertain, choose a different hook rather than guessing.",
                 ]
             )
         return "\n".join(lines)
@@ -1920,10 +1922,11 @@ Medium:
 - The wrong answers should be plausible.
 
 Hard:
-- Challenging but not unfair.
+- Challenging but not unfair: test a less obvious connection, not the obscurity of a name alone.
 - The answer should be verifiable.
 - Do not use tiny, joyless trivia.
 - Do not use facts that are disputed or likely to change.
+- Prefer a memorable, sourceable story over a technical definition or a pile of exact dates.
 
 {subject_prompt_guidance(subject, difficulty)}
 
@@ -1994,8 +1997,9 @@ Fail the question if:
 - The choices are too obvious, silly, or implausible.
 - A quoted name fragment identifies just the correct choice (for example Sanfrecce/Hiroshima).
 - Another question in this subject round already tests the same theme, such as stadiums.
-- Easy requires specialist historical/technical knowledge, or hard merely disguises a familiar answer with long wording.
-- Relative difficulty is inverted within this subject round: easy must be the most broadly accessible, hard the most specialist, and medium must sit credibly between them. Fail a new hard question that is easier or more familiar than the accepted medium question, and fail medium when it is more obscure than an accepted hard question.
+- Easy requires specialist historical/technical knowledge, or hard merely disguises an obvious answer with long wording.
+- Relative difficulty is inverted within this subject round: easy must be the most broadly accessible, hard must require the least obvious connection, and medium must sit credibly between them. Fail a new hard question that is easier to answer from its clue and choices than the accepted medium question, and fail medium when it demands a more obscure leap than an accepted hard question.
+- Judge the difficulty of the complete clue and four choices for an ordinary adult player. A recognizable answer is not automatically easy, and an obscure term is not automatically hard. Do not reject solely because the answer is famous; identify what makes the actual question too easy if it is.
 - An incidental claim (a stadium location, an architect attribution, a date) lacks support, even if the main answer is correct.
 
 Score every dimension with an integer from 0 to 10.

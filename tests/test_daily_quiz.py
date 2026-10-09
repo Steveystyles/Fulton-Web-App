@@ -710,7 +710,7 @@ class DailyQuizTests(unittest.TestCase):
             recovery_mode=False,
         )
 
-        self.assertIn("Hard questions should be specialist but fair", prompt)
+        self.assertIn("less obvious, documented connection", prompt)
         self.assertIn("foundational textbook concepts", prompt)
         self.assertIn("reputable source is likely to state explicitly", prompt)
 
@@ -2437,6 +2437,21 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertIn("Relative difficulty is inverted", prompt)
         self.assertIn("hard question that is easier", prompt)
+
+    def test_hard_general_knowledge_prompts_favour_fair_hooks_over_obscurity(self) -> None:
+        generator = daily_quiz.generator_prompt(
+            "general_knowledge", "hard", [], []
+        )
+        critic = daily_quiz.critic_prompt(
+            "general_knowledge", "hard",
+            valid_question("general_knowledge", "hard"), [],
+        )
+
+        self.assertIn("specific event, discovery, consequence, or human story", generator)
+        self.assertIn("Check every date, attribution, superlative, and premise", generator)
+        self.assertIn("ordinary adult player", critic)
+        self.assertIn("A recognizable answer is not automatically easy", critic)
+        self.assertIn("Do not reject solely because the answer is famous", critic)
 
     def test_prior_attempt_feedback_prefers_newest_failures(self) -> None:
         for index in range(7):
