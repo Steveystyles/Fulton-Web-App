@@ -387,6 +387,19 @@ function values(rules, property) {
   return rules.flatMap(rule => rule.nodes.filter(node => node.type === "decl" && node.prop === property).map(node => node.value));
 }
 
+test("Quiz choices stay tappable while the six-card board compacts on short phones", async () => {
+  const css = await stylesheet();
+  const shortPhoneRule = rulesFor(css, ".quiz-choice").find(rule =>
+    rule.parent.type === "atrule" && rule.parent.name === "media"
+    && rule.parent.params.includes("max-width: 759px")
+    && rule.parent.params.includes("max-height: 720px")
+  );
+  assert.ok(shortPhoneRule);
+  const rem = Number.parseFloat(values([shortPhoneRule], "min-height")[0]);
+  assert.ok(rem >= 2.75, "a card keeps a touch-sized target");
+  assert.ok(rem <= 4.15, "six cards can fit a short phone without clipping the mode switch");
+});
+
 test("CSS structure: app roots can shrink and disallow page-level horizontal scrolling", async () => {
   const css = await stylesheet();
   for (const selector of ["html", "body", "#root"]) {
