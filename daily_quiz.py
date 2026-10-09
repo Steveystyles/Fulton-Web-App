@@ -1947,6 +1947,9 @@ Do not tag or center the question on any blocked topic above.
 Previous failed attempts and feedback:
 {json.dumps(feedback[-40:], indent=2)}
 
+Current attempt topic requirement (follow this even if older examples suggest another topic):
+{json.dumps([entry for entry in feedback if entry.startswith("Required topic lane for this attempt:")][-1:], indent=2)}
+
 Return JSON only using this structure:
 {json.dumps(question_schema(), indent=2)}
 """
@@ -4623,7 +4626,27 @@ def generate_slot(
         ]
         generation_feedback = [*feedback]
         if failed_answers:
-            generation_feedback.insert(max(0, len(generation_feedback) - 1), "Previously rejected answers for this date; prefer a fresh idea unless correcting the specific failure: " + json.dumps(failed_answers))
+            generation_feedback.append(
+                "Do not reuse any previously rejected correct answer for this date: "
+                + json.dumps(failed_answers)
+            )
+        prior_slot_attempts = conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_attempts "
+            "WHERE quiz_date=? AND subject=? AND difficulty=?",
+            (quiz_date, subject, difficulty),
+        ).fetchone()[0]
+        topic_lane = choose_topic_lane(
+            conn,
+            subject=subject,
+            difficulty=difficulty,
+            batch_number=int(prior_slot_attempts) + 1,
+            profile_path=config.learning_profile_path,
+            recent_questions_for_topics=recent,
+        )
+        generation_feedback.append(
+            f"Required topic lane for this attempt: {topic_lane}. "
+            "Choose a new correct answer from this lane; do not pivot to a blocked answer."
+        )
         log(f"Generating {subject} / {difficulty} attempt {attempt_number}")
         try:
             generated = provider.generate_question(

@@ -285,7 +285,10 @@ class FeedbackReuseProvider(PassingProvider):
     ) -> dict[str, object]:
         if subject == "football" and difficulty == "easy":
             self.feedback_calls.append(list(feedback))
-            if not feedback:
+            if not any(
+                not entry.startswith("Required topic lane for this attempt:")
+                for entry in feedback
+            ):
                 return {"subject": "football"}
         return valid_question(subject, difficulty)
 
@@ -1712,7 +1715,7 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(status["failed_attempts"], 2)
         self.assertTrue(
             any(
-                feedback and "Missing required fields" in feedback[-1]
+                any("Missing required fields" in entry for entry in feedback)
                 for subject, difficulty, feedback in provider.generation_calls
                 if subject == "general_knowledge" and difficulty == "easy"
             )
@@ -2170,7 +2173,10 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(first["accepted_questions"], 3)
         self.assertEqual(second["status"], "published")
         self.assertEqual(len(provider.feedback_calls), 2)
-        self.assertEqual(provider.feedback_calls[0], [])
+        self.assertTrue(all(
+            entry.startswith("Required topic lane for this attempt:")
+            for entry in provider.feedback_calls[0]
+        ))
         self.assertTrue(
             any("Missing required fields" in entry for entry in provider.feedback_calls[1])
         )
@@ -2331,6 +2337,48 @@ class DailyQuizTests(unittest.TestCase):
             "Do not reuse the previously rejected correct answer: Wembley Stadium.",
             feedback,
         )
+
+    def test_legacy_generator_rotates_positive_topic_across_retries(self) -> None:
+        class RepeatingProvider:
+            name = "test"
+
+            def __init__(self) -> None:
+                self.feedback_calls: list[list[str]] = []
+
+            def generate_question(self, **kwargs: object) -> dict[str, str]:
+                self.feedback_calls.append(list(kwargs["feedback"]))
+                return {"correct_answer": "Shin guards"}
+
+        provider = RepeatingProvider()
+        quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, "2026-08-20")
+        for _ in range(2):
+            daily_quiz.generate_slot(
+                self.conn,
+                quiz_set_id=quiz_set["id"],
+                quiz_date="2026-08-20",
+                subject="football",
+                difficulty="easy",
+                provider=provider,
+                config=config(max_attempts=2),
+                log=lambda _: None,
+            )
+
+        directions = [
+            next(item for item in feedback if item.startswith("Required topic lane for this attempt:"))
+            for feedback in provider.feedback_calls
+        ]
+        self.assertEqual(len(directions), 4)
+        self.assertEqual(len(set(directions)), 4)
+        self.assertTrue(any(
+            item.startswith("Do not reuse any previously rejected correct answer for this date:")
+            and "Shin guards" in item
+            for item in provider.feedback_calls[1]
+        ))
+        prompt = daily_quiz.generator_prompt(
+            "football", "easy", [], provider.feedback_calls[1]
+        )
+        self.assertIn("Current attempt topic requirement", prompt)
+        self.assertIn(directions[1], prompt)
 
     def test_generator_prompt_blocks_answers_beyond_question_excerpt(self) -> None:
         recent = [
