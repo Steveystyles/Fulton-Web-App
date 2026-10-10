@@ -762,9 +762,9 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         tomorrow_map = daily_map_game.puzzle_status(conn, tomorrow_date)
         queue_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automatic_map_entries'").fetchone()
         if queue_exists:
-            queue_ready = conn.execute("SELECT COUNT(*) FROM automatic_map_entries WHERE state='ready' AND expires_at>?", (utc_now(),)).fetchone()[0]
-            tests.append({"id": "map_reserve", "label": "Map reserve queue", "status": "pass" if queue_ready >= automatic_map_pool.TARGET_READY else "warn",
-                          "detail": f"{queue_ready}/{automatic_map_pool.TARGET_READY} unexpired rounds; eligibility may reduce this count"})
+            tests.append(
+                ops_map_reserve_test(conn)
+            )
         tests.append(
             {
                 "id": "quiz_pool",
@@ -6387,6 +6387,24 @@ def ops_map_readiness_test(test_id: str, game_date: str, label: str, map_status:
         "label": label,
         "status": "pass" if status == "published" else "fail",
         "detail": f"{status} / accepted {map_status.get('acceptedLevels', 0)}",
+    }
+
+
+def ops_map_reserve_test(conn: sqlite3.Connection) -> dict[str, str]:
+    target_date = automatic_map_pool.next_date(conn)
+    publishable = len(automatic_map_pool.eligible(conn, target_date))
+    stored = conn.execute(
+        "SELECT COUNT(*) FROM automatic_map_entries WHERE state='ready' AND expires_at>?",
+        (utc_now(),),
+    ).fetchone()[0]
+    return {
+        "id": "map_reserve",
+        "label": "Map reserve queue",
+        "status": "pass" if publishable >= automatic_map_pool.TARGET_READY else "warn",
+        "detail": (
+            f"{publishable}/{automatic_map_pool.TARGET_READY} publishable for {target_date}; "
+            f"{stored} unexpired rounds stored"
+        ),
     }
 
 

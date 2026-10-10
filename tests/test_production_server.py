@@ -742,6 +742,25 @@ class ProductionServerHardeningTests(unittest.TestCase):
         wednesday_missing = server.ops_map_readiness_test("today_map", "2026-10-07", "Today map", {"status": "missing"})
         self.assertEqual(wednesday_missing["status"], "fail")
 
+    def test_ops_map_reserve_counts_publishable_not_unreviewed_rounds(self) -> None:
+        import server
+
+        with sqlite3.connect(":memory:") as conn:
+            conn.execute("CREATE TABLE automatic_map_entries(state TEXT, expires_at TEXT)")
+            conn.executemany(
+                "INSERT INTO automatic_map_entries VALUES(?,?)",
+                [("ready", "2099-01-01T00:00:00+00:00")] * 6,
+            )
+            with (
+                patch("server.automatic_map_pool.next_date", return_value="2026-10-17"),
+                patch("server.automatic_map_pool.eligible", return_value=[]),
+            ):
+                result = server.ops_map_reserve_test(conn)
+
+        self.assertEqual(result["status"], "warn")
+        self.assertIn("0/7 publishable", result["detail"])
+        self.assertIn("6 unexpired rounds stored", result["detail"])
+
     def test_local_generate_quiz_action_uses_https_not_ssh(self) -> None:
         import ops_monitor
 
