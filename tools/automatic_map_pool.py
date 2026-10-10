@@ -227,8 +227,16 @@ def recent_failed_round_lessons(conn: sqlite3.Connection, output_dir: Path,
                 continue
             seen.add(signature)
             candidate = report.get('candidate') if isinstance(report.get('candidate'), dict) else {}
+            place_name = str(candidate.get('canonical_name') or '')
+            if not place_name:
+                selected_id = model_output.get('place_id')
+                resolved = report.get('resolved_candidates')
+                if isinstance(resolved, list):
+                    place_name = next((str(place.get('canonical_name') or '')
+                                       for place in resolved if isinstance(place, dict)
+                                       and place.get('id') == selected_id), '')
             lessons.append({
-                'place': str(candidate.get('canonical_name') or '')[:100],
+                'place': place_name[:100],
                 'attempted_clues': clues,
                 'failure_reason': reason[:220],
             })
