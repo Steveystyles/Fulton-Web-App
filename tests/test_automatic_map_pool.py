@@ -339,6 +339,35 @@ class AutomaticPoolTests(unittest.TestCase):
             conn.commit()
             self.assertIsNone(pool.recoverable_report(conn, self.root / 'reports', '2026-09-08'))
 
+    def test_recent_failed_round_is_replayed_with_reason_from_private_report(self):
+        report_dir = self.root / 'reports' / 'previous'
+        report_dir.mkdir(parents=True)
+        report_path = report_dir / 'discovery-2026-09-08.json'
+        report_path.write_text(json.dumps(self.report()), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('failed-hook', '2026-09-08', '2026-09-08', self.clock.isoformat(), 'failed',
+                 json.dumps({'report_path': str(report_path),
+                             'reason': 'Evidence verifier rejected: the hook was minor trivia.'})),
+            )
+            conn.commit()
+            lessons = pool.recent_failed_round_lessons(conn, self.root / 'reports')
+        self.assertEqual(len(lessons), 1)
+        self.assertEqual(lessons[0]['attempted_clues']['hard'], self.result['clue_ladder']['hard'])
+        self.assertIn('minor trivia', lessons[0]['failure_reason'])
+
+        provider = Mock()
+        ids = [p['id'] for p in discovery.evidence_units(self.report()['resolved_candidates'][0])]
+        provider.call_with_fallback.return_value = {
+            **self.verdict,
+            'levels': {k: {'supported': True, 'source_ids': ids} for k in controlled.LEVELS},
+            'reason': 'Verified.',
+        }
+        pool.verify(self.report(), provider, failure_lessons=lessons)
+        self.assertIn('minor trivia', provider.call_with_fallback.call_args.kwargs['prompt'])
+
     def test_failed_discovery_never_enters_ready_pool_and_remembers_rejections(self):
         failed = {'status': 'failed', 'error': 'No source.', 'rejections': [{'title': 'Unresolved place'}]}
         with patch.object(discovery, 'discover', return_value=failed), patch.object(pool, 'verify') as verify:
