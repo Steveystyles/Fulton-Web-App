@@ -358,6 +358,14 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(lessons[0]['attempted_clues']['hard'], self.result['clue_ladder']['hard'])
         self.assertIn('minor trivia', lessons[0]['failure_reason'])
 
+        rejected_report = self.report()
+        rejected_report.pop('candidate')
+        rejected_report.pop('result')
+        report_path.write_text(json.dumps(rejected_report), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            rejected_lessons = pool.recent_failed_round_lessons(conn, self.root / 'reports')
+        self.assertEqual(rejected_lessons[0]['place'], self.place['canonical_name'])
+
         provider = Mock()
         ids = [p['id'] for p in discovery.evidence_units(self.report()['resolved_candidates'][0])]
         provider.call_with_fallback.return_value = {
