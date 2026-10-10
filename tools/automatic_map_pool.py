@@ -335,10 +335,13 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
 def next_date(conn: sqlite3.Connection) -> str:
     current = now().date()
     for offset in range(60):
-        value = (current + timedelta(days=offset)).isoformat()
+        candidate = current + timedelta(days=offset)
+        if candidate.weekday() not in {2, 5}:
+            continue
+        value = candidate.isoformat()
         if not conn.execute("SELECT 1 FROM daily_map_puzzles WHERE puzzle_date=? AND status='published'", (value,)).fetchone():
             return value
-    raise ValueError('No unpublished date in the maintenance horizon.')
+    raise ValueError('No unpublished scheduled Map date in the maintenance horizon.')
 
 
 def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:

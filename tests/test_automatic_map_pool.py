@@ -48,6 +48,13 @@ class AutomaticPoolTests(unittest.TestCase):
             pool.add(conn, self.place, self.result, self.verdict, origin=origin)
             conn.commit()
 
+    def test_next_date_skips_offdays_and_already_published_games(self):
+        with closing(self.connect()) as conn:
+            self.assertEqual(pool.next_date(conn), '2026-09-09')
+            conn.execute("INSERT INTO daily_map_puzzles(puzzle_date,status) VALUES(?,?)",
+                         ('2026-09-09', 'published'))
+            self.assertEqual(pool.next_date(conn), '2026-09-12')
+
     def test_budget_is_by_actual_day_not_future_game_date_and_survives_restart(self):
         for index in range(4):
             budget = pool.Budget(self.database, f'2026-10-{index+1:02d}')
