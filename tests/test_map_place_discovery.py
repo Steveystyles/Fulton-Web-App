@@ -84,10 +84,35 @@ class DiscoveryTests(unittest.TestCase):
                 source.request('en.wikipedia.org', {})
 
     def test_titles_cannot_inject_urls_namespaces_or_api_parameters(self):
-        for value in ('https://127.0.0.1/', 'File:example', 'Berlin|Paris', 'Paris\nHost: x', '../secret'):
+        for value in ('https://127.0.0.1/', 'File:example', 'Berlin|Paris', 'Paris\nHost: x', '../secret', '&lt;script&gt;'):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 discovery.title(value)
         self.assertEqual(discovery.title('Edinburgh Castle'), 'Edinburgh Castle')
+        self.assertEqual(discovery.title('Great Mosque of Djenn&eacute;'), 'Great Mosque of Djenné')
+
+    def test_missing_source_title_accepts_only_equivalent_article(self):
+        source = discovery.WikimediaSource(self.budget())
+        def page(name):
+            if name == 'Hillerød':
+                return {'title': name}
+            raise ValueError('Missing source page.')
+        with patch.object(source, 'page', side_effect=page), \
+             patch.object(source, 'equivalent_titles', return_value=['Hillerød', 'Hillerod Castle']) as search:
+            self.assertEqual(discovery.resolved_page(source, 'Hillerod')['title'], 'Hillerød')
+        search.assert_called_once_with('Hillerod')
+        with patch.object(source, 'page', side_effect=ValueError('Missing source page.')), \
+             patch.object(source, 'equivalent_titles', return_value=['Bran (village)', 'Bran Castle']):
+            with self.assertRaisesRegex(ValueError, 'equivalent source article'):
+                discovery.resolved_page(source, 'Bran')
+
+    def test_equivalent_title_search_is_main_namespace_and_bounded(self):
+        source = discovery.WikimediaSource(self.budget())
+        with patch.object(source, 'request', return_value={'query': {'search': [
+                {'title': 'Hillerød'}, {'title': 'Hillerod Castle'}]}}) as request:
+            self.assertEqual(source.equivalent_titles('Hillerod'), ['Hillerød', 'Hillerod Castle'])
+        self.assertEqual(request.call_args.args[0], 'en.wikipedia.org')
+        self.assertEqual(request.call_args.args[1]['srnamespace'], 0)
+        self.assertEqual(request.call_args.args[1]['srlimit'], 5)
 
     def test_entity_request_includes_revision_metadata_for_pinned_sources(self):
         source = discovery.WikimediaSource(self.budget())
