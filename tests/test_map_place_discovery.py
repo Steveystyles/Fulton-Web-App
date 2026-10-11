@@ -113,6 +113,18 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(request.call_args.args[0], 'en.wikipedia.org')
         self.assertEqual(request.call_args.args[1]['srnamespace'], 0)
         self.assertEqual(request.call_args.args[1]['srlimit'], 5)
+        self.assertNotIn('srwhat', request.call_args.args[1])
+
+    def test_source_api_error_is_not_a_bad_place(self):
+        source = discovery.WikimediaSource(self.budget())
+        with patch.object(discovery.http.client, 'HTTPSConnection') as connection:
+            response = connection.return_value.getresponse.return_value
+            response.status = 200
+            response.read.return_value = json.dumps({
+                'error': {'code': 'search-title-disabled', 'info': 'Unsupported search setting.'},
+            }).encode('utf-8')
+            with self.assertRaisesRegex(RuntimeError, 'Source API failed: search-title-disabled'):
+                source.request('en.wikipedia.org', {'action': 'query'})
 
     def test_entity_request_includes_revision_metadata_for_pinned_sources(self):
         source = discovery.WikimediaSource(self.budget())

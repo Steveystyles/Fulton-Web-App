@@ -169,8 +169,14 @@ class WikimediaSource:
             if len(body) > MAX_RESPONSE_BYTES:
                 raise ValueError('Source response exceeded the size limit.')
             data = json.loads(body)
-            if not isinstance(data, dict) or 'error' in data:
-                raise ValueError('Source API rejected the request.')
+            if not isinstance(data, dict):
+                raise RuntimeError('Source API returned an invalid response.')
+            if 'error' in data:
+                code = str(data['error'].get('code', 'unknown')) if isinstance(data['error'], dict) else 'unknown'
+                # An API outage or unsupported parameter is not evidence that
+                # the proposed place is bad. Abort this attempt without adding
+                # the place to the rejected-name feedback loop.
+                raise RuntimeError(f'Source API failed: {code[:60]}.')
             return data
         finally:
             conn.close()
@@ -251,7 +257,7 @@ class WikimediaSource:
         name = title(name)
         data = self.request('en.wikipedia.org', {
             'action': 'query', 'list': 'search', 'srsearch': name,
-            'srnamespace': 0, 'srwhat': 'title', 'srlimit': 5,
+            'srnamespace': 0, 'srlimit': 5,
         })
         results = data.get('query', {}).get('search', [])
         return [item['title'] for item in results
