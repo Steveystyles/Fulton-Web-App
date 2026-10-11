@@ -454,6 +454,13 @@ test("Map tools keep readable labels on narrow phones", async () => {
   assert.match(css, /\.map-tool span \{ overflow-wrap: normal; white-space: nowrap; \}/);
 });
 
+test("tiny Map screens do not reserve hidden footer space", async () => {
+  const router = await readFile(new URL("../src/routes/AppRouter.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/styles/index.css", import.meta.url), "utf8");
+  assert.match(router, /data-game=\{pathname === "\/map" \? "map" : undefined\}/);
+  assert.match(css, /@media \(max-width: 359px\) and \(max-height: 650px\)\s*\{\s*\.app-main\[data-game="map"\]:not\(\[data-review="true"\]\) \{ padding-bottom: 0\.25rem; \}/);
+});
+
 function responsiveHeight(rule) {
   const value = values([rule], "height").at(-1);
   const match = value?.match(/(?:^|min\()clamp\(([\d.]+)px,\s*([\d.]+)[sd]?vh,\s*([\d.]+)px\)/);

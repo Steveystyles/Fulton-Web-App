@@ -69,6 +69,7 @@ function AppFrame({
       <main
         id="main-content"
         data-review={reviewMode}
+        data-game={pathname === "/map" ? "map" : undefined}
         className={[
           "app-main flex-1 px-3 sm:px-4",
           compact ? "pt-2" : "pt-4",
