@@ -499,15 +499,15 @@ function MapCanvas({
       </> : null}
       </div>
       {draftSelection === null ? <div className="map-tools" data-tool-count={level.submitted ? 3 : 4} role="group" aria-label="Map tools">
-        {!level.submitted ? <button type="button" disabled={selectionBusy || measuring} className="map-tool saints-focus" onClick={() => {
+        {!level.submitted ? <button type="button" aria-label="Use map centre to choose a place" disabled={selectionBusy || measuring} className="map-tool saints-focus" onClick={() => {
           const map = mapRef.current;
           if (map) { const centre = map.getCenter(); onMapPick({ lat: centre.lat, lng: centre.lng }, map.getZoom()); }
-        }}><MapPinned aria-hidden="true" className="h-4 w-4 shrink-0" /><span>Use centre</span></button> : null}
+        }}><MapPinned aria-hidden="true" className="h-4 w-4 shrink-0" /><span className="map-tool__full-label">Use centre</span><span className="map-tool__short-label">Pick centre</span></button> : null}
         <button type="button" aria-label={measuring ? "Stop measuring distance" : "Measure distance"} aria-pressed={measuring} onClick={toggleMeasurement} disabled={selectionBusy} className="map-tool saints-focus">
           <Ruler aria-hidden="true" className="h-4 w-4 shrink-0" /><span>{measuring ? "Done" : "Measure"}</span>
         </button>
         <button type="button" aria-label={expanded ? "Reduce map height" : "Enlarge map"} aria-pressed={expanded} onClick={() => setExpanded(current => !current)} className="map-tool saints-focus">
-          {expanded ? <Minimize2 aria-hidden="true" className="h-4 w-4 shrink-0" /> : <Maximize2 aria-hidden="true" className="h-4 w-4 shrink-0" />}<span>{expanded ? "Smaller" : "Larger map"}</span>
+          {expanded ? <Minimize2 aria-hidden="true" className="h-4 w-4 shrink-0" /> : <Maximize2 aria-hidden="true" className="h-4 w-4 shrink-0" />}<span className="map-tool__full-label">{expanded ? "Smaller" : "Larger map"}</span><span className="map-tool__short-label">{expanded ? "Shrink" : "Expand"}</span>
         </button>
         {helpControl}
       </div> : null}
