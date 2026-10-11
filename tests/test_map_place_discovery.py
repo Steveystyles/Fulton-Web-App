@@ -413,6 +413,14 @@ class DiscoveryTests(unittest.TestCase):
         medium, easy = candidate['anchors']
         distance = discovery.daily_map_game.haversine_m(medium['lat'], medium['lng'], easy['lat'], easy['lng'])
         self.assertLess(distance + easy['radius_m'], medium['radius_m'])
+        self.assertEqual(candidate['city_sector'], 'southern')
+
+    def test_city_sector_is_derived_from_checked_coordinates(self):
+        self.assertEqual(discovery.broad_city_sector(50, 1, 50, 1), 'central')
+        self.assertEqual(discovery.broad_city_sector(50.03, 1, 50, 1), 'northern')
+        self.assertEqual(discovery.broad_city_sector(49.97, 1, 50, 1), 'southern')
+        self.assertEqual(discovery.broad_city_sector(50, 1.05, 50, 1), 'eastern')
+        self.assertEqual(discovery.broad_city_sector(50, 0.95, 50, 1), 'western')
 
     def test_invalid_map_routes_do_not_spend_country_source_requests(self):
         source, _, pages, proposal = self.source_fixture()
@@ -467,6 +475,7 @@ class DiscoveryTests(unittest.TestCase):
         with patch.dict(os.environ, {'MAP_AI_API_KEY': 'map-fixture'}, clear=True):
             provider = discovery.DiscoveryProvider.from_map_env(budget)
         self.place['proposal_reason'] = 'A memorable structure.'
+        self.place['city_sector'] = 'northern'
         second = self.second_place()
         proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(discovery.PROPOSAL_COUNT)]}
         before = controlled.DEFAULT_CATALOG.read_bytes()
@@ -488,6 +497,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn('Himeji Castle', request.call_args_list[0].args[1])
         self.assertIn('medium="Look in Brussels, Belgium, the city that hosted this landmark during Expo 58."',
                       request.call_args_list[1].args[1])
+        self.assertIn('"coordinate_derived_city_sector": "northern"', request.call_args_list[1].args[1])
+        self.assertIn('sector comes from checked coordinates', request.call_args_list[1].args[1])
         self.assertFalse(report['production_modified'])
         self.assertFalse((self.root / 'unused.db').exists())
         self.assertEqual(controlled.DEFAULT_CATALOG.read_bytes(), before)
