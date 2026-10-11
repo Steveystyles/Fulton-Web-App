@@ -650,7 +650,7 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['retry_at'], '2026-09-08T10:30:00+00:00')
         self.assertEqual(maintain.call_count, 4)
 
-    def test_actual_provider_daily_quota_pauses_until_its_reset(self):
+    def test_provider_quota_uses_reported_retry_delay(self):
         with patch.object(
             pool,
             'maintain',
@@ -658,6 +658,7 @@ class AutomaticPoolTests(unittest.TestCase):
                 'status': 'failed',
                 'ready': 3,
                 'reason': 'RESOURCE_EXHAUSTED free_tier_requests; free-models-per-day',
+                'retry_after_seconds': 125,
             },
         ):
             result = pool.maintain_until_stocked(
@@ -667,7 +668,7 @@ class AutomaticPoolTests(unittest.TestCase):
             )
 
         self.assertEqual(result['status'], 'quota_paused')
-        self.assertEqual(result['retry_at'], '2026-09-09T07:05:00+00:00')
+        self.assertEqual(result['retry_at'], '2026-09-08T10:02:10+00:00')
 
     def test_provider_quota_failure_stops_refill_cycle_without_more_attempts(self):
         failed = {'status': 'failed',
@@ -680,8 +681,20 @@ class AutomaticPoolTests(unittest.TestCase):
             )
         self.assertEqual(result['status'], 'quota_paused')
         self.assertEqual(result['attempted'], 1)
-        self.assertEqual(result['retry_at'], '2026-09-09T07:05:00+00:00')
+        self.assertEqual(result['retry_at'], '2026-09-08T10:30:05+00:00')
         discover.assert_called_once()
+
+    def test_provider_report_retry_hint_survives_discovery_failure(self):
+        failed = {'status': 'failed', 'error': 'Map preview provider failed; stopped to preserve quota.',
+                  'provider_error_detail': 'Gemini request failed with HTTP 429: RESOURCE_EXHAUSTED free-models-per-day',
+                  'retry_after_seconds': 3600, 'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed):
+            result = pool.maintain_until_stocked(
+                self.database, self.root/'reports', seed_catalog=None,
+                provider_factory=Mock(return_value=Mock(requests=[])), max_attempts=4,
+            )
+        self.assertTrue(result['quota_limited'])
+        self.assertEqual(result['retry_at'], '2026-09-08T11:00:05+00:00')
 
     def test_scheduler_wakes_for_maintenance_even_when_games_are_published(self):
         import server

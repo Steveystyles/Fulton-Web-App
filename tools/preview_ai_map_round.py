@@ -33,6 +33,8 @@ class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
         self.max_requests = max_requests
         self.requests: list[dict[str, Any]] = []
         self.stop_reason = ""
+        self.retry_after_seconds: float | None = None
+        self.provider_error_detail = ""
 
     @classmethod
     def from_preview_env(cls, *, max_requests: int = 30, generator_model: str = "") -> "PreviewGeminiProvider":
@@ -93,6 +95,8 @@ class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
             record["status"] = "failed"
             record["error_type"] = type(error).__name__
             record["error_detail"] = str(error).replace(client.config.gemini_api_key, "[REDACTED]")[:500]
+            self.provider_error_detail = record["error_detail"]
+            self.retry_after_seconds = getattr(client.provider, "last_retry_after_seconds", None)
             self.stop_reason = "Map preview provider failed; stopped to preserve quota."
             raise RuntimeError(self.stop_reason) from None
         record["status"] = "completed"

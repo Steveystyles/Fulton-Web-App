@@ -673,6 +673,12 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         report['error_type'] = type(error).__name__
         # Provider errors are recorded by the credential-redacting provider wrapper.
         report['error'] = str(error).replace(provider.clients[0].config.gemini_api_key, '[REDACTED]')[:800]
+        provider_error_detail = getattr(provider, 'provider_error_detail', None)
+        retry_after_seconds = getattr(provider, 'retry_after_seconds', None)
+        if isinstance(provider_error_detail, str) and provider_error_detail:
+            report['provider_error_detail'] = provider_error_detail
+        if isinstance(retry_after_seconds, (int, float)):
+            report['retry_after_seconds'] = retry_after_seconds
     report['requests'] = provider.requests
     report['request_counts'] = budget.finish(report['status'], path)
     report['report_path'] = str(path)

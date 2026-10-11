@@ -631,6 +631,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     outcome = {'status': 'failed', 'run_id': budget.id, 'ready': len(ready)}
     report = {}
     verifier = None
+    provider = None
     try:
         provider = factory(budget)
         if pending_audits:
@@ -697,7 +698,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             message = str(error)
             key = os.environ.get('MAP_AI_API_KEY', '').strip()
             outcome['reason'] = (message.replace(key, '[REDACTED]') if key else message)[:500]
-        error_text = str(error)
+        error_text = ' '.join((str(error), str(report.get('provider_error_detail') or ''),
+                               str(getattr(provider, 'provider_error_detail', '') or '')))
+        retry_after = report.get('retry_after_seconds', getattr(provider, 'retry_after_seconds', None))
+        if isinstance(retry_after, (int, float)) and 0 < retry_after <= 172800:
+            outcome['retry_after_seconds'] = retry_after
         outcome['quota_limited'] = daily_quiz.is_daily_quota_failure(error_text)
         outcome['rate_limited'] = outcome['quota_limited'] or any(
             marker in error_text.casefold() for marker in ('http 429', 'resource_exhausted', 'rate limit')
@@ -715,8 +720,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     return outcome
 
 
-def next_quota_retry_at(current: datetime | None = None) -> str:
-    return daily_quiz.provider_quota_reset_at('gemini', now=current or now()).isoformat()
+def provider_retry_at(retry_after_seconds: float | None, current: datetime | None = None) -> str:
+    # The provider's hint is authoritative when present. Without one, keep
+    # checking at a bounded interval instead of guessing the quota reset.
+    seconds = max(5.0, min(float(retry_after_seconds or REFILL_RETRY_MINUTES * 60), 172800.0))
+    return ((current or now()) + timedelta(seconds=seconds + 5)).isoformat()
 
 
 def next_refill_retry_at(current: datetime | None = None) -> str:
@@ -746,10 +754,10 @@ def maintain_until_stocked(
         outcomes.append(last)
         if last.get('quota_limited') or daily_quiz.is_daily_quota_failure(str(last.get('reason') or '')):
             return {**last, 'status': 'quota_paused', 'attempted': len(outcomes),
-                    'retry_at': next_quota_retry_at()}
+                    'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
         if last.get('rate_limited'):
             return {**last, 'status': 'rate_paused', 'attempted': len(outcomes),
-                    'retry_at': next_refill_retry_at()}
+                    'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
         if int(last.get('ready', 0)) >= TARGET_READY:
             return {
                 **last,
