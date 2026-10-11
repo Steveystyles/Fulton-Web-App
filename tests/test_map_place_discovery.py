@@ -37,6 +37,7 @@ class DiscoveryTests(unittest.TestCase):
         return place
 
     def test_proposal_focus_rotates_geographic_lanes_without_more_model_requests(self):
+        self.assertGreaterEqual(discovery.MAX_SOURCE_REQUESTS, discovery.PROPOSAL_COUNT * 10)
         focuses = [
             discovery.proposal_focus(Mock(day='2026-10-02', budget_day='2026-10-01', attempt_number=number))
             for number in range(1, 5)
@@ -60,9 +61,10 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'already attempted'):
             self.budget()
         budget.spend('model')
+        budget.spend('model')
         with self.assertRaisesRegex(ValueError, 'budget exhausted'):
             budget.spend('model')
-        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 3)
         with self.assertRaises(ValueError):
             budget.spend('source')
 
@@ -497,6 +499,28 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(resolve.call_count, 2)
         self.assertEqual(report['rejections'], [])
         self.assertEqual(report['budget_exhausted_at_title'], 'Proposal 1')
+
+    def test_invalid_clue_ladder_gets_one_evidence_grounded_repair(self):
+        budget = self.budget()
+        with patch.dict(os.environ, {'MAP_AI_API_KEY': 'map-fixture'}, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        invalid = deepcopy(self.payload)
+        invalid['clues']['easy']['text'] = 'Look somewhere in Brussels.'
+        with self.assertRaises(ValueError):
+            discovery.validate_selection(invalid, [self.place])
+        proposals = {'candidates': [{'title': f'Proposal {index}'} for index in range(discovery.PROPOSAL_COUNT)]}
+        with patch.object(discovery, 'history', return_value=[]), \
+             patch.object(discovery, 'resolve', side_effect=[self.place] + [ValueError('No second place')] * 11), \
+             patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, invalid, self.payload]) as request:
+            report = discovery.discover(source_db=self.root / 'unused.db', catalog=None,
+                                        puzzle_date='2026-09-10', output_dir=self.root, budget=budget,
+                                        provider=provider, sources=Mock())
+        self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
+        self.assertTrue(report['repair_attempted'])
+        self.assertEqual(report['request_counts']['model_requests'], 3)
+        self.assertEqual(request.call_count, 3)
+        self.assertIn('VALIDATION FAILURE', request.call_args_list[2].args[1])
+        self.assertEqual(report['candidate']['id'], self.place['id'])
 
     def test_source_budget_exhaustion_does_not_blacklist_unchecked_proposals(self):
         budget = self.budget()

@@ -84,10 +84,10 @@ class Budget:
             wall_day = now().date().isoformat()
             conn.execute('INSERT OR IGNORE INTO automatic_map_usage(day) VALUES(?)', (wall_day,))
             if kind == 'model':
-                run = conn.execute("UPDATE automatic_map_runs SET model_requests=model_requests+1 WHERE id=? AND status='running' AND model_requests<3", (self.id,))
+                run = conn.execute("UPDATE automatic_map_runs SET model_requests=model_requests+1 WHERE id=? AND status='running' AND model_requests<?", (self.id, discovery.MAX_MODEL_REQUESTS + 1))
                 conn.execute('UPDATE automatic_map_usage SET model_requests=model_requests+1 WHERE day=?', (wall_day,))
             else:
-                run = conn.execute("UPDATE automatic_map_runs SET source_requests=source_requests+1 WHERE id=? AND status='running' AND source_requests<16", (self.id,))
+                run = conn.execute("UPDATE automatic_map_runs SET source_requests=source_requests+1 WHERE id=? AND status='running' AND source_requests<?", (self.id, discovery.MAX_SOURCE_REQUESTS))
                 conn.execute('UPDATE automatic_map_usage SET source_requests=source_requests+1 WHERE day=?', (wall_day,))
             if run.rowcount != 1:
                 raise ValueError('Automatic map per-attempt request limit reached.')
