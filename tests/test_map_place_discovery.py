@@ -435,7 +435,9 @@ class DiscoveryTests(unittest.TestCase):
              patch.object(provider.clients[0].provider, '_request', side_effect=[proposals, self.payload]) as request:
             report = discovery.discover(source_db=self.root / 'unused.db', catalog=controlled.DEFAULT_CATALOG,
                                         puzzle_date='2026-09-10', output_dir=self.root, budget=budget,
-                                        provider=provider, sources=Mock())
+                                        provider=provider, sources=Mock(), route_failure_lessons=[
+                                            {'place': 'Himeji Castle',
+                                             'failed_route_reason': 'Local feature article: Missing source page.'}])
         self.assertEqual(report['status'], 'needs_source_review')
         self.assertEqual(report['request_counts']['model_requests'], 2)
         self.assertTrue(all(region in request.call_args_list[0].args[1] for region in discovery.proposal_focus(budget)))
@@ -443,6 +445,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(report['resolved_candidates']), 2)
         self.assertEqual(request.call_args_list[0].args[2]['properties']['candidates']['minItems'], discovery.PROPOSAL_COUNT)
         self.assertIn('four landmarks from EACH', request.call_args_list[0].args[1])
+        self.assertIn('recent_bad_map_routes', request.call_args_list[0].args[1])
+        self.assertIn('Himeji Castle', request.call_args_list[0].args[1])
         self.assertIn('medium="Look in Brussels, Belgium, the city that hosted this landmark during Expo 58."',
                       request.call_args_list[1].args[1])
         self.assertFalse(report['production_modified'])

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import closing
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import sqlite3
 import sys
 import tempfile
 from typing import Any
+from urllib.error import HTTPError
 from uuid import uuid4
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -19,8 +21,46 @@ if str(PROJECT_DIR) not in sys.path:
 
 import daily_map_game
 import daily_quiz
+from safe_http import ResponseTooLarge, read_bounded_response
 from tools import generate_ai_daily_map_round as generator
 from tools import rewrite_map_clues_with_ai as rewriter
+
+
+class MapGeminiProvider(daily_quiz.GeminiProvider):
+    """Preserve the provider's retry hint for the automatic Map scheduler."""
+
+    last_retry_after_seconds: float | None = None
+
+    def _http_error_detail(self, error: HTTPError) -> str:
+        retry_header = (error.headers or {}).get('Retry-After', '')
+        try:
+            retry_seconds = float(retry_header)
+        except (TypeError, ValueError):
+            try:
+                retry_seconds = (parsedate_to_datetime(retry_header) - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                retry_seconds = 0.0
+        try:
+            body, charset = read_bounded_response(error, max_bytes=64_000, label='Gemini error')
+            payload = json.loads(body.decode(charset, errors='replace'))
+        except (OSError, ValueError, ResponseTooLarge, UnicodeDecodeError):
+            payload = {}
+        error_payload = payload.get('error', {}) if isinstance(payload, dict) else {}
+        if not isinstance(error_payload, dict):
+            error_payload = {}
+        for item in error_payload.get('details', []):
+            if not isinstance(item, dict) or not str(item.get('@type', '')).endswith('RetryInfo'):
+                continue
+            delay = str(item.get('retryDelay', ''))
+            try:
+                retry_seconds = max(retry_seconds, float(delay[:-1]) if delay.endswith('s') else 0)
+            except ValueError:
+                pass
+        self.last_retry_after_seconds = retry_seconds if 0 < retry_seconds <= 172800 else None
+        detail = ' '.join(str(error_payload.get(key) or '').strip() for key in ('status', 'code', 'message')).strip()
+        if daily_quiz.is_daily_quota_failure(json.dumps(error_payload)) and not daily_quiz.is_daily_quota_failure(detail):
+            detail = f'{detail} daily quota exceeded'.strip()
+        return detail[:700]
 
 
 class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
@@ -29,10 +69,12 @@ class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
     def __init__(self, config: daily_quiz.QuizConfig, *, max_requests: int = 30):
         if not 1 <= max_requests <= 30:
             raise ValueError("Preview request budget must be between 1 and 30.")
-        super().__init__([rewriter.ProviderClient(daily_quiz.GeminiProvider(config), config)])
+        super().__init__([rewriter.ProviderClient(MapGeminiProvider(config), config)])
         self.max_requests = max_requests
         self.requests: list[dict[str, Any]] = []
         self.stop_reason = ""
+        self.retry_after_seconds: float | None = None
+        self.provider_error_detail = ""
 
     @classmethod
     def from_preview_env(cls, *, max_requests: int = 30, generator_model: str = "") -> "PreviewGeminiProvider":
@@ -93,6 +135,8 @@ class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
             record["status"] = "failed"
             record["error_type"] = type(error).__name__
             record["error_detail"] = str(error).replace(client.config.gemini_api_key, "[REDACTED]")[:500]
+            self.provider_error_detail = record["error_detail"]
+            self.retry_after_seconds = getattr(client.provider, "last_retry_after_seconds", None)
             self.stop_reason = "Map preview provider failed; stopped to preserve quota."
             raise RuntimeError(self.stop_reason) from None
         record["status"] = "completed"

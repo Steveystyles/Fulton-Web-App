@@ -1,11 +1,13 @@
 import json
 from contextlib import closing
+from io import BytesIO
 import os
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import daily_map_game
 from tools import generate_ai_daily_map_round as generator
@@ -57,6 +59,20 @@ class MapPreviewTests(unittest.TestCase):
                     provider.call_with_fallback(model_attr="generator_model", prompt="fixture", schema={})
         self.assertEqual(request.call_count, 1)
         self.assertNotIn("isolated-test-value", json.dumps(provider.requests))
+
+    def test_gemini_quota_error_preserves_provider_retry_delay(self):
+        provider = self.provider()
+        client = provider.clients[0].provider
+        error = HTTPError(
+            'https://generativelanguage.googleapis.com/v1beta/models/test:generateContent',
+            429, 'Too Many Requests', hdrs={'Retry-After': '42'},
+            fp=BytesIO(json.dumps({'error': {'code': 429, 'status': 'RESOURCE_EXHAUSTED',
+                'message': 'free-models-per-day', 'details': [
+                    {'@type': 'type.googleapis.com/google.rpc.RetryInfo', 'retryDelay': '125.5s'}
+                ]}}).encode('utf-8')),
+        )
+        self.assertIn('RESOURCE_EXHAUSTED', client._http_error_detail(error))
+        self.assertEqual(client.last_retry_after_seconds, 125.5)
 
     def test_preview_uses_copy_and_exports_three_clues(self):
         with tempfile.TemporaryDirectory() as directory:
