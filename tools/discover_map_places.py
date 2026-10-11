@@ -5,6 +5,7 @@ import argparse
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import html
 import http.client
 import json
 import math
@@ -78,7 +79,7 @@ def plain(value: Any, maximum: int = 600) -> str:
 
 
 def title(value: Any) -> str:
-    value = plain(value, 160)
+    value = plain(html.unescape(value) if isinstance(value, str) else value, 160)
     if any(c in value for c in ':|#/?\\'):
         raise ValueError('Expected a main-namespace Wikipedia title, not a URL.')
     return value
@@ -245,6 +246,17 @@ class WikimediaSource:
         name = title(name)
         return self.area_cache.get(name) or self.page(name)
 
+    def equivalent_titles(self, name: str) -> list[str]:
+        """Find spelling/diacritic corrections, never a different place."""
+        name = title(name)
+        data = self.request('en.wikipedia.org', {
+            'action': 'query', 'list': 'search', 'srsearch': name,
+            'srnamespace': 0, 'srwhat': 'title', 'srlimit': 5,
+        })
+        results = data.get('query', {}).get('search', [])
+        return [item['title'] for item in results
+                if isinstance(item, dict) and isinstance(item.get('title'), str)]
+
     def entities(self, ids: list[str]) -> dict:
         if not ids or len(ids) > 3 or any(not re.fullmatch(r'Q[1-9][0-9]*', item) for item in ids):
             raise ValueError('Invalid source entity identifiers.')
@@ -304,12 +316,26 @@ def resolved_page(sources: WikimediaSource, name: str, *, city_hint: str = '', a
             alternate = requested.rsplit(' (', 1)[0]
         elif str(error) == 'Ambiguous source page.' and city_hint and ',' not in requested:
             alternate = f'{requested}, {title(city_hint)}'
-        if not alternate:
+        if alternate:
+            try:
+                return fetch(title(alternate))
+            except ValueError as retry_error:
+                if str(retry_error) != 'Missing source page.':
+                    raise ValueError(f'Exact title and one bounded alternative did not resolve: {retry_error}') from retry_error
+        if str(error) != 'Missing source page.' or not isinstance(sources, WikimediaSource):
             raise
-        try:
-            return fetch(title(alternate))
-        except ValueError as retry_error:
-            raise ValueError(f'Exact title and one bounded alternative did not resolve: {retry_error}') from retry_error
+        def equivalent_key(value: str) -> str:
+            latin_variants = str.maketrans({'ø': 'o', 'ł': 'l', 'đ': 'd', 'ð': 'd',
+                                            'þ': 'th', 'æ': 'ae', 'œ': 'oe', 'ß': 'ss'})
+            words = unicodedata.normalize('NFKD', value.casefold().translate(latin_variants))
+            words = ''.join(c for c in words if not unicodedata.combining(c))
+            words = re.sub(r'^the\s+', '', words)
+            return ''.join(c for c in words if c.isalnum())
+        key = equivalent_key(requested)
+        for suggestion in sources.equivalent_titles(requested):
+            if equivalent_key(suggestion) == key and suggestion != requested:
+                return fetch(title(suggestion))
+        raise ValueError('Exact and equivalent source article titles did not resolve.') from error
 
 
 def anchor_name(page: dict, proposed_name: str, target_text: str) -> str:
