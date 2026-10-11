@@ -3634,19 +3634,6 @@ class DailyQuizTests(unittest.TestCase):
         self.assertIn("RESOURCE_EXHAUSTED", detail)
         self.assertIn("Quota exceeded", detail)
 
-    def test_gemini_provider_reads_quota_retry_hint(self) -> None:
-        provider = daily_quiz.GeminiProvider(config())
-        error = HTTPError(
-            "https://generativelanguage.googleapis.com/v1beta/models/test:generateContent",
-            429, "Too Many Requests", hdrs={"Retry-After": "42"},
-            fp=BytesIO(json.dumps({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
-                "message": "free-models-per-day", "details": [
-                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "125.5s"}
-                ]}}).encode("utf-8")),
-        )
-        provider._http_error_detail(error)
-        self.assertEqual(provider.last_retry_after_seconds, 125.5)
-
     def test_gemini_provider_retries_network_timeout(self) -> None:
         class FakeResponse:
             def __enter__(self) -> "FakeResponse":

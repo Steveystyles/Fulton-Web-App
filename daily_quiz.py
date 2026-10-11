@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Protocol
 from urllib.parse import quote
 from urllib.error import HTTPError, URLError
@@ -741,17 +740,6 @@ class GeminiProvider:
         self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
 
     def _http_error_detail(self, error: HTTPError) -> str:
-        self.last_retry_after_seconds = None
-        retry_header = (error.headers or {}).get("Retry-After", "")
-        try:
-            retry_seconds = float(retry_header)
-        except (TypeError, ValueError):
-            try:
-                retry_seconds = (parsedate_to_datetime(retry_header) - datetime.now(timezone.utc)).total_seconds()
-            except (TypeError, ValueError, OverflowError):
-                retry_seconds = 0
-        if 0 < retry_seconds <= 172800:
-            self.last_retry_after_seconds = retry_seconds
         try:
             body, charset = read_bounded_response(
                 error,
@@ -768,16 +756,6 @@ class GeminiProvider:
         error_payload = payload.get("error")
         if not isinstance(error_payload, dict):
             return ""
-        for item in error_payload.get("details", []):
-            if not isinstance(item, dict) or not str(item.get("@type", "")).endswith("RetryInfo"):
-                continue
-            delay = str(item.get("retryDelay", ""))
-            try:
-                retry_seconds = max(retry_seconds, float(delay[:-1]) if delay.endswith("s") else 0)
-            except ValueError:
-                pass
-        if 0 < retry_seconds <= 172800:
-            self.last_retry_after_seconds = retry_seconds
         status = str(error_payload.get("status") or "").strip()
         code = str(error_payload.get("code") or "").strip()
         message = str(error_payload.get("message") or "").strip()
@@ -824,7 +802,6 @@ class GeminiProvider:
             },
             method="POST",
         )
-        self.last_retry_after_seconds = None
         for attempt in range(self.config.transient_retries + 1):
             self._wait_for_request_slot()
             try:
