@@ -171,8 +171,68 @@ class AutomaticPoolTests(unittest.TestCase):
             row = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
             self.assertEqual(row[0], 'rejected')
             self.assertTrue(json.loads(row[1])['editorial_rejection'])
+            lessons = pool.rejected_interest_lessons(conn)
+            self.assertEqual(len(lessons), 1)
+            self.assertEqual(lessons[0]['attempted_clues']['hard'], self.result['clue_ladder']['hard'])
+            self.assertIn('2/5', lessons[0]['failure_reason'])
             with self.assertRaisesRegex(ValueError, 'Editorially rejected'):
                 pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
+        failed = {'status': 'failed', 'error': 'No source.', 'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                          provider_factory=Mock(return_value=Mock(requests=[])))
+        passed_lessons = discover.call_args.kwargs['failure_lessons']
+        self.assertIn(self.result['clue_ladder']['hard'],
+                      [item['attempted_clues']['hard'] for item in passed_lessons])
+
+    def queue_two_legacy_rounds(self):
+        second = next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
+                      if p['id'] == 'sydney-opera-house')
+        payload = {'place_id': second['id'], 'selection_reason': 'A memorable sourced landmark.',
+                   'clues': {k: {'text': v['text'], 'fact_id': k} for k, v in second['facts'].items()}}
+        second_result = controlled.validate_result(payload, [second])
+        with closing(self.connect()) as conn:
+            for candidate, result in ((self.place, self.result), (second, second_result)):
+                pool.add(conn, candidate, result, {k: True for k in pool.CHECKS}, origin='discovery')
+            conn.commit()
+        return second
+
+    def test_legacy_interest_backlog_is_audited_in_one_bounded_request(self):
+        second = self.queue_two_legacy_rounds()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {'audits': [
+            {'id': second['id'], 'interesting_hook_score': 2, 'reason': 'Only a design detail.'},
+            {'id': self.place['id'], 'interesting_hook_score': 5, 'reason': 'Memorable discovery.'},
+        ]}
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        self.assertEqual(outcome['ready'], 1)
+        self.assertEqual(len(outcome['places']), 2)
+        provider.call_with_fallback.assert_called_once()
+        self.assertEqual(provider.call_with_fallback.call_args.kwargs['schema']['properties']['audits']['maxItems'], 2)
+        with closing(self.connect()) as conn:
+            rows = {row[0]: (row[1], json.loads(row[2])) for row in conn.execute(
+                'SELECT id,state,verification FROM automatic_map_entries')}
+            self.assertEqual(rows[self.place['id']][0], 'ready')
+            self.assertEqual(rows[second['id']][0], 'rejected')
+            self.assertTrue(rows[second['id']][1]['editorial_rejection'])
+            self.assertEqual(conn.execute('SELECT attempts FROM automatic_map_usage').fetchone()[0], 1)
+
+    def test_malformed_interest_batch_does_not_partially_update_queue(self):
+        self.queue_two_legacy_rounds()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {'audits': [
+            {'id': self.place['id'], 'interesting_hook_score': 5, 'reason': 'Good.'},
+            {'id': self.place['id'], 'interesting_hook_score': 2, 'reason': 'Duplicate.'},
+        ]}
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'failed')
+        with closing(self.connect()) as conn:
+            for state, verification in conn.execute('SELECT state,verification FROM automatic_map_entries'):
+                self.assertEqual(state, 'ready')
+                self.assertNotIn('interesting_hook_score', json.loads(verification))
 
     def test_published_round_keeps_saved_clues_and_hides_answer_at_each_stage(self):
         self.queue()
