@@ -59,14 +59,14 @@ class AutomaticPoolTests(unittest.TestCase):
         for index in range(8):
             budget = pool.Budget(self.database, f'2026-10-{index+1:02d}')
             self.assertEqual(budget.attempt_number, index + 1)
-            for _ in range(3):
+            for _ in range(discovery.MAX_MODEL_REQUESTS + 1):
                 budget.spend('model')
             with self.assertRaisesRegex(ValueError, 'per-attempt request limit'):
                 budget.spend('model')
             budget.complete('failed', {})
         with closing(self.connect()) as conn:
             row = conn.execute('SELECT day,attempts,model_requests FROM automatic_map_usage').fetchone()
-            self.assertEqual(tuple(row), ('2026-09-08', 8, 24))
+            self.assertEqual(tuple(row), ('2026-09-08', 8, 8 * (discovery.MAX_MODEL_REQUESTS + 1)))
         self.clock += timedelta(days=1)
         next_day = pool.Budget(self.database, '2026-12-01')
         self.assertEqual(next_day.budget_day, '2026-09-09')
@@ -87,12 +87,13 @@ class AutomaticPoolTests(unittest.TestCase):
 
     def test_source_request_cap_rolls_back_partial_attempt_increment(self):
         budget = pool.Budget(self.database, '2026-09-08')
-        for _ in range(16):
+        for _ in range(discovery.MAX_SOURCE_REQUESTS):
             budget.spend('source')
         with self.assertRaises(ValueError):
             budget.spend('source')
         with closing(self.connect()) as conn:
-            self.assertEqual(conn.execute('SELECT source_requests FROM automatic_map_usage').fetchone()[0], 16)
+            self.assertEqual(conn.execute('SELECT source_requests FROM automatic_map_usage').fetchone()[0],
+                             discovery.MAX_SOURCE_REQUESTS)
 
     def test_publication_and_queue_consumption_are_atomic_and_preserve_caller_work(self):
         self.queue('discovery')
