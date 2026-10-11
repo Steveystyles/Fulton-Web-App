@@ -16,15 +16,15 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import daily_map_game
+import daily_quiz
 import map_clue_editor
 from tools import controlled_map_round as controlled
 from tools import discover_map_places as discovery
 from tools import rewrite_map_clues_with_ai as rewriter
 
 TARGET_READY = 7
-DAILY_ATTEMPTS = 4
-DAILY_MODEL_REQUESTS = 12
-DAILY_SOURCE_REQUESTS = 64
+REFILL_ATTEMPTS_PER_CYCLE = 4
+REFILL_RETRY_MINUTES = 30
 MAX_AGE_DAYS = 14
 CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interesting_hook',
           'usable_map_route', 'qualifiers_preserved', 'place_type_correct', 'distinctive_hard_hook',
@@ -66,11 +66,8 @@ class Budget:
             if conn.execute("SELECT 1 FROM automatic_map_runs WHERE status='running'").fetchone():
                 raise ValueError('A maintenance run already owns the lease.')
             conn.execute('INSERT OR IGNORE INTO automatic_map_usage(day) VALUES(?)', (self.budget_day,))
-            claimed = conn.execute('UPDATE automatic_map_usage SET attempts=attempts+1 '
-                                   'WHERE day=? AND attempts<? AND model_requests<? AND source_requests<?',
-                                   (self.budget_day, DAILY_ATTEMPTS, DAILY_MODEL_REQUESTS, DAILY_SOURCE_REQUESTS))
-            if claimed.rowcount != 1:
-                raise ValueError('Automatic map daily budget exhausted.')
+            conn.execute('UPDATE automatic_map_usage SET attempts=attempts+1 WHERE day=?',
+                         (self.budget_day,))
             self.attempt_number = int(conn.execute(
                 'SELECT attempts FROM automatic_map_usage WHERE day=?', (self.budget_day,)
             ).fetchone()[0])
@@ -88,12 +85,12 @@ class Budget:
             conn.execute('INSERT OR IGNORE INTO automatic_map_usage(day) VALUES(?)', (wall_day,))
             if kind == 'model':
                 run = conn.execute("UPDATE automatic_map_runs SET model_requests=model_requests+1 WHERE id=? AND status='running' AND model_requests<3", (self.id,))
-                total = conn.execute('UPDATE automatic_map_usage SET model_requests=model_requests+1 WHERE day=? AND model_requests<?', (wall_day, DAILY_MODEL_REQUESTS))
+                conn.execute('UPDATE automatic_map_usage SET model_requests=model_requests+1 WHERE day=?', (wall_day,))
             else:
                 run = conn.execute("UPDATE automatic_map_runs SET source_requests=source_requests+1 WHERE id=? AND status='running' AND source_requests<16", (self.id,))
-                total = conn.execute('UPDATE automatic_map_usage SET source_requests=source_requests+1 WHERE day=? AND source_requests<?', (wall_day, DAILY_SOURCE_REQUESTS))
-            if run.rowcount != 1 or total.rowcount != 1:
-                raise ValueError('Automatic map request budget exhausted.')
+                conn.execute('UPDATE automatic_map_usage SET source_requests=source_requests+1 WHERE day=?', (wall_day,))
+            if run.rowcount != 1:
+                raise ValueError('Automatic map per-attempt request limit reached.')
             conn.commit()
 
     def finish(self, status: str, report: Path) -> dict:
@@ -490,7 +487,7 @@ def recoverable_report(conn: sqlite3.Connection, output_dir: Path, puzzle_date: 
 
 
 def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
-    """Keep unique first-hand failures, not unchecked or inherited rejections."""
+    """Exclude bad places, but allow a good place to retry with better map anchors."""
     root = output_dir.resolve()
     cutoff = (now() - timedelta(days=2)).isoformat()
     names: list[str] = []
@@ -517,6 +514,7 @@ def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]
                                 and (
                                     'budget exhausted' in str(item.get('reason', '')).casefold()
                                     or str(item.get('reason', '')).casefold().startswith('place was rejected recently')
+                                    or retryable_route_rejection(str(item.get('reason', '')))
                                 )
                             }
                 except (OSError, ValueError, TypeError):
@@ -532,6 +530,57 @@ def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]
         if key:
             unique.setdefault(key, name)
     return list(unique.values())
+
+
+def retryable_route_rejection(reason: str) -> bool:
+    """The proposed route failed; that does not condemn the landmark itself."""
+    value = reason.casefold()
+    return value.startswith(('city article:', 'local feature article:',
+                             'target and both search areas must be different places.',
+                             'search area centres are too close',
+                             'search area is too broad',
+                             'a search area name exposes the answer',
+                             'the target article does not mention the supplied search area.',
+                             'place type was used in the last two days.',
+                             'batch country or place type is repetitive.'))
+
+
+def recent_route_failure_lessons(conn: sqlite3.Connection, output_dir: Path,
+                                 *, limit: int = 4) -> list[dict]:
+    """Teach proposal generation which recent city/local-anchor choices failed."""
+    root = output_dir.resolve()
+    cutoff = (now() - timedelta(days=2)).isoformat()
+    lessons: list[dict] = []
+    seen: set[str] = set()
+    for detail_text, in conn.execute(
+        'SELECT detail FROM automatic_map_runs WHERE started_at>? ORDER BY started_at DESC LIMIT 16',
+        (cutoff,),
+    ):
+        try:
+            detail = json.loads(detail_text or '{}')
+            report_name = detail.get('report_path')
+            if not isinstance(report_name, str):
+                continue
+            path = Path(report_name).resolve(strict=True)
+            if not path.is_relative_to(root) or path.suffix != '.json' or path.stat().st_size > 2_000_000:
+                continue
+            report = json.loads(path.read_text(encoding='utf-8'))
+            for item in report.get('rejections', []):
+                if not isinstance(item, dict):
+                    continue
+                title, reason = str(item.get('title') or '').strip(), str(item.get('reason') or '').strip()
+                if not title or not retryable_route_rejection(reason):
+                    continue
+                key = discovery.exclusion_key(title)
+                if key in seen:
+                    continue
+                seen.add(key)
+                lessons.append({'place': title[:100], 'failed_route_reason': reason[:180]})
+                if len(lessons) >= limit:
+                    return lessons
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return lessons
 
 
 def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = controlled.DEFAULT_CATALOG,
@@ -561,6 +610,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         ) if state == 'ready' or json.loads(verification).get('operator_rejection')
         or json.loads(verification).get('editorial_rejection')]
         failed_names = recent_failed_names(conn, output_dir)
+        route_lessons = recent_route_failure_lessons(conn, output_dir)
         feedback = editorial_corrections(conn)
         failure_lessons = rejected_interest_lessons(conn) + recent_failed_round_lessons(conn, output_dir)
         pending_audits = [row for row in conn.execute(
@@ -624,6 +674,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             report = discovery.discover(source_db=database, catalog=None, puzzle_date=target, output_dir=run_dir,
                                         budget=budget, provider=provider, sources=discovery.WikimediaSource(budget),
                                         excluded_places=exclusions, excluded_names=failed_names,
+                                        route_failure_lessons=route_lessons,
                                         editorial_feedback=feedback, failure_lessons=failure_lessons)
         if report['status'] != 'needs_source_review':
             raise ValueError('Discovery rejected: ' + str(report.get('error', 'no candidate'))[:400])
@@ -646,6 +697,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             message = str(error)
             key = os.environ.get('MAP_AI_API_KEY', '').strip()
             outcome['reason'] = (message.replace(key, '[REDACTED]') if key else message)[:500]
+        error_text = str(error)
+        outcome['quota_limited'] = daily_quiz.is_daily_quota_failure(error_text)
+        outcome['rate_limited'] = outcome['quota_limited'] or any(
+            marker in error_text.casefold() for marker in ('http 429', 'resource_exhausted', 'rate limit')
+        )
         if verifier is not None:
             outcome['verifier_requests'] = verifier.requests
     outcome['failed_names'] = [item.get('title', '') for item in report.get('rejections', []) if isinstance(item, dict)]
@@ -659,11 +715,12 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     return outcome
 
 
-def next_budget_reset_at(current: datetime | None = None) -> str:
-    value = (current or now()).astimezone(timezone.utc)
-    return (value + timedelta(days=1)).replace(
-        hour=0, minute=5, second=0, microsecond=0
-    ).isoformat()
+def next_quota_retry_at(current: datetime | None = None) -> str:
+    return daily_quiz.provider_quota_reset_at('gemini', now=current or now()).isoformat()
+
+
+def next_refill_retry_at(current: datetime | None = None) -> str:
+    return ((current or now()) + timedelta(minutes=REFILL_RETRY_MINUTES)).isoformat()
 
 
 def maintain_until_stocked(
@@ -672,9 +729,9 @@ def maintain_until_stocked(
     *,
     seed_catalog: Path | None = controlled.DEFAULT_CATALOG,
     provider_factory=None,
-    max_attempts: int = DAILY_ATTEMPTS,
+    max_attempts: int = REFILL_ATTEMPTS_PER_CYCLE,
 ) -> dict:
-    """Keep producing checked rounds until inventory or the daily cap wins."""
+    """Keep producing checked rounds in bounded cycles until inventory is stocked."""
     if max_attempts < 1:
         raise ValueError('Automatic map maintenance needs at least one attempt.')
     outcomes: list[dict] = []
@@ -687,6 +744,12 @@ def maintain_until_stocked(
             provider_factory=provider_factory,
         )
         outcomes.append(last)
+        if last.get('quota_limited') or daily_quiz.is_daily_quota_failure(str(last.get('reason') or '')):
+            return {**last, 'status': 'quota_paused', 'attempted': len(outcomes),
+                    'retry_at': next_quota_retry_at()}
+        if last.get('rate_limited'):
+            return {**last, 'status': 'rate_paused', 'attempted': len(outcomes),
+                    'retry_at': next_refill_retry_at()}
         if int(last.get('ready', 0)) >= TARGET_READY:
             return {
                 **last,
@@ -694,17 +757,13 @@ def maintain_until_stocked(
                 'attempted': len(outcomes),
             }
         if last.get('status') not in {'added', 'audited', 'failed'}:
-            result = {**last, 'attempted': len(outcomes)}
-            if 'daily budget exhausted' in str(last.get('reason', '')).casefold():
-                result['retry_at'] = next_budget_reset_at()
-                result['status'] = 'capped'
-            return result
+            return {**last, 'attempted': len(outcomes)}
 
     return {
         **last,
-        'status': 'attempt_cap',
+        'status': 'replenishing',
         'attempted': len(outcomes),
-        'retry_at': next_budget_reset_at(),
+        'retry_at': next_refill_retry_at(),
     }
 
 

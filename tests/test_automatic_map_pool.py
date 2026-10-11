@@ -56,19 +56,17 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(pool.next_date(conn), '2026-09-12')
 
     def test_budget_is_by_actual_day_not_future_game_date_and_survives_restart(self):
-        for index in range(4):
+        for index in range(8):
             budget = pool.Budget(self.database, f'2026-10-{index+1:02d}')
             self.assertEqual(budget.attempt_number, index + 1)
             for _ in range(3):
                 budget.spend('model')
-            with self.assertRaisesRegex(ValueError, 'budget exhausted'):
+            with self.assertRaisesRegex(ValueError, 'per-attempt request limit'):
                 budget.spend('model')
             budget.complete('failed', {})
-        with self.assertRaisesRegex(ValueError, 'daily budget'):
-            pool.Budget(self.database, '2026-12-01')
         with closing(self.connect()) as conn:
             row = conn.execute('SELECT day,attempts,model_requests FROM automatic_map_usage').fetchone()
-            self.assertEqual(tuple(row), ('2026-09-08', 4, 12))
+            self.assertEqual(tuple(row), ('2026-09-08', 8, 24))
         self.clock += timedelta(days=1)
         next_day = pool.Budget(self.database, '2026-12-01')
         self.assertEqual(next_day.budget_day, '2026-09-09')
@@ -87,7 +85,7 @@ class AutomaticPoolTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             first.spend('model')
 
-    def test_source_request_cap_rolls_back_partial_daily_increment(self):
+    def test_source_request_cap_rolls_back_partial_attempt_increment(self):
         budget = pool.Budget(self.database, '2026-09-08')
         for _ in range(16):
             budget.spend('source')
@@ -475,6 +473,34 @@ class AutomaticPoolTests(unittest.TestCase):
             conn.commit()
             self.assertEqual(pool.recent_failed_names(conn, self.root / 'reports'), ['Bad source'])
 
+    def test_bad_map_anchor_teaches_next_proposal_without_blacklisting_landmark(self):
+        report_dir = self.root / 'reports' / 'route-failure'
+        report_dir.mkdir(parents=True)
+        report_path = report_dir / 'discovery.json'
+        report_path.write_text(json.dumps({'rejections': [
+            {'title': 'Himeji Castle', 'reason': 'Local feature article: Missing source page.'},
+            {'title': 'Tower Bridge', 'reason': 'Search area centres are too close to the answer or too far away.'},
+            {'title': 'Bad coordinate', 'reason': 'Wikipedia and Wikidata coordinates disagree by more than 250 metres.'},
+        ]}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('route-failure', '2026-09-08', '2026-09-08', self.clock.isoformat(), 'failed',
+                 json.dumps({'failed_names': ['Himeji Castle', 'Tower Bridge', 'Bad coordinate'],
+                             'report_path': str(report_path)})),
+            )
+            conn.commit()
+            self.assertEqual(pool.recent_failed_names(conn, self.root/'reports'), ['Bad coordinate'])
+            lessons = pool.recent_route_failure_lessons(conn, self.root/'reports')
+        self.assertEqual([item['place'] for item in lessons], ['Himeji Castle', 'Tower Bridge'])
+        failed = {'status': 'failed', 'error': 'No source.', 'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                          provider_factory=Mock(return_value=Mock(requests=[])))
+        self.assertEqual(discover.call_args.kwargs['route_failure_lessons'], lessons)
+        self.assertNotIn('Himeji Castle', discover.call_args.kwargs['excluded_names'])
+
     def test_editorially_rejected_place_cannot_be_automatically_readmitted(self):
         self.queue()
         with closing(self.connect()) as conn:
@@ -606,7 +632,7 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['attempted'], 2)
         self.assertEqual(maintain.call_count, 2)
 
-    def test_maintenance_cycle_waits_for_reset_after_attempt_cap(self):
+    def test_maintenance_cycle_retries_after_short_backoff_not_next_day(self):
         with patch.object(pool, 'TARGET_READY', 7), patch.object(
             pool,
             'maintain',
@@ -619,19 +645,19 @@ class AutomaticPoolTests(unittest.TestCase):
                 max_attempts=4,
             )
 
-        self.assertEqual(result['status'], 'attempt_cap')
+        self.assertEqual(result['status'], 'replenishing')
         self.assertEqual(result['attempted'], 4)
-        self.assertEqual(result['retry_at'], '2026-09-09T00:05:00+00:00')
+        self.assertEqual(result['retry_at'], '2026-09-08T10:30:00+00:00')
         self.assertEqual(maintain.call_count, 4)
 
-    def test_daily_budget_defer_reports_provider_wake_time(self):
+    def test_actual_provider_daily_quota_pauses_until_its_reset(self):
         with patch.object(
             pool,
             'maintain',
             return_value={
-                'status': 'deferred',
+                'status': 'failed',
                 'ready': 3,
-                'reason': 'Automatic map daily budget exhausted.',
+                'reason': 'RESOURCE_EXHAUSTED free_tier_requests; free-models-per-day',
             },
         ):
             result = pool.maintain_until_stocked(
@@ -640,8 +666,22 @@ class AutomaticPoolTests(unittest.TestCase):
                 seed_catalog=None,
             )
 
-        self.assertEqual(result['status'], 'capped')
-        self.assertEqual(result['retry_at'], '2026-09-09T00:05:00+00:00')
+        self.assertEqual(result['status'], 'quota_paused')
+        self.assertEqual(result['retry_at'], '2026-09-09T07:05:00+00:00')
+
+    def test_provider_quota_failure_stops_refill_cycle_without_more_attempts(self):
+        failed = {'status': 'failed',
+                  'error': 'All AI providers failed: RESOURCE_EXHAUSTED free_tier_requests; free-models-per-day',
+                  'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            result = pool.maintain_until_stocked(
+                self.database, self.root/'reports', seed_catalog=None,
+                provider_factory=Mock(return_value=Mock(requests=[])), max_attempts=4,
+            )
+        self.assertEqual(result['status'], 'quota_paused')
+        self.assertEqual(result['attempted'], 1)
+        self.assertEqual(result['retry_at'], '2026-09-09T07:05:00+00:00')
+        discover.assert_called_once()
 
     def test_scheduler_wakes_for_maintenance_even_when_games_are_published(self):
         import server
