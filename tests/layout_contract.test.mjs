@@ -445,6 +445,15 @@ test("Map fit calculation stays anchored when selected-pin review scrolls into v
   assert.match(source, /aria-label="Change selected place"/);
 });
 
+test("Map tools keep readable labels on narrow phones", async () => {
+  const source = await readFile(new URL("../src/pages/MapGame.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/styles/index.css", import.meta.url), "utf8");
+  assert.match(source, /map-tool__short-label">Pick centre/);
+  assert.match(source, /map-tool__short-label">\{expanded \? "Shrink" : "Expand"\}/);
+  assert.match(css, /@media \(max-width: 359px\)\s*\{[\s\S]*?\.map-tool \{ flex-direction: column;/);
+  assert.match(css, /\.map-tool span \{ overflow-wrap: normal; white-space: nowrap; \}/);
+});
+
 function responsiveHeight(rule) {
   const value = values([rule], "height").at(-1);
   const match = value?.match(/(?:^|min\()clamp\(([\d.]+)px,\s*([\d.]+)[sd]?vh,\s*([\d.]+)px\)/);
