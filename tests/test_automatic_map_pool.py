@@ -671,6 +671,31 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['status'], 'quota_paused')
         self.assertEqual(result['retry_at'], '2026-09-08T10:02:10+00:00')
 
+    def test_provider_reset_pause_survives_scheduler_ticks_and_restart(self):
+        quota = {
+            'status': 'failed', 'ready': 3,
+            'reason': 'RESOURCE_EXHAUSTED free_tier_requests; free-models-per-day',
+            'retry_after_seconds': 125,
+        }
+        with patch.object(pool, 'maintain', return_value=quota) as maintain:
+            first = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
+            self.assertEqual(maintain.call_count, 1)
+        with patch.object(pool, 'maintain') as maintain:
+            second = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
+            self.assertEqual(second['status'], 'quota_paused')
+            self.assertEqual(second['retry_at'], first['retry_at'])
+            self.assertEqual(second['attempted'], 0)
+            maintain.assert_not_called()
+        self.clock += timedelta(seconds=131)
+        with patch.object(pool, 'maintain', return_value={'status': 'stocked', 'ready': 7}) as maintain:
+            resumed = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
+            self.assertEqual(resumed['status'], 'stocked')
+            maintain.assert_called_once()
+        with closing(self.connect()) as conn:
+            self.assertIsNone(conn.execute(
+                "SELECT value FROM automatic_map_meta WHERE key='provider_retry'"
+            ).fetchone())
+
     def test_provider_quota_failure_stops_refill_cycle_without_more_attempts(self):
         failed = {'status': 'failed',
                   'error': 'All AI providers failed: RESOURCE_EXHAUSTED free_tier_requests; free-models-per-day',
@@ -695,6 +720,21 @@ class AutomaticPoolTests(unittest.TestCase):
                 provider_factory=Mock(return_value=Mock(requests=[])), max_attempts=4,
             )
         self.assertTrue(result['quota_limited'])
+        self.assertEqual(result['retry_at'], '2026-09-08T11:00:05+00:00')
+
+    def test_verifier_quota_error_uses_its_own_reset_delay(self):
+        discovery_provider = Mock(requests=[], provider_error_detail='', retry_after_seconds=None)
+        verifier_provider = Mock(
+            requests=[], provider_error_detail='RESOURCE_EXHAUSTED free-models-per-day',
+            retry_after_seconds=3600,
+        )
+        factory = Mock(side_effect=[discovery_provider, verifier_provider])
+        with patch.object(discovery, 'discover', return_value=self.report()), \
+             patch.object(pool, 'verify', side_effect=RuntimeError('Map provider stopped')):
+            result = pool.maintain_until_stocked(
+                self.database, self.root, seed_catalog=None, provider_factory=factory,
+            )
+        self.assertEqual(result['status'], 'quota_paused')
         self.assertEqual(result['retry_at'], '2026-09-08T11:00:05+00:00')
 
     def test_scheduler_wakes_for_maintenance_even_when_games_are_published(self):
