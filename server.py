@@ -758,8 +758,10 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         today_quiz = ops_quiz_preview(conn, today_date)
         tomorrow_quiz = ops_quiz_preview(conn, tomorrow_date)
         quiz_pool = daily_quiz.quiz_pool_status(conn)
-        today_map = daily_map_game.puzzle_status(conn, today_date)
-        tomorrow_map = daily_map_game.puzzle_status(conn, tomorrow_date)
+        current_map_date = daily_map_game.active_map_round_date(today_date)
+        next_day_map_date = daily_map_game.active_map_round_date(tomorrow_date)
+        today_map = daily_map_game.puzzle_status(conn, current_map_date)
+        tomorrow_map = daily_map_game.puzzle_status(conn, next_day_map_date)
         queue_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automatic_map_entries'").fetchone()
         if queue_exists:
             tests.append(
@@ -826,10 +828,10 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         }
     )
     for test_id, label, map_status in (
-        ("today_map", "Today map", today_map),
-        ("tomorrow_map", "Tomorrow map", tomorrow_map),
+        ("today_map", "Current map round", today_map),
+        ("tomorrow_map", "Next day map round", tomorrow_map),
     ):
-        map_test = ops_map_readiness_test(test_id, today_date if test_id == "today_map" else tomorrow_date, label, map_status)
+        map_test = ops_map_readiness_test(test_id, current_map_date if test_id == "today_map" else next_day_map_date, label, map_status)
         tests.append(
             {
                 "id": map_test["id"],
@@ -4185,13 +4187,16 @@ def daily_map_level_is_requestable(conn: sqlite3.Connection, level_id: int) -> b
     return (
         row is not None
         and date.fromisoformat(str(row["puzzle_date"])).weekday() in {2, 5}
-        and daily_map_date_is_requestable(str(row["puzzle_date"]))
+        and (
+            (DAILY_MAP_FUTURE_REVIEW_ENABLED and daily_map_date_is_requestable(str(row["puzzle_date"])))
+            or str(row["puzzle_date"]) == daily_map_game.active_map_round_date(today_game_date())
+        )
     )
 
 
 def daily_map_submission_date(conn: sqlite3.Connection, level_id: int) -> str:
     if not DAILY_MAP_FUTURE_REVIEW_ENABLED:
-        return today_game_date()
+        return daily_map_game.active_map_round_date(today_game_date())
     row = conn.execute(
         """
         SELECT daily_map_puzzles.puzzle_date
@@ -5594,7 +5599,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
             if path == "/api/league" and method == "GET":
                 import playability
-                self.send_json(HTTPStatus.OK, playability.league_payload(conn, today_game_date()))
+                self.send_json(HTTPStatus.OK, playability.league_payload(conn, today_game_date(), SERVER_TZ))
                 return
 
             if path == "/api/daily-quiz/progress" and method == "POST":
@@ -5621,15 +5626,9 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
 
             if path == "/api/daily-map-game" and method == "GET":
-                puzzle_date = str(params.get("date", [today_game_date()])[0]).strip()
+                puzzle_date = str(params.get("date", [daily_map_game.active_map_round_date(today_game_date())])[0]).strip()
                 try:
                     normalized_date = daily_map_game.valid_game_date(puzzle_date)
-                    if date.fromisoformat(normalized_date).weekday() not in {2, 5}:
-                        self.send_error_json(
-                            HTTPStatus.NOT_FOUND,
-                            "Pin the place is available on Wednesdays and Saturdays.",
-                        )
-                        return
                     if not daily_map_date_is_requestable(normalized_date):
                         self.send_error_json(
                             HTTPStatus.NOT_FOUND,
@@ -6374,19 +6373,12 @@ class FultonsHandler(SimpleHTTPRequestHandler):
 
 
 def ops_map_readiness_test(test_id: str, game_date: str, label: str, map_status: dict[str, Any]) -> dict[str, str]:
-    if date.fromisoformat(game_date).weekday() not in {2, 5}:
-        return {
-            "id": test_id,
-            "label": label,
-            "status": "pass",
-            "detail": "Not scheduled (Wednesday and Saturday only)",
-        }
     status = str(map_status.get("status") or "missing")
     return {
         "id": test_id,
         "label": label,
         "status": "pass" if status == "published" else "fail",
-        "detail": f"{status} / accepted {map_status.get('acceptedLevels', 0)}",
+        "detail": f"{game_date}: {status} / accepted {map_status.get('acceptedLevels', 0)}",
     }
 
 

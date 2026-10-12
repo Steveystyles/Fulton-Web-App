@@ -72,15 +72,8 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 3614,
+      "line_number": 3621,
       "line_range": [
-        3614,
-        3615,
-        3616,
-        3617,
-        3618,
-        3619,
-        3620,
         3621,
         3622,
         3623,
@@ -89,11 +82,18 @@
         3626,
         3627,
         3628,
-        3629
+        3629,
+        3630,
+        3631,
+        3632,
+        3633,
+        3634,
+        3635,
+        3636
       ],
       "col_offset": 12,
       "end_col_offset": 8,
-      "code_sha256": "c51ee912334ed9afd0e8802fc16d7d40e624a07f0cacad07873c70d5a4740c7f"
+      "code_sha256": "1d3f1e555a50d278c865bad9fa9e5f22821e6ceac46142933a5b5d6d87e01fed"
     },
     {
       "filename": "daily_map_game.py",
@@ -103,13 +103,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4563,
+      "line_number": 4570,
       "line_range": [
-        4563
+        4570
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "f21a0f779ecef5c990de150d5df048ab6559db19d5386413bad8f6631a3587af"
+      "code_sha256": "5d81264e03d05a4bce9e09f5e745e58821e2c0a5aa4b2971aa3b70dcc3570211"
     },
     {
       "filename": "daily_map_game.py",
@@ -119,13 +119,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4618,
+      "line_number": 4625,
       "line_range": [
-        4618
+        4625
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "fbccc8ca75d6e570e72125e1b2138f3599a983c38f245faa0d7c0716d97c6b34"
+      "code_sha256": "d6799ac8a500fc55dd4ad575faa6d806efd7a45069799aebed2426dc3ba3e9ab"
     },
     {
       "filename": "daily_quiz.py",
@@ -424,19 +424,19 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 1799,
+      "line_number": 1801,
       "line_range": [
-        1799,
-        1800,
         1801,
         1802,
         1803,
         1804,
-        1805
+        1805,
+        1806,
+        1807
       ],
       "col_offset": 12,
       "end_col_offset": 14,
-      "code_sha256": "28a4b97b4990261b1dddd94e4c675a3f398cf017a808e1ae1f9271e6f2fb1a63"
+      "code_sha256": "f853c033a8235a890b7813f7b3f4ed0cdbf549d40d7980aa29e0a747cdef20f3"
     },
     {
       "filename": "server.py",
@@ -446,13 +446,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 2429,
+      "line_number": 2431,
       "line_range": [
-        2429
+        2431
       ],
       "col_offset": 13,
       "end_col_offset": 66,
-      "code_sha256": "da44369a5a8fda29ed5165bf3ddd4f06d4ca4c942711a111772c632ead617e53"
+      "code_sha256": "b3f1abe0721ed563ea3435b77f27a7127e04e32ecbd9e73b8854c11ff42b40cb"
     },
     {
       "filename": "server.py",
@@ -462,13 +462,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 2530,
+      "line_number": 2532,
       "line_range": [
-        2530
+        2532
       ],
       "col_offset": 9,
       "end_col_offset": 73,
-      "code_sha256": "a25b0ad3f08529b6d79fda2ccc9bfcfbcfd743ae297d9e6663d5e8712fb313e6"
+      "code_sha256": "d0ad77e8853a55d8e973da09f13a64accde81a36baa53730254c6591e42a0a95"
     },
     {
       "filename": "server.py",
@@ -478,19 +478,19 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 3426,
+      "line_number": 3428,
       "line_range": [
-        3426,
-        3427,
         3428,
         3429,
         3430,
         3431,
-        3432
+        3432,
+        3433,
+        3434
       ],
       "col_offset": 12,
       "end_col_offset": 8,
-      "code_sha256": "207ce38f286f985d3a2b86daa4561e3ff0e6ff0f334fe2aabace033c3c22430b"
+      "code_sha256": "65d57ebe9fc998392e6cd4f947fcc5f5b50ada335ac1ded52c05830e7c232676"
     },
     {
       "filename": "server.py",
@@ -500,13 +500,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 3687,
+      "line_number": 3689,
       "line_range": [
-        3687
+        3689
       ],
       "col_offset": 9,
       "end_col_offset": 37,
-      "code_sha256": "1b4dd302c874692b2297018d5fcfc8398ab7252ac983ace34c1b2b2e11ce0176"
+      "code_sha256": "5f1ca5f69127c28b3f211c711e4ab47771f5a4a6187ab1f8d9b96f7b51611a8e"
     },
     {
       "filename": "server.py",
@@ -516,13 +516,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Using xml.etree.ElementTree.fromstring to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.fromstring with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called",
       "cwe_id": 20,
-      "line_number": 3694,
+      "line_number": 3696,
       "line_range": [
-        3694
+        3696
       ],
       "col_offset": 11,
       "end_col_offset": 42,
-      "code_sha256": "4db14b2ab1c453e8ad20e9c3e5ef981cf8b9f69a71847c6173164e7b1cce497b"
+      "code_sha256": "55f340f5cff9e931ee7997068a2c414eda621dca31980a2b0f3b6663c95c9118"
     },
     {
       "filename": "tools/export_reviewed_football_training_data.py",

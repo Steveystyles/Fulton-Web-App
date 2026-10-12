@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import server
 import playability
+import daily_map_game
 
 
 class PlayabilityTests(unittest.TestCase):
@@ -96,6 +97,83 @@ class PlayabilityTests(unittest.TestCase):
         self.save(self.answers)
         self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-09")["activities"][1]["status"], "completed")
         self.assertEqual(initial["nextRoundAt"], "2026-09-10T00:00:00+00:00")
+
+    def test_map_round_remains_available_and_keeps_progress_between_publication_days(self):
+        self.assertEqual(daily_map_game.active_map_round_date("2026-09-10"), "2026-09-09")
+        self.assertEqual(daily_map_game.active_map_round_date("2026-09-11"), "2026-09-09")
+        self.assertEqual(daily_map_game.active_map_round_date("2026-09-12"), "2026-09-12")
+        self.assertEqual(daily_map_game.active_map_round_date("2026-09-13"), "2026-09-12")
+        self.assertEqual(daily_map_game.active_map_round_date("2026-09-15"), "2026-09-12")
+
+        now = server.utc_now()
+        puzzle_id = self.conn.execute(
+            "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-09-09', 'published')"
+        ).lastrowid
+        place_id = self.conn.execute("SELECT id FROM map_place_pool LIMIT 1").fetchone()["id"]
+        level_id = self.conn.execute(
+            "INSERT INTO daily_map_levels (puzzle_id, level_slug, place_id, max_points, lambda_km, created_at) "
+            "VALUES (?, 'easy', ?, 10, 100, ?)",
+            (puzzle_id, place_id, now),
+        ).lastrowid
+        self.conn.execute(
+            "INSERT INTO daily_map_progress (user_id, level_id, revealed_hint_count, created_at, updated_at) "
+            "VALUES (?, ?, 1, ?, ?)",
+            (self.user, level_id, now, now),
+        )
+        thursday = next(item for item in playability.today_payload(self.conn, self.user, "2026-09-10")["activities"] if item["id"] == "map")
+        self.assertEqual(thursday["status"], "continue")
+        with patch.object(server, "today_game_date", return_value="2026-09-10"):
+            status, bundle = self.route("GET", "/api/daily-map-game")
+        self.assertEqual(status, 200)
+        self.assertEqual(bundle["date"], "2026-09-09")
+        self.assertEqual(bundle["levels"][0]["revealedHintCount"], 1)
+        self.conn.execute(
+            "INSERT INTO daily_map_guesses (user_id, level_id, guessed_lat, guessed_lng, revealed_hint_count, "
+            "distance_m, score, band, completed_at, created_at, updated_at) "
+            "VALUES (?, ?, 0, 0, 1, 0, 7, 'exact', ?, ?, ?)",
+            (self.user, level_id, "2026-09-11T12:00:00+00:00", now, now),
+        )
+        friday = next(item for item in playability.today_payload(self.conn, self.user, "2026-09-11")["activities"] if item["id"] == "map")
+        self.assertEqual((friday["status"], friday["score"]), ("completed", 7))
+
+    def test_map_league_points_count_in_week_played_not_week_published(self):
+        now = server.utc_now()
+        puzzle_id = self.conn.execute(
+            "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-09-12', 'published')"
+        ).lastrowid
+        place_id = self.conn.execute("SELECT id FROM map_place_pool LIMIT 1").fetchone()["id"]
+        level_id = self.conn.execute(
+            "INSERT INTO daily_map_levels (puzzle_id, level_slug, place_id, max_points, lambda_km, created_at) "
+            "VALUES (?, 'easy', ?, 10, 100, ?)",
+            (puzzle_id, place_id, now),
+        ).lastrowid
+        self.conn.execute(
+            "INSERT INTO daily_map_guesses (user_id, level_id, guessed_lat, guessed_lng, revealed_hint_count, "
+            "distance_m, score, band, completed_at, created_at, updated_at) "
+            "VALUES (?, ?, 0, 0, 0, 0, 10, 'exact', ?, ?, ?)",
+            (self.user, level_id, "2026-09-14T12:00:00+00:00", now, now),
+        )
+        league = playability.league_payload(self.conn, "2026-09-14")
+        player = next(item for item in league["players"] if item["id"] == self.user)
+        self.assertEqual(player["games"]["map"], 10)
+        self.assertEqual(player["points"], 10)
+        second_puzzle_id = self.conn.execute(
+            "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-09-16', 'published')"
+        ).lastrowid
+        second_level_id = self.conn.execute(
+            "INSERT INTO daily_map_levels (puzzle_id, level_slug, place_id, max_points, lambda_km, created_at) "
+            "VALUES (?, 'easy', ?, 10, 100, ?)",
+            (second_puzzle_id, place_id, now),
+        ).lastrowid
+        self.conn.execute(
+            "INSERT INTO daily_map_guesses (user_id, level_id, guessed_lat, guessed_lng, revealed_hint_count, "
+            "distance_m, score, band, completed_at, created_at, updated_at) "
+            "VALUES (?, ?, 0, 0, 0, 0, 7, 'exact', ?, ?, ?)",
+            (self.user, second_level_id, "2026-09-16T12:00:00+00:00", now, now),
+        )
+        two_rounds = playability.league_payload(self.conn, "2026-09-16")
+        player = next(item for item in two_rounds["players"] if item["id"] == self.user)
+        self.assertEqual(player["games"]["map"], 17)
 
     def test_balanced_league_preserves_raw_quiz_results(self):
         self.save(self.answers)
