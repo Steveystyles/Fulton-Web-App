@@ -699,8 +699,13 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             key = os.environ.get('MAP_AI_API_KEY', '').strip()
             outcome['reason'] = (message.replace(key, '[REDACTED]') if key else message)[:500]
         error_text = ' '.join((str(error), str(report.get('provider_error_detail') or ''),
-                               str(getattr(provider, 'provider_error_detail', '') or '')))
-        retry_after = report.get('retry_after_seconds', getattr(provider, 'retry_after_seconds', None))
+                               str(getattr(provider, 'provider_error_detail', '') or ''),
+                               str(getattr(verifier, 'provider_error_detail', '') or '')))
+        retry_after = max((value for value in (
+            report.get('retry_after_seconds'),
+            getattr(provider, 'retry_after_seconds', None),
+            getattr(verifier, 'retry_after_seconds', None),
+        ) if isinstance(value, (int, float)) and 0 < value <= 172800), default=None)
         if isinstance(retry_after, (int, float)) and 0 < retry_after <= 172800:
             outcome['retry_after_seconds'] = retry_after
         outcome['quota_limited'] = daily_quiz.is_daily_quota_failure(error_text)
@@ -731,6 +736,39 @@ def next_refill_retry_at(current: datetime | None = None) -> str:
     return ((current or now()) + timedelta(minutes=REFILL_RETRY_MINUTES)).isoformat()
 
 
+def pending_provider_retry(database: Path) -> dict | None:
+    """Keep the provider's reset deadline across scheduler ticks and restarts."""
+    with closing(sqlite3.connect(database, timeout=10)) as conn:
+        initialize(conn)
+        row = conn.execute(
+            "SELECT value FROM automatic_map_meta WHERE key='provider_retry'"
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            pause = json.loads(row[0])
+            deadline = datetime.fromisoformat(pause['retry_at'].replace('Z', '+00:00'))
+            if deadline.tzinfo is None or deadline <= now():
+                raise ValueError('Provider retry deadline has elapsed or is invalid.')
+            return pause
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            conn.execute("DELETE FROM automatic_map_meta WHERE key='provider_retry'")
+            conn.commit()
+            return None
+
+
+def save_provider_retry(database: Path, outcome: dict) -> None:
+    pause = {key: outcome[key] for key in ('status', 'ready', 'retry_at')}
+    with closing(sqlite3.connect(database, timeout=10)) as conn:
+        initialize(conn)
+        conn.execute(
+            "INSERT INTO automatic_map_meta(key,value) VALUES('provider_retry',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (json.dumps(pause),),
+        )
+        conn.commit()
+
+
 def maintain_until_stocked(
     database: Path,
     output_dir: Path,
@@ -742,6 +780,9 @@ def maintain_until_stocked(
     """Keep producing checked rounds in bounded cycles until inventory is stocked."""
     if max_attempts < 1:
         raise ValueError('Automatic map maintenance needs at least one attempt.')
+    pause = pending_provider_retry(database)
+    if pause is not None:
+        return {**pause, 'attempted': 0}
     outcomes: list[dict] = []
     last: dict = {'status': 'deferred', 'ready': 0}
     for _ in range(max_attempts):
@@ -753,11 +794,15 @@ def maintain_until_stocked(
         )
         outcomes.append(last)
         if last.get('quota_limited') or daily_quiz.is_daily_quota_failure(str(last.get('reason') or '')):
-            return {**last, 'status': 'quota_paused', 'attempted': len(outcomes),
-                    'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
+            result = {**last, 'status': 'quota_paused', 'attempted': len(outcomes),
+                      'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
+            save_provider_retry(database, result)
+            return result
         if last.get('rate_limited'):
-            return {**last, 'status': 'rate_paused', 'attempted': len(outcomes),
-                    'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
+            result = {**last, 'status': 'rate_paused', 'attempted': len(outcomes),
+                      'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
+            save_provider_retry(database, result)
+            return result
         if int(last.get('ready', 0)) >= TARGET_READY:
             return {
                 **last,
