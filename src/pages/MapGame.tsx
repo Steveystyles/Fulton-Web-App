@@ -17,7 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
 import { DailyJourney, useToday } from "../components/DailyJourney";
 import { GameFeedback } from "../components/GameFeedback";
@@ -638,6 +638,7 @@ function MapCanvas({
 
 export function MapGame() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const requestedDate = searchParams.get("date")?.trim() || undefined;
   const { data: today } = useToday();
   const [game, setGame] = useState<DailyMapGameResponse | null>(null);
@@ -673,6 +674,9 @@ export function MapGame() {
     try {
       const response = await api.dailyMapGame(requestedDate);
       setGame(response);
+      if (requestedDate && response.date !== requestedDate) {
+        navigate("/map", { replace: true });
+      }
       setError("");
       setSelectedLevelId((current) => {
         if (current !== null && response.levels.some((level) => level.id === current)) {
@@ -687,7 +691,7 @@ export function MapGame() {
     } finally {
       setLoading(false);
     }
-  }, [requestedDate]);
+  }, [navigate, requestedDate]);
 
   useEffect(() => {
     void loadGame();
