@@ -155,8 +155,10 @@ test("Quiz question shows progress and keeps pressed answers visible", async () 
   assert.match(quiz, /aria-pressed=\{choice === answerOption\.id\}/);
   assert.match(css, /\.quiz-answer\[aria-pressed="true"\]\s*\{[^}]*translateY\(4px\)/s,
     "selection has a physical pressed state");
-  assert.match(css, /\.quiz-question-stage\s*\{[^}]*min-height:\s*min\(610px, calc\(100svh - 145px\)\)/s,
-    "the question uses available phone height without imposing a fixed overflow");
+  assert.match(css, /\.quiz-question-stage\s*\{[^}]*min-height:\s*min\(610px, max\(0px, calc\(100svh - var\(--app-header-height, 4rem\) - var\(--app-nav-height, 0px\) - 5\.5rem\)\)\)/s,
+    "the question accounts for the measured header and navigation height");
+  assert.match(css, /@media \(max-width: 759px\) and \(max-height: 720px\)\s*\{[^}]*\.quiz-question-stage\s*\{\s*min-height:\s*0/s,
+    "short phones are not forced to scroll by the stage minimum height");
 });
 
 function visit(node, predicate, result = []) {
