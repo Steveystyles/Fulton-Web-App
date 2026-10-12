@@ -30,7 +30,7 @@ def today_payload(conn, user_id, game_date, tz=timezone.utc):
     activities.append({"id": "quiz", "title": "Quiz", "href": "/quiz",
                        "status": "completed" if (board and board["status"] == "completed") or legacy_results else "continue" if (board and board["status"] == "in_progress") or any(json.loads(row["answers_json"] or "[]") for row in legacy_progress) else "ready" if available else "unavailable",
                        "score": board["score"] if board and board["status"] == "completed" else sum(row["score"] for row in legacy_results) if legacy_results else None})
-    active_map_date = daily_map_game.active_map_round_date(game_date)
+    active_map_date = daily_map_game.playable_map_round_date(conn, game_date)
     levels = conn.execute(
         "SELECT l.id, g.score, p.revealed_hint_count FROM daily_map_levels l "
         "JOIN daily_map_puzzles d ON d.id = l.puzzle_id "

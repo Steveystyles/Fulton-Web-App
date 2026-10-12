@@ -4189,14 +4189,14 @@ def daily_map_level_is_requestable(conn: sqlite3.Connection, level_id: int) -> b
         and date.fromisoformat(str(row["puzzle_date"])).weekday() in {2, 5}
         and (
             (DAILY_MAP_FUTURE_REVIEW_ENABLED and daily_map_date_is_requestable(str(row["puzzle_date"])))
-            or str(row["puzzle_date"]) == daily_map_game.active_map_round_date(today_game_date())
+            or str(row["puzzle_date"]) == daily_map_game.playable_map_round_date(conn, today_game_date())
         )
     )
 
 
 def daily_map_submission_date(conn: sqlite3.Connection, level_id: int) -> str:
     if not DAILY_MAP_FUTURE_REVIEW_ENABLED:
-        return daily_map_game.active_map_round_date(today_game_date())
+        return daily_map_game.playable_map_round_date(conn, today_game_date())
     row = conn.execute(
         """
         SELECT daily_map_puzzles.puzzle_date
@@ -5626,7 +5626,7 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
 
             if path == "/api/daily-map-game" and method == "GET":
-                puzzle_date = str(params.get("date", [daily_map_game.active_map_round_date(today_game_date())])[0]).strip()
+                puzzle_date = str(params.get("date", [daily_map_game.playable_map_round_date(conn, today_game_date())])[0]).strip()
                 try:
                     normalized_date = daily_map_game.valid_game_date(puzzle_date)
                     if not daily_map_date_is_requestable(normalized_date):

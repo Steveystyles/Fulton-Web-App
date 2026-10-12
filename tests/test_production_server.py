@@ -4392,6 +4392,17 @@ class ProductionServerHardeningTests(unittest.TestCase):
                     self.assertTrue(server.daily_map_level_is_requestable(conn, level_id))
                     self.assertEqual(server.daily_map_submission_date(conn, level_id), "2026-08-05")
             with patch.object(server, "today_game_date", return_value="2026-08-08"):
+                self.assertTrue(server.daily_map_level_is_requestable(conn, level_id))
+                self.assertEqual(server.daily_map_submission_date(conn, level_id), "2026-08-05")
+            next_puzzle_id = conn.execute(
+                "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-08-08', 'published')"
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO daily_map_levels (puzzle_id, level_slug, place_id, max_points, lambda_km, created_at) "
+                "VALUES (?, 'easy', ?, 10, 100, '2026-08-08T00:00:00+00:00')",
+                (next_puzzle_id, place_id),
+            )
+            with patch.object(server, "today_game_date", return_value="2026-08-08"):
                 self.assertFalse(server.daily_map_level_is_requestable(conn, level_id))
 
 
