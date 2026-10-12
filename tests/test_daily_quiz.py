@@ -2643,6 +2643,21 @@ class DailyQuizTests(unittest.TestCase):
             )
         )
 
+    def test_provider_quota_circuit_prefers_reported_reset_delay(self) -> None:
+        current = datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
+        provider = AlwaysFailingProvider("gemini", "free-models-per-day")
+        provider.last_retry_after_seconds = 125
+        self.assertTrue(daily_quiz.open_provider_quota_circuit(
+            self.conn, provider, "free-models-per-day", now=current,
+        ))
+        circuit = self.conn.execute(
+            "SELECT blocked_until FROM daily_quiz_provider_circuits WHERE provider_key='gemini'"
+        ).fetchone()
+        self.assertEqual(
+            circuit["blocked_until"],
+            (current + timedelta(seconds=130)).isoformat(),
+        )
+
     def test_provider_chain_uses_next_critic_after_invalid_payload(self) -> None:
         invalid = InvalidCriticProvider("invalid-critic")
         fallback = PassingProvider("valid-critic")
@@ -3699,6 +3714,7 @@ class DailyQuizTests(unittest.TestCase):
 
         self.assertEqual(request.call_count, 1)
         sleep.assert_not_called()
+        self.assertEqual(provider.last_retry_after_seconds, 28800)
 
     def test_gemini_daily_quota_on_final_attempt_opens_circuit(self) -> None:
         provider = daily_quiz.GeminiProvider(
@@ -3714,7 +3730,10 @@ class DailyQuizTests(unittest.TestCase):
             fp=BytesIO(json.dumps({"error": {
                 "status": "RESOURCE_EXHAUSTED",
                 "message": "Free tier exhausted",
-                "details": [{"metric": "free_tier_requests"}],
+                "details": [
+                    {"metric": "free_tier_requests"},
+                    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "125s"},
+                ],
             }}).encode("utf-8")),
         )
         tracked = daily_quiz.CircuitTrackingProvider(self.conn, provider)
@@ -3727,7 +3746,17 @@ class DailyQuizTests(unittest.TestCase):
             )
 
         self.assertEqual(request.call_count, 1)
-        self.assertIsNotNone(daily_quiz.active_provider_circuit(self.conn, "gemini:test-generator"))
+        self.assertEqual(provider.last_retry_after_seconds, 125)
+        circuit = daily_quiz.active_provider_circuit(self.conn, "gemini:test-generator")
+        self.assertIsNotNone(circuit)
+        self.assertLess(
+            datetime.fromisoformat(circuit["blocked_until"]) - datetime.now(timezone.utc),
+            timedelta(seconds=131),
+        )
+        self.assertGreater(
+            datetime.fromisoformat(circuit["blocked_until"]) - datetime.now(timezone.utc),
+            timedelta(seconds=120),
+        )
 
     def test_openrouter_daily_quota_does_not_retry(self) -> None:
         provider = daily_quiz.OpenAICompatibleProvider(
@@ -3746,7 +3775,7 @@ class DailyQuizTests(unittest.TestCase):
             "https://openrouter.ai/api/v1/chat/completions",
             429,
             "Too Many Requests",
-            hdrs=None,
+            hdrs={"Retry-After": "75"},
             fp=BytesIO(json.dumps({"error": {"message": "free-models-per-day limit reached"}}).encode("utf-8")),
         )
         with (
@@ -3756,6 +3785,7 @@ class DailyQuizTests(unittest.TestCase):
             provider._request("openrouter/free", "Return a decision.")
 
         self.assertEqual(request.call_count, 1)
+        self.assertEqual(provider.last_retry_after_seconds, 75)
 
     def test_provider_chain_reuses_primary_gemini_key_for_gemini_fallback(self) -> None:
         chain = daily_quiz.provider_chain_from_config(

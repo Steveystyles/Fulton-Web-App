@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import sqlite3
@@ -12,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Protocol
 from urllib.parse import quote
 from urllib.error import HTTPError, URLError
@@ -676,6 +678,34 @@ def configured_question_evidence(
         raise EvidenceSearchUnavailable(f"{openrouter_error}{suffix}") from openrouter_error
 
 
+def provider_retry_delay_seconds(error: HTTPError, payload: Any = None) -> float | None:
+    """Read a bounded provider reset delay without guessing from an HTTP 429."""
+    delays: list[float] = []
+    retry_header = str((error.headers or {}).get("Retry-After", "")).strip()
+    if retry_header:
+        try:
+            delays.append(float(retry_header))
+        except ValueError:
+            try:
+                reset_at = parsedate_to_datetime(retry_header)
+                if reset_at.tzinfo is None:
+                    reset_at = reset_at.replace(tzinfo=timezone.utc)
+                delays.append((reset_at - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                pass
+    body = payload.get("error") if isinstance(payload, dict) else None
+    details = body.get("details") if isinstance(body, dict) else None
+    if isinstance(details, list):
+        for detail in details:
+            if not isinstance(detail, dict) or not str(detail.get("@type", "")).endswith("RetryInfo"):
+                continue
+            match = re.fullmatch(r"(\d+(?:\.\d+)?)s", str(detail.get("retryDelay", "")))
+            if match:
+                delays.append(float(match.group(1)))
+    valid = [delay for delay in delays if math.isfinite(delay) and 0 < delay <= 172800]
+    return max(valid, default=None)
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -685,6 +715,7 @@ class GeminiProvider:
         self.config = config
         self.name = config.provider or self.name
         self._next_request_at = 0.0
+        self.last_retry_after_seconds: float | None = None
 
     def _wait_for_request_slot(self) -> None:
         wait_sec = self._next_request_at - time.monotonic()
@@ -693,11 +724,7 @@ class GeminiProvider:
         self._next_request_at = time.monotonic() + self.config.request_delay_sec
 
     def _defer_retry(self, attempt: int, error: HTTPError) -> None:
-        retry_after = error.headers.get("Retry-After", "").strip()
-        try:
-            retry_after_sec = float(retry_after)
-        except ValueError:
-            retry_after_sec = 0.0
+        retry_after_sec = provider_retry_delay_seconds(error) or 0.0
         try:
             body, charset = read_bounded_response(
                 error,
@@ -705,21 +732,12 @@ class GeminiProvider:
                 label="Gemini error",
             )
             error_payload = json.loads(body.decode(charset))
+            retry_after_sec = max(retry_after_sec, provider_retry_delay_seconds(error, error_payload) or 0.0)
+            self.last_retry_after_seconds = retry_after_sec or None
             if is_daily_quota_failure(json.dumps(error_payload)):
                 raise RuntimeError(
                     f"Gemini request failed with HTTP {error.code}: daily quota exceeded."
                 )
-            details = error_payload.get("error", {}).get("details", [])
-            retry_info = next(
-                (
-                    detail
-                    for detail in details
-                    if str(detail.get("@type", "")).endswith("RetryInfo")
-                ),
-                {},
-            )
-            retry_delay = str(retry_info.get("retryDelay", "")).rstrip("s")
-            retry_after_sec = max(retry_after_sec, float(retry_delay or 0))
         except (
             AttributeError,
             json.JSONDecodeError,
@@ -729,6 +747,7 @@ class GeminiProvider:
             ValueError,
         ):
             pass
+        self.last_retry_after_seconds = retry_after_sec or None
         self._defer_transient_retry(attempt, retry_after_sec=retry_after_sec)
 
     def _defer_transient_retry(self, attempt: int, *, retry_after_sec: float = 0.0) -> None:
@@ -740,6 +759,7 @@ class GeminiProvider:
         self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
 
     def _http_error_detail(self, error: HTTPError) -> str:
+        self.last_retry_after_seconds = provider_retry_delay_seconds(error)
         try:
             body, charset = read_bounded_response(
                 error,
@@ -747,6 +767,7 @@ class GeminiProvider:
                 label="Gemini error",
             )
             payload = json.loads(body.decode(charset, errors="replace"))
+            self.last_retry_after_seconds = provider_retry_delay_seconds(error, payload)
         except (OSError, json.JSONDecodeError, ResponseTooLarge, UnicodeDecodeError):
             return ""
         finally:
@@ -802,6 +823,7 @@ class GeminiProvider:
             },
             method="POST",
         )
+        self.last_retry_after_seconds = None
         for attempt in range(self.config.transient_retries + 1):
             self._wait_for_request_slot()
             try:
@@ -938,6 +960,7 @@ class OpenAICompatibleProvider:
         self.config = config
         self.name = config.provider or self.name
         self._next_request_at = 0.0
+        self.last_retry_after_seconds: float | None = None
 
     def _wait_for_request_slot(self) -> None:
         wait_sec = self._next_request_at - time.monotonic()
@@ -948,11 +971,8 @@ class OpenAICompatibleProvider:
     def _defer_retry(self, attempt: int, error: HTTPError | None = None) -> None:
         retry_after_sec = 0.0
         if error is not None:
-            retry_after = error.headers.get("Retry-After", "").strip()
-            try:
-                retry_after_sec = float(retry_after)
-            except ValueError:
-                retry_after_sec = 0.0
+            retry_after_sec = provider_retry_delay_seconds(error) or 0.0
+            self.last_retry_after_seconds = retry_after_sec or None
         delay = max(
             self.config.request_delay_sec,
             min(retry_after_sec, 60.0),
@@ -961,6 +981,7 @@ class OpenAICompatibleProvider:
         self._next_request_at = max(self._next_request_at, time.monotonic() + delay)
 
     def _http_error_detail(self, error: HTTPError) -> str:
+        self.last_retry_after_seconds = provider_retry_delay_seconds(error)
         try:
             body, charset = read_bounded_response(
                 error,
@@ -968,6 +989,7 @@ class OpenAICompatibleProvider:
                 label=f"{self.name} error",
             )
             payload = json.loads(body.decode(charset, errors="replace"))
+            self.last_retry_after_seconds = provider_retry_delay_seconds(error, payload)
         except (OSError, json.JSONDecodeError, ResponseTooLarge, UnicodeDecodeError):
             return ""
         finally:
@@ -1019,6 +1041,7 @@ class OpenAICompatibleProvider:
             headers=headers,
             method="POST",
         )
+        self.last_retry_after_seconds = None
         for attempt in range(self.config.transient_retries + 1):
             self._wait_for_request_slot()
             try:
@@ -1500,7 +1523,11 @@ def open_provider_quota_circuit(
         return False
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     provider_key = provider_circuit_key(provider, method_name=method_name)
-    blocked_until = provider_quota_reset_at(provider_key, now=current)
+    retry_after = getattr(provider, "last_retry_after_seconds", None)
+    if isinstance(retry_after, (int, float)) and math.isfinite(retry_after) and 0 < retry_after <= 172800:
+        blocked_until = current + timedelta(seconds=retry_after + 5)
+    else:
+        blocked_until = provider_quota_reset_at(provider_key, now=current)
     conn.execute(
         """
         INSERT INTO daily_quiz_provider_circuits (
