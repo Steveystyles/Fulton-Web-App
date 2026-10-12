@@ -633,7 +633,7 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['attempted'], 2)
         self.assertEqual(maintain.call_count, 2)
 
-    def test_maintenance_cycle_retries_after_short_backoff_not_next_day(self):
+    def test_maintenance_cycle_continues_promptly_without_a_quota_error(self):
         with patch.object(pool, 'TARGET_READY', 7), patch.object(
             pool,
             'maintain',
@@ -648,8 +648,14 @@ class AutomaticPoolTests(unittest.TestCase):
 
         self.assertEqual(result['status'], 'replenishing')
         self.assertEqual(result['attempted'], 4)
-        self.assertEqual(result['retry_at'], '2026-09-08T10:30:00+00:00')
+        self.assertEqual(result['retry_at'], '2026-09-08T10:00:15+00:00')
         self.assertEqual(maintain.call_count, 4)
+
+        self.clock += timedelta(seconds=16)
+        with patch.object(pool, 'maintain', return_value={'status': 'stocked', 'ready': 7}) as maintain:
+            resumed = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
+        self.assertEqual(resumed['status'], 'stocked')
+        maintain.assert_called_once()
 
     def test_provider_quota_uses_reported_retry_delay(self):
         with patch.object(
