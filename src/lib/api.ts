@@ -2,7 +2,7 @@ export type Role = "admin" | "mod" | "user";
 
 export type ActivityId = "wordle" | "quiz" | "map";
 export type TodayResponse = {
-  date: string; nextRoundAt: string;
+  date: string; mapRoundDate: string; nextRoundAt: string;
   nextMapDates: string[];
   activities: Array<{ id: ActivityId; title: string; href: string; status: "ready" | "continue" | "completed" | "unavailable"; score: number | null }>;
 };

@@ -19,7 +19,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
-import { DailyJourney } from "../components/DailyJourney";
+import { DailyJourney, useToday } from "../components/DailyJourney";
 import { GameFeedback } from "../components/GameFeedback";
 import { layoutMapLabels, type LabelBox } from "../lib/mapLabels";
 import { useAuth } from "../context/AuthContext";
@@ -639,6 +639,7 @@ function MapCanvas({
 export function MapGame() {
   const [searchParams] = useSearchParams();
   const requestedDate = searchParams.get("date")?.trim() || undefined;
+  const { data: today } = useToday();
   const [game, setGame] = useState<DailyMapGameResponse | null>(null);
   const [selectedLevelId, setSelectedLevelId] = useState<number | null>(null);
   const [draftSelection, setDraftSelection] = useState<DailyMapSnapSelection | null>(null);
@@ -680,6 +681,8 @@ export function MapGame() {
         return response.levels.find((level) => !level.submitted)?.id ?? response.levels[0]?.id ?? null;
       });
     } catch (caughtError) {
+      setGame(null);
+      setSelectedLevelId(null);
       setError(caughtError instanceof Error ? caughtError.message : "Map game failed to load.");
     } finally {
       setLoading(false);
@@ -689,6 +692,13 @@ export function MapGame() {
   useEffect(() => {
     void loadGame();
   }, [loadGame]);
+
+  useEffect(() => {
+    if (!requestedDate && game !== null && today?.mapRoundDate && game.date !== today.mapRoundDate) {
+      setDraftSelection(null);
+      void loadGame();
+    }
+  }, [game, loadGame, requestedDate, today?.mapRoundDate]);
 
   useEffect(() => {
     setDraftSelection(null);

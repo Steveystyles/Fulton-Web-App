@@ -27,7 +27,7 @@ createServer((request, response) => {
   } else if (url.pathname === "/api/health") {
     respond(response, 200, { ok: true, build: { version: "local-map-fixture" } });
   } else if (url.pathname === "/api/today") {
-    respond(response, 200, { date: "2026-10-10", nextRoundAt: "2026-10-11T00:00:00Z", nextMapDates: [], activities: [
+    respond(response, 200, { date: "2026-10-10", mapRoundDate: "2026-10-10", nextRoundAt: "2026-10-11T00:00:00Z", nextMapDates: [], activities: [
       { id: "wordle", title: "Wordle", href: "/wordle", status: "ready", score: null },
       { id: "quiz", title: "Quiz", href: "/quiz", status: "ready", score: null },
       { id: "map", title: "Map", href: "/map", status: "ready", score: null },

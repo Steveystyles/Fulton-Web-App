@@ -49,7 +49,8 @@ def today_payload(conn, user_id, game_date, tz=timezone.utc):
         cursor += timedelta(days=1)
         if cursor.weekday() in {2, 5}:
             upcoming_map_dates.append(cursor.isoformat())
-    return {"date": game_date, "nextRoundAt": datetime.combine(tomorrow, time(), tz).isoformat(),
+    return {"date": game_date, "mapRoundDate": active_map_date,
+            "nextRoundAt": datetime.combine(tomorrow, time(), tz).isoformat(),
             "activities": activities, "nextMapDates": upcoming_map_dates}
 
 
