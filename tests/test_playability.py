@@ -97,6 +97,7 @@ class PlayabilityTests(unittest.TestCase):
         self.save(self.answers)
         self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-09")["activities"][1]["status"], "completed")
         self.assertEqual(initial["nextRoundAt"], "2026-09-10T00:00:00+00:00")
+        self.assertEqual(initial["mapRoundDate"], "2026-09-09")
 
     def test_map_round_remains_available_and_keeps_progress_between_publication_days(self):
         self.assertEqual(daily_map_game.active_map_round_date("2026-09-10"), "2026-09-09")
@@ -122,6 +123,8 @@ class PlayabilityTests(unittest.TestCase):
         )
         thursday = next(item for item in playability.today_payload(self.conn, self.user, "2026-09-10")["activities"] if item["id"] == "map")
         self.assertEqual(thursday["status"], "continue")
+        self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-10")["mapRoundDate"], "2026-09-09")
+        self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-12")["mapRoundDate"], "2026-09-12")
         with patch.object(server, "today_game_date", return_value="2026-09-10"):
             status, bundle = self.route("GET", "/api/daily-map-game")
         self.assertEqual(status, 200)
