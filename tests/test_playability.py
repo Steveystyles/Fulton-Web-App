@@ -124,7 +124,7 @@ class PlayabilityTests(unittest.TestCase):
         thursday = next(item for item in playability.today_payload(self.conn, self.user, "2026-09-10")["activities"] if item["id"] == "map")
         self.assertEqual(thursday["status"], "continue")
         self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-10")["mapRoundDate"], "2026-09-09")
-        self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-12")["mapRoundDate"], "2026-09-12")
+        self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-12")["mapRoundDate"], "2026-09-09")
         with patch.object(server, "today_game_date", return_value="2026-09-10"):
             status, bundle = self.route("GET", "/api/daily-map-game")
         self.assertEqual(status, 200)
@@ -138,6 +138,22 @@ class PlayabilityTests(unittest.TestCase):
         )
         friday = next(item for item in playability.today_payload(self.conn, self.user, "2026-09-11")["activities"] if item["id"] == "map")
         self.assertEqual((friday["status"], friday["score"]), ("completed", 7))
+        with patch.object(server, "today_game_date", return_value="2026-09-12"):
+            status, fallback = self.route("GET", "/api/daily-map-game")
+        self.assertEqual((status, fallback["date"]), (200, "2026-09-09"))
+        saturday_puzzle_id = self.conn.execute(
+            "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-09-12', 'published')"
+        ).lastrowid
+        self.conn.execute(
+            "INSERT INTO daily_map_levels (puzzle_id, level_slug, place_id, max_points, lambda_km, created_at) "
+            "VALUES (?, 'easy', ?, 10, 100, ?)",
+            (saturday_puzzle_id, place_id, now),
+        )
+        self.assertEqual(playability.today_payload(self.conn, self.user, "2026-09-12")["mapRoundDate"], "2026-09-12")
+        with patch.object(server, "today_game_date", return_value="2026-09-12"):
+            status, fresh = self.route("GET", "/api/daily-map-game")
+        self.assertEqual((status, fresh["date"]), (200, "2026-09-12"))
+        self.assertEqual(daily_map_game.playable_map_round_date(self.conn, "2026-09-19"), "2026-09-19")
 
     def test_map_league_points_count_in_week_played_not_week_published(self):
         now = server.utc_now()

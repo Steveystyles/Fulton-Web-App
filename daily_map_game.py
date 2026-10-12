@@ -1196,6 +1196,29 @@ def active_map_round_date(value: str) -> str:
     return (game_date - timedelta(days=days_since_round)).isoformat()
 
 
+def playable_map_round_date(conn: sqlite3.Connection, value: str) -> str:
+    """Keep the previous published round playable if this round is not ready."""
+    scheduled = active_map_round_date(value)
+    preceding_day = (date.fromisoformat(scheduled) - timedelta(days=1)).isoformat()
+    previous = active_map_round_date(preceding_day)
+    row = conn.execute(
+        """
+        SELECT puzzle_date
+        FROM daily_map_puzzles
+        WHERE puzzle_date IN (?, ?)
+          AND status = 'published'
+          AND EXISTS (
+              SELECT 1 FROM daily_map_levels
+              WHERE daily_map_levels.puzzle_id = daily_map_puzzles.id
+          )
+        ORDER BY puzzle_date DESC
+        LIMIT 1
+        """,
+        (scheduled, previous),
+    ).fetchone()
+    return str(row["puzzle_date"]) if row is not None else scheduled
+
+
 def ensure_column(
     conn: sqlite3.Connection,
     table_name: str,
