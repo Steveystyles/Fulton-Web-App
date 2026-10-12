@@ -23,7 +23,10 @@ from tools import discover_map_places as discovery
 from tools import rewrite_map_clues_with_ai as rewriter
 
 TARGET_READY = 7
+# Four attempts only bound one scheduler work slice; they are not a daily or
+# lifetime generation quota. An understocked pool continues on the next tick.
 REFILL_ATTEMPTS_PER_CYCLE = 4
+REFILL_CONTINUE_SECONDS = 15
 REFILL_RETRY_MINUTES = 30
 MAX_AGE_DAYS = 14
 CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interesting_hook',
@@ -733,7 +736,7 @@ def provider_retry_at(retry_after_seconds: float | None, current: datetime | Non
 
 
 def next_refill_retry_at(current: datetime | None = None) -> str:
-    return ((current or now()) + timedelta(minutes=REFILL_RETRY_MINUTES)).isoformat()
+    return ((current or now()) + timedelta(seconds=REFILL_CONTINUE_SECONDS)).isoformat()
 
 
 def pending_provider_retry(database: Path) -> dict | None:
