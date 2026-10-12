@@ -163,7 +163,12 @@ export function Quiz() {
 
       {activeCard?.question && !reveal ? (
         <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-2xl focus:outline-none">
-          <div className="quiz-question-stage">
+          <div className="quiz-question-stage" data-mode={mode}>
+            <div className="quiz-question-stage__progress" aria-label={`Question ${activeCard.selectedOrder} of ${board?.pickCount ?? 4}`}>
+              {Array.from({ length: board?.pickCount ?? 4 }, (_, index) => (
+                <span key={index} data-state={index + 1 < (activeCard.selectedOrder ?? 1) ? "done" : index + 1 === activeCard.selectedOrder ? "current" : "upcoming"} />
+              ))}
+            </div>
             <div className="quiz-question-stage__meta">
               <span>Question {activeCard.selectedOrder} of {board?.pickCount ?? 4}</span>
               <span>{activeCard.difficulty} · {activeCard.points} {activeCard.points === 1 ? "point" : "points"}</span>

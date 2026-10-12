@@ -147,6 +147,18 @@ test("quiz markup: four long answers are fully rendered in an equal two-column g
   });
 });
 
+test("Quiz question shows progress and keeps pressed answers visible", async () => {
+  const quiz = await sourceText("src/pages/Quiz.tsx");
+  const css = await sourceText("src/styles/index.css");
+  assert.match(quiz, /quiz-question-stage__progress/);
+  assert.match(quiz, /aria-label=\{`Question \$\{activeCard\.selectedOrder\} of/);
+  assert.match(quiz, /aria-pressed=\{choice === answerOption\.id\}/);
+  assert.match(css, /\.quiz-answer\[aria-pressed="true"\]\s*\{[^}]*translateY\(4px\)/s,
+    "selection has a physical pressed state");
+  assert.match(css, /\.quiz-question-stage\s*\{[^}]*min-height:\s*min\(610px, calc\(100svh - 145px\)\)/s,
+    "the question uses available phone height without imposing a fixed overflow");
+});
+
 function visit(node, predicate, result = []) {
   if (predicate(node)) result.push(node);
   ts.forEachChild(node, child => { visit(child, predicate, result); });
