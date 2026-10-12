@@ -725,19 +725,18 @@ class ProductionServerHardeningTests(unittest.TestCase):
         self.assertEqual(sent, [(HTTPStatus.OK, summary)])
         internal_ops_summary.assert_called_once_with()
 
-    def test_ops_map_readiness_skips_off_days_but_flags_missing_scheduled_rounds(self) -> None:
+    def test_ops_map_readiness_checks_active_round_on_every_day(self) -> None:
         import server
 
-        friday = server.ops_map_readiness_test("today_map", "2026-10-02", "Today map", {"status": "missing"})
-        self.assertEqual(friday["status"], "pass")
-        self.assertIn("Not scheduled", friday["detail"])
+        friday = server.ops_map_readiness_test("today_map", "2026-09-30", "Current map round", {"status": "missing"})
+        self.assertEqual(friday["status"], "fail")
 
         saturday_missing = server.ops_map_readiness_test("tomorrow_map", "2026-10-03", "Tomorrow map", {"status": "missing"})
         self.assertEqual(saturday_missing["status"], "fail")
 
         saturday_ready = server.ops_map_readiness_test("tomorrow_map", "2026-10-03", "Tomorrow map", {"status": "published", "acceptedLevels": 1})
         self.assertEqual(saturday_ready["status"], "pass")
-        self.assertIn("published / accepted 1", saturday_ready["detail"])
+        self.assertIn("2026-10-03: published / accepted 1", saturday_ready["detail"])
 
         wednesday_missing = server.ops_map_readiness_test("today_map", "2026-10-07", "Today map", {"status": "missing"})
         self.assertEqual(wednesday_missing["status"], "fail")
@@ -4366,8 +4365,34 @@ class ProductionServerHardeningTests(unittest.TestCase):
         ):
             self.assertEqual(
                 server.daily_map_submission_date(conn, level_id),
-                "2026-08-03",
+                "2026-08-01",
             )
+
+    def test_map_round_stays_playable_until_next_publication_day(self) -> None:
+        import daily_map_game
+        import server
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        self.addCleanup(conn.close)
+        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        daily_map_game.initialize_database(conn)
+        place_id = conn.execute("SELECT id FROM map_place_pool LIMIT 1").fetchone()["id"]
+        puzzle_id = conn.execute(
+            "INSERT INTO daily_map_puzzles (puzzle_date, status) VALUES ('2026-08-05', 'published')"
+        ).lastrowid
+        level_id = conn.execute(
+            "INSERT INTO daily_map_levels (puzzle_id, level_slug, place_id, max_points, lambda_km, created_at) "
+            "VALUES (?, 'easy', ?, 10, 100, '2026-08-05T00:00:00+00:00')",
+            (puzzle_id, place_id),
+        ).lastrowid
+        with patch.object(server, "DAILY_MAP_FUTURE_REVIEW_ENABLED", False):
+            for current_day in ("2026-08-05", "2026-08-06", "2026-08-07"):
+                with patch.object(server, "today_game_date", return_value=current_day):
+                    self.assertTrue(server.daily_map_level_is_requestable(conn, level_id))
+                    self.assertEqual(server.daily_map_submission_date(conn, level_id), "2026-08-05")
+            with patch.object(server, "today_game_date", return_value="2026-08-08"):
+                self.assertFalse(server.daily_map_level_is_requestable(conn, level_id))
 
 
 if __name__ == "__main__":

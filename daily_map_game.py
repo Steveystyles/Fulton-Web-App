@@ -11,7 +11,7 @@ import time
 import hashlib
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any, Protocol
@@ -1187,6 +1187,13 @@ def valid_game_date(value: str) -> str:
         return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
     except ValueError as error:
         raise ValueError("Map game date must use YYYY-MM-DD format.") from error
+
+
+def active_map_round_date(value: str) -> str:
+    """The latest Wednesday or Saturday round, including its publication day."""
+    game_date = date.fromisoformat(valid_game_date(value))
+    days_since_round = min((game_date.weekday() - weekday) % 7 for weekday in (2, 5))
+    return (game_date - timedelta(days=days_since_round)).isoformat()
 
 
 def ensure_column(
@@ -4796,7 +4803,7 @@ def snap_guess(
     if level is None or level["status"] != "published":
         return {"error": "Map-game level was not found."}, HTTPStatus.NOT_FOUND
     if level["puzzle_date"] != today:
-        return {"error": "Only today's map game can be selected."}, HTTPStatus.BAD_REQUEST
+        return {"error": "Only the current map round can be selected."}, HTTPStatus.BAD_REQUEST
 
     candidate_radius_m = max(SNAP_TOUCH_RADIUS_CAP_M.values())
     latitude_delta = min(180.0, (candidate_radius_m / 110_000.0) + 0.01)
@@ -5089,7 +5096,7 @@ def reveal_next_clue(
     if level is None or level["status"] != "published":
         return {"error": "Map-game level was not found."}, HTTPStatus.NOT_FOUND
     if level["puzzle_date"] != today:
-        return {"error": "Only today's map game can reveal clues."}, HTTPStatus.BAD_REQUEST
+        return {"error": "Only the current map round can reveal clues."}, HTTPStatus.BAD_REQUEST
     if (
         type(expected_revealed_hint_count) is not int
         or not 0 <= expected_revealed_hint_count <= 3
@@ -5155,7 +5162,7 @@ def submit_guess(
     if level is None or level["status"] != "published":
         return {"error": "Map-game level was not found."}, HTTPStatus.NOT_FOUND
     if level["puzzle_date"] != today:
-        return {"error": "Only today's map game can be scored."}, HTTPStatus.BAD_REQUEST
+        return {"error": "Only the current map round can be scored."}, HTTPStatus.BAD_REQUEST
 
     existing = submitted_level_row(conn, user_id, level_id)
     if existing is not None:
