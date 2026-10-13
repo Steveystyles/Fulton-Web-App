@@ -832,6 +832,7 @@ class GeminiProvider:
                         response,
                         max_bytes=2_000_000,
                         label="Gemini",
+                        max_duration_sec=self.config.timeout_sec,
                     )
                     response_payload = json.loads(body.decode(charset))
                 break
@@ -1050,6 +1051,7 @@ class OpenAICompatibleProvider:
                         response,
                         max_bytes=2_000_000,
                         label=self.name,
+                        max_duration_sec=self.config.timeout_sec,
                     )
                     response_payload = json.loads(body.decode(charset))
                 try:
