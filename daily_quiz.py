@@ -5236,6 +5236,10 @@ def _generate_daily_quiz_in_place(
             return quiz_status(conn, quiz_date)
         if not slot_result:
             reason = f"Could not generate {subject} / {difficulty} after {config.max_attempts_per_slot} attempts."
+            if generation_mode == "pool":
+                set_quiz_status(conn, quiz_date, "generating", failure_reason=reason)
+                log(f"{reason} Keeping the pool batch for a later retry.")
+                return quiz_status(conn, quiz_date)
             set_quiz_status(conn, quiz_date, "failed", failure_reason=reason)
             log(reason)
             return quiz_status(conn, quiz_date)
