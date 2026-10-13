@@ -20,6 +20,7 @@ from tools import build_quiz_learning_profile
 
 DEFAULT_DB_PATH = PROJECT_DIR / "data" / "fultons.db"
 DEFAULT_TRAINING_DIR = PROJECT_DIR / "data" / "training"
+RUNTIME_PROFILE_VERSION = 2
 
 
 def connect_database(path: Path) -> sqlite3.Connection:
@@ -38,6 +39,9 @@ def latest_negative_files(training_dir: Path) -> list[Path]:
 
 def feedback_entries_from_attempt(row: sqlite3.Row) -> list[str]:
     entries: list[str] = []
+    reason = str(row["failure_reason"] or "").strip()
+    if reason and not daily_quiz.is_transient_provider_failure(reason):
+        entries.append(reason)
     critic_json = row["critic_json"]
     if critic_json:
         try:
@@ -52,9 +56,6 @@ def feedback_entries_from_attempt(row: sqlite3.Row) -> list[str]:
                 text = str(reason or "").strip()
                 if text:
                     entries.append(text)
-    reason = str(row["failure_reason"] or "").strip()
-    if reason and not daily_quiz.is_transient_provider_failure(reason):
-        entries.append(reason)
     return entries
 
 
@@ -82,16 +83,21 @@ def failed_attempt_records(
     ).fetchall()
 
     records: list[dict[str, Any]] = []
-    seen: set[str] = set()
     for row in rows:
+        if daily_quiz.is_transient_provider_failure(str(row["failure_reason"] or "")):
+            continue
+        feedback: list[str] = []
+        seen: set[str] = set()
         for entry in feedback_entries_from_attempt(row):
             normalized = daily_quiz.normalize_text(entry)
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
+            feedback.append(entry)
+        if feedback:
             records.append(
                 {
-                    "feedback_to_generator": entry,
+                    "feedback_to_generator": "; ".join(feedback)[:2400],
                     "metadata": {
                         "reason": "daily_quiz_attempt_failure",
                         "quiz_date": row["quiz_date"],
@@ -263,7 +269,8 @@ def refresh_runtime_profile(conn: sqlite3.Connection, profile_path: str) -> dict
             "SELECT COALESCE(MAX(id), 0) FROM daily_quiz_candidates"
         ).fetchone()[0]),
     }
-    if previous.get("runtime_source_progress") == progress:
+    if (previous.get("runtime_source_progress") == progress
+            and previous.get("runtime_profile_version") == RUNTIME_PROFILE_VERSION):
         return {"status": "unchanged", **progress}
     if progress["attempt_id"] == 0:
         return {"status": "no_feedback", **progress}
@@ -285,6 +292,7 @@ def refresh_runtime_profile(conn: sqlite3.Connection, profile_path: str) -> dict
     if errors:
         raise ValueError("Invalid live quiz learning profile: " + "; ".join(errors[:3]))
     profile["runtime_source_progress"] = progress
+    profile["runtime_profile_version"] = RUNTIME_PROFILE_VERSION
     profile["validation"] = {"passed": True, "errors": []}
 
     # A same-directory replacement keeps readers on either complete version.

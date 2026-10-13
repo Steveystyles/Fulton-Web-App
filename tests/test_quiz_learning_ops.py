@@ -145,7 +145,7 @@ class QuizLearningOpsTests(unittest.TestCase):
             )
 
         self.assertTrue(profile["validation"]["passed"])
-        self.assertEqual(profile["failed_attempt_record_count"], 3)
+        self.assertEqual(profile["failed_attempt_record_count"], 1)
         self.assertEqual(profile["pattern_counts"]["underspecified_multi_answer"], 1)
         self.assertIn("football/*", profile["feedback_by_slot"])
 
@@ -262,6 +262,22 @@ class QuizLearningOpsTests(unittest.TestCase):
 
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["metadata"]["quiz_date"], "2026-10-13")
+
+    def test_runtime_profile_counts_repeated_failures_per_attempt(self) -> None:
+        for _ in range(3):
+            self.add_attempt(
+                date="9000-01-27", passed=False,
+                failure_reason="Correct answer already appeared recently in this quiz subject.",
+            )
+        self.add_attempt(
+            date="9000-01-27", passed=False,
+            failure_reason="HTTP 503 temporary upstream error",
+        )
+
+        profile = refresh.build_candidate_profile(self.conn, negative_files=[])
+
+        self.assertEqual(profile["failed_attempt_record_count"], 3)
+        self.assertEqual(profile["slot_pattern_counts"]["football/easy"]["repeated_answer"], 3)
 
     def test_slot_specific_learning_precedes_wildcard_in_prompt_budget(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
