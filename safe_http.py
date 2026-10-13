@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 import ssl
+import time
 from http.client import HTTPConnection, HTTPSConnection, HTTPException, HTTPResponse
 from io import BytesIO
 from email.message import Message
@@ -140,14 +141,18 @@ def read_bounded_response(
     *,
     max_bytes: int,
     label: str = "Upstream",
+    max_duration_sec: float | None = None,
 ) -> tuple[bytes, str]:
     if max_bytes < 1:
         raise ValueError("max_bytes must be positive.")
+    if max_duration_sec is not None and max_duration_sec <= 0:
+        raise ValueError("max_duration_sec must be positive.")
     headers = getattr(response, "headers", None) or Message()
     content_encoding = str(headers.get("Content-Encoding") or "identity").lower()
     if content_encoding not in {"", "identity"}:
         raise ResponseTooLarge(f"{label} compressed responses are not accepted.")
     raw_length = headers.get("Content-Length")
+    declared_length: int | None = None
     if raw_length:
         try:
             declared_length = int(raw_length)
@@ -155,7 +160,48 @@ def read_bounded_response(
             raise ResponseTooLarge(f"{label} Content-Length is invalid.") from error
         if declared_length < 0 or declared_length > max_bytes:
             raise ResponseTooLarge(f"{label} response exceeds the allowed size.")
-    body = response.read(max_bytes + 1)
+    if max_duration_sec is None:
+        body = response.read(max_bytes + 1)
+    else:
+        # A socket timeout only bounds the gap between received bytes. A server
+        # that drips a response can otherwise occupy a generation worker forever.
+        sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+        if sock is None:
+            # Test doubles and in-memory responses have no network to stall.
+            if isinstance(response, HTTPResponse):
+                raise TimeoutError(f"{label} response deadline cannot be enforced.")
+            body = response.read(max_bytes + 1)
+        else:
+            original_timeout = sock.gettimeout()
+            deadline = time.monotonic() + max_duration_sec
+            chunks: list[bytes] = []
+            total = 0
+            try:
+                while total <= max_bytes and (declared_length is None or total < declared_length):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"{label} response exceeded its deadline.")
+                    sock.settimeout(remaining)
+                    read_size = min(65_536, max_bytes + 1 - total)
+                    if declared_length is not None:
+                        read_size = min(read_size, declared_length - total)
+                    # read1 returns after one buffered/network read; read(n) can
+                    # wait to fill n while a peer keeps trickling bytes.
+                    read_once = getattr(response, "read1", None)
+                    chunk = read_once(read_size) if callable(read_once) else response.read(read_size)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if getattr(response, "fp", None) is None:
+                        break
+            finally:
+                try:
+                    sock.settimeout(original_timeout)
+                except OSError:
+                    # HTTPResponse closes its socket after the final body byte.
+                    pass
+            body = b"".join(chunks)
     if len(body) > max_bytes:
         raise ResponseTooLarge(f"{label} response exceeds the allowed size.")
     get_charset = getattr(headers, "get_content_charset", None)

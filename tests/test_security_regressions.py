@@ -163,6 +163,48 @@ class OutboundRequestSafetyTests(unittest.TestCase):
             ):
                 safe_http.read_bounded_response(response, max_bytes=5)  # type: ignore[arg-type]
 
+    def test_bounded_reader_enforces_total_response_deadline(self) -> None:
+        class Socket:
+            timeout = 30.0
+
+            def gettimeout(self) -> float:
+                return self.timeout
+
+            def settimeout(self, value: float) -> None:
+                self.timeout = value
+
+        class Response:
+            def __init__(self) -> None:
+                self.headers = Message()
+                self.headers["Content-Length"] = "3"
+                self.socket = Socket()
+                self.fp = type("Buffer", (), {"raw": type("Raw", (), {"_sock": self.socket})()})()
+                self.reads = 0
+
+            def read1(self, _limit: int) -> bytes:
+                self.reads += 1
+                return b"x"
+
+            def read(self, _limit: int) -> bytes:
+                raise AssertionError("Deadline reader should use non-filling read1.")
+
+        response = Response()
+        with patch("safe_http.time.monotonic", side_effect=[0.0, 0.2, 1.1]):
+            with self.assertRaisesRegex(TimeoutError, "exceeded its deadline"):
+                safe_http.read_bounded_response(
+                    response, max_bytes=5, max_duration_sec=1.0,
+                )  # type: ignore[arg-type]
+        self.assertEqual(response.reads, 1)
+        self.assertEqual(response.socket.timeout, 30.0)
+
+        response = Response()
+        with patch("safe_http.time.monotonic", side_effect=[0.0, 0.1, 0.2, 0.3]):
+            body, _charset = safe_http.read_bounded_response(
+                response, max_bytes=5, max_duration_sec=1.0,
+            )  # type: ignore[arg-type]
+        self.assertEqual(body, b"xxx")
+        self.assertEqual(response.socket.timeout, 30.0)
+
 
 class AuthenticationSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
