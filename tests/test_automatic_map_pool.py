@@ -143,7 +143,8 @@ class AutomaticPoolTests(unittest.TestCase):
                 pool.publish(conn, puzzle_date='2026-09-08')
         provider = Mock(requests=[])
         provider.call_with_fallback.return_value = {
-            'interesting_hook_score': 5, 'reason': 'A striking scientific idea.',
+            'interesting_hook_score': 5, 'evidence_supported': True,
+            'chronology_consistent': True, 'reason': 'A striking scientific idea.',
         }
         outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                 provider_factory=lambda _budget: provider)
@@ -161,7 +162,8 @@ class AutomaticPoolTests(unittest.TestCase):
             conn.commit()
         provider = Mock(requests=[])
         provider.call_with_fallback.return_value = {
-            'interesting_hook_score': 2, 'reason': 'Only an ordinary design detail.',
+            'interesting_hook_score': 2, 'evidence_supported': True,
+            'chronology_consistent': True, 'reason': 'Only an ordinary design detail.',
         }
         outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                 provider_factory=lambda _budget: provider)
@@ -201,8 +203,10 @@ class AutomaticPoolTests(unittest.TestCase):
         second = self.queue_two_legacy_rounds()
         provider = Mock(requests=[])
         provider.call_with_fallback.return_value = {'audits': [
-            {'id': second['id'], 'interesting_hook_score': 2, 'reason': 'Only a design detail.'},
-            {'id': self.place['id'], 'interesting_hook_score': 5, 'reason': 'Memorable discovery.'},
+            {'id': second['id'], 'interesting_hook_score': 2, 'evidence_supported': True,
+             'chronology_consistent': True, 'reason': 'Only a design detail.'},
+            {'id': self.place['id'], 'interesting_hook_score': 5, 'evidence_supported': True,
+             'chronology_consistent': True, 'reason': 'Memorable discovery.'},
         ]}
         outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                 provider_factory=lambda _budget: provider)
@@ -218,6 +222,46 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(rows[second['id']][0], 'rejected')
             self.assertTrue(rows[second['id']][1]['editorial_rejection'])
             self.assertEqual(conn.execute('SELECT attempts FROM automatic_map_usage').fetchone()[0], 1)
+
+    def test_full_legacy_queue_still_audits_and_rejects_unsupported_history(self):
+        second = self.queue_two_legacy_rounds()
+        with patch.object(pool, 'TARGET_READY', 1):
+            provider = Mock(requests=[])
+            provider.call_with_fallback.return_value = {'audits': [
+                {'id': self.place['id'], 'interesting_hook_score': 5,
+                 'evidence_supported': False, 'chronology_consistent': False,
+                 'reason': 'The cited passage concerns a different century.'},
+                {'id': second['id'], 'interesting_hook_score': 5,
+                 'evidence_supported': True, 'chronology_consistent': True,
+                 'reason': 'Supported and memorable.'},
+            ]}
+            outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                    provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        self.assertEqual(outcome['ready'], 1)
+        provider.call_with_fallback.assert_called_once()
+        self.assertIn('different periods', provider.call_with_fallback.call_args.kwargs['prompt'])
+        with closing(self.connect()) as conn:
+            rejected = json.loads(conn.execute(
+                "SELECT verification FROM automatic_map_entries WHERE id='atomium'"
+            ).fetchone()[0])
+            self.assertFalse(rejected['ready_audit']['evidence_supported'])
+            self.assertFalse(rejected['ready_audit']['chronology_consistent'])
+            self.assertEqual(conn.execute(
+                "SELECT state FROM automatic_map_entries WHERE id='atomium'"
+            ).fetchone()[0], 'rejected')
+            lessons = pool.rejected_interest_lessons(conn)
+            self.assertEqual(len(lessons), 1)
+            self.assertIn('unsupported factual claims', lessons[0]['failure_reason'])
+
+    def test_malformed_ready_audit_cannot_approve_a_round(self):
+        self.queue()
+        for bad in ({'interesting_hook_score': 5, 'evidence_supported': True,
+                     'reason': 'Missing chronology.'},
+                    {'interesting_hook_score': 5, 'evidence_supported': 'true',
+                     'chronology_consistent': True, 'reason': 'String is not a verdict.'}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pool.parse_ready_audit(bad)
 
     def test_malformed_interest_batch_does_not_partially_update_queue(self):
         self.queue_two_legacy_rounds()
@@ -284,12 +328,22 @@ class AutomaticPoolTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 pool.verify(report, provider)
 
-    def test_publication_accepts_legacy_verification_but_rejects_failed_new_chronology(self):
+    def test_publication_requires_legacy_reaudit_and_rejects_failed_chronology(self):
         legacy = {key: True for key in pool.CHECKS}
         legacy['interesting_hook_score'] = 5
         with closing(self.connect()) as conn:
             pool.add(conn, self.place, self.result, legacy, origin='discovery')
             conn.commit()
+            with self.assertRaisesRegex(ValueError, 'No eligible'):
+                pool.publish(conn, puzzle_date='2026-09-09')
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {
+            'interesting_hook_score': 5, 'evidence_supported': True,
+            'chronology_consistent': True, 'reason': 'Supported.',
+        }
+        self.assertEqual(pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                       provider_factory=lambda _budget: provider)['status'], 'audited')
+        with closing(self.connect()) as conn:
             self.assertEqual(pool.publish(conn, puzzle_date='2026-09-09')['status'], 'published')
 
         with closing(self.connect()) as conn:
@@ -298,11 +352,11 @@ class AutomaticPoolTests(unittest.TestCase):
             failed = json.loads(conn.execute(
                 "SELECT verification FROM automatic_map_entries WHERE id=?", (self.place['id'],)
             ).fetchone()[0])
-            failed['chronology_consistent'] = False
+            failed['ready_audit']['chronology_consistent'] = False
             conn.execute("UPDATE automatic_map_entries SET verification=?",
                          (json.dumps(failed),))
             conn.commit()
-            with self.assertRaisesRegex(ValueError, 'chronology check'):
+            with self.assertRaisesRegex(ValueError, 'No eligible'):
                 pool.publish(conn, puzzle_date='2026-09-09')
 
     def test_published_editorial_replacement_teaches_automatic_queue(self):
