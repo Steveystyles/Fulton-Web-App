@@ -1048,7 +1048,8 @@ class OpenAICompatibleProvider:
             method="POST",
         )
         self.last_retry_after_seconds = None
-        for attempt in range(self.config.transient_retries + 1):
+        reasoning_compat_retry = False
+        for attempt in range(self.config.transient_retries + 2):
             self._wait_for_request_slot()
             try:
                 with urlopen(request, timeout=self.config.timeout_sec) as response:
@@ -1077,11 +1078,29 @@ class OpenAICompatibleProvider:
             except HTTPError as error:
                 status_code = error.code
                 try:
-                    detail = self._http_error_detail(error) if status_code == 429 else ""
+                    detail = self._http_error_detail(error) if status_code in {400, 429} else ""
                     if is_daily_quota_failure(detail):
                         raise RuntimeError(
                             f"{self.name} request failed with HTTP {status_code}: {detail}"
                         ) from error
+                    if (
+                        status_code == 400
+                        and "reasoning" in payload
+                        and not reasoning_compat_retry
+                        and "reasoning" in detail.casefold()
+                        and "cannot be disabled" in detail.casefold()
+                    ):
+                        # A free-router endpoint may require thinking. Retry once
+                        # without the disable flag, retaining the larger budget.
+                        payload.pop("reasoning")
+                        request = Request(
+                            f"{self.config.compatible_base_url}/chat/completions",
+                            data=json.dumps(payload).encode("utf-8"),
+                            headers=headers,
+                            method="POST",
+                        )
+                        reasoning_compat_retry = True
+                        continue
                     if (
                         status_code in {408, 429, 500, 502, 503, 504}
                         and attempt < self.config.transient_retries

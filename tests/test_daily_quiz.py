@@ -3635,6 +3635,49 @@ class DailyQuizTests(unittest.TestCase):
         self.assertNotIn("reasoning", other_payload)
         self.assertTrue(daily_quiz.is_transient_provider_failure("Provider returned invalid JSON."))
 
+    def test_openrouter_free_retries_mandatory_reasoning_once(self) -> None:
+        class FakeResponse:
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *args: object) -> None:
+                return None
+
+            def read(self, _limit: int) -> bytes:
+                return b'{"choices": [{"message": {"content": "{\\"passed\\": true}"}}]}'
+
+        provider = daily_quiz.OpenAICompatibleProvider(
+            daily_quiz.QuizConfig(
+                **{
+                    **config().__dict__,
+                    "provider": "openrouter",
+                    "generator_model": "openrouter/free",
+                    "critic_model": "openrouter/free",
+                    "compatible_api_key": "test-key",
+                    "compatible_base_url": "https://openrouter.ai/api/v1",
+                    "transient_retries": 0,
+                    "request_delay_sec": 0,
+                }
+            )
+        )
+        mandatory = HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=BytesIO(
+                b'{"error": {"message": "Reasoning is mandatory for this endpoint and cannot be disabled."}}'
+            ),
+        )
+        with patch("daily_quiz.urlopen", side_effect=[mandatory, FakeResponse()]) as request:
+            self.assertEqual(provider._request("openrouter/free", "Return a decision."), {"passed": True})
+        self.assertEqual(request.call_count, 2)
+        first = json.loads(request.call_args_list[0].args[0].data.decode("utf-8"))
+        second = json.loads(request.call_args_list[1].args[0].data.decode("utf-8"))
+        self.assertEqual(first["reasoning"], {"enabled": False})
+        self.assertNotIn("reasoning", second)
+        self.assertEqual(second["max_tokens"], 3000)
+
     def test_gemini_provider_keeps_http_error_details(self) -> None:
         provider = daily_quiz.GeminiProvider(config())
         error = HTTPError(
