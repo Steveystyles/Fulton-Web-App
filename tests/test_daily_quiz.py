@@ -3368,6 +3368,50 @@ class DailyQuizTests(unittest.TestCase):
         ).fetchone()[0], job["work_quiz_date"])
         self.assertEqual(daily_quiz.failed_attempt_count(self.conn, job["work_quiz_date"]), 0)
 
+    def test_quiz_pool_retries_same_batch_after_slot_attempt_slice(self) -> None:
+        job = daily_quiz._create_quiz_pool_job(self.conn)
+        work_date = job["work_quiz_date"]
+        self.conn.execute(
+            """INSERT INTO daily_quiz_attempts
+               (quiz_date, subject, difficulty, attempt_number, provider,
+                generated_json, passed, failure_reason, created_at)
+               VALUES (?, 'general_knowledge', 'easy', 1, 'test-provider', '{}', 0,
+                       'Not interesting enough', ?)""",
+            (work_date, daily_quiz.utc_now()),
+        )
+        self.conn.commit()
+
+        with patch.object(daily_quiz, "generate_slot", return_value=False):
+            first = daily_quiz.replenish_quiz_pool(
+                self.conn,
+                config=config(max_attempts=1),
+                target_ready=1,
+                max_batch_attempts=1,
+                provider=PassingProvider("test-provider"),
+                log=lambda _: None,
+            )
+
+        self.assertEqual(first["status"], "deferred")
+        self.assertEqual(first["generating"], 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
+        ).fetchone()[0], "generating")
+        self.assertEqual(daily_quiz.failed_attempt_count(self.conn, work_date), 1)
+
+        resumed = daily_quiz.replenish_quiz_pool(
+            self.conn,
+            config=config(max_attempts=1),
+            target_ready=1,
+            max_batch_attempts=1,
+            provider=PassingProvider("test-provider"),
+            log=lambda _: None,
+        )
+
+        self.assertEqual(resumed["status"], "stocked")
+        self.assertEqual(self.conn.execute(
+            "SELECT id, work_quiz_date FROM daily_quiz_pool_batches WHERE state='ready'"
+        ).fetchone()[:], (job["id"], work_date))
+
     def test_quiz_pool_preserves_verified_partial_batch_after_daily_budget(self) -> None:
         job = daily_quiz._create_quiz_pool_job(self.conn)
         quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, job["work_quiz_date"])
