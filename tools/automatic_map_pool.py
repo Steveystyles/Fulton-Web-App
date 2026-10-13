@@ -208,7 +208,30 @@ def audit_ready_interest_batch(rows: list[tuple], provider: discovery.DiscoveryP
 
 
 def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[dict]:
-    """Use actual published edits as contrastive feedback for the live queue."""
+    """Use source-reviewed queue and published edits as live contrastive feedback."""
+    feedback = []
+    for row in conn.execute(
+        """
+        SELECT json_extract(candidate, '$.canonical_name') AS place,
+               json_extract(verification, '$.operator_correction.edits.hard.old') AS rejected_hook,
+               json_extract(verification, '$.operator_correction.edits.hard.new') AS replacement_hook,
+               json_extract(verification, '$.operator_correction.reason') AS reason
+        FROM automatic_map_entries
+        WHERE json_type(verification, '$.operator_correction.edits.hard') = 'object'
+        ORDER BY json_extract(verification, '$.operator_correction.at') DESC
+        LIMIT ?
+        """, (limit,),
+    ):
+        old, new = (str(row[index] or "").strip() for index in (1, 2))
+        if old and new and old != new:
+            feedback.append({
+                "place": str(row[0] or "")[:100],
+                "rejected_hook": old[:240],
+                "replacement_hook": new[:240],
+                "reason": str(row[3] or "An editor corrected this unpublished Map hook.")[:240],
+            })
+    if len(feedback) >= limit:
+        return feedback
     rows = conn.execute(
         """
         SELECT e.used_date, json_extract(e.candidate, '$.canonical_name') AS place,
@@ -224,7 +247,6 @@ def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[d
         ORDER BY e.used_date DESC
         """
     ).fetchall()
-    feedback = []
     for row in rows:
         old = str(row[2] or "").strip()
         new = str(row[3] or "").strip()

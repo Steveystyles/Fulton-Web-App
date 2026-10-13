@@ -26,6 +26,7 @@ class MapQueueCorrectionTests(unittest.TestCase):
                              for level, fact in self.place["facts"].items()}}
         result = controlled_map_round.validate_result(payload, [self.place])
         with closing(sqlite3.connect(self.database)) as conn:
+            controlled_map_round.daily_map_game.initialize_database(conn)
             automatic_map_pool.initialize(conn)
             automatic_map_pool.add(conn, self.place, result,
                                    {key: True for key in automatic_map_pool.CHECKS}, origin="discovery")
@@ -62,6 +63,14 @@ class MapQueueCorrectionTests(unittest.TestCase):
         self.assertEqual(verification["operator_correction"]["edits"]["hard"]["old"], self.change["edits"]["hard"]["old"])
         self.assertEqual(verification["payload_sha256"], automatic_map_pool.discovery.digest({
             "candidate": candidate, "result": checked}))
+        with closing(sqlite3.connect(self.database)) as conn:
+            feedback = automatic_map_pool.editorial_corrections(conn)
+        self.assertEqual(feedback, [{
+            "place": "Atomium",
+            "rejected_hook": self.change["edits"]["hard"]["old"],
+            "replacement_hook": self.new,
+            "reason": self.change["reason"],
+        }])
         with self.assertRaisesRegex(ValueError, "reviewed payload hash"):
             correct_map_queue.correct(self.database, [self.change])
 
