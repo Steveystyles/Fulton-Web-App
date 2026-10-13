@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import json
+import os
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -73,7 +75,7 @@ def failed_attempt_records(
         SELECT quiz_date, subject, difficulty, failure_reason, critic_json, provider
         FROM daily_quiz_attempts
         {where}
-        ORDER BY quiz_date DESC, id DESC
+        ORDER BY id DESC
         LIMIT ?
         """,
         params,
@@ -236,6 +238,72 @@ def write_candidate_profile(
     output_path = output_dir / f"{prefix}_{timestamp}.json"
     output_path.write_text(json.dumps(profile, indent=2, ensure_ascii=True), encoding="utf-8")
     return output_path
+
+
+def refresh_runtime_profile(conn: sqlite3.Connection, profile_path: str) -> dict[str, Any]:
+    """Atomically update the configured profile from live, rejected attempts.
+
+    Only deterministic, template-based lessons are promoted into prompts. The
+    existing reviewed wildcard guidance remains in place, and invalid refreshes
+    leave the previous profile untouched.
+    """
+    if not profile_path:
+        return {"status": "disabled"}
+    path = Path(profile_path)
+    if path.is_symlink():
+        raise ValueError("Quiz learning profile must not be a symbolic link.")
+    previous = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not isinstance(previous, dict):
+        raise ValueError("Existing quiz learning profile is not an object.")
+    progress = {
+        "attempt_id": int(conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM daily_quiz_attempts WHERE passed=0"
+        ).fetchone()[0]),
+        "candidate_id": int(conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM daily_quiz_candidates"
+        ).fetchone()[0]),
+    }
+    if previous.get("runtime_source_progress") == progress:
+        return {"status": "unchanged", **progress}
+    if progress["attempt_id"] == 0:
+        return {"status": "no_feedback", **progress}
+
+    profile = build_candidate_profile(conn, negative_files=[], attempt_limit=500)
+    old_feedback = previous.get("feedback_by_slot", {})
+    if isinstance(old_feedback, dict):
+        for slot, values in old_feedback.items():
+            if not isinstance(slot, str) or not slot.endswith("/*") or not isinstance(values, list):
+                continue
+            reviewed = [
+                value.strip() for value in values
+                if isinstance(value, str) and 0 < len(value.strip()) <= 240
+            ]
+            profile["feedback_by_slot"][slot] = daily_quiz.merge_feedback_entries(
+                reviewed, profile["feedback_by_slot"].get(slot, []), limit=8
+            )
+    errors = validate_profile(profile)
+    if errors:
+        raise ValueError("Invalid live quiz learning profile: " + "; ".join(errors[:3]))
+    profile["runtime_source_progress"] = progress
+    profile["validation"] = {"passed": True, "errors": []}
+
+    # A same-directory replacement keeps readers on either complete version.
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(profile, handle, indent=2, ensure_ascii=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+    return {"status": "updated", **progress, "slots": len(profile["feedback_by_slot"])}
 
 
 def parse_args() -> argparse.Namespace:
