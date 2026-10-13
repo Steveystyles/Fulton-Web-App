@@ -36,7 +36,8 @@ class AutomaticPoolTests(unittest.TestCase):
         self.payload = {'place_id': self.place['id'], 'selection_reason': 'A memorable scientific idea with sourced local map placement.',
                         'clues': {k: {'text': v['text'], 'fact_id': k} for k, v in self.place['facts'].items()}}
         self.result = controlled.validate_result(self.payload, [self.place])
-        self.verdict = {**{k: True for k in pool.CHECKS}, 'interesting_hook_score': 5}
+        self.verdict = {**{k: True for k in pool.CHECKS},
+                        'chronology_consistent': True, 'interesting_hook_score': 5}
 
     def connect(self):
         conn = sqlite3.connect(self.database)
@@ -271,14 +272,38 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertIn('obscure procurement detail', prompt)
         self.assertIn('absence of an event', prompt)
         self.assertIn('editorial discovery hook', prompt)
-        for change in ('unsupported', 'citation', 'uncertain'):
+        self.assertIn('chronology_consistent=false', prompt)
+        self.assertIn('chronology_consistent', provider.call_with_fallback.call_args.kwargs['schema']['required'])
+        for change in ('unsupported', 'citation', 'uncertain', 'chronology'):
             altered = deepcopy(verdict)
             if change == 'unsupported': altered['levels']['hard']['supported'] = False
             if change == 'citation': altered['levels']['hard']['source_ids'] = ['invented']
             if change == 'uncertain': altered['identity_correct'] = 'true'
+            if change == 'chronology': altered['chronology_consistent'] = False
             provider.call_with_fallback.return_value = altered
             with self.subTest(change=change), self.assertRaises(ValueError):
                 pool.verify(report, provider)
+
+    def test_publication_accepts_legacy_verification_but_rejects_failed_new_chronology(self):
+        legacy = {key: True for key in pool.CHECKS}
+        legacy['interesting_hook_score'] = 5
+        with closing(self.connect()) as conn:
+            pool.add(conn, self.place, self.result, legacy, origin='discovery')
+            conn.commit()
+            self.assertEqual(pool.publish(conn, puzzle_date='2026-09-09')['status'], 'published')
+
+        with closing(self.connect()) as conn:
+            conn.execute("DELETE FROM daily_map_puzzles WHERE puzzle_date='2026-09-09'")
+            conn.execute("UPDATE automatic_map_entries SET state='ready', used_date=NULL")
+            failed = json.loads(conn.execute(
+                "SELECT verification FROM automatic_map_entries WHERE id=?", (self.place['id'],)
+            ).fetchone()[0])
+            failed['chronology_consistent'] = False
+            conn.execute("UPDATE automatic_map_entries SET verification=?",
+                         (json.dumps(failed),))
+            conn.commit()
+            with self.assertRaisesRegex(ValueError, 'chronology check'):
+                pool.publish(conn, puzzle_date='2026-09-09')
 
     def test_published_editorial_replacement_teaches_automatic_queue(self):
         self.queue('discovery')

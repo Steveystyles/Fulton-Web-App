@@ -677,6 +677,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'that is the final clue. Code copies the actual quotations; do not retype them or invent IDs. '
                   'The medium passages must contain the city anchor name; easy passages must contain the local '
                   'anchor name. Do not combine unrelated incidents, embellish, or invent qualifiers. '
+                  'Check the chronology across every cited passage: do not make an event, group, or '
+                  'regime use a structure built later, or compress separate historical periods into one event. '
                   'Hard: a specific memorable story or surprising function, preserving the distinctive details; '
                   'construction dates, listed status, designer names and vague engineering praise are insufficient. '
                   'Compare the candidates on whether the hard fact explains why this particular landmark is worth discovering, '
