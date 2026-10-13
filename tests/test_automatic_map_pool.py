@@ -263,6 +263,62 @@ class AutomaticPoolTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 pool.parse_ready_audit(bad)
 
+    def test_consequential_historical_label_needs_explicit_passage_support(self):
+        candidate = deepcopy(self.place)
+        candidate['facts']['hard']['supporting_quotes'] = [
+            'Hundreds of residents were held hostage inside the building by soldiers.'
+        ]
+        result = deepcopy(self.result)
+        result['clue_ladder']['hard'] = (
+            'During the battle this building became a concentration camp where residents were held hostage.'
+        )
+        self.assertEqual(pool.unsupported_critical_labels(candidate, result), ['concentration camp'])
+        with closing(self.connect()) as conn, \
+                patch.object(controlled, 'validate_result', return_value=result), \
+                self.assertRaisesRegex(ValueError, 'historical label'):
+            pool.add(conn, candidate, result, self.verdict, origin='discovery')
+        candidate['facts']['hard']['supporting_quotes'] = [
+            'During the battle the building became a concentration camp where residents were held hostage.'
+        ]
+        self.assertEqual(pool.unsupported_critical_labels(candidate, result), [])
+
+    def test_ready_audit_cannot_override_missing_critical_label_evidence(self):
+        self.queue_two_legacy_rounds()
+        with closing(self.connect()) as conn:
+            candidate, result, verification = conn.execute(
+                "SELECT candidate,result,verification FROM automatic_map_entries WHERE id='atomium'"
+            ).fetchone()
+            candidate, result = json.loads(candidate), json.loads(result)
+            verification = json.loads(verification)
+            candidate['facts']['hard']['supporting_quotes'] = ['Residents were held hostage in the building.']
+            result['clue_ladder']['hard'] = 'This building was used as a concentration camp.'
+            verification['ready_audit'] = {
+                'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 5,
+                'evidence_supported': True, 'chronology_consistent': True,
+                'reason': 'The previous model incorrectly approved this.',
+            }
+            conn.execute("UPDATE automatic_map_entries SET candidate=?,result=?,verification=? WHERE id='atomium'",
+                         (json.dumps(candidate), json.dumps(result), json.dumps(verification)))
+            conn.commit()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {'audits': [
+            {'id': self.place['id'], 'interesting_hook_score': 5,
+             'evidence_supported': True, 'chronology_consistent': True,
+             'reason': 'The model incorrectly approves it.'},
+            {'id': 'sydney-opera-house', 'interesting_hook_score': 5,
+             'evidence_supported': True, 'chronology_consistent': True,
+             'reason': 'Supported.'},
+        ]}
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        with closing(self.connect()) as conn:
+            row = conn.execute("SELECT state,verification FROM automatic_map_entries WHERE id='atomium'").fetchone()
+            self.assertEqual(row[0], 'rejected')
+            audit = json.loads(row[1])['ready_audit']
+            self.assertFalse(audit['evidence_supported'])
+            self.assertIn('concentration camp', audit['reason'])
+
     def test_malformed_interest_batch_does_not_partially_update_queue(self):
         self.queue_two_legacy_rounds()
         provider = Mock(requests=[])
