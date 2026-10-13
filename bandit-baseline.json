@@ -713,19 +713,19 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 74,
+      "line_number": 75,
       "line_range": [
-        74,
         75,
         76,
         77,
         78,
         79,
-        80
+        80,
+        81
       ],
       "col_offset": 12,
       "end_col_offset": 8,
-      "code_sha256": "ba77302cfe8a52b0d8f42083e30d1150ae3fc6872d3ed737b846d1b538a02088"
+      "code_sha256": "fa50d44c7707293d05064685762eb3045008f8831a2fb1ebec9eb923779f4b85"
     },
     {
       "filename": "tools/rewrite_map_clues_with_ai.py",
