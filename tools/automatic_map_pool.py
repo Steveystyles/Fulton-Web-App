@@ -115,7 +115,8 @@ def verification_schema() -> dict:
              'source_ids': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1, 'maxItems': 3}},
              'required': ['supported', 'source_ids'], 'additionalProperties': False}
     props = {check: {'type': 'boolean'} for check in CHECKS}
-    props.update({'interesting_hook_score': {'type': 'integer', 'minimum': 1, 'maximum': 5},
+    props.update({'chronology_consistent': {'type': 'boolean'},
+                  'interesting_hook_score': {'type': 'integer', 'minimum': 1, 'maximum': 5},
                   'levels': {'type': 'object', 'properties': {name: level for name in controlled.LEVELS},
                             'required': list(controlled.LEVELS), 'additionalProperties': False},
                   'reason': {'type': 'string'}})
@@ -358,7 +359,7 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
     feedback = editorial_feedback or []
     selected_hook = str(result['clue_ladder']['hard']).strip().casefold()
     if any(selected_hook == str(item.get('rejected_hook') or '').strip().casefold() for item in feedback):
-        raise ValueError('The hard hook repeats one that an editor rejected after publication.')
+        raise ValueError('The hard hook repeats one that an editor rejected.')
     resolved = next(p for p in report['resolved_candidates'] if p['id'] == candidate['id'])
     units = discovery.evidence_units(resolved)
     prompt = ('Independently verify a proposed map quiz using ONLY the retrieved evidence below. '
@@ -369,7 +370,11 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
               'function owned by this place. Medium must geographically narrow; easy must identify a '
               'supported city sector and a useful nearby feature, not a different target inside the place. '
               'For EACH clue return supported=true only when every important claim is supported, citing '
-              'actual passage IDs. Check country/identity against the supplied Wikidata-derived metadata. '
+              'actual passage IDs. Set chronology_consistent=false if a clue links actions, structures, '
+              'people, or outcomes from different periods as though they happened together, even when '
+              'separate passages support each fragment. Compare the dates and sequence of every cited '
+              'passage; a 17th-century republic must not be said to use a tower built in the 18th century. '
+              'Check country/identity against the supplied Wikidata-derived metadata. '
               'Return false for any failed check; explain briefly. Do not invent factual confidence scores.\n'
               'Editorial requirements: place_type_correct is false for a stadium disguised as engineering. '
               'distinctive_hard_hook requires a memorable event/story or a recognisable surprising function; '
@@ -394,6 +399,9 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
     score = verdict.get('interesting_hook_score')
     if not sufficient_interest_score(score):
         raise ValueError('Evidence verifier found the hard hook insufficiently interesting.')
+    if verdict.get('chronology_consistent') is not True:
+        raise ValueError('Evidence verifier rejected a chronological conflation: '
+                         + str(verdict.get('reason', 'failed chronology check'))[:400])
     if any(verdict.get(check) is not True for check in CHECKS):
         raise ValueError('Evidence verifier rejected: ' + str(verdict.get('reason', 'failed checks'))[:400])
     available = {unit['id'] for unit in units}
@@ -861,6 +869,8 @@ def publish(conn: sqlite3.Connection, *, puzzle_date: str) -> dict:
         raise ValueError('Queued round differs from its checked payload.')
     if row[4] == 'discovery' and any(verification.get(check) is not True for check in CHECKS):
         raise ValueError('Queued round is missing automatic evidence checks.')
+    if row[4] == 'discovery' and 'chronology_consistent' in verification and verification['chronology_consistent'] is not True:
+        raise ValueError('Queued round failed its chronology check.')
     if row[4] == 'discovery' and not sufficient_interest_score(verification.get('interesting_hook_score')):
         raise ValueError('Queued round has not passed the editorial interest check.')
     payload = {'place_id': candidate['id'], 'selection_reason': result['selection_reason'],

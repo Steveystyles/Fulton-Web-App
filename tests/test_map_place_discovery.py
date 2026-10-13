@@ -499,6 +499,8 @@ class DiscoveryTests(unittest.TestCase):
                       request.call_args_list[1].args[1])
         self.assertIn('"coordinate_derived_city_sector": "northern"', request.call_args_list[1].args[1])
         self.assertIn('sector comes from checked coordinates', request.call_args_list[1].args[1])
+        self.assertIn('do not make an event, group, or regime use a structure built later',
+                      request.call_args_list[1].args[1])
         self.assertFalse(report['production_modified'])
         self.assertFalse((self.root / 'unused.db').exists())
         self.assertEqual(controlled.DEFAULT_CATALOG.read_bytes(), before)
