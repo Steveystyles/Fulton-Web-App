@@ -3301,7 +3301,7 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(result["generating"], 1)
         self.assertEqual(len(result["provider_circuits"]), 1)
 
-    def test_quiz_pool_retires_exhausted_work_date_even_with_provider_circuit(self) -> None:
+    def test_quiz_pool_keeps_work_date_and_feedback_during_provider_circuit(self) -> None:
         job = daily_quiz._create_quiz_pool_job(self.conn)
         work_date = job["work_quiz_date"]
         self.conn.execute(
@@ -3331,13 +3331,13 @@ class DailyQuizTests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "capped")
-        self.assertEqual(result["generating"], 0)
+        self.assertEqual(result["generating"], 1)
         self.assertEqual(self.conn.execute(
             "SELECT state FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
-        ).fetchone()[0], "failed")
-        self.assertEqual(daily_quiz.failed_attempt_count(self.conn, work_date), 0)
+        ).fetchone()[0], "generating")
+        self.assertEqual(daily_quiz.failed_attempt_count(self.conn, work_date), 1)
 
-    def test_quiz_pool_moves_to_fresh_work_date_after_exhausted_budget(self) -> None:
+    def test_quiz_pool_can_finish_same_work_date_after_daily_budget(self) -> None:
         job = daily_quiz._create_quiz_pool_job(self.conn)
         self.conn.execute(
             """INSERT INTO daily_quiz_attempts
@@ -3362,12 +3362,13 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(result["ready"], 1)
         self.assertEqual(self.conn.execute(
             "SELECT state FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
-        ).fetchone()[0], "failed")
-        self.assertNotEqual(self.conn.execute(
+        ).fetchone()[0], "ready")
+        self.assertEqual(self.conn.execute(
             "SELECT work_quiz_date FROM daily_quiz_pool_batches WHERE state='ready'"
         ).fetchone()[0], job["work_quiz_date"])
+        self.assertEqual(daily_quiz.failed_attempt_count(self.conn, job["work_quiz_date"]), 0)
 
-    def test_quiz_pool_carries_verified_partial_batch_after_attempt_budget(self) -> None:
+    def test_quiz_pool_preserves_verified_partial_batch_after_daily_budget(self) -> None:
         job = daily_quiz._create_quiz_pool_job(self.conn)
         quiz_set = daily_quiz.get_or_create_quiz_set(self.conn, job["work_quiz_date"])
         carried = []
@@ -3404,15 +3405,15 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(result["status"], "stocked")
         self.assertEqual(self.conn.execute(
             "SELECT state FROM daily_quiz_pool_batches WHERE id=?", (job["id"],)
-        ).fetchone()[0], "failed")
+        ).fetchone()[0], "ready")
         self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE batch_id != ?",
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE batch_id = ?",
             (job["id"],),
         ).fetchone()[0], 6)
         self.assertEqual(
             [tuple(row) for row in self.conn.execute(
                 """SELECT subject, difficulty, question FROM daily_quiz_pool_questions
-                   WHERE batch_id != ? ORDER BY subject, difficulty""",
+                   WHERE batch_id = ? ORDER BY subject, difficulty""",
                 (job["id"],),
             ) if (row[0], row[1], row[2]) in carried],
             sorted(carried),

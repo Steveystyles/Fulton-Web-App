@@ -5148,6 +5148,7 @@ def _generate_daily_quiz_in_place(
             log(f"Removed {removed} unverified question(s) before resuming generation.")
     if (
         not force
+        and generation_mode != "pool"
         and failed_attempt_count(conn, quiz_date) >= config.max_failed_attempts_per_date
     ):
         reason = failed_attempt_budget_reason(config)
@@ -5218,11 +5219,12 @@ def _generate_daily_quiz_in_place(
             config=config,
             generation_mode=generation_mode,
             log=log,
-            enforce_date_attempt_budget=not force,
+            enforce_date_attempt_budget=not force and generation_mode != "pool",
         )
         if slot_result is None:
             if (
                 not force
+                and generation_mode != "pool"
                 and failed_attempt_count(conn, quiz_date)
                 >= config.max_failed_attempts_per_date
             ):
