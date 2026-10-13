@@ -3622,6 +3622,17 @@ class DailyQuizTests(unittest.TestCase):
         retry.assert_called_once_with(0)
         request_payload = json.loads(request.call_args_list[0].args[0].data.decode("utf-8"))
         self.assertEqual(request_payload["plugins"], [{"id": "response-healing"}])
+        self.assertEqual(request_payload["reasoning"], {"enabled": False})
+        self.assertEqual(request_payload["max_tokens"], 3000)
+        self.assertIn(
+            "Do not return the schema itself",
+            daily_quiz.generator_prompt("general_knowledge", "hard", [], []),
+        )
+        with patch("daily_quiz.urlopen", return_value=FakeResponse('{"passed": true}')) as other_request:
+            provider._request("another/model", "Return a decision.")
+        other_payload = json.loads(other_request.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(other_payload["max_tokens"], 1000)
+        self.assertNotIn("reasoning", other_payload)
         self.assertTrue(daily_quiz.is_transient_provider_failure("Provider returned invalid JSON."))
 
     def test_gemini_provider_keeps_http_error_details(self) -> None:
