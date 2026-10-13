@@ -1036,6 +1036,11 @@ class OpenAICompatibleProvider:
         }
         if self.name == "openrouter":
             payload["plugins"] = [{"id": "response-healing"}]
+            if model.strip().lower() == "openrouter/free":
+                # The free router may select thinking models. At 1,000 tokens,
+                # reasoning can exhaust the completion before any JSON appears.
+                payload["reasoning"] = {"enabled": False}
+                payload["max_tokens"] = 3000
         request = Request(
             f"{self.config.compatible_base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
@@ -1982,7 +1987,7 @@ Previous failed attempts and feedback:
 Current attempt topic requirement (follow this even if older examples suggest another topic):
 {json.dumps([entry for entry in feedback if entry.startswith("Required topic lane for this attempt:")][-1:], indent=2)}
 
-Return JSON only using this structure:
+Return one filled question data object satisfying this schema. Do not return the schema itself.
 {json.dumps(question_schema(), indent=2)}
 """
 
