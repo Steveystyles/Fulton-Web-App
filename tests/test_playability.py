@@ -130,6 +130,11 @@ class PlayabilityTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(bundle["date"], "2026-09-09")
         self.assertEqual(bundle["levels"][0]["revealedHintCount"], 1)
+        with patch.object(server, "today_game_date", return_value="2026-09-10"):
+            old_status, old_link = self.route("GET", "/api/daily-map-game", "date=2026-09-05")
+            future_status, future_link = self.route("GET", "/api/daily-map-game", "date=2026-09-12")
+        self.assertEqual((old_status, old_link["date"]), (200, "2026-09-09"))
+        self.assertEqual((future_status, future_link["date"]), (200, "2026-09-09"))
         self.conn.execute(
             "INSERT INTO daily_map_guesses (user_id, level_id, guessed_lat, guessed_lng, revealed_hint_count, "
             "distance_m, score, band, completed_at, created_at, updated_at) "

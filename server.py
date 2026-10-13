@@ -5626,9 +5626,13 @@ class FultonsHandler(SimpleHTTPRequestHandler):
                 return
 
             if path == "/api/daily-map-game" and method == "GET":
-                puzzle_date = str(params.get("date", [daily_map_game.playable_map_round_date(conn, today_game_date())])[0]).strip()
+                requested_date = str(params.get("date", [""])[0]).strip()
                 try:
-                    normalized_date = daily_map_game.valid_game_date(puzzle_date)
+                    normalized_date = (
+                        daily_map_game.valid_game_date(requested_date)
+                        if DAILY_MAP_FUTURE_REVIEW_ENABLED and requested_date
+                        else daily_map_game.playable_map_round_date(conn, today_game_date())
+                    )
                     if not daily_map_date_is_requestable(normalized_date):
                         self.send_error_json(
                             HTTPStatus.NOT_FOUND,
