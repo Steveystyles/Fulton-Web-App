@@ -3898,7 +3898,9 @@ def learning_profile_feedback(
     if not isinstance(by_slot, dict):
         return []
     groups: list[list[str]] = []
-    for key in ("global", f"{subject}/*", f"*/{difficulty}", f"{subject}/{difficulty}"):
+    # The small prompt budget should not let generic guidance crowd out what
+    # this exact slot learned from its own rejected questions.
+    for key in (f"{subject}/{difficulty}", f"{subject}/*", f"*/{difficulty}", "global"):
         values = by_slot.get(key)
         if isinstance(values, list):
             groups.append([str(value) for value in values if str(value).strip()])

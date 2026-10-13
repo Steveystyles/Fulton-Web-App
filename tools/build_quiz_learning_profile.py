@@ -14,6 +14,16 @@ DEFAULT_TRAINING_DIR = PROJECT_DIR / "data" / "training"
 
 PATTERNS = (
     (
+        "repeated_answer",
+        re.compile(r"correct answer already appeared recently|too similar to (?:a )?recent accepted question", re.IGNORECASE),
+        "Pick a new correct answer, not a rewording of an answer already used in this subject; change the underlying topic when needed.",
+    ),
+    (
+        "generic_hook",
+        re.compile(r"too generic|lacks a memorable hook|overused.*lacks originality", re.IGNORECASE),
+        "Choose a distinctive, source-backed story or connection that a player would want to retell, not a generic definition or familiar trivia staple.",
+    ),
+    (
         "underspecified_multi_answer",
         re.compile(r"under-specified|more than once|possible valid answers", re.IGNORECASE),
         "Avoid under-specified football questions where one player, team, or event can produce multiple valid answers; add the exact goal/event or choose a different hook.",

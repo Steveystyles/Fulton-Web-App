@@ -44,6 +44,7 @@ from tools import install_map_reviewed_fallbacks
 from tools import map_clue_quality_model
 from tools import map_selector_model
 from tools import refresh_map_learning_profile
+from tools import refresh_quiz_learning_profile
 from tools import rewrite_map_clues_with_ai as map_clue_rewriter
 from tools import training_data_store
 
@@ -4003,6 +4004,18 @@ def maintain_daily_quiz_pool() -> dict[str, Any]:
     with DAILY_QUIZ_OPERATION_LOCK:
         with closing(connect_db()) as conn:
             with conn:
+                if DAILY_QUIZ_CONFIG.learning_profile_path:
+                    try:
+                        refreshed = refresh_quiz_learning_profile.refresh_runtime_profile(
+                            conn, DAILY_QUIZ_CONFIG.learning_profile_path
+                        )
+                        if refreshed["status"] == "updated":
+                            safe_log(
+                                f"Daily quiz learning profile refreshed across "
+                                f"{refreshed['slots']} slot(s)."
+                            )
+                    except (OSError, ValueError, sqlite3.DatabaseError) as error:
+                        safe_log(f"Daily quiz learning profile refresh deferred: {type(error).__name__}")
                 result = daily_quiz.replenish_quiz_pool(
                     conn,
                     config=DAILY_QUIZ_CONFIG,

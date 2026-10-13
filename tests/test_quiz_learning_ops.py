@@ -214,6 +214,69 @@ class QuizLearningOpsTests(unittest.TestCase):
         self.assertEqual(slot["provider_weights"]["test-provider"], 0.5)
         self.assertEqual(slot["failure_categories"]["evidence"], 1)
 
+    def test_runtime_refresh_learns_new_slots_without_losing_reviewed_guidance(self) -> None:
+        self.add_attempt(
+            date="9000-01-27", passed=False,
+            failure_reason="Correct answer already appeared recently in this quiz subject.",
+        )
+        daily_quiz.save_attempt(
+            self.conn, quiz_date="9000-01-27", subject="general_knowledge",
+            difficulty="hard", attempt_number=1, provider="test-provider",
+            generated={"question": "Generated candidate"}, critic=None,
+            passed=False,
+            failure_reason="The question is too easy for the hard difficulty target.",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "profile.json"
+            path.write_text(json.dumps({"feedback_by_slot": {
+                "football/*": ["Keep the human-reviewed football lesson."]
+            }}), encoding="utf-8")
+
+            first = refresh.refresh_runtime_profile(self.conn, str(path))
+            profile = json.loads(path.read_text(encoding="utf-8"))
+            second = refresh.refresh_runtime_profile(self.conn, str(path))
+
+        self.assertEqual(first["status"], "updated")
+        self.assertEqual(second["status"], "unchanged")
+        self.assertIn("Keep the human-reviewed football lesson.", profile["feedback_by_slot"]["football/*"])
+        self.assertTrue(any(
+            "hard questions" in lesson.lower()
+            for lesson in profile["feedback_by_slot"]["general_knowledge/hard"]
+        ))
+        self.assertTrue(any(
+            "new correct answer" in lesson.lower()
+            for lesson in profile["feedback_by_slot"]["football/easy"]
+        ))
+
+    def test_runtime_feedback_uses_latest_attempt_not_largest_work_date(self) -> None:
+        self.add_attempt(
+            date="9000-01-27", passed=False,
+            failure_reason="An older pool attempt was too generic.",
+        )
+        self.add_attempt(
+            date="2026-10-13", passed=False,
+            failure_reason="A newer live attempt repeated an answer.",
+        )
+
+        records = refresh.failed_attempt_records(self.conn, limit=1)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["metadata"]["quiz_date"], "2026-10-13")
+
+    def test_slot_specific_learning_precedes_wildcard_in_prompt_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "profile.json"
+            path.write_text(json.dumps({"feedback_by_slot": {
+                "football/*": [f"Broad football lesson {index}" for index in range(8)],
+                "football/easy": ["Do not repeat the exact accepted answer."],
+            }}), encoding="utf-8")
+            feedback = daily_quiz.learning_profile_feedback(
+                str(path), subject="football", difficulty="easy"
+            )
+
+        self.assertEqual(feedback[0], "Do not repeat the exact accepted answer.")
+        self.assertLessEqual(len(feedback), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
