@@ -275,12 +275,49 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(pool.unsupported_critical_labels(candidate, result), ['concentration camp'])
         with closing(self.connect()) as conn, \
                 patch.object(controlled, 'validate_result', return_value=result), \
-                self.assertRaisesRegex(ValueError, 'historical label'):
+                self.assertRaisesRegex(ValueError, 'light Map game'):
             pool.add(conn, candidate, result, self.verdict, origin='discovery')
         candidate['facts']['hard']['supporting_quotes'] = [
             'During the battle the building became a concentration camp where residents were held hostage.'
         ]
         self.assertEqual(pool.unsupported_critical_labels(candidate, result), [])
+
+    def test_light_game_tone_rejects_victim_hooks_but_keeps_history(self):
+        examples = (
+            ('This church was used as a concentration camp.', 'camp confinement'),
+            ('Hundreds of residents were held hostage inside this church.', 'hostage-taking'),
+            ('Young cadets died defending this hilltop stronghold.', 'victim deaths'),
+            ('A leader was seized under a white flag of truce here.', 'betrayal and detention'),
+            ('Its sloping roof turns an opera house into a public square.', None),
+            ('A Persian emperor plundered this fort and seized its famous throne.', None),
+            ('An eruption buried this Roman city and preserved its streets.', None),
+        )
+        for clue, expected in examples:
+            with self.subTest(clue=clue):
+                self.assertEqual(pool.unsuitable_game_hook({'clue_ladder': {'hard': clue}}), expected)
+
+    def test_maintenance_quarantines_old_victim_hook_without_model_request(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            result = json.loads(conn.execute('SELECT result FROM automatic_map_entries').fetchone()[0])
+            result['clue_ladder']['hard'] = 'Hundreds of residents were held hostage inside this building.'
+            conn.execute('UPDATE automatic_map_entries SET result=?', (json.dumps(result),))
+            conn.commit()
+        with patch.dict(os.environ, {'MAP_AI_API_KEY': ''}):
+            outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None)
+        self.assertEqual(outcome['status'], 'deferred')
+        with closing(self.connect()) as conn:
+            row = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(row[0], 'rejected')
+            verification = json.loads(row[1])
+            self.assertEqual(verification['tone_rejection'], 'hostage-taking')
+            self.assertTrue(verification['editorial_rejection'])
+            self.assertIn('light Map game', pool.rejected_interest_lessons(conn)[0]['failure_reason'])
+            # Reject the hook, not the place: a genuinely different, suitable
+            # story may return to the ordinary selection pool.
+            pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
+            conn.commit()
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
 
     def test_ready_audit_cannot_override_missing_critical_label_evidence(self):
         self.queue_two_legacy_rounds()
@@ -300,24 +337,15 @@ class AutomaticPoolTests(unittest.TestCase):
             conn.execute("UPDATE automatic_map_entries SET candidate=?,result=?,verification=? WHERE id='atomium'",
                          (json.dumps(candidate), json.dumps(result), json.dumps(verification)))
             conn.commit()
-        provider = Mock(requests=[])
-        provider.call_with_fallback.return_value = {'audits': [
-            {'id': self.place['id'], 'interesting_hook_score': 5,
-             'evidence_supported': True, 'chronology_consistent': True,
-             'reason': 'The model incorrectly approves it.'},
-            {'id': 'sydney-opera-house', 'interesting_hook_score': 5,
-             'evidence_supported': True, 'chronology_consistent': True,
-             'reason': 'Supported.'},
-        ]}
-        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
-                                provider_factory=lambda _budget: provider)
-        self.assertEqual(outcome['status'], 'audited')
+        with patch.dict(os.environ, {'MAP_AI_API_KEY': ''}):
+            outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None)
+        self.assertEqual(outcome['status'], 'deferred')
         with closing(self.connect()) as conn:
             row = conn.execute("SELECT state,verification FROM automatic_map_entries WHERE id='atomium'").fetchone()
             self.assertEqual(row[0], 'rejected')
-            audit = json.loads(row[1])['ready_audit']
-            self.assertFalse(audit['evidence_supported'])
-            self.assertIn('concentration camp', audit['reason'])
+            verification = json.loads(row[1])
+            self.assertTrue(verification['ready_audit']['evidence_supported'])
+            self.assertEqual(verification['tone_rejection'], 'camp confinement')
 
     def test_malformed_interest_batch_does_not_partially_update_queue(self):
         self.queue_two_legacy_rounds()
