@@ -52,6 +52,12 @@ UNSUITABLE_HOOK_PATTERNS = (
     (r'\b(?:died|killed|murder\w*|execut\w*)\b', 'victim deaths'),
     (r'\b(?:seized|captured|arrested)\b.{0,100}\b(?:truce|surrender|white flag)\b',
      'betrayal and detention'),
+    (r'\b(?:apparently|allegedly|reportedly|supposedly|perhaps|possibly)\b|'
+     r'\b(?:may|might) have\b|\b(?:said|believed|thought) to have\b',
+     'hedged historical claim'),
+    (r'\b(?:radio|television|broadcast|communication)\s+signals?\b.{0,180}'
+     r'\b(?:antennas?|construction|tower|line.of.sight)\b',
+     'routine signal-engineering premise'),
 )
 
 
@@ -199,10 +205,15 @@ def unsupported_critical_labels(candidate: dict, result: dict) -> list[str]:
 
 
 def unsuitable_game_hook(result: dict) -> str | None:
-    """Catch explicit victim-centred hooks without banning historical settings."""
+    """Catch explicit victim-centred, uncertain or routine technical hooks."""
     hard = str(result.get('clue_ladder', {}).get('hard') or '').casefold()
     return next((reason for pattern, reason in UNSUITABLE_HOOK_PATTERNS
                  if re.search(pattern, hard)), None)
+
+
+def rejected_hook_reason(verification: dict) -> str | None:
+    # Preserve earlier tone rejections while allowing one shared hook rule.
+    return verification.get('hook_rejection') or verification.get('tone_rejection')
 
 
 def quarantine_unsuitable_ready(conn: sqlite3.Connection) -> list[str]:
@@ -216,7 +227,7 @@ def quarantine_unsuitable_ready(conn: sqlite3.Connection) -> list[str]:
         if not reason:
             continue
         verification = json.loads(verification_text)
-        verification.update(editorial_rejection=True, tone_rejection=reason)
+        verification.update(editorial_rejection=True, hook_rejection=reason)
         conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
                      "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
         retired.append(json.loads(candidate_text).get('canonical_name', row_id))
@@ -235,6 +246,8 @@ READY_AUDIT_INSTRUCTIONS = (
     'Score the hard clue from 1 (generic trivia) to 5 (memorable place-defining hook); '
     'This is a light discovery game: victim deaths, hostages, camps and atrocities '
     'are not suitable as the main hook, even when historically accurate. '
+    'A hedged claim (apparently, reportedly, may have) or a routine explanation '
+    'for signal/antenna engineering is not a compelling hook. '
     'a true but minor architectural detail or bare superlative is below 4. '
     'When evidence is too thin, reject rather than guess. Explain the strongest '
     'objection or why the round survives. Return JSON only.\n'
@@ -360,9 +373,9 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
             hook = str(result.get('clue_ladder', {}).get('hard') or '').strip()
             if not hook:
                 continue
-            if verification.get('tone_rejection'):
-                failure_reason = ('Unsuitable for a light Map game ('
-                                  + str(verification['tone_rejection'])[:80] + '): ')
+            if rejected_hook_reason(verification):
+                failure_reason = ('Unsuitable Map hook ('
+                                  + str(rejected_hook_reason(verification))[:80] + '): ')
             elif audit.get('evidence_supported') is False:
                 failure_reason = 'Ready audit found unsupported factual claims: '
             elif audit.get('chronology_consistent') is False:
@@ -469,6 +482,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
               'This is a light discovery game: reject a hard hook centred on camps, hostages, '
               'victim deaths or atrocities, even when factual. Prefer achievement, design, '
               'performance or a surprising public use. '
+              'Reject hedged historical premises and ordinary broadcast-signal engineering '
+              'premises regardless of how well the source supports them. '
               'Medium must geographically narrow; easy must identify a supported city sector '
               'and a useful nearby feature, not a different target inside the place. '
               'For EACH clue return supported=true only when every important claim is supported, citing '
@@ -525,10 +540,10 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
         prior_verification = json.loads(previous[1])
         if prior_verification.get('operator_rejection') or (
             prior_verification.get('editorial_rejection')
-            and not prior_verification.get('tone_rejection')
+            and not rejected_hook_reason(prior_verification)
         ):
             raise ValueError('Editorially rejected map place requires an explicit operator review before reuse.')
-        if prior_verification.get('tone_rejection') and (
+        if rejected_hook_reason(prior_verification) and (
             str(json.loads(previous[2]).get('clue_ladder', {}).get('hard') or '').strip().casefold()
             == str(result.get('clue_ladder', {}).get('hard') or '').strip().casefold()
         ):
@@ -770,7 +785,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             "SELECT state,candidate,verification FROM automatic_map_entries WHERE state IN ('ready','rejected')"
         ) if state == 'ready' or json.loads(verification).get('operator_rejection')
         or (json.loads(verification).get('editorial_rejection')
-            and not json.loads(verification).get('tone_rejection'))]
+            and not rejected_hook_reason(json.loads(verification)))]
         failed_names = recent_failed_names(conn, output_dir)
         route_lessons = recent_route_failure_lessons(conn, output_dir)
         feedback = editorial_corrections(conn)
