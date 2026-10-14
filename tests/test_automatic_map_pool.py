@@ -49,6 +49,82 @@ class AutomaticPoolTests(unittest.TestCase):
             pool.add(conn, self.place, self.result, self.verdict, origin=origin)
             conn.commit()
 
+    def alignment_report(self, *, aligned=False):
+        report_root = self.root / 'reports'
+        report_root.mkdir(exist_ok=True)
+        path = report_root / 'saved-discovery.json'
+        hard = self.result['clue_ladder']['hard']
+        proposal = (hard if aligned else
+                    'A helicopter hoisted giant antenna sections over the fairground in a daring night operation.')
+        selected = {
+            'id': self.place['id'], 'canonical_name': self.place['canonical_name'],
+            'proposal_reason': proposal,
+            'evidence': {'article': {'text': ('Unrelated geographical background. ' * 80) + proposal}},
+        }
+        hook_indexes = discovery.proposal_hook_passage_indexes(selected)
+        self.assertTrue(hook_indexes)
+        source_id = f'article-{max(hook_indexes)}' if aligned else 'article-0'
+        if not aligned:
+            self.assertNotIn(0, hook_indexes)
+        report = {
+            'candidate': {'id': self.place['id']},
+            'result': self.result,
+            'resolved_candidates': [selected],
+            'model_output': {'facts': {'hard': {'text': hard, 'source_ids': [source_id]}}},
+        }
+        path.write_text(json.dumps(report), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute('INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,report_path) '
+                         'VALUES(?,?,?,?,?,?)',
+                         ('saved-run', self.clock.date().isoformat(), '2026-09-09',
+                          self.clock.isoformat(), 'added', str(path)))
+            conn.commit()
+        return report_root
+
+    def test_old_unused_map_hook_is_rejected_from_original_discovery_report(self):
+        self.queue('discovery')
+        reports = self.alignment_report()
+        with closing(self.connect()) as conn:
+            self.assertEqual(pool.quarantine_unaligned_ready(conn, reports), [self.place['canonical_name']])
+            self.assertEqual(pool.quarantine_unaligned_ready(conn, reports), [])
+            row = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(row['state'], 'rejected')
+            verification = json.loads(row['verification'])
+            self.assertEqual(verification['hook_rejection'], 'abandoned proposed discovery hook')
+            self.assertEqual(verification['proposal_alignment_audit']['status'], 'rejected')
+
+    def test_old_aligned_map_hook_is_stamped_without_quarantining(self):
+        self.queue('discovery')
+        reports = self.alignment_report(aligned=True)
+        with closing(self.connect()) as conn:
+            self.assertEqual(pool.quarantine_unaligned_ready(conn, reports), [])
+            row = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(row['state'], 'ready')
+            self.assertEqual(json.loads(row['verification'])['proposal_alignment_audit']['status'], 'passed')
+
+    def test_map_reaudit_skips_operator_corrections_and_missing_reports(self):
+        self.queue('discovery')
+        reports = self.alignment_report()
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute('SELECT verification FROM automatic_map_entries').fetchone()[0])
+            verification['operator_correction'] = {'reason': 'Reviewed by editor'}
+            conn.execute('UPDATE automatic_map_entries SET verification=?', (json.dumps(verification),))
+            self.assertEqual(pool.quarantine_unaligned_ready(conn, reports), [])
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
+            del verification['operator_correction']
+            conn.execute('UPDATE automatic_map_entries SET verification=?', (json.dumps(verification),))
+            conn.execute("UPDATE automatic_map_runs SET report_path='outside-root.json'")
+            self.assertEqual(pool.quarantine_unaligned_ready(conn, reports), [])
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
+
+    def test_map_reaudit_never_changes_a_used_round(self):
+        self.queue('discovery')
+        reports = self.alignment_report()
+        with closing(self.connect()) as conn:
+            conn.execute("UPDATE automatic_map_entries SET state='used',used_date='2026-09-08'")
+            self.assertEqual(pool.quarantine_unaligned_ready(conn, reports), [])
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'used')
+
     def test_next_date_skips_offdays_and_already_published_games(self):
         with closing(self.connect()) as conn:
             self.assertEqual(pool.next_date(conn), '2026-09-09')

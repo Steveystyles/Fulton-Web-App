@@ -36,6 +36,7 @@ CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interest
 MIN_INTEREST_SCORE = 4
 INTEREST_AUDIT_BATCH_SIZE = 4
 READY_AUDIT_VERSION = 1
+PROPOSAL_ALIGNMENT_AUDIT_VERSION = 1
 # These labels assert a historically consequential classification, not merely
 # descriptive colour. A model must not infer one from a related event (for
 # example, hostages in a church do not prove it was a concentration camp).
@@ -233,6 +234,86 @@ def quarantine_unsuitable_ready(conn: sqlite3.Connection) -> list[str]:
         conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
                      "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
         retired.append(json.loads(candidate_text).get('canonical_name', row_id))
+    return retired
+
+
+def quarantine_unaligned_ready(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
+    """Recheck unused pre-fix rounds against their original private source reports."""
+    pending = []
+    for row in conn.execute(
+        "SELECT id,candidate,result,verification FROM automatic_map_entries "
+        "WHERE state='ready' AND origin='discovery'"
+    ):
+        verification = json.loads(row[3])
+        alignment_audit = verification.get('proposal_alignment_audit')
+        if (verification.get('operator_correction') or
+                (isinstance(alignment_audit, dict) and
+                 alignment_audit.get('version') == PROPOSAL_ALIGNMENT_AUDIT_VERSION)):
+            continue
+        candidate, result = json.loads(row[1]), json.loads(row[2])
+        if verification.get('payload_sha256') != discovery.digest({'candidate': candidate, 'result': result}):
+            continue
+        pending.append((row[0], candidate, result, verification))
+    if not pending:
+        return []
+    root = output_dir.resolve()
+    reports = {}
+    cutoff = (now() - timedelta(days=MAX_AGE_DAYS)).isoformat()
+    for report_name, in conn.execute(
+        "SELECT report_path FROM automatic_map_runs WHERE status='added' "
+        "AND started_at>? AND report_path IS NOT NULL ORDER BY started_at DESC LIMIT 100",
+        (cutoff,),
+    ):
+        try:
+            path = Path(report_name).resolve(strict=True)
+            if not path.is_relative_to(root) or path.suffix != '.json' or path.stat().st_size > 2_000_000:
+                continue
+            report = json.loads(path.read_text(encoding='utf-8'))
+            report_candidate = report.get('candidate')
+            report_id = report_candidate.get('id') if isinstance(report_candidate, dict) else None
+            report_result = report.get('result')
+            if isinstance(report_id, str) and isinstance(report_result, dict):
+                clue_ladder = report_result.get('clue_ladder')
+                if isinstance(clue_ladder, dict):
+                    report_key = (report_id, json.dumps(clue_ladder, sort_keys=True))
+                    reports.setdefault(report_key, report)
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    retired = []
+    for row_id, candidate, result, verification in pending:
+        report_key = (row_id, json.dumps(result.get('clue_ladder'), sort_keys=True))
+        report = reports.get(report_key)
+        report_result = report.get('result') if report else None
+        if not isinstance(report_result, dict) or report_result.get('clue_ladder') != result.get('clue_ladder'):
+            continue
+        resolved = report.get('resolved_candidates')
+        if not isinstance(resolved, list):
+            continue
+        selected = next((item for item in resolved
+                         if isinstance(item, dict) and item.get('id') == row_id), None)
+        payload = report.get('model_output')
+        facts = payload.get('facts') if isinstance(payload, dict) else None
+        hard = facts.get('hard') if isinstance(facts, dict) else None
+        if (selected is None or not isinstance(hard, dict) or
+                hard.get('text') != result.get('clue_ladder', {}).get('hard')):
+            continue
+        try:
+            discovery.validate_proposal_hook_alignment(payload, selected)
+        except (ValueError, KeyError, TypeError) as error:
+            if not isinstance(error, ValueError) or 'proposed discovery hook' not in str(error):
+                continue
+            verification.update(editorial_rejection=True,
+                                hook_rejection='abandoned proposed discovery hook',
+                                proposal_alignment_audit={'version': PROPOSAL_ALIGNMENT_AUDIT_VERSION,
+                                                          'status': 'rejected'})
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
+                         "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
+            retired.append(candidate['canonical_name'])
+        else:
+            verification['proposal_alignment_audit'] = {
+                'version': PROPOSAL_ALIGNMENT_AUDIT_VERSION, 'status': 'passed'}
+            conn.execute("UPDATE automatic_map_entries SET verification=? WHERE id=? AND state='ready'",
+                         (json.dumps(verification), row_id))
     return retired
 
 
@@ -772,6 +853,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         target = next_date(conn)
         conn.execute("UPDATE automatic_map_entries SET state='expired' WHERE state='ready' AND expires_at<=?", (now().isoformat(),))
         quarantined = quarantine_unsuitable_ready(conn)
+        quarantined += quarantine_unaligned_ready(conn, output_dir)
         if not conn.execute("SELECT 1 FROM automatic_map_meta WHERE key='bootstrap'").fetchone():
             if seed_catalog and seed_catalog.is_file():
                 for candidate in controlled.load_catalog(seed_catalog):
@@ -875,6 +957,8 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         verifier.max_requests = 1
         verdict = verify(report, verifier, editorial_feedback=feedback,
                          failure_lessons=failure_lessons)
+        verdict['proposal_alignment_audit'] = {
+            'version': PROPOSAL_ALIGNMENT_AUDIT_VERSION, 'status': 'passed'}
         candidate, result = discovery.validate_selection(report['model_output'], report['resolved_candidates'])
         with closing(sqlite3.connect(database)) as conn:
             conn.execute('BEGIN IMMEDIATE')
