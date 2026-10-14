@@ -904,6 +904,9 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         outcome['rate_limited'] = outcome['quota_limited'] or any(
             marker in error_text.casefold() for marker in ('http 429', 'resource_exhausted', 'rate limit')
         )
+        # A 503 is not a quota reset, but rapidly retrying an overloaded free-tier
+        # model wastes requests. Keep its Retry-After hint (if any) across ticks.
+        outcome['provider_unavailable'] = 'http 503' in error_text.casefold()
         if verifier is not None:
             outcome['verifier_requests'] = verifier.requests
     outcome['failed_names'] = [item.get('title', '') for item in report.get('rejections', []) if isinstance(item, dict)]
@@ -992,6 +995,11 @@ def maintain_until_stocked(
             return result
         if last.get('rate_limited'):
             result = {**last, 'status': 'rate_paused', 'attempted': len(outcomes),
+                      'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
+            save_provider_retry(database, result)
+            return result
+        if last.get('provider_unavailable'):
+            result = {**last, 'status': 'provider_paused', 'attempted': len(outcomes),
                       'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
             save_provider_retry(database, result)
             return result

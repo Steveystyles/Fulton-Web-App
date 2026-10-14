@@ -925,6 +925,58 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['status'], 'quota_paused')
         self.assertEqual(result['retry_at'], '2026-09-08T11:00:05+00:00')
 
+    def test_provider_503_pauses_refill_and_resumes_after_reported_delay(self):
+        failed = {'status': 'failed',
+                  'error': 'Map preview provider failed; stopped to preserve quota.',
+                  'provider_error_detail': 'Gemini request failed with HTTP 503: UNAVAILABLE',
+                  'retry_after_seconds': 125, 'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            first = pool.maintain_until_stocked(
+                self.database, self.root/'reports', seed_catalog=None,
+                provider_factory=Mock(return_value=Mock(requests=[])), max_attempts=4,
+            )
+        self.assertEqual(first['status'], 'provider_paused')
+        self.assertEqual(first['attempted'], 1)
+        self.assertEqual(first['retry_at'], '2026-09-08T10:02:10+00:00')
+        discover.assert_called_once()
+        with patch.object(pool, 'maintain') as maintain:
+            paused = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
+        self.assertEqual(paused['status'], 'provider_paused')
+        self.assertEqual(paused['attempted'], 0)
+        maintain.assert_not_called()
+        self.clock += timedelta(seconds=131)
+        with patch.object(pool, 'maintain', return_value={'status': 'stocked', 'ready': 7}) as maintain:
+            resumed = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
+        self.assertEqual(resumed['status'], 'stocked')
+        maintain.assert_called_once()
+
+    def test_provider_503_without_retry_hint_uses_bounded_backoff(self):
+        failed = {'status': 'failed', 'error': 'Gemini request failed with HTTP 503: UNAVAILABLE',
+                  'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed):
+            result = pool.maintain_until_stocked(
+                self.database, self.root/'reports', seed_catalog=None,
+                provider_factory=Mock(return_value=Mock(requests=[])), max_attempts=4,
+            )
+        self.assertEqual(result['status'], 'provider_paused')
+        self.assertEqual(result['retry_at'], '2026-09-08T10:30:05+00:00')
+
+    def test_verifier_503_uses_verifier_retry_hint(self):
+        discovery_provider = Mock(requests=[], provider_error_detail='', retry_after_seconds=None)
+        verifier_provider = Mock(
+            requests=[], provider_error_detail='Gemini request failed with HTTP 503: UNAVAILABLE',
+            retry_after_seconds=3600,
+        )
+        factory = Mock(side_effect=[discovery_provider, verifier_provider])
+        with patch.object(discovery, 'discover', return_value=self.report()), \
+             patch.object(pool, 'verify', side_effect=RuntimeError('Map provider stopped')):
+            result = pool.maintain_until_stocked(
+                self.database, self.root, seed_catalog=None, provider_factory=factory,
+            )
+        self.assertEqual(result['status'], 'provider_paused')
+        self.assertFalse(result['quota_limited'])
+        self.assertEqual(result['retry_at'], '2026-09-08T11:00:05+00:00')
+
     def test_scheduler_wakes_for_maintenance_even_when_games_are_published(self):
         import server
         with patch.object(server, 'DAILY_MAP_AUTOMATIC_ENABLED', True), \
