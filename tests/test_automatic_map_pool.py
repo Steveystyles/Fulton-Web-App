@@ -125,6 +125,46 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(pool.quarantine_unaligned_ready(conn, reports), [])
             self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'used')
 
+    def test_rejected_factual_round_teaches_all_three_clues_not_just_its_hook(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute('SELECT verification FROM automatic_map_entries').fetchone()[0])
+            verification.update(editorial_rejection=True,
+                                hook_rejection='unsupported factual claims',
+                                ready_audit={'evidence_supported': False,
+                                             'chronology_consistent': True,
+                                             'reason': 'The easy clue invents a nearby feature.'})
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=?",
+                         (json.dumps(verification),))
+            lessons = pool.rejected_interest_lessons(conn)
+            self.assertEqual(len(lessons), 1)
+            self.assertIn('unsupported factual claims', lessons[0]['failure_reason'])
+            self.assertEqual(lessons[0]['attempted_clues'], {
+                level: self.result['clue_ladder'][level] for level in ('hard', 'medium', 'easy')})
+
+    def test_rejected_lessons_keep_distinct_failure_types_in_small_prompt(self):
+        with closing(self.connect()) as conn:
+            for index, kind in enumerate(('unsupported', 'hook', 'hook', 'hook')):
+                candidate = {**self.place, 'id': f'place-{index}',
+                             'canonical_name': f'Place {index}'}
+                verification = {'editorial_rejection': True, 'interesting_hook_score': 5,
+                                'ready_audit': {'evidence_supported': kind != 'unsupported',
+                                                'chronology_consistent': True,
+                                                'reason': kind}}
+                if kind == 'hook':
+                    verification['hook_rejection'] = 'abandoned proposed discovery hook'
+                conn.execute(
+                    'INSERT INTO automatic_map_entries(id,state,candidate,result,verification,created_at,expires_at,origin) '
+                    'VALUES(?,?,?,?,?,?,?,?)',
+                    (candidate['id'], 'rejected', json.dumps(candidate), json.dumps(self.result),
+                     json.dumps(verification), (self.clock + timedelta(minutes=index)).isoformat(),
+                     (self.clock + timedelta(days=14)).isoformat(), 'discovery'))
+            lessons = pool.rejected_interest_lessons(conn, limit=3)
+            self.assertEqual(len(lessons), 3)
+            self.assertEqual(lessons[0]['place'], 'Place 3')
+            self.assertEqual(lessons[1]['place'], 'Place 0')
+            self.assertIn('unsupported factual claims', lessons[1]['failure_reason'])
+
     def test_next_date_skips_offdays_and_already_published_games(self):
         with closing(self.connect()) as conn:
             self.assertEqual(pool.next_date(conn), '2026-09-09')

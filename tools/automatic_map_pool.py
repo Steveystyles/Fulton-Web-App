@@ -441,8 +441,10 @@ def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[d
 
 
 def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> list[dict]:
-    """Feed failed ready audits back into discovery, not just the exclusion list."""
-    lessons = []
+    """Feed varied failed audits back into discovery, not just the exclusion list."""
+    if limit <= 0:
+        return []
+    candidates = []
     for candidate_text, result_text, verification_text in conn.execute(
         "SELECT candidate,result,verification FROM automatic_map_entries "
         "WHERE state='rejected' AND origin='discovery' ORDER BY created_at DESC LIMIT 30"
@@ -457,29 +459,50 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
             hook = str(result.get('clue_ladder', {}).get('hard') or '').strip()
             if not hook:
                 continue
-            if rejected_hook_reason(verification):
-                failure_reason = ('Unsuitable Map hook ('
-                                  + str(rejected_hook_reason(verification))[:80] + '): ')
-            elif audit.get('evidence_supported') is False:
+            if audit.get('evidence_supported') is False:
+                category = 'unsupported evidence'
                 failure_reason = 'Ready audit found unsupported factual claims: '
             elif audit.get('chronology_consistent') is False:
+                category = 'chronology'
                 failure_reason = 'Ready audit found conflated historical periods: '
+            elif rejected_hook_reason(verification):
+                category = 'unsuitable hook'
+                failure_reason = ('Unsuitable Map hook ('
+                                  + str(rejected_hook_reason(verification))[:80] + '): ')
             elif not sufficient_interest_score(score):
+                category = 'low interest'
                 failure_reason = f'Interest audit scored this hook {score}/5: '
             else:
                 continue
-            lessons.append({
+            attempted_clues = {'hard': hook[:200]}
+            if (audit.get('evidence_supported') is False or
+                    audit.get('chronology_consistent') is False):
+                for level in ('medium', 'easy'):
+                    clue = str(result.get('clue_ladder', {}).get(level) or '').strip()
+                    if clue:
+                        attempted_clues[level] = clue[:200]
+            candidates.append((category, {
                 'place': str(candidate.get('canonical_name') or '')[:100],
-                'attempted_clues': {'hard': hook[:200]},
+                'attempted_clues': attempted_clues,
                 'failure_reason': failure_reason + str(audit.get('reason') or
                     verification.get('interest_audit_reason') or
                     'Not a supported, memorable, place-defining discovery hook.')[:160],
-            })
-            if len(lessons) >= limit:
-                break
+            }))
         except (ValueError, TypeError, AttributeError):
             continue
-    return lessons
+    lessons = []
+    chosen = set()
+    for index, (category, lesson) in enumerate(candidates):
+        if category not in chosen:
+            chosen.add(category)
+            lessons.append((index, lesson))
+            if len(lessons) >= limit:
+                break
+    if len(lessons) < limit:
+        used_indexes = {index for index, _ in lessons}
+        lessons.extend((index, lesson) for index, (_, lesson) in enumerate(candidates)
+                       if index not in used_indexes)
+    return [lesson for _, lesson in lessons[:limit]]
 
 
 def recent_failed_round_lessons(conn: sqlite3.Connection, output_dir: Path,
