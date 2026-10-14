@@ -269,6 +269,53 @@ class DiscoveryTests(unittest.TestCase):
             [('Local Park', 'medium'), ('River Walk', 'easy')],
         )
 
+    def test_proposed_story_passage_is_retrieved_beyond_article_intro(self):
+        candidate = {
+            'canonical_name': 'Example Tower',
+            'proposal_reason': 'A helicopter lifted antenna sections after the crane was removed.',
+            'anchors': [{'name': 'Example City'}, {'name': 'Local Park'}],
+            'evidence': {'article': {'text': (
+                'Example City has a documented landmark. ' * 150
+                + 'A helicopter lifted antenna sections above the tower after removing the crane. '
+                + 'Local Park is beside the landmark.'
+            )}},
+        }
+        units = discovery.evidence_units(candidate)
+        hook_units = [unit for unit in units if unit.get('proposal_hook_passage')]
+        self.assertTrue(hook_units)
+        self.assertTrue(any('helicopter' in unit['text'] for unit in hook_units))
+        self.assertLess(len(units), 20)
+
+    def test_final_hard_clue_cannot_abandon_source_supported_proposal(self):
+        self.place['proposal_reason'] = self.place['facts']['hard']['text']
+        self.place['evidence']['article']['text'] = (
+            'An unrelated archive describes a temporary exhibition in this district. ' * 70
+            + ' '.join(fact['text'] for fact in self.place['facts'].values())
+        )
+        units = discovery.evidence_units(self.place)
+        hook_id = next(unit['id'] for unit in units
+                       if unit.get('proposal_hook_passage') and 'iron crystal' in unit['text'])
+        unrelated_id = next(unit['id'] for unit in units
+                            if not unit.get('proposal_hook_passage') and 'unrelated archive' in unit['text'])
+        aligned = deepcopy(self.payload)
+        aligned['facts']['hard'] = {
+            'text': self.place['facts']['hard']['text'], 'source_ids': [hook_id],
+        }
+        discovery.validate_selection(aligned, [self.place])
+
+        unrelated = deepcopy(aligned)
+        unrelated['facts']['hard'] = {
+            'text': 'An unrelated archive describes a temporary exhibition in this district.',
+            'source_ids': [unrelated_id],
+        }
+        with self.assertRaisesRegex(ValueError, 'unrelated passage'):
+            discovery.validate_selection(unrelated, [self.place])
+
+        disguised = deepcopy(aligned)
+        disguised['facts']['hard']['text'] = 'A routine district exhibition used this space.'
+        with self.assertRaisesRegex(ValueError, 'abandoned the proposed'):
+            discovery.validate_selection(disguised, [self.place])
+
     def test_only_map_key_is_used_and_failed_request_is_not_retried(self):
         budget = self.budget()
         with patch.dict(os.environ, {'GEMINI_API_KEY_DEV': 'dev-fixture', 'GEMINI_API_KEY': 'general-fixture'}, clear=True):
@@ -513,6 +560,8 @@ class DiscoveryTests(unittest.TestCase):
                       request.call_args_list[1].args[1])
         self.assertIn('"coordinate_derived_city_sector": "northern"', request.call_args_list[1].args[1])
         self.assertIn('sector comes from checked coordinates', request.call_args_list[1].args[1])
+        self.assertIn('proposal_hypothesis', request.call_args_list[1].args[1])
+        self.assertIn('unverified idea, not a fact', request.call_args_list[1].args[1])
         self.assertIn('do not make an event, group, or regime use a structure built later',
                       request.call_args_list[1].args[1])
         self.assertFalse(report['production_modified'])
@@ -584,6 +633,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(report['request_counts']['model_requests'], 3)
         self.assertEqual(request.call_count, 3)
         self.assertIn('VALIDATION FAILURE', request.call_args_list[2].args[1])
+        self.assertIn('proposal_hypothesis', request.call_args_list[2].args[1])
         self.assertEqual(report['candidate']['id'], self.place['id'])
 
     def test_source_budget_exhaustion_does_not_blacklist_unchecked_proposals(self):
