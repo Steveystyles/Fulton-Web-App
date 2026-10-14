@@ -288,6 +288,17 @@ class AutomaticPoolTests(unittest.TestCase):
             ('Hundreds of residents were held hostage inside this church.', 'hostage-taking'),
             ('Young cadets died defending this hilltop stronghold.', 'victim deaths'),
             ('A leader was seized under a white flag of truce here.', 'betrayal and detention'),
+            ('Apparently, a stonemason from the rival order supervised this castle.',
+             'hedged historical claim'),
+            ("Apparently during a truce with the Teutonic Order, the construction works "
+             "of this island fortress were supervised by the Order's stonemason.",
+             'hedged historical claim'),
+            ('Reflective skyscrapers disrupted broadcast signals, prompting construction '
+             'of this tower for higher antennas.', 'routine signal-engineering premise'),
+            ('As downtown skyscrapers multiplied, their reflective surfaces disrupted '
+             'broadcast signals, prompting the construction of this soaring tower to mount '
+             'higher antennas and restore line-of-sight communication links.',
+             'routine signal-engineering premise'),
             ('Its sloping roof turns an opera house into a public square.', None),
             ('A Persian emperor plundered this fort and seized its famous throne.', None),
             ('An eruption buried this Roman city and preserved its streets.', None),
@@ -295,6 +306,8 @@ class AutomaticPoolTests(unittest.TestCase):
         for clue, expected in examples:
             with self.subTest(clue=clue):
                 self.assertEqual(pool.unsuitable_game_hook({'clue_ladder': {'hard': clue}}), expected)
+        self.assertEqual(pool.rejected_hook_reason({'tone_rejection': 'hostage-taking'}),
+                         'hostage-taking')
 
     def test_maintenance_quarantines_old_victim_hook_without_model_request(self):
         self.queue('discovery')
@@ -310,9 +323,9 @@ class AutomaticPoolTests(unittest.TestCase):
             row = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
             self.assertEqual(row[0], 'rejected')
             verification = json.loads(row[1])
-            self.assertEqual(verification['tone_rejection'], 'hostage-taking')
+            self.assertEqual(verification['hook_rejection'], 'hostage-taking')
             self.assertTrue(verification['editorial_rejection'])
-            self.assertIn('light Map game', pool.rejected_interest_lessons(conn)[0]['failure_reason'])
+            self.assertIn('Unsuitable Map hook', pool.rejected_interest_lessons(conn)[0]['failure_reason'])
             # Reject the hook, not the place: a genuinely different, suitable
             # story may return to the ordinary selection pool.
             pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
@@ -345,7 +358,7 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(row[0], 'rejected')
             verification = json.loads(row[1])
             self.assertTrue(verification['ready_audit']['evidence_supported'])
-            self.assertEqual(verification['tone_rejection'], 'camp confinement')
+            self.assertEqual(verification['hook_rejection'], 'camp confinement')
 
     def test_malformed_interest_batch_does_not_partially_update_queue(self):
         self.queue_two_legacy_rounds()
