@@ -93,13 +93,14 @@ class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
         return cls.from_explicit_key(key, generator_model=generator_model, max_requests=max_requests)
 
     @classmethod
-    def from_explicit_key(cls, key: str, *, generator_model: str = "", max_requests: int = 30):
+    def from_explicit_key(cls, key: str, *, generator_model: str = "", critic_model: str = "",
+                          max_requests: int = 30):
         # Construct explicitly: no provider fallback or hidden retries.
         config = daily_quiz.QuizConfig(
             provider="gemini",
             generator_model=generator_model.strip() or os.environ.get("MAP_PREVIEW_GENERATOR_MODEL", "").strip()
             or rewriter.DEFAULT_MAP_GEMINI_GENERATOR_MODEL,
-            critic_model=os.environ.get("MAP_PREVIEW_CRITIC_MODEL", "").strip()
+            critic_model=critic_model.strip() or os.environ.get("MAP_PREVIEW_CRITIC_MODEL", "").strip()
             or rewriter.DEFAULT_MAP_GEMINI_CRITIC_MODEL,
             gemini_api_key=key,
             compatible_api_key="",

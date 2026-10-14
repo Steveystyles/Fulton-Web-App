@@ -276,6 +276,8 @@ class DiscoveryTests(unittest.TestCase):
                 discovery.DiscoveryProvider.from_map_env(budget)
         with patch.dict(os.environ, {'MAP_AI_API_KEY': 'map-fixture'}, clear=True):
             provider = discovery.DiscoveryProvider.from_map_env(budget)
+        self.assertEqual(provider.clients[0].config.critic_model,
+                         provider.clients[0].config.generator_model)
         with patch.object(provider.clients[0].provider, '_request', side_effect=RuntimeError('map-fixture')) as request:
             for _ in range(2):
                 with self.assertRaises(RuntimeError):
@@ -283,6 +285,18 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(request.call_count, 1)
             self.assertNotIn('map-fixture', json.dumps(provider.requests))
         self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 1)
+
+    def test_production_map_critic_can_be_selected_independently(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'MAP_AI_MODEL': 'gemini-3.5-flash-lite',
+            'MAP_AI_CRITIC_MODEL': 'gemini-3.8-flash',
+            'MAP_PREVIEW_CRITIC_MODEL': 'preview-only-model',
+        }, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(self.budget())
+        config = provider.clients[0].config
+        self.assertEqual(config.generator_model, 'gemini-3.5-flash-lite')
+        self.assertEqual(config.critic_model, 'gemini-3.8-flash')
 
     def test_evidence_is_exact_and_unsupported_numbers_are_rejected(self):
         candidate, result = discovery.validate_selection(self.payload, [self.place])

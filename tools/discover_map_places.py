@@ -133,8 +133,10 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
         key = os.environ.get('MAP_AI_API_KEY', '').strip()
         if not key:
             raise ValueError('MAP_AI_API_KEY is required; no other provider key is used.')
-        provider = cls.from_explicit_key(key, generator_model=os.environ.get('MAP_AI_MODEL', '').strip()
-                                         or 'gemini-3.5-flash-lite', max_requests=MAX_MODEL_REQUESTS)
+        generator_model = os.environ.get('MAP_AI_MODEL', '').strip() or 'gemini-3.5-flash-lite'
+        critic_model = os.environ.get('MAP_AI_CRITIC_MODEL', '').strip() or generator_model
+        provider = cls.from_explicit_key(key, generator_model=generator_model,
+                                         critic_model=critic_model, max_requests=MAX_MODEL_REQUESTS)
         provider.budget = budget
         return provider
 

@@ -276,7 +276,7 @@ def audit_ready_interest(candidate: dict, result: dict, provider: discovery.Disc
     prompt = READY_AUDIT_INSTRUCTIONS + json.dumps(
         {**ready_audit_input(candidate, result),
          'past_editorial_corrections': editorial_feedback}, ensure_ascii=False)
-    verdict = provider.call_with_fallback(model_attr='generator_model', prompt=prompt,
+    verdict = provider.call_with_fallback(model_attr='critic_model', prompt=prompt,
                                           schema=interest_audit_schema())
     return parse_ready_audit(verdict)
 
@@ -289,7 +289,7 @@ def audit_ready_interest_batch(rows: list[tuple], provider: discovery.DiscoveryP
     prompt = (READY_AUDIT_INSTRUCTIONS + 'Preserve each supplied id exactly; return one audit per id.\n'
               + json.dumps({'proposals': proposals, 'past_editorial_corrections': editorial_feedback},
                            ensure_ascii=False))
-    verdict = provider.call_with_fallback(model_attr='generator_model', prompt=prompt,
+    verdict = provider.call_with_fallback(model_attr='critic_model', prompt=prompt,
                                           schema=interest_audit_batch_schema(len(rows)))
     audits = verdict.get('audits') if isinstance(verdict, dict) else None
     if not isinstance(audits, list) or len(audits) != len(rows):
@@ -516,7 +516,7 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
               + json.dumps({'place': candidate['canonical_name'], 'country': candidate['country_name'],
                             'city': candidate['locality_name'], 'place_type': candidate['place_type'], 'aliases': candidate['acceptable_aliases'],
                             'anchors': candidate['anchors'], 'clues': result['clue_ladder'], 'passages': units}))
-    verdict = provider.call_with_fallback(model_attr='generator_model', prompt=prompt, schema=verification_schema())
+    verdict = provider.call_with_fallback(model_attr='critic_model', prompt=prompt, schema=verification_schema())
     score = verdict.get('interesting_hook_score')
     if not sufficient_interest_score(score):
         raise ValueError('Evidence verifier found the hard hook insufficiently interesting.')
