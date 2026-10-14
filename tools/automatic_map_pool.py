@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 from uuid import uuid4
@@ -35,6 +36,13 @@ CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interest
 MIN_INTEREST_SCORE = 4
 INTEREST_AUDIT_BATCH_SIZE = 4
 READY_AUDIT_VERSION = 1
+# These labels assert a historically consequential classification, not merely
+# descriptive colour. A model must not infer one from a related event (for
+# example, hostages in a church do not prove it was a concentration camp).
+CRITICAL_HISTORICAL_LABELS = (
+    'concentration camp', 'death camp', 'internment camp', 'mass grave',
+    'genocide', 'war crime', 'massacre',
+)
 
 
 def now() -> datetime:
@@ -165,6 +173,19 @@ def ready_audit_input(candidate: dict, result: dict) -> dict:
             'supporting_passages': {
                 level: candidate.get('facts', {}).get(level, {}).get('supporting_quotes', [])
                 for level in controlled.LEVELS}}
+
+
+def unsupported_critical_labels(candidate: dict, result: dict) -> list[str]:
+    """Require verbatim source support for consequential historical labels."""
+    hard = str(result.get('clue_ladder', {}).get('hard') or '')
+    facts = candidate.get('facts', {}).get('hard', {})
+    passages = facts.get('supporting_quotes') or [facts.get('supporting_quote', '')]
+    evidence = ' '.join(p for p in passages if isinstance(p, str))
+    normalize = lambda value: re.sub(r'\s+', ' ', str(value).casefold())
+    clue_text, source_text = normalize(hard), normalize(evidence)
+    return [label for label in CRITICAL_HISTORICAL_LABELS
+            if re.search(r'(?<!\w)' + re.escape(label) + r'(?!\w)', clue_text)
+            and not re.search(r'(?<!\w)' + re.escape(label) + r'(?!\w)', source_text)]
 
 
 READY_AUDIT_INSTRUCTIONS = (
@@ -386,6 +407,10 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
            *, editorial_feedback: list[dict] | None = None,
            failure_lessons: list[dict] | None = None) -> dict:
     candidate, result = discovery.validate_selection(report['model_output'], report['resolved_candidates'])
+    unsupported_labels = unsupported_critical_labels(candidate, result)
+    if unsupported_labels:
+        raise ValueError('Consequential historical label lacks exact source support: '
+                         + ', '.join(unsupported_labels))
     feedback = editorial_feedback or []
     selected_hook = str(result['clue_ladder']['hard']).strip().casefold()
     if any(selected_hook == str(item.get('rejected_hook') or '').strip().casefold() for item in feedback):
@@ -460,6 +485,8 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
     validated = controlled.validate_result(payload, [candidate])
     if not validated['automated_pass']:
         raise ValueError('Queued clue validation failed.')
+    if origin == 'discovery' and unsupported_critical_labels(candidate, validated):
+        raise ValueError('Consequential historical label lacks exact source support.')
     for row in conn.execute("SELECT candidate FROM automatic_map_entries WHERE state='ready'"):
         old = json.loads(row[0])
         if old['id'] == candidate['id'] or daily_map_game.haversine_m(old['lat'], old['lng'], candidate['lat'], candidate['lng']) < 500:
@@ -502,6 +529,8 @@ def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:
         candidate = json.loads(row[1])
         verification = json.loads(row[3])
         if row[4] == 'discovery' and not ready_audit_passed(verification):
+            continue
+        if row[4] == 'discovery' and unsupported_critical_labels(candidate, json.loads(row[2])):
             continue
         try:
             controlled.eligible_places_in_database(conn, puzzle_date, [candidate])
@@ -689,7 +718,9 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             "SELECT id,candidate,result,verification FROM automatic_map_entries "
             "WHERE state='ready' AND origin='discovery' AND expires_at>? ORDER BY created_at,id",
             (now().isoformat(),),
-        ) if not ready_audit_passed(json.loads(row[3]))][:INTEREST_AUDIT_BATCH_SIZE]
+        ) if (not ready_audit_passed(json.loads(row[3]))
+              or unsupported_critical_labels(json.loads(row[1]), json.loads(row[2]))
+        )][:INTEREST_AUDIT_BATCH_SIZE]
         conn.commit()
     if len(ready) >= TARGET_READY and not pending_audits:
         return {'status': 'stocked', 'ready': len(ready)}
@@ -719,6 +750,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
                 for row in pending_audits:
                     candidate, verification = json.loads(row[1]), json.loads(row[3])
                     audited = audits[row[0]]
+                    unsupported_labels = unsupported_critical_labels(candidate, json.loads(row[2]))
+                    if unsupported_labels:
+                        audited = {**audited, 'evidence_supported': False,
+                                   'reason': 'Consequential historical label lacks exact source support: '
+                                   + ', '.join(unsupported_labels)}
                     passed = (sufficient_interest_score(audited['interesting_hook_score'])
                               and audited['evidence_supported'] and audited['chronology_consistent'])
                     verification['interesting_hook_score'] = audited['interesting_hook_score']
@@ -914,6 +950,8 @@ def publish(conn: sqlite3.Connection, *, puzzle_date: str) -> dict:
         raise ValueError('Queued round is missing automatic evidence checks.')
     if row[4] == 'discovery' and not ready_audit_passed(verification):
         raise ValueError('Queued round has not passed the current evidence and chronology audit.')
+    if row[4] == 'discovery' and unsupported_critical_labels(candidate, result):
+        raise ValueError('Queued round contains an unsupported consequential historical label.')
     if row[4] == 'discovery' and not sufficient_interest_score(verification.get('interesting_hook_score')):
         raise ValueError('Queued round has not passed the editorial interest check.')
     payload = {'place_id': candidate['id'], 'selection_reason': result['selection_reason'],
