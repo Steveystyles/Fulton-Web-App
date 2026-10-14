@@ -490,6 +490,20 @@ def proposal_hook_passage_indexes(candidate: dict, matches: list | None = None) 
             for nearby in range(max(0, index - 1), min(len(matches), index + 2))}
 
 
+def validate_proposal_hook_alignment(payload: dict, selected: dict) -> None:
+    """Keep a supported proposal story instead of citing an unrelated easy fact."""
+    hook_passages = proposal_hook_passage_indexes(selected)
+    hard = payload['facts']['hard']
+    if not hook_passages or 'source_ids' not in hard:
+        return
+    allowed_ids = {f'article-{index}' for index in hook_passages}
+    if not allowed_ids.intersection(hard['source_ids']):
+        raise ValueError('Hard clue cites an unrelated passage instead of the proposed discovery hook.')
+    if len(hook_terms(hard['text'], selected['canonical_name']) &
+           hook_terms(selected.get('proposal_reason'), selected['canonical_name'])) < 2:
+        raise ValueError('Hard clue abandoned the proposed discovery hook for an unrelated fact.')
+
+
 def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dict]:
     selected = next((c for c in candidates if c['id'] == payload.get('place_id')), None)
     if selected is None:
@@ -536,15 +550,7 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 raise ValueError(f'{level} quotation does not name its search area.')
         facts[level] = {'text': text, 'source_ids': ['article'], 'supporting_quote': quotes[0],
                         'supporting_quotes': quotes}
-    hook_passages = proposal_hook_passage_indexes(selected)
-    hard = payload['facts']['hard']
-    if hook_passages and 'source_ids' in hard:
-        allowed_ids = {f'article-{index}' for index in hook_passages}
-        if not allowed_ids.intersection(hard['source_ids']):
-            raise ValueError('Hard clue cites an unrelated passage instead of the proposed discovery hook.')
-        if len(hook_terms(hard['text'], selected['canonical_name']) &
-               hook_terms(selected.get('proposal_reason'), selected['canonical_name'])) < 2:
-            raise ValueError('Hard clue abandoned the proposed discovery hook for an unrelated fact.')
+    validate_proposal_hook_alignment(payload, selected)
     # This date means retrieved, not reviewed: candidate remains outside the runtime catalogue.
     candidate = {k: v for k, v in selected.items() if k not in ('evidence', 'proposal_reason')}
     candidate.update(facts=facts, checked_on=selected['retrieved_on'], review_status='pending')
