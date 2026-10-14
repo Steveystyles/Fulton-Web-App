@@ -150,6 +150,7 @@ class AutomaticPoolTests(unittest.TestCase):
                                 provider_factory=lambda _budget: provider)
         self.assertEqual(outcome['status'], 'audited')
         self.assertEqual(outcome['ready'], 1)
+        self.assertEqual(provider.call_with_fallback.call_args.kwargs['model_attr'], 'critic_model')
         self.assertIn('past_editorial_corrections',
                       provider.call_with_fallback.call_args.kwargs['prompt'])
         with closing(self.connect()) as conn:
@@ -214,6 +215,7 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(outcome['ready'], 1)
         self.assertEqual(len(outcome['places']), 2)
         provider.call_with_fallback.assert_called_once()
+        self.assertEqual(provider.call_with_fallback.call_args.kwargs['model_attr'], 'critic_model')
         self.assertEqual(provider.call_with_fallback.call_args.kwargs['schema']['properties']['audits']['maxItems'], 2)
         with closing(self.connect()) as conn:
             rows = {row[0]: (row[1], json.loads(row[2])) for row in conn.execute(
@@ -412,6 +414,7 @@ class AutomaticPoolTests(unittest.TestCase):
         provider = Mock()
         provider.call_with_fallback.return_value = verdict
         self.assertEqual(pool.verify(report, provider), verdict)
+        self.assertEqual(provider.call_with_fallback.call_args.kwargs['model_attr'], 'critic_model')
         prompt = provider.call_with_fallback.call_args.kwargs['prompt']
         self.assertIn('obscure procurement detail', prompt)
         self.assertIn('absence of an event', prompt)
