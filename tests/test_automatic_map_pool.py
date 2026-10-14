@@ -287,6 +287,9 @@ class AutomaticPoolTests(unittest.TestCase):
             ('This church was used as a concentration camp.', 'camp confinement'),
             ('Hundreds of residents were held hostage inside this church.', 'hostage-taking'),
             ('Young cadets died defending this hilltop stronghold.', 'victim deaths'),
+            ('Defenders jammed the elevator with a matchbox and considered deploying an '
+             'asphyxiating fire-fighting system to deter Soviet troops.',
+             'threatened serious harm'),
             ('A leader was seized under a white flag of truce here.', 'betrayal and detention'),
             ('Apparently, a stonemason from the rival order supervised this castle.',
              'hedged historical claim'),

@@ -50,6 +50,8 @@ UNSUITABLE_HOOK_PATTERNS = (
     (r'\b(?:genocide|massacre|mass grave|war crime|tortur\w*|enslav\w*|slavery)\b', 'atrocity'),
     (r'\b(?:hostages?|kidnapp\w*)\b', 'hostage-taking'),
     (r'\b(?:died|killed|murder\w*|execut\w*)\b', 'victim deaths'),
+    (r'\b(?:asphyxiat\w*|suffocat\w*|poison(?:ous)? gas|toxic gas|chemical weapons?)\b',
+     'threatened serious harm'),
     (r'\b(?:seized|captured|arrested)\b.{0,100}\b(?:truce|surrender|white flag)\b',
      'betrayal and detention'),
     (r'\b(?:apparently|allegedly|reportedly|supposedly|perhaps|possibly)\b|'
@@ -244,7 +246,8 @@ READY_AUDIT_INSTRUCTIONS = (
     'from different periods are made to seem simultaneous or causally linked. '
     'Do not infer that separate statements in one passage happened together. '
     'Score the hard clue from 1 (generic trivia) to 5 (memorable place-defining hook); '
-    'This is a light discovery game: victim deaths, hostages, camps and atrocities '
+    'This is a light discovery game: victim deaths, hostages, camps, threats of '
+    'serious harm and atrocities '
     'are not suitable as the main hook, even when historically accurate. '
     'A hedged claim (apparently, reportedly, may have) or a routine explanation '
     'for signal/antenna engineering is not a compelling hook. '
@@ -480,7 +483,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
               'leaks, or a myth presented as fact. The hard clue must be a specific memorable story or '
               'function owned by this place. '
               'This is a light discovery game: reject a hard hook centred on camps, hostages, '
-              'victim deaths or atrocities, even when factual. Prefer achievement, design, '
+              'victim deaths, threats of serious harm or atrocities, even when factual. '
+              'Prefer achievement, design, '
               'performance or a surprising public use. '
               'Reject hedged historical premises and ordinary broadcast-signal engineering '
               'premises regardless of how well the source supports them. '
