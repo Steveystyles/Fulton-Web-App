@@ -148,6 +148,15 @@ class StoryPipelineTests(unittest.TestCase):
         candidate, result = story.legacy.validate_selection(payload, [place])
         self.assertTrue(result['automated_pass'])
         self.assertEqual(candidate['facts']['hard']['source_ids'], ['unesco'])
+        place['sources'].pop('unesco')
+        place['sources']['historic_england'] = 'https://historicengland.org.uk/listing/the-list/list-entry/1291494'
+        place['evidence']['official']['source_key'] = 'historic_england'
+        candidate, result = story.legacy.validate_selection(payload, [place])
+        self.assertTrue(result['automated_pass'])
+        self.assertEqual(candidate['facts']['hard']['source_ids'], ['historic_england'])
+        with self.assertRaisesRegex(ValueError, 'unrelated passage'):
+            story.legacy.validate_proposal_hook_alignment(
+                {'facts': {'hard': {'text': hard, 'source_ids': ['article-0']}}}, place)
 
     def test_unesco_identity_requires_direct_wikidata_identifier(self):
         def claim(value):
@@ -156,6 +165,14 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(story.unesco_id({'claims': {'P757': [claim('252')]}}), '252')
         self.assertIsNone(story.unesco_id({'claims': {'P757': [claim('https://other.example/')]}}))
         self.assertIsNone(story.unesco_id({'claims': {}}))
+
+    def test_historic_england_identity_requires_direct_wikidata_identifier(self):
+        def claim(value):
+            return {'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+                    'datavalue': {'value': value}}}
+        self.assertEqual(story.historic_england_id({'claims': {'P1216': [claim('1291494')]}}), '1291494')
+        self.assertIsNone(story.historic_england_id({'claims': {'P1216': [claim('https://example.org/')]}}))
+        self.assertIsNone(story.historic_england_id({'claims': {}}))
 
     def test_unesco_fetch_is_fixed_host_and_bounded_english_section(self):
         source = Mock()
@@ -173,6 +190,28 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertNotIn('Ignore footer', page['text'])
         self.assertEqual(page['url'], 'https://whc.unesco.org/en/list/252/')
         source.budget.spend.assert_called_once_with('source')
+
+    def test_historic_england_fetch_is_fixed_host_and_rejects_wrong_entry(self):
+        source = Mock()
+        response = Mock(status=200)
+        response.read.return_value = (
+            b'<nav>Ignore navigation</nav><h1>Example Abbey</h1>'
+            b'<h2>Official list entry</h2><p>List Entry Number: 1291494</p>'
+            b'<h3>Details</h3><p>A remarkable public ceremony was held in this abbey. ' * 8 +
+            b'</p><h3>Legacy</h3><p>Ignore legacy material.</p>')
+        connection = Mock()
+        connection.getresponse.return_value = response
+        with patch.object(story.http.client, 'HTTPSConnection', return_value=connection) as factory:
+            page = story.historic_england_page(source, '1291494')
+        factory.assert_called_once_with('historicengland.org.uk', timeout=20)
+        self.assertIn('remarkable public ceremony', page['text'])
+        self.assertNotIn('Ignore legacy', page['text'])
+        self.assertEqual(page['source_key'], 'historic_england')
+        source.budget.spend.assert_called_once_with('source')
+        with patch.object(story, 'official_html', return_value=(
+                'Official list entry List Entry Number: 1000000 Details ' + 'A history. ' * 50)):
+            with self.assertRaisesRegex(ValueError, 'does not identify'):
+                story.historic_england_page(source, '1291494')
 
     def test_passages_are_bounded_and_include_story_beyond_introduction(self):
         text = 'A landmark in Example City. ' * 80
@@ -196,6 +235,21 @@ class StoryPipelineTests(unittest.TestCase):
         targets[0]['passages'][0]['role'] = 'context'
         self.assertEqual(story.ranked_routes({'ranked': [item]}, targets), [])
 
+    def test_official_only_story_is_eligible_when_direct_entry_matches(self):
+        article = 'The Glass Hall stands in Eastport beside Market Park. '
+        official_text = ('The public hall hosted the first demonstration of a solar railway, '
+                         'bringing hundreds of visitors into the building.')
+        target = {'title': 'Glass Hall', 'place_type': 'museum', 'page': {'text': article},
+                  'official': {'text': official_text, 'source_name': 'Historic England'},
+                  'passages': [{'id': 'op2', 'text': official_text, 'role': 'story',
+                                'source': 'Historic England'}]}
+        item = {'title': 'Glass Hall', 'passage_id': 'op2',
+                'hook': 'The first public demonstration of a solar railway was hosted here.',
+                'city_title': 'Eastport', 'local_title': 'Market Park'}
+        self.assertEqual(len(story.ranked_routes({'ranked': [item]}, [target])), 1)
+        target['official']['text'] = 'An unrelated official listing.'
+        self.assertEqual(story.ranked_routes({'ranked': [item]}, [target]), [])
+
     def test_target_lookup_does_not_request_city_or_local_articles(self):
         source = Mock()
         source.budget.day = '2026-10-15'
@@ -208,6 +262,28 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(len(targets), 1)
         source.page.assert_called_once_with('Glass Hall')
         source.country.assert_not_called()
+
+    def test_target_lookup_adds_direct_historic_england_story_evidence(self):
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        source.page.return_value = {
+            'title': 'Glass Hall', 'entity': 'Q1', 'lat': 51, 'lng': 0,
+            'text': ('The Glass Hall is in Eastport beside Market Park. ' * 12) +
+                    ('It hosted the first public demonstration of a solar railway. ' * 12),
+        }
+        source.request.return_value = {'query': {'geosearch': []}}
+        source.entities.return_value = {'Q1': {'claims': {'P1216': [{
+            'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+                'datavalue': {'value': '1291494'}}}]}}}
+        official = {'text': ('The entry records the public demonstration of a solar railway. ' * 24),
+                    'url': 'https://historicengland.org.uk/listing/the-list/list-entry/1291494',
+                    'source_key': 'historic_england', 'source_name': 'Historic England'}
+        with patch.object(story, 'historic_england_page', return_value=official) as fetch:
+            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum'}],
+                                           source, [], [], [], {'rejections': []})
+        fetch.assert_called_once_with(source, '1291494')
+        self.assertEqual(targets[0]['official']['source_key'], 'historic_england')
+        self.assertTrue(any(item['source'] == 'Historic England' for item in targets[0]['passages']))
 
     def test_discovery_stops_before_clue_generation_without_sourced_story(self):
         with tempfile.TemporaryDirectory() as directory:

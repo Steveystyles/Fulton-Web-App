@@ -494,11 +494,11 @@ def validate_proposal_hook_alignment(payload: dict, selected: dict) -> None:
     """Keep a supported proposal story instead of citing an unrelated easy fact."""
     hook_passages = proposal_hook_passage_indexes(selected)
     hard = payload['facts']['hard']
-    if not hook_passages or 'source_ids' not in hard:
-        return
-    allowed_ids = {f'article-{index}' for index in hook_passages}
     official = selected.get('evidence', {}).get('official', {})
     official_ids = {'official-hook'} if isinstance(official, dict) and official.get('hook_passage') else set()
+    if (not hook_passages and not official_ids) or 'source_ids' not in hard:
+        return
+    allowed_ids = {f'article-{index}' for index in hook_passages}
     if not (allowed_ids | official_ids).intersection(hard['source_ids']):
         raise ValueError('Hard clue cites an unrelated passage instead of the proposed discovery hook.')
     if len(hook_terms(hard['text'], selected['canonical_name']) &
@@ -543,7 +543,8 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                     quotes.append(anchor_quote['text'])
         official_text = (selected['evidence'].get('official', {}).get('text', '')
                          if level == 'hard' and 'source_ids' in item and
-                         any(units[ref].get('source') == 'unesco' for ref in item['source_ids']) else '')
+                         any(units[ref].get('source') in ('unesco', 'historic_england')
+                             for ref in item['source_ids']) else '')
         if any(len(q) < 30 or not any(normalized(q) in source_text for source_text in
                                      (selected['evidence']['article']['text'], official_text)) for q in quotes):
             raise ValueError(f'{level} quotation is absent from a retrieved source.')
@@ -554,7 +555,7 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
             anchor = selected['anchors'][0 if level == 'medium' else 1]['name']
             if daily_map_game.normalized_place_name(anchor) not in daily_map_game.normalized_place_name(combined):
                 raise ValueError(f'{level} quotation does not name its search area.')
-        source_keys = ({'unesco' if units[ref].get('source') == 'unesco' else 'article'
+        source_keys = ({units[ref].get('source', 'article')
                         for ref in item['source_ids']} if 'source_ids' in item else {'article'})
         facts[level] = {'text': text, 'source_ids': sorted(source_keys), 'supporting_quote': quotes[0],
                         'supporting_quotes': quotes}
@@ -617,7 +618,8 @@ def evidence_units(candidate: dict) -> list[dict]:
     official = candidate['evidence'].get('official', {})
     official_hook = official.get('hook_passage', '') if isinstance(official, dict) else ''
     if official_hook and normalized(official_hook) in official.get('text', ''):
-        units.append({'id': 'official-hook', 'text': official_hook, 'source': 'unesco',
+        units.append({'id': 'official-hook', 'text': official_hook,
+                      'source': official.get('source_key', 'unesco'),
                       'proposal_hook_passage': True, 'clue_role': 'hard'})
     return units
 

@@ -48,26 +48,40 @@ def unesco_id(entity: dict) -> str | None:
     return value if isinstance(value, str) and re.fullmatch(r'[1-9]\d{0,3}(?:bis|ter|quater|quinquies)?', value) else None
 
 
-def unesco_page(sources, site_id: str) -> dict:
-    if not re.fullmatch(r'[1-9]\d{0,3}(?:bis|ter|quater|quinquies)?', site_id):
-        raise ValueError('Invalid UNESCO site identifier.')
+def historic_england_id(entity: dict) -> str | None:
+    """Only a direct seven-digit NHLE identifier can select an official entry."""
+    values = legacy.claim_values(entity, 'P1216')
+    if len(values) != 1:
+        return None
+    value = values[0]
+    return value if isinstance(value, str) and re.fullmatch(r'\d{7}', value) else None
+
+
+def official_html(sources, host: str, path: str) -> str:
+    """Fetch from a fixed adapter host/path, without redirects or model-supplied URLs."""
     sources.budget.spend('source')
-    conn = http.client.HTTPSConnection('whc.unesco.org', timeout=20)
+    conn = http.client.HTTPSConnection(host, timeout=20)
     try:
-        conn.request('GET', f'/en/list/{site_id}/', headers={
+        conn.request('GET', path, headers={
             'User-Agent': legacy.USER_AGENT, 'Accept': 'text/html',
         })
         response = conn.getresponse()
         if response.status != 200:
-            raise RuntimeError(f'UNESCO source returned HTTP {response.status}.')
+            raise RuntimeError(f'Official source returned HTTP {response.status}.')
         body = response.read(legacy.MAX_RESPONSE_BYTES + 1)
         if len(body) > legacy.MAX_RESPONSE_BYTES:
-            raise ValueError('UNESCO source exceeded the size limit.')
+            raise ValueError('Official source exceeded the size limit.')
     finally:
         conn.close()
     parser = _VisibleText()
     parser.feed(body.decode('utf-8', errors='replace'))
-    text = legacy.normalized(' '.join(parser.parts))
+    return legacy.normalized(' '.join(parser.parts))
+
+
+def unesco_page(sources, site_id: str) -> dict:
+    if not re.fullmatch(r'[1-9]\d{0,3}(?:bis|ter|quater|quinquies)?', site_id):
+        raise ValueError('Invalid UNESCO site identifier.')
+    text = official_html(sources, 'whc.unesco.org', f'/en/list/{site_id}/')
     # Ignore navigation and non-English translations. The official English
     # description and Outstanding Universal Value section precede Links.
     start = text.find('Outstanding Universal Value')
@@ -78,7 +92,34 @@ def unesco_page(sources, site_id: str) -> dict:
     if len(excerpt) < 300:
         raise ValueError('UNESCO value statement is too short.')
     return {'text': excerpt, 'url': f'https://whc.unesco.org/en/list/{site_id}/',
-            'license': 'CC BY-SA IGO 3.0; UNESCO World Heritage Centre'}
+            'license': 'CC BY-SA IGO 3.0; UNESCO World Heritage Centre',
+            'source_key': 'unesco', 'source_name': 'UNESCO'}
+
+
+def historic_england_page(sources, entry_id: str) -> dict:
+    if not re.fullmatch(r'\d{7}', entry_id):
+        raise ValueError('Invalid National Heritage List entry identifier.')
+    text = official_html(sources, 'historicengland.org.uk',
+                         f'/listing/the-list/list-entry/{entry_id}')
+    official = text.find('Official list entry')
+    if official < 0:
+        official = text.find('Official List Entry')
+    if official < 0 or not re.search(r'List Entry Number:\s*' + re.escape(entry_id) + r'\b',
+                                    text[official:official + 2000], re.I):
+        raise ValueError('Historic England page does not identify the requested list entry.')
+    start = text.find('Details', official)
+    if start < 0:
+        raise ValueError('Historic England list entry has no details section.')
+    end = text.find('Legacy', start)
+    if end < 0:
+        end = text.find('Sources', start)
+    excerpt = text[start:(end if end > start else start + 12000)][:12000]
+    if len(excerpt) < 250:
+        raise ValueError('Historic England list entry details are too short.')
+    return {'text': excerpt,
+            'url': f'https://historicengland.org.uk/listing/the-list/list-entry/{entry_id}',
+            'license': 'Open Government Licence v3.0; Historic England',
+            'source_key': 'historic_england', 'source_name': 'Historic England'}
 
 
 def target_schema() -> dict:
@@ -187,9 +228,9 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                 report['budget_exhausted_at_title'] = name[:160]
                 break
             report['rejections'].append({'title': name[:160], 'reason': str(error)[:300]})
-    # An official UNESCO description is independent of the encyclopedia. A
-    # direct Wikidata identifier is required: never ask the model for a URL or
-    # search arbitrary websites. Missing official coverage is not a rejection.
+    # Official descriptions are independent of the encyclopedia. Direct
+    # Wikidata identifiers select fixed-host adapters; the model never supplies
+    # a URL. Missing official coverage is not a target rejection.
     for offset in range(0, len(result), 3):
         batch = result[offset:offset + 3]
         try:
@@ -201,20 +242,24 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
             break
         for item in batch:
             try:
-                site_id = unesco_id(entities[item['page']['entity']])
-                if site_id is None:
+                entity = entities[item['page']['entity']]
+                site_id = unesco_id(entity)
+                entry_id = historic_england_id(entity) if site_id is None else None
+                if site_id is None and entry_id is None:
                     continue
-                official = unesco_page(sources, site_id)
+                official = (unesco_page(sources, site_id) if site_id is not None
+                            else historic_england_page(sources, entry_id))
                 official_items = [p for p in passages(official) if p['role'] == 'story'][:2]
                 if not official_items:
                     continue
                 wiki = item['passages']
                 item['passages'] = [wiki[0], *[p for p in wiki if p['role'] == 'story'][:2],
-                                    *[{**p, 'id': 'u' + p['id'], 'source': 'UNESCO'} for p in official_items]]
+                                    *[{**p, 'id': 'o' + p['id'], 'source': official['source_name']}
+                                      for p in official_items]]
                 item['official'] = official
             except (ValueError, RuntimeError, KeyError, TypeError) as error:
                 report.setdefault('source_warnings', []).append(
-                    'UNESCO source unavailable for ' + item['title'][:80] + ': ' + str(error)[:150])
+                    'Official source unavailable for ' + item['title'][:80] + ': ' + str(error)[:150])
                 if 'budget exhausted' in str(error).casefold():
                     return result
     return result
@@ -243,11 +288,10 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
         # A chosen hook must visibly relate to its cited source paragraph.
         if len(legacy.hook_terms(hook, target['title']) & legacy.hook_terms(passage['text'], target['title'])) < 3:
             continue
-        if passage.get('source') == 'UNESCO':
-            official_terms = legacy.hook_terms(passage['text'], target['title'])
-            wiki_chunks = re.findall(r'.{1,500}(?:\s|$)', target['page']['text'])
-            if not any(len(official_terms & legacy.hook_terms(chunk, target['title'])) >= 3
-                       for chunk in wiki_chunks):
+        if passage.get('source') in ('UNESCO', 'Historic England'):
+            official = target.get('official') or {}
+            if (official.get('source_name') != passage['source'] or
+                    legacy.normalized(passage['text']) not in official.get('text', '')):
                 continue
         city = legacy.title(item.get('city_title'))
         local = legacy.title(item.get('local_title'))
@@ -256,7 +300,7 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
             continue
         result.append({'title': target['title'], 'place_type': target['place_type'],
                        'city_title': city, 'local_title': local, 'reason': hook,
-                       'story_passage': passage['text'], 'story_source': passage.get('source', 'Wikipedia')})
+                'story_passage': passage['text'], 'story_source': passage.get('source', 'Wikipedia')})
     return result
 
 
@@ -340,7 +384,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         if not targets:
             raise ValueError('No proposed target had usable source evidence.')
         story_prefix = ('Rank up to six places by the strength of a specific, place-owned, engaging story. '
-                        'Each hook must cite one target-article passage marked role="story"; context passages '
+                        'Each hook must cite one supplied Wikipedia or official-source passage marked role="story"; '
+                        'context passages '
                         'are for identity and geography, never a hook. Give its passage_id, '
                         'a faithful hook sentence, and a real city plus distinct nearby named feature that are '
                         'BOTH explicitly mentioned in that same target article. The local feature must be a '
@@ -389,9 +434,9 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                         'title': route['title'], 'verified_local_article': replacement_local})
                 official = target.get('official')
                 if official:
-                    candidate['sources']['unesco'] = official['url']
+                    candidate['sources'][official['source_key']] = official['url']
                     candidate['evidence']['official'] = {**official,
-                        'hook_passage': route['story_passage'] if route['story_source'] == 'UNESCO' else ''}
+                        'hook_passage': route['story_passage'] if route['story_source'] == official['source_name'] else ''}
                 legacy.reject_excluded_place([candidate['canonical_name'], *candidate['acceptable_aliases']],
                                              excluded_names or [])
                 if any(c['country_code'] == candidate['country_code'] or c['place_type'] == candidate['place_type']
@@ -407,8 +452,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         if not candidates:
             raise ValueError('No source-backed story had a playable map route.')
         clue_prompt = ('Choose the most engaging source-backed story and write hard, medium and easy Map clues. '
-                       'Use the cited story passage for hard; do not pivot to an unrelated fact. A UNESCO '
-                       'official-hook passage may support hard; medium and easy must cite target Wikipedia '
+                       'Use the cited story passage for hard; do not pivot to an unrelated fact. An official '
+                       'source passage may support hard; medium and easy must cite target Wikipedia '
                        'article passages that name their map anchors. Medium must name '
                        'the city anchor and country. Easy must start "In <city_sector> <city>," and name the local '
                        'anchor as practical map guidance. Each clue must be 8–40 words and no more than 240 '
