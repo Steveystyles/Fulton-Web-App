@@ -661,16 +661,37 @@ def review_markdown(report: dict) -> str:
         lines += ['## Selection', '', '    ' + candidate['canonical_name'], '',
                   '    ' + report['result']['selection_reason'], '',
                   f"Candidate SHA-256: `{report['candidate_sha256']}`", '']
+        if report.get('story_pivot'):
+            pivot = report['story_pivot']
+            lines += ['## Story changed during clue writing', '',
+                      'The clue writer chose a different retrieved passage. Review the change before approval.', '',
+                      'Original story passage:', '',
+                      '    ' + normalized(pivot['original_story_passage']), '',
+                      'Adopted story passage:', '',
+                      '    ' + normalized(pivot['new_story_passage']), '']
         for level in controlled.LEVELS:
             lines += [f'## {level.title()}', '', 'Clue:', '',
                       '    ' + report['result']['clue_ladder'][level], '', 'Supporting quotation:', '',
-                      *['    ' + quote for quote in candidate['facts'][level]['supporting_quotes']], '']
+                      *['    ' + quote for quote in candidate['facts'][level]['supporting_quotes']],
+                      'Evidence sources: ' + ', '.join(candidate['facts'][level]['source_ids']), '']
         lines += ['## Sources and map areas', '']
         for key, url in candidate['sources'].items():
-            # URLs are built by the source adapter, never supplied by the model.
+            # Story-first URLs can be model-suggested, but the fetcher checks
+            # public HTTPS transport and place identity before retaining them.
             lines.append(f'- [{key}]({url})')
-        lines += ['', 'Wikipedia extracts: CC BY-SA 4.0, Wikipedia contributors; '
-                  'Wikidata structured data: CC0. Sources link to the retrieved revisions.', '']
+        if report.get('pipeline') == 'story_first':
+            lines += ['', 'Story and navigation pages may have different reuse terms. '
+                      'These links record provenance, not permission to reproduce their text. '
+                      'Check the terms of each source before republication. '
+                      'Wikidata structured data: CC0.', '']
+            if 'osm' in candidate['sources']:
+                lines += ['OpenStreetMap location data: © OpenStreetMap contributors (ODbL).', '']
+            note = candidate.get('coordinate_check', {}).get('note')
+            if note:
+                lines += ['Coordinate check:', '', '    ' + normalized(note), '']
+        else:
+            lines += ['', 'Wikipedia extracts: CC BY-SA 4.0, Wikipedia contributors; '
+                      'Wikidata structured data: CC0. Sources link to the retrieved revisions.', '']
         for anchor in candidate['anchors']:
             lines.append('    ' + json.dumps(anchor, ensure_ascii=False))
     if report.get('error'):

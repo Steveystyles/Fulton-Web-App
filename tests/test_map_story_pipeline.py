@@ -11,6 +11,32 @@ from tools import controlled_map_round as controlled
 
 
 class StoryPipelineTests(unittest.TestCase):
+    def test_review_shows_story_pivot_and_source_specific_citations(self):
+        candidate = {'canonical_name': 'Glass Hall',
+                     'sources': {'article': 'https://local-history.example/glass-hall',
+                                 'city': 'https://en.wikipedia.org/wiki/Eastport',
+                                 'local': 'https://en.wikipedia.org/wiki/Market_Park',
+                                 'osm': 'https://www.openstreetmap.org/way/123'},
+                     'facts': {level: {'supporting_quotes': [f'Sourced {level} passage.'],
+                                      'source_ids': [source]}
+                               for level, source in (('hard', 'article'), ('medium', 'city'),
+                                                     ('easy', 'local'))},
+                     'anchors': [{'name': 'Eastport'}, {'name': 'Market Park'}],
+                     'coordinate_check': {'note': 'OSM and Wikidata coordinates cross-checked.'}}
+        report = {'pipeline': 'story_first', 'status': 'needs_source_review',
+                  'candidate': candidate, 'candidate_sha256': 'abc',
+                  'result': {'selection_reason': 'A memorable public story.',
+                             'clue_ladder': {level: f'{level} clue' for level in ('hard', 'medium', 'easy')}},
+                  'story_pivot': {'original_story_passage': 'Generic location fact.',
+                                  'new_story_passage': 'An inventive public exhibition.'},
+                  'request_counts': {'model_requests': 3, 'source_requests': 12}}
+        review = story.legacy.review_markdown(report)
+        self.assertIn('Story changed during clue writing', review)
+        self.assertIn('An inventive public exhibition.', review)
+        self.assertIn('Evidence sources: city', review)
+        self.assertIn('OpenStreetMap location data', review)
+        self.assertNotIn('Wikipedia extracts: CC BY-SA 4.0', review)
+
     def test_non_wikipedia_place_uses_exact_osm_identity_and_public_page(self):
         geocoder = Mock()
         geocoder.search.return_value = [
