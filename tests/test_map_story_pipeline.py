@@ -46,6 +46,34 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(page['url'], evidence['url'])
         fetch.assert_called_once_with(unittest.mock.ANY, external['url'], 'Glass Hall')
 
+    def test_wikidata_identity_uses_public_story_without_geocoding(self):
+        source = Mock()
+        source.entities.return_value = {'Q123': {
+            'lastrevid': 44, 'labels': {'en': {'value': 'Glass Hall'}},
+            'claims': {'P625': [{'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+                        'datavalue': {'value': {'latitude': 51.5, 'longitude': -0.12,
+                                               'globe': 'http://www.wikidata.org/entity/Q2'}}}}],
+                       'P17': [{'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+                                 'datavalue': {'value': {'id': 'Q145'}}}}]}}}
+        external = {'text': 'Glass Hall hosted the first public solar railway demonstration. ' * 12,
+                    'url': 'https://local-history.example/glass-hall',
+                    'source_name': 'local-history.example', 'source_key': 'external'}
+        geocoder = Mock()
+        with patch.object(story, 'public_page', return_value=external):
+            page, evidence = story.non_wikipedia_target(
+                'Glass Hall', source, geocoder, external['url'], 'Q123')
+        self.assertEqual(page['source_kind'], 'wikidata_public_page')
+        self.assertEqual((page['lat'], page['lng']), (51.5, -0.12))
+        self.assertEqual(evidence, external)
+        geocoder.search.assert_not_called()
+
+    def test_wikidata_identity_rejects_different_place_name(self):
+        source = Mock()
+        source.entities.return_value = {'Q123': {'labels': {'en': {'value': 'Another Hall'}}}}
+        with self.assertRaisesRegex(ValueError, 'does not have the proposed place name'):
+            story.non_wikipedia_target('Glass Hall', source, None,
+                                       'https://local-history.example/glass-hall', 'Q123')
+
     def test_source_targets_falls_back_when_wikipedia_has_no_article(self):
         source = Mock()
         source.budget.day = '2026-10-15'
@@ -65,7 +93,7 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(len(targets), 1)
         self.assertEqual(targets[0]['official'], external)
         self.assertEqual(targets[0]['passages'][0]['source'], 'glass.example')
-        fallback.assert_called_once_with('Glass Hall', source, geocoder, '')
+        fallback.assert_called_once_with('Glass Hall', source, geocoder, '', '')
         source.entities.assert_not_called()
 
     def test_non_wikipedia_route_keeps_osm_provenance(self):
@@ -111,6 +139,10 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(candidate['sources']['article'], page['url'])
         self.assertEqual(candidate['sources']['osm'], page['osm_url'])
         self.assertEqual(candidate['coordinate_check']['distance_m'], 0)
+        wikidata_page = {**page, 'source_kind': 'wikidata_public_page'}
+        wikidata_candidate, _ = story.resolve_route(route, {'page': wikidata_page}, source, [], [])
+        self.assertNotIn('osm', wikidata_candidate['sources'])
+        self.assertIn('Wikidata coordinates used', wikidata_candidate['coordinate_check']['note'])
 
     def test_full_source_first_flow_saves_review_without_publication(self):
         place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)

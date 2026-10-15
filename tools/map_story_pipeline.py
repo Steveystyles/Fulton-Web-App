@@ -224,8 +224,8 @@ def historic_england_page(sources, entry_id: str) -> dict:
 def target_schema() -> dict:
     item = {'type': 'object', 'properties': {
         'title': {'type': 'string'}, 'place_type': {'type': 'string', 'enum': list(legacy.PLACE_TYPES)},
-        'source_url': {'type': 'string'},
-    }, 'required': ['title', 'place_type', 'source_url'], 'additionalProperties': False}
+        'source_url': {'type': 'string'}, 'wikidata_id': {'type': 'string'},
+    }, 'required': ['title', 'place_type', 'source_url', 'wikidata_id'], 'additionalProperties': False}
     return {'type': 'object', 'properties': {'targets': {
         'type': 'array', 'minItems': 12, 'maxItems': 12, 'items': item,
     }}, 'required': ['targets'], 'additionalProperties': False}
@@ -313,7 +313,7 @@ def linked_public_urls(page: dict, entity: dict, sources) -> list[str]:
 
 
 class _TargetPageSource:
-    """Use an OSM-located public page for the answer; keep checked area articles."""
+    """Use a checked public page for the answer; keep checked area articles."""
     def __init__(self, sources, target: dict):
         self.sources, self.target, self.budget = sources, target, sources.budget
 
@@ -332,8 +332,50 @@ class _TargetPageSource:
         return self.sources.country(entity_id)
 
 
-def non_wikipedia_target(name: str, sources, geocoder, suggested_url: str = '') -> tuple[dict, dict]:
-    """Resolve an exact public landmark from OSM plus Wikidata and its own site."""
+def _wikidata_target(name: str, sources, entity_id: str, suggested_url: str) -> tuple[dict, dict]:
+    """Use a checked public story page and a pinned Wikidata place identity."""
+    if not re.fullmatch(r'Q[1-9]\d*', entity_id):
+        raise ValueError('No valid Wikidata place identifier was supplied.')
+    entity = sources.entities([entity_id])[entity_id]
+    labels = [entity.get('labels', {}).get('en', {}).get('value', '')]
+    labels += [alias.get('value', '') for alias in entity.get('aliases', {}).get('en', [])]
+    if legacy.exclusion_key(name) not in {legacy.exclusion_key(label) for label in labels if label}:
+        raise ValueError('Wikidata identifier does not have the proposed place name.')
+    coordinates = legacy.claim_values(entity, 'P625')
+    if len(coordinates) != 1 or not coordinates[0].get('globe', '').endswith('/Q2'):
+        raise ValueError('Wikidata place has no unique Earth coordinate.')
+    lat, lng = legacy.daily_map_game.valid_coordinate(coordinates[0]['latitude'],
+                                                      coordinates[0]['longitude'])
+    if len(legacy.claim_values(entity, 'P17')) != 1 or not entity.get('lastrevid'):
+        raise ValueError('Wikidata place lacks a pinned country identity.')
+    urls = [suggested_url] if suggested_url else []
+    urls += [url for url in legacy.claim_values(entity, 'P856')
+             if isinstance(url, str) and url not in urls][:2]
+    first_error = None
+    for url in urls:
+        try:
+            external = public_page(sources, url, name)
+            return {'title': name, 'entity': entity_id, 'lat': lat, 'lng': lng,
+                    'text': external['text'], 'url': external['url'],
+                    'source_kind': 'wikidata_public_page'}, external
+        except (ValueError, RuntimeError, OSError, TypeError, http.client.HTTPException) as error:
+            if 'budget exhausted' in str(error).casefold():
+                raise
+            first_error = error
+    raise ValueError('Wikidata place has no usable public story page.') from first_error
+
+
+def non_wikipedia_target(name: str, sources, geocoder, suggested_url: str = '',
+                         wikidata_id: str = '') -> tuple[dict, dict]:
+    """Resolve an exact public place without requiring its Wikipedia article."""
+    if wikidata_id:
+        try:
+            return _wikidata_target(name, sources, wikidata_id, suggested_url)
+        except (ValueError, KeyError, TypeError) as error:
+            if geocoder is None or 'budget exhausted' in str(error).casefold():
+                raise
+    if geocoder is None:
+        raise ValueError('No checked place identity is available.')
     matches = geocoder.search(name)
     key = legacy.exclusion_key(name.split(' (')[0])
     choices = [row for row in matches if legacy.exclusion_key(row['name']) == key and
@@ -385,10 +427,11 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
             try:
                 page = legacy.resolved_page(sources, name)
             except ValueError as error:
-                if geocoder is None or 'budget exhausted' in str(error).casefold():
+                if (geocoder is None and not proposal.get('wikidata_id')) or 'budget exhausted' in str(error).casefold():
                     raise
                 page, external = non_wikipedia_target(name, sources, geocoder,
-                                                      str(proposal.get('source_url') or ''))
+                                                      str(proposal.get('source_url') or ''),
+                                                      str(proposal.get('wikidata_id') or ''))
             intro = page['text'][:700]
             if re.search(r'\b(stadium|stadion|sports arena|football ground)\b', page['title'], re.I) or re.search(
                     r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I):
@@ -564,11 +607,15 @@ def resolve_route(route: dict, target: dict, sources, recent: list[dict], existi
         try:
             page = target.get('page') or {}
             checked_sources = (_TargetPageSource(sources, page)
-                               if page.get('source_kind') == 'osm_public_page' else sources)
+                               if page.get('source_kind') in ('osm_public_page', 'wikidata_public_page')
+                               else sources)
             candidate = legacy.resolve(option, checked_sources, recent, existing)
             if page.get('source_kind') == 'osm_public_page':
                 candidate['sources']['osm'] = page['osm_url']
                 candidate['coordinate_check']['note'] = 'OSM and Wikidata coordinates cross-checked.'
+            elif page.get('source_kind') == 'wikidata_public_page':
+                candidate['coordinate_check']['note'] = (
+                    'Wikidata coordinates used; the external story page confirms the place name, not its position.')
             return candidate, (option['local_title'] if index else None)
         except ValueError as error:
             if first_error is None:
@@ -598,10 +645,11 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         focus = legacy.proposal_focus(budget)
         prompt = ('Propose exactly 12 distinct, presently existing, precisely pinnable public landmarks. '
                   'Propose four from EACH geographic lane: ' + ', '.join(focus) + '. '
-                  'Give each place\'s exact public name and place type. Supply one public HTTPS source_url '
+                  'Give each place\'s exact public name and place type, and its Wikidata Q identifier '
+                  '(wikidata_id), or an empty string if unknown. Supply one public HTTPS source_url '
                   'describing its specific story, or an empty string when unknown. Choose sources for factual '
                   'quality and relevance, never because they belong to a fixed domain list. A Wikipedia article is useful but NOT '
-                  'required; an independently identifiable OpenStreetMap place with its own public site also '
+                  'required; a verifiable Wikidata or OpenStreetMap identity with a public story page also '
                   'qualifies. Do not invent nearby '
                   'map anchors or clues. Prefer places likely to have a surprising achievement, cultural moment, '
                   'public use or distinctive engineering story documented in their own article. Exclude stadiums, '
