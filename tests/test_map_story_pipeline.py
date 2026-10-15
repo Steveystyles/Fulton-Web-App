@@ -53,6 +53,31 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertTrue(Path(report['report_path']).exists())
             self.assertEqual(provider.call_with_fallback.call_count, 3)
 
+    def test_story_evidence_is_bounded_before_model_call(self):
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.side_effect = [
+            {'targets': [{'title': f'Target {i}', 'place_type': 'museum'} for i in range(12)]},
+            {'ranked': [{'title': 'Unknown', 'passage_id': 'p0', 'hook': 'No useful evidence here.',
+                         'city_title': 'Nowhere', 'local_title': 'Nothing'}]},
+        ]
+        targets = [{'title': f'Target {i}', 'place_type': 'museum',
+                    'page': {'title': f'Target {i}', 'text': 'Source text.'},
+                    'passages': [{'id': f'p{j}', 'role': 'story', 'source': 'Wikipedia',
+                                  'text': 'An interesting public story. ' * 50} for j in range(5)],
+                    'nearby_options': []} for i in range(12)]
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
+        budget.finish.return_value = {'model_requests': 2, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets', return_value=targets):
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock())
+        self.assertLess(report['story_target_count'], 12)
+        self.assertLessEqual(len(provider.call_with_fallback.call_args_list[1].kwargs['prompt']), 36000)
+
     def test_nearby_options_are_from_api_and_named_in_target_article(self):
         source = Mock()
         source.request.return_value = {'query': {'geosearch': [
