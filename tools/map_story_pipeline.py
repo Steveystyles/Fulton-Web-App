@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 import re
 import socket
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from tools import controlled_map_round as controlled
 from tools import discover_map_places as legacy
@@ -128,23 +128,34 @@ def checked_public_url(value: str) -> tuple[str, str, str]:
 
 
 def public_page(sources, url: str, target_title: str) -> dict:
-    host, path, address = checked_public_url(url)
-    sources.budget.spend('source')
-    conn = _PinnedHTTPSConnection(host, address)
-    try:
-        conn.request('GET', path, headers={'User-Agent': legacy.USER_AGENT,
-                                           'Accept': 'text/html, text/plain;q=0.5'})
-        response = conn.getresponse()
-        if response.status != 200:
-            raise RuntimeError(f'Public source returned HTTP {response.status}.')
-        content_type = str(response.getheader('Content-Type') or '').split(';', 1)[0].strip().lower()
-        if content_type not in ('text/html', 'text/plain'):
-            raise ValueError('Public source did not return readable text.')
-        body = response.read(legacy.MAX_RESPONSE_BYTES + 1)
-        if len(body) > legacy.MAX_RESPONSE_BYTES:
-            raise ValueError('Public source exceeded the size limit.')
-    finally:
-        conn.close()
+    current_url = url
+    for _ in range(3):
+        host, path, address = checked_public_url(current_url)
+        sources.budget.spend('source')
+        conn = _PinnedHTTPSConnection(host, address)
+        try:
+            conn.request('GET', path, headers={'User-Agent': legacy.USER_AGENT,
+                                               'Accept': 'text/html, text/plain;q=0.5'})
+            response = conn.getresponse()
+            if response.status in (301, 302, 303, 307, 308):
+                location = response.getheader('Location')
+                if not location:
+                    raise ValueError('Public source redirect has no destination.')
+                current_url = urljoin(current_url, location)
+                continue
+            if response.status != 200:
+                raise RuntimeError(f'Public source returned HTTP {response.status}.')
+            content_type = str(response.getheader('Content-Type') or '').split(';', 1)[0].strip().lower()
+            if content_type not in ('text/html', 'text/plain'):
+                raise ValueError('Public source did not return readable text.')
+            body = response.read(legacy.MAX_RESPONSE_BYTES + 1)
+            if len(body) > legacy.MAX_RESPONSE_BYTES:
+                raise ValueError('Public source exceeded the size limit.')
+            break
+        finally:
+            conn.close()
+    else:
+        raise ValueError('Public source redirected too many times.')
     raw = body.decode('utf-8', errors='replace')
     if content_type == 'text/html':
         parser = _VisibleText()
@@ -161,7 +172,7 @@ def public_page(sources, url: str, target_title: str) -> dict:
     excerpt = text[max(0, mention.start() - 200):mention.start() + 16000]
     if len(excerpt) < 400:
         raise ValueError('Public source has too little relevant text.')
-    return {'text': excerpt, 'url': urlsplit(url)._replace(fragment='').geturl(),
+    return {'text': excerpt, 'url': urlsplit(current_url)._replace(fragment='').geturl(),
             'source_key': 'external', 'source_name': host}
 
 

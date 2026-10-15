@@ -113,7 +113,7 @@ class StoryPipelineTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 story.checked_public_url(url)
 
-    def test_public_page_checks_place_identity_and_never_follows_redirects(self):
+    def test_public_page_checks_place_identity_and_bounds_redirects(self):
         source = Mock()
         response = Mock(status=200)
         response.getheader.return_value = 'text/html; charset=utf-8'
@@ -130,10 +130,39 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertIn('solar railway', page['text'])
         self.assertNotIn('Menu', page['text'])
         response.status = 302
-        with patch.object(story, 'checked_public_url', return_value=('example.org', '/story', '93.184.216.34')), \
+        response.getheader.side_effect = lambda name: (
+            'http://127.0.0.1/internal' if name == 'Location' else 'text/html')
+        with patch.object(story, 'checked_public_url', side_effect=[
+                ('example.org', '/story', '93.184.216.34'),
+                ValueError('Public sources require a normal HTTPS host.')]), \
              patch.object(story, '_PinnedHTTPSConnection', return_value=connection):
-            with self.assertRaisesRegex(RuntimeError, 'HTTP 302'):
+            with self.assertRaisesRegex(ValueError, 'normal HTTPS'):
                 story.public_page(source, 'https://example.org/story', 'Glass Hall')
+        response.status = 200
+        response.getheader.side_effect = None
+
+    def test_public_page_rechecks_a_valid_redirect_destination(self):
+        source = Mock()
+        redirect = Mock(status=301)
+        redirect.getheader.return_value = 'https://another.example/glass-hall-story'
+        final = Mock(status=200)
+        final.getheader.return_value = 'text/html'
+        final.read.return_value = (b'<main>Glass Hall hosted the first public demonstration '
+                                   b'of a solar railway. ' * 20 + b'</main>')
+        first_connection = Mock()
+        first_connection.getresponse.return_value = redirect
+        second_connection = Mock()
+        second_connection.getresponse.return_value = final
+        with patch.object(story, 'checked_public_url', side_effect=[
+                ('example.org', '/story', '93.184.216.34'),
+                ('another.example', '/glass-hall-story', '93.184.216.35')]) as checked, \
+             patch.object(story, '_PinnedHTTPSConnection', side_effect=[
+                 first_connection, second_connection]) as factory:
+            page = story.public_page(source, 'https://example.org/story', 'Glass Hall')
+        self.assertEqual(checked.call_count, 2)
+        self.assertEqual(factory.call_count, 2)
+        self.assertEqual(page['url'], 'https://another.example/glass-hall-story')
+        self.assertEqual(source.budget.spend.call_count, 2)
 
     def test_linked_public_urls_uses_official_record_and_relevant_external_links(self):
         source = Mock()
