@@ -568,9 +568,10 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
                 continue
         city = legacy.title(item.get('city_title'))
         local = legacy.title(item.get('local_title'))
-        article = target['page']['text']
-        if not re.search(re.escape(city), article, re.I) or not re.search(re.escape(local), article, re.I):
-            continue
+        if target['page'].get('source_kind') not in ('osm_public_page', 'wikidata_public_page'):
+            article = target['page']['text']
+            if not re.search(re.escape(city), article, re.I) or not re.search(re.escape(local), article, re.I):
+                continue
         result.append({'title': target['title'], 'place_type': target['place_type'],
                        'city_title': city, 'local_title': local, 'reason': hook,
                 'story_passage': passage['text'], 'story_source': passage.get('source', 'Wikipedia')})
@@ -775,8 +776,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
             raise ValueError('No source-backed story had a playable map route.')
         clue_prompt = ('Choose the most engaging source-backed story and write hard, medium and easy Map clues. '
                        'Use the cited story passage for hard; do not pivot to an unrelated fact. An official '
-                       'source passage may support hard; medium and easy must cite target source '
-                       'passages that name their map anchors. Medium must name '
+                       'source passage may support hard; medium and easy must cite the target source '
+                       'or separate checked map-area source passages naming their anchors. Medium must name '
                        'the city anchor and country. Easy must start "In <city_sector> <city>," and name the local '
                        'anchor as practical map guidance. Each clue must be 8–40 words and no more than 240 '
                        'characters, omit the answer name, and cite 1–3 supplied article passage IDs. Do not add '

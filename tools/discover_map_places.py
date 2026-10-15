@@ -415,7 +415,7 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     coord = coordinates[0]
     lat, lng = daily_map_game.valid_coordinate(coord['latitude'], coord['longitude'])
     if daily_map_game.haversine_m(lat, lng, target['lat'], target['lng']) > 250:
-        raise ValueError('Wikipedia and Wikidata coordinates disagree by more than 250 metres.')
+        raise ValueError('Target and Wikidata coordinates disagree by more than 250 metres.')
     aliases = [target['title'], entity.get('labels', {}).get('en', {}).get('value', target['title'])]
     aliases += [a['value'] for a in entity.get('aliases', {}).get('en', [])][:15]
     names = {daily_map_game.normalized_place_name(a) for a in aliases}
@@ -442,7 +442,8 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
         raise ValueError('A search area name exposes the answer.')
     # These checks need only the already-retrieved articles and coordinates.
     # Reject weak map routes before spending two more requests on country metadata.
-    evidence_excerpt({'evidence': {'article': target}, 'anchors': anchors})
+    if target.get('source_kind') not in ('osm_public_page', 'wikidata_public_page'):
+        evidence_excerpt({'evidence': {'article': target}, 'anchors': anchors})
     countries = claim_values(entity, 'P17')
     if len(countries) != 1:
         raise ValueError('Country identity is ambiguous.')
@@ -530,6 +531,7 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 raise ValueError('At most two additional supporting quotations are permitted.')
             quotes = [plain(item.get('quote'), 550), *[plain(q, 550) for q in extra]]
         text = plain(item.get('text'), 600)
+        added_anchor_source = None
         if level in ('medium', 'easy') and 'source_ids' in item:
             anchor_index = 0 if level == 'medium' else 1
             anchor = selected['anchors'][anchor_index]['name']
@@ -537,16 +539,22 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 # The target article has already established this search area. A model
                 # sometimes cites another valid passage while omitting the specific
                 # anchor passage; complete the citation, never the clue wording.
-                anchor_quote = units.get(f'article-anchor-{anchor_index}')
+                anchor_quote = (units.get(f'article-anchor-{anchor_index}') or
+                                units.get(('city-anchor-0', 'local-anchor-1')[anchor_index]))
                 if (len(quotes) < 3 and anchor_quote and
                         daily_map_game.normalized_place_name(anchor) in daily_map_game.normalized_place_name(text)):
                     quotes.append(anchor_quote['text'])
+                    added_anchor_source = anchor_quote.get('source', 'article')
         official_text = (selected['evidence'].get('official', {}).get('text', '')
                          if level == 'hard' and 'source_ids' in item and
                          any(units[ref].get('source') not in (None, 'article')
                              for ref in item['source_ids']) else '')
-        if any(len(q) < 30 or not any(normalized(q) in source_text for source_text in
-                                     (selected['evidence']['article']['text'], official_text)) for q in quotes):
+        retrieved_texts = [selected['evidence'][key]['text'] for key in ('article', 'city', 'local')
+                           if isinstance(selected['evidence'].get(key), dict)]
+        if official_text:
+            retrieved_texts.append(official_text)
+        if any(len(q) < 30 or not any(normalized(q) in source_text for source_text in retrieved_texts)
+               for q in quotes):
             raise ValueError(f'{level} quotation is absent from a retrieved source.')
         combined = ' '.join(quotes)
         if set(re.findall(r'\d+(?:\.\d+)?', text)) - set(re.findall(r'\d+(?:\.\d+)?', combined)):
@@ -557,6 +565,8 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 raise ValueError(f'{level} quotation does not name its search area.')
         source_keys = ({units[ref].get('source', 'article')
                         for ref in item['source_ids']} if 'source_ids' in item else {'article'})
+        if added_anchor_source:
+            source_keys.add(added_anchor_source)
         facts[level] = {'text': text, 'source_ids': sorted(source_keys), 'supporting_quote': quotes[0],
                         'supporting_quotes': quotes}
     validate_proposal_hook_alignment(payload, selected)
@@ -596,9 +606,13 @@ def evidence_units(candidate: dict) -> list[dict]:
     chosen = {i for i, match in enumerate(matches) if match.start() < 4000}
     hook_passages = proposal_hook_passage_indexes(candidate, matches)
     chosen.update(hook_passages)
+    external_target = candidate['evidence']['article'].get('source_kind') in (
+        'osm_public_page', 'wikidata_public_page')
     for anchor in candidate['anchors']:
         hit = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
         if hit is None:
+            if external_target:
+                continue
             raise ValueError('The target article does not mention the supplied search area.')
         for i, match in enumerate(matches):
             if match.start() <= hit.start() < match.end():
@@ -610,6 +624,20 @@ def evidence_units(candidate: dict) -> list[dict]:
     # Additional metadata guides selection; validation still checks the actual text.
     for index, anchor in enumerate(candidate['anchors']):
         hit = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
+        if hit is None and external_target:
+            source_key = 'city' if index == 0 else 'local'
+            source_text = candidate['evidence'][source_key]['text']
+            source_hit = re.search(re.escape(anchor['name']), source_text, flags=re.IGNORECASE)
+            if source_hit is None:
+                raise ValueError('Checked map-area source does not name its own search area.')
+            passage = source_text[max(0, source_hit.start() - 100):source_hit.end() + 400].strip()
+            if len(passage) >= 30:
+                units.append({'id': f'{source_key}-anchor-{index}', 'text': passage,
+                              'source': source_key, 'anchor_name': anchor['name'],
+                              'clue_role': 'medium' if index == 0 else 'easy'})
+            continue
+        if hit is None:
+            raise ValueError('The target article does not mention the supplied search area.')
         passage = text[max(0, hit.start() - 250):min(len(text), hit.end() + 400)].strip()
         if len(passage) >= 30:
             units.append({'id': f'article-anchor-{index}', 'text': passage,

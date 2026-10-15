@@ -112,14 +112,16 @@ class StoryPipelineTests(unittest.TestCase):
             return {'rank': 'normal', 'mainsnak': {'snaktype': 'value',
                                                   'datavalue': {'value': value}}}
         page = {'title': 'Glass Hall', 'entity': 'Q100', 'lat': 50, 'lng': 1,
-                'text': 'The Glass Hall is in City, beside Park. ' * 20,
+                'text': 'The Glass Hall hosted an inventive public exhibition. ' * 20,
                 'url': 'https://local-history.example/glass-hall',
                 'source_kind': 'osm_public_page',
                 'osm_url': 'https://www.openstreetmap.org/way/123'}
         areas = {'City': {'title': 'City', 'entity': 'Q101', 'lat': 50.04, 'lng': 1,
-                          'text': 'City is a public settlement.', 'url': 'https://example.org/city'},
+                          'text': 'City is a public settlement with a documented civic centre.',
+                          'url': 'https://example.org/city'},
                  'Park': {'title': 'Park', 'entity': 'Q102', 'lat': 50.01, 'lng': 1,
-                          'text': 'Park is a public space.', 'url': 'https://example.org/park'}}
+                          'text': 'Park is a public green space beside the old exhibition grounds.',
+                          'url': 'https://example.org/park'}}
         entity = {'lastrevid': 10, 'labels': {'en': {'value': 'Glass Hall'}},
                   'claims': {'P625': [claim({'latitude': 50, 'longitude': 1,
                                             'globe': 'http://www.wikidata.org/entity/Q2'})],
@@ -139,10 +141,42 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(candidate['sources']['article'], page['url'])
         self.assertEqual(candidate['sources']['osm'], page['osm_url'])
         self.assertEqual(candidate['coordinate_check']['distance_m'], 0)
+        self.assertIn('city-anchor-0', [unit['id'] for unit in story.legacy.evidence_units(candidate)])
+        self.assertIn('local-anchor-1', [unit['id'] for unit in story.legacy.evidence_units(candidate)])
+        selection = {'place_id': candidate['id'], 'selection_reason': 'A public exhibition story.',
+                     'facts': {
+                         'hard': {'text': 'This hall hosted an inventive public exhibition.',
+                                  'source_ids': ['article-0']},
+                         'medium': {'text': 'Look in City, France, for the exhibition hall.',
+                                    'source_ids': ['city-anchor-0']},
+                         'easy': {'text': 'In southern City, look near Park for the hall.',
+                                  'source_ids': ['local-anchor-1']}}}
+        with patch.object(story.controlled, 'load_catalog'), \
+             patch.object(story.controlled, 'validate_result', return_value={'automated_pass': True}):
+            checked, _ = story.legacy.validate_selection(selection, [candidate])
+        self.assertEqual(checked['facts']['medium']['source_ids'], ['city'])
+        self.assertEqual(checked['facts']['easy']['source_ids'], ['local'])
         wikidata_page = {**page, 'source_kind': 'wikidata_public_page'}
         wikidata_candidate, _ = story.resolve_route(route, {'page': wikidata_page}, source, [], [])
         self.assertNotIn('osm', wikidata_candidate['sources'])
         self.assertIn('Wikidata coordinates used', wikidata_candidate['coordinate_check']['note'])
+
+    def test_external_story_route_does_not_require_navigation_names_in_story_page(self):
+        passage = ('Glass Hall hosted the first public demonstration of solar rail '
+                   'transport after its designers developed a novel roof.')
+        source = {'text': passage, 'source_name': 'local-history.example'}
+        target = {'title': 'Glass Hall', 'place_type': 'museum',
+                  'page': {'text': passage, 'source_kind': 'wikidata_public_page'},
+                  'official': source,
+                  'passages': [{'id': 'p0', 'text': passage, 'role': 'story',
+                                'source': source['source_name']}]}
+        ranked = {'ranked': [{'title': 'Glass Hall', 'passage_id': 'p0',
+                              'hook': 'The first public demonstration of solar rail transport '
+                                      'followed a novel roof design.',
+                              'city_title': 'Eastport', 'local_title': 'Market Park'}]}
+        routes = story.ranked_routes(ranked, [target])
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0]['city_title'], 'Eastport')
 
     def test_full_source_first_flow_saves_review_without_publication(self):
         place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
