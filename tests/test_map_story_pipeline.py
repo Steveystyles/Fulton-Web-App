@@ -285,6 +285,33 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(targets[0]['official']['source_key'], 'historic_england')
         self.assertTrue(any(item['source'] == 'Historic England' for item in targets[0]['passages']))
 
+    def test_target_lookup_falls_back_to_second_official_source(self):
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        source.page.return_value = {
+            'title': 'Glass Hall', 'entity': 'Q1', 'lat': 51, 'lng': 0,
+            'text': ('The Glass Hall is in Eastport beside Market Park. ' * 12) +
+                    ('It hosted the first public demonstration of a solar railway. ' * 12),
+        }
+        source.request.return_value = {'query': {'geosearch': []}}
+        def claim(value):
+            return {'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+                    'datavalue': {'value': value}}}
+        source.entities.return_value = {'Q1': {'claims': {
+            'P757': [claim('252')], 'P1216': [claim('1291494')]}}}
+        official = {'text': ('The entry records the public demonstration of a solar railway. ' * 24),
+                    'url': 'https://historicengland.org.uk/listing/the-list/list-entry/1291494',
+                    'source_key': 'historic_england', 'source_name': 'Historic England'}
+        report = {'rejections': []}
+        with patch.object(story, 'unesco_page', side_effect=RuntimeError('HTTP 503')) as unesco, \
+             patch.object(story, 'historic_england_page', return_value=official) as historic:
+            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum'}],
+                                           source, [], [], [], report)
+        unesco.assert_called_once_with(source, '252')
+        historic.assert_called_once_with(source, '1291494')
+        self.assertEqual(targets[0]['official']['source_key'], 'historic_england')
+        self.assertEqual(len(report['source_warnings']), 1)
+
     def test_discovery_stops_before_clue_generation_without_sourced_story(self):
         with tempfile.TemporaryDirectory() as directory:
             provider = Mock()

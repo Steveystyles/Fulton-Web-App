@@ -244,24 +244,35 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
             try:
                 entity = entities[item['page']['entity']]
                 site_id = unesco_id(entity)
-                entry_id = historic_england_id(entity) if site_id is None else None
-                if site_id is None and entry_id is None:
-                    continue
-                official = (unesco_page(sources, site_id) if site_id is not None
-                            else historic_england_page(sources, entry_id))
-                official_items = [p for p in passages(official) if p['role'] == 'story'][:2]
-                if not official_items:
-                    continue
-                wiki = item['passages']
-                item['passages'] = [wiki[0], *[p for p in wiki if p['role'] == 'story'][:2],
-                                    *[{**p, 'id': 'o' + p['id'], 'source': official['source_name']}
-                                      for p in official_items]]
-                item['official'] = official
+                entry_id = historic_england_id(entity)
             except (ValueError, RuntimeError, KeyError, TypeError) as error:
                 report.setdefault('source_warnings', []).append(
-                    'Official source unavailable for ' + item['title'][:80] + ': ' + str(error)[:150])
+                    'Official source identifiers unavailable for ' + item['title'][:80] + ': ' + str(error)[:150])
                 if 'budget exhausted' in str(error).casefold():
                     return result
+                continue
+            official_options = []
+            if site_id is not None:
+                official_options.append(('UNESCO', site_id, unesco_page))
+            if entry_id is not None:
+                official_options.append(('Historic England', entry_id, historic_england_page))
+            for source_name, source_id, fetch in official_options:
+                try:
+                    official = fetch(sources, source_id)
+                    official_items = [p for p in passages(official) if p['role'] == 'story'][:2]
+                    if not official_items:
+                        raise ValueError('No usable discovery-story passage.')
+                    wiki = item['passages']
+                    item['passages'] = [wiki[0], *[p for p in wiki if p['role'] == 'story'][:2],
+                                        *[{**p, 'id': 'o' + p['id'], 'source': official['source_name']}
+                                          for p in official_items]]
+                    item['official'] = official
+                    break
+                except (ValueError, RuntimeError, KeyError, TypeError) as error:
+                    report.setdefault('source_warnings', []).append(
+                        source_name + ' source unavailable for ' + item['title'][:80] + ': ' + str(error)[:150])
+                    if 'budget exhausted' in str(error).casefold():
+                        return result
     return result
 
 
