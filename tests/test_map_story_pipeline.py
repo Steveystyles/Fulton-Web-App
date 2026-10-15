@@ -192,6 +192,8 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(story.ranked_routes({'ranked': [{**item, 'local_title': 'Fake Park'}]}, targets), [])
         self.assertEqual(story.ranked_routes({'ranked': [{**item, 'passage_id': 'fake'}]}, targets), [])
         self.assertEqual(story.ranked_routes({'ranked': [{**item, 'hook': 'An unrelated miraculous rescue happened here.'}]}, targets), [])
+        targets[0]['passages'][0]['role'] = 'context'
+        self.assertEqual(story.ranked_routes({'ranked': [item]}, targets), [])
 
     def test_target_lookup_does_not_request_city_or_local_articles(self):
         source = Mock()

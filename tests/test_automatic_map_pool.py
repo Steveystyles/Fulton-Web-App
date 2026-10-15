@@ -705,6 +705,20 @@ class AutomaticPoolTests(unittest.TestCase):
         story_discover.assert_called_once()
         legacy_discover.assert_not_called()
 
+    def test_story_first_report_must_match_checked_candidate_before_queueing(self):
+        report = {**self.report(), 'pipeline': 'story_first',
+                  'candidate_sha256': 'incorrect-digest'}
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report), \
+             patch.object(pool, 'verify', return_value=self.verdict):
+            outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                    provider_factory=factory)
+        self.assertEqual(outcome['status'], 'failed')
+        self.assertIn('Story-first candidate changed', outcome['reason'])
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM automatic_map_entries').fetchone()[0], 0)
+
     def test_recent_structural_failure_is_reverified_without_new_discovery(self):
         old_report = {**self.report(), 'status': 'failed'}
         report_dir = self.root / 'reports' / 'previous'

@@ -1030,6 +1030,10 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         verdict['proposal_alignment_audit'] = {
             'version': PROPOSAL_ALIGNMENT_AUDIT_VERSION, 'status': 'passed'}
         candidate, result = discovery.validate_selection(report['model_output'], report['resolved_candidates'])
+        if report.get('pipeline') == 'story_first' and (
+                report.get('candidate_sha256') != discovery.digest(candidate)
+                or report.get('candidate') != candidate):
+            raise ValueError('Story-first candidate changed after its source and story checks.')
         with closing(sqlite3.connect(database)) as conn:
             conn.execute('BEGIN IMMEDIATE')
             controlled.eligible_places_in_database(conn, target, [candidate])
