@@ -21,6 +21,7 @@ import daily_quiz
 import map_clue_editor
 from tools import controlled_map_round as controlled
 from tools import discover_map_places as discovery
+from tools import map_story_pipeline
 from tools import rewrite_map_clues_with_ai as rewriter
 
 TARGET_READY = 7
@@ -1006,11 +1007,15 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         if report:
             outcome['retried_report_path'] = report['report_path']
         else:
-            report = discovery.discover(source_db=database, catalog=None, puzzle_date=target, output_dir=run_dir,
-                                        budget=budget, provider=provider, sources=discovery.WikimediaSource(budget),
-                                        excluded_places=exclusions, excluded_names=failed_names,
-                                        route_failure_lessons=route_lessons,
-                                        editorial_feedback=feedback, failure_lessons=failure_lessons)
+            engine_name = os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold()
+            if engine_name not in ('legacy', 'story_first'):
+                raise ValueError('Unsupported Map discovery pipeline.')
+            engine = map_story_pipeline if engine_name == 'story_first' else discovery
+            report = engine.discover(source_db=database, catalog=None, puzzle_date=target, output_dir=run_dir,
+                                     budget=budget, provider=provider, sources=discovery.WikimediaSource(budget),
+                                     excluded_places=exclusions, excluded_names=failed_names,
+                                     route_failure_lessons=route_lessons,
+                                     editorial_feedback=feedback, failure_lessons=failure_lessons)
         if report['status'] != 'needs_source_review':
             raise ValueError('Discovery rejected: ' + str(report.get('error', 'no candidate'))[:400])
         verifier = factory(budget)

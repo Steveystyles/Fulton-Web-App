@@ -51,6 +51,7 @@
     "tools/map_clue_quality_model.py",
     "tools/map_launch_round.py",
     "tools/map_selector_model.py",
+    "tools/map_story_pipeline.py",
     "tools/openai_map_clue_finetune.py",
     "tools/openai_quiz_finetune.py",
     "tools/preview_ai_map_round.py",

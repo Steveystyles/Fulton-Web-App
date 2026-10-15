@@ -548,6 +548,36 @@ class AutomaticPoolTests(unittest.TestCase):
         return {'status': 'needs_source_review', 'candidate': candidate, 'result': result,
                 'model_output': output, 'resolved_candidates': [place], 'rejections': []}
 
+    def test_independent_verifier_can_read_official_hard_hook(self):
+        place = deepcopy(self.place)
+        hard = place['facts']['hard']['text']
+        place['retrieved_on'] = discovery.date.today().isoformat()
+        place['sources']['article'] = next(iter(place['sources'].values()))
+        place['sources']['unesco'] = 'https://whc.unesco.org/en/list/252/'
+        place['evidence'] = {
+            'article': {'text': ' '.join(place['facts'][level]['text'] for level in ('medium', 'easy'))},
+            'official': {'text': hard, 'hook_passage': hard},
+        }
+        place['proposal_reason'] = hard
+        output = {'place_id': place['id'], 'selection_reason': self.payload['selection_reason'],
+                  'facts': {'hard': {'text': hard, 'source_ids': ['official-hook']},
+                            'medium': {'text': place['facts']['medium']['text'],
+                                       'quote': place['facts']['medium']['text']},
+                            'easy': {'text': place['facts']['easy']['text'],
+                                     'quote': place['facts']['easy']['text']}}}
+        candidate, result = discovery.validate_selection(output, [place])
+        report = {'candidate': candidate, 'result': result, 'model_output': output,
+                  'resolved_candidates': [place]}
+        verdict = {**self.verdict,
+                   'levels': {level: {'supported': True,
+                                     'source_ids': ['official-hook' if level == 'hard' else 'article-0']}
+                              for level in controlled.LEVELS},
+                   'reason': 'The official passage supports the design story.'}
+        provider = Mock()
+        provider.call_with_fallback.return_value = verdict
+        self.assertEqual(pool.verify(report, provider), verdict)
+        self.assertIn('official-hook', provider.call_with_fallback.call_args.kwargs['prompt'])
+
     def test_independent_verifier_rejects_unsupported_or_fabricated_citations(self):
         report = self.report()
         ids = [p['id'] for p in discovery.evidence_units(report['resolved_candidates'][0])]
@@ -661,6 +691,19 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(json.loads(row[0])['review_status'], 'machine_checked')
             self.assertEqual(row[1], 'discovery')
             self.assertEqual(pool.publish(conn, puzzle_date='2026-09-08')['status'], 'published')
+
+    def test_story_first_pipeline_can_be_selected_without_changing_default(self):
+        report = self.report()
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report) as story_discover, \
+             patch.object(discovery, 'discover') as legacy_discover, \
+             patch.object(pool, 'verify', return_value=self.verdict):
+            result = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(result['status'], 'added')
+        story_discover.assert_called_once()
+        legacy_discover.assert_not_called()
 
     def test_recent_structural_failure_is_reverified_without_new_discovery(self):
         old_report = {**self.report(), 'status': 'failed'}

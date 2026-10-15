@@ -497,7 +497,9 @@ def validate_proposal_hook_alignment(payload: dict, selected: dict) -> None:
     if not hook_passages or 'source_ids' not in hard:
         return
     allowed_ids = {f'article-{index}' for index in hook_passages}
-    if not allowed_ids.intersection(hard['source_ids']):
+    official = selected.get('evidence', {}).get('official', {})
+    official_ids = {'official-hook'} if isinstance(official, dict) and official.get('hook_passage') else set()
+    if not (allowed_ids | official_ids).intersection(hard['source_ids']):
         raise ValueError('Hard clue cites an unrelated passage instead of the proposed discovery hook.')
     if len(hook_terms(hard['text'], selected['canonical_name']) &
            hook_terms(selected.get('proposal_reason'), selected['canonical_name'])) < 2:
@@ -515,12 +517,12 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
         item = payload['facts'][level]
         if 'source_ids' in item:
             references = item['source_ids']
-            units = {unit['id']: unit['text'] for unit in evidence_units(selected)}
+            units = {unit['id']: unit for unit in evidence_units(selected)}
             if not isinstance(references, list) or not 1 <= len(references) <= 3 or any(
                 not isinstance(ref, str) or ref not in units for ref in references
             ):
                 raise ValueError('Unknown or invalid retrieved passage reference.')
-            quotes = [units[ref] for ref in references]
+            quotes = [units[ref]['text'] for ref in references]
         else:
             # Preserve validation of earlier saved reports; current model schema uses passage IDs.
             extra = item.get('additional_quotes', [])
@@ -538,9 +540,13 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 anchor_quote = units.get(f'article-anchor-{anchor_index}')
                 if (len(quotes) < 3 and anchor_quote and
                         daily_map_game.normalized_place_name(anchor) in daily_map_game.normalized_place_name(text)):
-                    quotes.append(anchor_quote)
-        if any(len(q) < 30 or normalized(q) not in selected['evidence']['article']['text'] for q in quotes):
-            raise ValueError(f'{level} quotation is absent from the retrieved target article.')
+                    quotes.append(anchor_quote['text'])
+        official_text = (selected['evidence'].get('official', {}).get('text', '')
+                         if level == 'hard' and 'source_ids' in item and
+                         any(units[ref].get('source') == 'unesco' for ref in item['source_ids']) else '')
+        if any(len(q) < 30 or not any(normalized(q) in source_text for source_text in
+                                     (selected['evidence']['article']['text'], official_text)) for q in quotes):
+            raise ValueError(f'{level} quotation is absent from a retrieved source.')
         combined = ' '.join(quotes)
         if set(re.findall(r'\d+(?:\.\d+)?', text)) - set(re.findall(r'\d+(?:\.\d+)?', combined)):
             raise ValueError(f'{level} adds a number unsupported by its quotation.')
@@ -548,7 +554,9 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
             anchor = selected['anchors'][0 if level == 'medium' else 1]['name']
             if daily_map_game.normalized_place_name(anchor) not in daily_map_game.normalized_place_name(combined):
                 raise ValueError(f'{level} quotation does not name its search area.')
-        facts[level] = {'text': text, 'source_ids': ['article'], 'supporting_quote': quotes[0],
+        source_keys = ({'unesco' if units[ref].get('source') == 'unesco' else 'article'
+                        for ref in item['source_ids']} if 'source_ids' in item else {'article'})
+        facts[level] = {'text': text, 'source_ids': sorted(source_keys), 'supporting_quote': quotes[0],
                         'supporting_quotes': quotes}
     validate_proposal_hook_alignment(payload, selected)
     # This date means retrieved, not reviewed: candidate remains outside the runtime catalogue.
@@ -606,6 +614,11 @@ def evidence_units(candidate: dict) -> list[dict]:
             units.append({'id': f'article-anchor-{index}', 'text': passage,
                           'anchor_name': anchor['name'],
                           'clue_role': 'medium' if index == 0 else 'easy'})
+    official = candidate['evidence'].get('official', {})
+    official_hook = official.get('hook_passage', '') if isinstance(official, dict) else ''
+    if official_hook and normalized(official_hook) in official.get('text', ''):
+        units.append({'id': 'official-hook', 'text': official_hook, 'source': 'unesco',
+                      'proposal_hook_passage': True, 'clue_role': 'hard'})
     return units
 
 
