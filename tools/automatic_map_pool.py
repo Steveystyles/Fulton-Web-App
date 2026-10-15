@@ -506,7 +506,12 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
             hook = str(result.get('clue_ladder', {}).get('hard') or '').strip()
             if not hook:
                 continue
-            if audit.get('evidence_supported') is False:
+            if verification.get('round_rejection'):
+                category = 'clue ladder'
+                failure_reason = ('The completed clue ladder failed independent audit. '
+                                  'The discovery hook may still be useful; correct the faulty clue or '
+                                  'navigation rather than discarding the place: ')
+            elif audit.get('evidence_supported') is False:
                 category = 'unsupported evidence'
                 failure_reason = 'Ready audit found unsupported factual claims: '
             elif audit.get('chronology_consistent') is False:
@@ -522,7 +527,8 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
             else:
                 continue
             attempted_clues = {'hard': hook[:200]}
-            if (audit.get('evidence_supported') is False or
+            if (verification.get('round_rejection') or
+                    audit.get('evidence_supported') is False or
                     audit.get('chronology_consistent') is False):
                 for level in ('medium', 'easy'):
                     clue = str(result.get('clue_ladder', {}).get(level) or '').strip()
@@ -530,6 +536,7 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
                         attempted_clues[level] = clue[:200]
             candidates.append((category, {
                 'place': str(candidate.get('canonical_name') or '')[:100],
+                'rejection_kind': 'clue_ladder' if verification.get('round_rejection') else 'hook',
                 'attempted_clues': attempted_clues,
                 'failure_reason': failure_reason + str(audit.get('reason') or
                     verification.get('interest_audit_reason') or

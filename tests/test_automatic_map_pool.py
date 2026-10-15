@@ -793,6 +793,10 @@ class AutomaticPoolTests(unittest.TestCase):
             verification = json.loads(conn.execute('SELECT verification FROM automatic_map_entries').fetchone()[0])
             self.assertTrue(verification['round_rejection'])
             self.assertNotIn('hook_rejection', verification)
+            lesson = pool.rejected_interest_lessons(conn)[0]
+            self.assertEqual(lesson['rejection_kind'], 'clue_ladder')
+            self.assertIn('hook may still be useful', lesson['failure_reason'])
+            self.assertEqual(lesson['attempted_clues']['easy'], report['result']['clue_ladder']['easy'])
             with self.assertRaisesRegex(ValueError, 'same rejected Map clue ladder'):
                 pool.add(conn, report['candidate'], report['result'], self.verdict,
                          origin='discovery', audit_pending=True)

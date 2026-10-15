@@ -59,6 +59,7 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertIn('A generic old hook', ranking_prompt)
             self.assertIn('An unplayable old park', ranking_prompt)
             self.assertIn('A weak story was rejected', ranking_prompt)
+            self.assertIn('when rejection_kind is clue_ladder', ranking_prompt)
 
     def test_story_evidence_is_bounded_before_model_call(self):
         provider = Mock()
