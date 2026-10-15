@@ -794,6 +794,11 @@ def recoverable_report(conn: sqlite3.Connection, output_dir: Path, puzzle_date: 
             report = json.loads(path.read_text(encoding='utf-8'))
             if not isinstance(report, dict) or report.get('status') != 'failed':
                 continue
+            # A story-first failure may have passed the legacy structural
+            # validator but failed its separate sourced-story check. Never
+            # recover it through the old validator alone.
+            if report.get('pipeline') == 'story_first':
+                continue
             candidate, result = discovery.validate_selection(
                 report['model_output'], report['resolved_candidates']
             )

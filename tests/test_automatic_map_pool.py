@@ -730,6 +730,22 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM automatic_map_entries WHERE state='ready'").fetchone()[0], 1)
             self.assertEqual(conn.execute('SELECT source_requests FROM automatic_map_usage').fetchone()[0], 0)
 
+    def test_story_first_failure_cannot_bypass_its_story_gate_via_recovery(self):
+        report_dir = self.root / 'reports' / 'previous'
+        report_dir.mkdir(parents=True)
+        report_path = report_dir / 'discovery-2026-09-08.json'
+        report_path.write_text(json.dumps({**self.report(), 'status': 'failed',
+                                           'pipeline': 'story_first',
+                                           'error': 'Hard clue did not preserve the sourced discovery story.'}),
+                               encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute('INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                         'VALUES(?,?,?,?,?,?)',
+                         ('story-failed', '2026-09-08', '2026-09-08', self.clock.isoformat(),
+                          'failed', json.dumps({'report_path': str(report_path)})))
+            conn.commit()
+            self.assertIsNone(pool.recoverable_report(conn, self.root / 'reports', '2026-09-08'))
+
     def test_failed_report_reverification_is_attempted_only_once(self):
         old_report = {**self.report(), 'status': 'failed'}
         report_dir = self.root / 'reports' / 'previous'

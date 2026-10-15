@@ -47,11 +47,18 @@ class StoryPipelineTests(unittest.TestCase):
              patch.object(story.legacy, 'resolve', return_value=place):
             report = story.discover(source_db=Path(directory) / 'db', catalog=None,
                                     puzzle_date='2026-10-17', output_dir=Path(directory),
-                                    budget=budget, provider=provider, sources=Mock())
+                                    budget=budget, provider=provider, sources=Mock(),
+                                    editorial_feedback=[{'rejected_hook': 'A generic old hook'}],
+                                    route_failure_lessons=[{'failed_route_reason': 'An unplayable old park'}],
+                                    failure_lessons=[{'failure_reason': 'A weak story was rejected'}])
             self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
             self.assertFalse(report['production_modified'])
             self.assertTrue(Path(report['report_path']).exists())
             self.assertEqual(provider.call_with_fallback.call_count, 3)
+            ranking_prompt = provider.call_with_fallback.call_args_list[1].kwargs['prompt']
+            self.assertIn('A generic old hook', ranking_prompt)
+            self.assertIn('An unplayable old park', ranking_prompt)
+            self.assertIn('A weak story was rejected', ranking_prompt)
 
     def test_story_evidence_is_bounded_before_model_call(self):
         provider = Mock()
