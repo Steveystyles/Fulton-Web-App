@@ -15,6 +15,13 @@ from tools import discover_map_places as discovery
 
 
 class AutomaticPoolTests(unittest.TestCase):
+    def test_cli_treats_completed_interest_audit_as_success(self):
+        with patch('sys.argv', ['automatic_map_pool', '--source-db', 'unused.db']), \
+             patch.object(pool.rewriter, 'load_env_file'), \
+             patch.object(pool, 'maintain', return_value={
+                 'status': 'audited', 'ready': 1, 'run_id': 'fixture', 'place': 'CN Tower'}):
+            self.assertEqual(pool.main(), 0)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)

@@ -1290,7 +1290,7 @@ def main() -> int:
     rewriter.load_env_file(args.env_file)
     result = maintain(args.source_db, args.out_dir, seed_catalog=None if args.no_bootstrap else controlled.DEFAULT_CATALOG)
     print(json.dumps({k: result[k] for k in ('status', 'ready', 'run_id', 'place', 'reason') if k in result}))
-    return 0 if result['status'] in ('stocked', 'added', 'deferred') else 1
+    return 0 if result['status'] in ('stocked', 'added', 'audited', 'deferred') else 1
 
 
 if __name__ == '__main__':
