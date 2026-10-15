@@ -141,7 +141,8 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
         generator_model = os.environ.get('MAP_AI_MODEL', '').strip() or 'gemini-3.5-flash-lite'
         critic_model = os.environ.get('MAP_AI_CRITIC_MODEL', '').strip() or generator_model
         provider = cls.from_explicit_key(key, generator_model=generator_model,
-                                         critic_model=critic_model, max_requests=MAX_MODEL_REQUESTS)
+                                         critic_model=critic_model, max_requests=MAX_MODEL_REQUESTS,
+                                         timeout_sec=180)
         provider.budget = budget
         return provider
 
