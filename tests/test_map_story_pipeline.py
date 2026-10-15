@@ -516,6 +516,13 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertLessEqual(len(items), 5)
         self.assertTrue(any('experiment' in item['text'] and item['role'] == 'story' for item in items))
 
+    def test_short_public_story_is_not_discarded_from_opening_paragraph(self):
+        text = ('Glass Hall hosted the first public demonstration of solar rail transport. '
+                'The experiment attracted visitors from across the region. ' * 5)
+        items = story.passages({'text': text})
+        self.assertTrue(any(item['role'] == 'story' and 'first public demonstration' in item['text']
+                            for item in items))
+
     def test_ranked_route_rejects_invented_hook_or_anchor(self):
         article = ('The Glass Hall stands in Eastport beside Market Park. '
                    'It hosted the first public demonstration of a solar railway.')

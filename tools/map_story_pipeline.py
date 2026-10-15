@@ -250,9 +250,11 @@ def passages(page: dict) -> list[dict]:
                              r'concept|sketch|inspired|demonstration|expo|exposition|fair)\b', re.I)
     location_words = re.compile(r'\b(near|beside|adjacent|district|neighbourhood|neighborhood|'
                                 r'park|square|harbour|harbor|located|between)\b', re.I)
-    tail = range(2, min(len(chunks), 120))
-    strongest = sorted(tail, key=lambda i: (-len(story_words.findall(chunks[i])), i))[:3]
-    geographical = sorted(tail, key=lambda i: (-len(location_words.findall(chunks[i])), i))[:1]
+    # Short public pages often state their best story in the opening paragraph.
+    # Rank the whole excerpt; excluding its first two chunks hid those hooks.
+    eligible = range(min(len(chunks), 120))
+    strongest = sorted(eligible, key=lambda i: (-len(story_words.findall(chunks[i])), i))[:3]
+    geographical = sorted(eligible, key=lambda i: (-len(location_words.findall(chunks[i])), i))[:1]
     chosen = sorted({0, *strongest, *geographical})
     return [{'id': f'p{index}', 'text': chunks[index],
              'role': 'story' if index in strongest else 'context'}
