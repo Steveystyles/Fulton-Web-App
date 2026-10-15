@@ -20,6 +20,7 @@ from urllib.parse import urljoin, urlsplit
 
 from tools import controlled_map_round as controlled
 from tools import discover_map_places as legacy
+from tools import map_geocoding
 from tools import rewrite_map_clues_with_ai as rewriter
 
 
@@ -223,7 +224,8 @@ def historic_england_page(sources, entry_id: str) -> dict:
 def target_schema() -> dict:
     item = {'type': 'object', 'properties': {
         'title': {'type': 'string'}, 'place_type': {'type': 'string', 'enum': list(legacy.PLACE_TYPES)},
-    }, 'required': ['title', 'place_type'], 'additionalProperties': False}
+        'source_url': {'type': 'string'},
+    }, 'required': ['title', 'place_type', 'source_url'], 'additionalProperties': False}
     return {'type': 'object', 'properties': {'targets': {
         'type': 'array', 'minItems': 12, 'maxItems': 12, 'items': item,
     }}, 'required': ['targets'], 'additionalProperties': False}
@@ -310,8 +312,58 @@ def linked_public_urls(page: dict, entity: dict, sources) -> list[str]:
     return unique[:3]
 
 
+class _TargetPageSource:
+    """Use an OSM-located public page for the answer; keep checked area articles."""
+    def __init__(self, sources, target: dict):
+        self.sources, self.target, self.budget = sources, target, sources.budget
+
+    def page(self, name: str) -> dict:
+        if legacy.exclusion_key(name) == legacy.exclusion_key(self.target['title']):
+            return self.target
+        return self.sources.area_page(name)
+
+    def area_page(self, name: str) -> dict:
+        return self.sources.area_page(name)
+
+    def entities(self, ids: list[str]) -> dict:
+        return self.sources.entities(ids)
+
+    def country(self, entity_id: str) -> dict:
+        return self.sources.country(entity_id)
+
+
+def non_wikipedia_target(name: str, sources, geocoder, suggested_url: str = '') -> tuple[dict, dict]:
+    """Resolve an exact public landmark from OSM plus Wikidata and its own site."""
+    matches = geocoder.search(name)
+    key = legacy.exclusion_key(name.split(' (')[0])
+    choices = [row for row in matches if legacy.exclusion_key(row['name']) == key and
+               re.fullmatch(r'Q[1-9]\d*', row.get('wikidata', '')) and
+               row.get('country_code') and row.get('country_name')]
+    if len(choices) != 1:
+        raise ValueError('No unique exact OSM landmark with an independent Wikidata identity.')
+    match = choices[0]
+    urls = [suggested_url] if suggested_url else []
+    if match.get('website') and match['website'] not in urls:
+        urls.append(match['website'])
+    if not urls:
+        entity = sources.entities([match['wikidata']])[match['wikidata']]
+        urls = [value for value in legacy.claim_values(entity, 'P856') if isinstance(value, str)][:2]
+    first_error = None
+    for url in urls:
+        try:
+            external = public_page(sources, url, match['name'])
+            page = {'title': match['name'], 'entity': match['wikidata'],
+                    'lat': match['lat'], 'lng': match['lng'],
+                    'text': external['text'], 'url': external['url'],
+                    'source_kind': 'osm_public_page', 'osm_url': match['url']}
+            return page, external
+        except (ValueError, RuntimeError, OSError, TypeError, http.client.HTTPException) as error:
+            first_error = error
+    raise ValueError('OSM landmark has no usable public story page.') from first_error
+
+
 def source_targets(proposals: list[dict], sources, recent: list[dict], existing: list[dict],
-                   excluded_names: list[str], report: dict) -> list[dict]:
+                   excluded_names: list[str], report: dict, geocoder=None) -> list[dict]:
     result = []
     seen = set()
     for proposal in proposals:
@@ -329,7 +381,14 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                    (legacy.date.fromisoformat(sources.budget.day) - legacy.timedelta(days=2)).isoformat()
                    for row in recent):
                 raise ValueError('Place type was used in the last two days.')
-            page = legacy.resolved_page(sources, name)
+            external = None
+            try:
+                page = legacy.resolved_page(sources, name)
+            except ValueError as error:
+                if geocoder is None or 'budget exhausted' in str(error).casefold():
+                    raise
+                page, external = non_wikipedia_target(name, sources, geocoder,
+                                                      str(proposal.get('source_url') or ''))
             intro = page['text'][:700]
             if re.search(r'\b(stadium|stadion|sports arena|football ground)\b', page['title'], re.I) or re.search(
                     r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I):
@@ -346,8 +405,11 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
             except (ValueError, RuntimeError, KeyError, TypeError):
                 nearby = []
             result.append({'title': page['title'], 'place_type': kind, 'page': page,
-                           'passages': [{**item, 'source': 'Wikipedia'} for item in items],
-                           'nearby_options': nearby})
+                           'passages': [{**item, 'source': external['source_name'] if external else 'Wikipedia'}
+                                        for item in items],
+                           'nearby_options': nearby,
+                           'suggested_url': str(proposal.get('source_url') or ''),
+                           **({'official': external} if external else {})})
         except (ValueError, KeyError, TypeError) as error:
             if 'budget exhausted' in str(error).casefold():
                 report['budget_exhausted_at_title'] = name[:160]
@@ -356,8 +418,9 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
     # Official descriptions are independent of the encyclopedia. Direct
     # Wikidata identifiers select fixed-host adapters; the model never supplies
     # a URL. Missing official coverage is not a target rejection.
-    for offset in range(0, len(result), 3):
-        batch = result[offset:offset + 3]
+    unresolved = [item for item in result if not item.get('official')]
+    for offset in range(0, len(unresolved), 3):
+        batch = unresolved[offset:offset + 3]
         try:
             entities = sources.entities([item['page']['entity'] for item in batch])
         except (ValueError, RuntimeError, KeyError, TypeError) as error:
@@ -407,7 +470,10 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                     'Linked-source lookup failed for ' + item['title'][:80] + ': ' + str(error)[:150])
                 if 'budget exhausted' in str(error).casefold():
                     return result
-                continue
+                public_urls = []
+            if item['suggested_url'] and item['suggested_url'] not in public_urls:
+                public_urls.insert(0, item['suggested_url'])
+            public_urls = public_urls[:4]
             for url in public_urls:
                 try:
                     external = public_page(sources, url, item['title'])
@@ -496,7 +562,13 @@ def resolve_route(route: dict, target: dict, sources, recent: list[dict], existi
     first_error = None
     for index, option in enumerate(options):
         try:
-            candidate = legacy.resolve(option, sources, recent, existing)
+            page = target.get('page') or {}
+            checked_sources = (_TargetPageSource(sources, page)
+                               if page.get('source_kind') == 'osm_public_page' else sources)
+            candidate = legacy.resolve(option, checked_sources, recent, existing)
+            if page.get('source_kind') == 'osm_public_page':
+                candidate['sources']['osm'] = page['osm_url']
+                candidate['coordinate_check']['note'] = 'OSM and Wikidata coordinates cross-checked.'
             return candidate, (option['local_title'] if index else None)
         except ValueError as error:
             if first_error is None:
@@ -526,7 +598,11 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         focus = legacy.proposal_focus(budget)
         prompt = ('Propose exactly 12 distinct, presently existing, precisely pinnable public landmarks. '
                   'Propose four from EACH geographic lane: ' + ', '.join(focus) + '. '
-                  'Give only the exact English Wikipedia article title and place type; do not invent nearby '
+                  'Give each place\'s exact public name and place type. Supply one public HTTPS source_url '
+                  'describing its specific story, or an empty string when unknown. Choose sources for factual '
+                  'quality and relevance, never because they belong to a fixed domain list. A Wikipedia article is useful but NOT '
+                  'required; an independently identifiable OpenStreetMap place with its own public site also '
+                  'qualifies. Do not invent nearby '
                   'map anchors or clues. Prefer places likely to have a surprising achievement, cultural moment, '
                   'public use or distinctive engineering story documented in their own article. Exclude stadiums, '
                   'private homes, camps, hostage incidents, atrocities and places whose only appeal is fame, age '
@@ -542,20 +618,22 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         report['proposals'] = proposals
         if len(proposals) != 12:
             raise ValueError('Exactly twelve target proposals are required.')
-        targets = source_targets(proposals, sources, recent, existing, excluded_names or [], report)
+        geocoder = map_geocoding.NominatimSource(output_dir.parent / 'map-geocode-cache.sqlite3', budget)
+        targets = source_targets(proposals, sources, recent, existing, excluded_names or [], report,
+                                 geocoder=geocoder)
         report['source_targets'] = [{'title': t['title'], 'place_type': t['place_type'],
                                      'official_source': t.get('official', {}).get('url')} for t in targets]
         if not targets:
             raise ValueError('No proposed target had usable source evidence.')
         story_prefix = ('Rank up to six places by the strength of a specific, place-owned, engaging story. '
-                        'Each hook must cite one supplied Wikipedia or official-source passage marked role="story"; '
+                        'Each hook must cite one supplied source passage marked role="story"; '
                         'context passages '
                         'are for identity and geography, never a hook. Give its passage_id, '
                         'a faithful hook sentence, and a real city plus distinct nearby named feature that are '
-                        'BOTH explicitly mentioned in that same target article. The local feature must be a '
+                        'BOTH explicitly mentioned in that same target source. The local feature must be a '
                         'district, park, harbour, or separate landmark, not part of the answer. Prefer one of '
                         'the geotagged nearby_options: they are genuinely near the target and named in the target '
-                        'article, though their own source pages and map suitability still require checks. These are route '
+                        'source, though their own source pages and map suitability still require checks. These are route '
                         'hypotheses; coordinates will be checked in code. Do not choose ordinary dates, materials, '
                         'bare superlatives, procurement details, routine signal coverage, danger to victims, '
                         'camps, or atrocities. If an interesting premise is hedged or unsupported, skip it. '
@@ -617,8 +695,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
             raise ValueError('No source-backed story had a playable map route.')
         clue_prompt = ('Choose the most engaging source-backed story and write hard, medium and easy Map clues. '
                        'Use the cited story passage for hard; do not pivot to an unrelated fact. An official '
-                       'source passage may support hard; medium and easy must cite target Wikipedia '
-                       'article passages that name their map anchors. Medium must name '
+                       'source passage may support hard; medium and easy must cite target source '
+                       'passages that name their map anchors. Medium must name '
                        'the city anchor and country. Easy must start "In <city_sector> <city>," and name the local '
                        'anchor as practical map guidance. Each clue must be 8–40 words and no more than 240 '
                        'characters, omit the answer name, and cite 1–3 supplied article passage IDs. Do not add '

@@ -11,6 +11,107 @@ from tools import controlled_map_round as controlled
 
 
 class StoryPipelineTests(unittest.TestCase):
+    def test_non_wikipedia_place_uses_exact_osm_identity_and_public_page(self):
+        geocoder = Mock()
+        geocoder.search.return_value = [
+            {'name': 'Glass Hall', 'wikidata': 'Q123', 'country_code': 'GB',
+             'country_name': 'United Kingdom', 'website': 'https://glass.example/story',
+             'lat': 51.5, 'lng': -0.12, 'url': 'https://www.openstreetmap.org/way/123'},
+            {'name': 'Glass Hall East', 'wikidata': 'Q456', 'country_code': 'GB',
+             'country_name': 'United Kingdom', 'website': 'https://east.example/',
+             'lat': 51.6, 'lng': -0.12, 'url': 'https://www.openstreetmap.org/way/456'},
+        ]
+        external = {'text': 'Glass Hall hosted the first public solar railway demonstration. ' * 12,
+                    'url': 'https://glass.example/story', 'source_name': 'glass.example',
+                    'source_key': 'external'}
+        with patch.object(story, 'public_page', return_value=external) as fetch:
+            page, evidence = story.non_wikipedia_target('Glass Hall', Mock(), geocoder)
+        self.assertEqual(page['entity'], 'Q123')
+        self.assertEqual(page['source_kind'], 'osm_public_page')
+        self.assertEqual(evidence, external)
+        fetch.assert_called_once_with(unittest.mock.ANY, 'https://glass.example/story', 'Glass Hall')
+
+    def test_non_wikipedia_place_can_use_any_checked_public_story_site(self):
+        geocoder = Mock()
+        geocoder.search.return_value = [
+            {'name': 'Glass Hall', 'wikidata': 'Q123', 'country_code': 'GB',
+             'country_name': 'United Kingdom', 'website': '', 'lat': 51.5, 'lng': -0.12,
+             'url': 'https://www.openstreetmap.org/way/123'}]
+        external = {'text': 'Glass Hall hosted a railway demonstration. ' * 15,
+                    'url': 'https://local-history.example/glass-hall',
+                    'source_name': 'local-history.example', 'source_key': 'external'}
+        with patch.object(story, 'public_page', return_value=external) as fetch:
+            page, evidence = story.non_wikipedia_target(
+                'Glass Hall', Mock(), geocoder, 'https://local-history.example/glass-hall')
+        self.assertEqual(page['url'], evidence['url'])
+        fetch.assert_called_once_with(unittest.mock.ANY, external['url'], 'Glass Hall')
+
+    def test_source_targets_falls_back_when_wikipedia_has_no_article(self):
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        geocoder = Mock()
+        external = {'text': 'Glass Hall hosted the first public solar railway demonstration. ' * 12,
+                    'url': 'https://glass.example/story', 'source_name': 'glass.example',
+                    'source_key': 'external'}
+        page = {'title': 'Glass Hall', 'entity': 'Q123', 'lat': 51.5, 'lng': -0.12,
+                'text': external['text'], 'url': external['url'],
+                'source_kind': 'osm_public_page', 'osm_url': 'https://www.openstreetmap.org/way/123'}
+        report = {'rejections': []}
+        with patch.object(story.legacy, 'resolved_page', side_effect=ValueError('Missing source page.')), \
+             patch.object(story, 'non_wikipedia_target', return_value=(page, external)) as fallback, \
+             patch.object(story, 'nearby_options', return_value=[]):
+            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum'}],
+                                           source, [], [], [], report, geocoder=geocoder)
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]['official'], external)
+        self.assertEqual(targets[0]['passages'][0]['source'], 'glass.example')
+        fallback.assert_called_once_with('Glass Hall', source, geocoder, '')
+        source.entities.assert_not_called()
+
+    def test_non_wikipedia_route_keeps_osm_provenance(self):
+        source = Mock()
+        target = {'page': {'title': 'Glass Hall', 'source_kind': 'osm_public_page',
+                           'osm_url': 'https://www.openstreetmap.org/way/123'}}
+        candidate = {'sources': {}, 'coordinate_check': {}}
+        with patch.object(story.legacy, 'resolve', return_value=candidate) as resolve:
+            checked, _ = story.resolve_route({'title': 'Glass Hall', 'local_title': 'Market Park'},
+                                             target, source, [], [])
+        self.assertIsInstance(resolve.call_args.args[1], story._TargetPageSource)
+        self.assertEqual(checked['sources']['osm'], 'https://www.openstreetmap.org/way/123')
+
+    def test_non_wikipedia_route_passes_real_geometry_and_anchor_checks(self):
+        def claim(value):
+            return {'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+                                                  'datavalue': {'value': value}}}
+        page = {'title': 'Glass Hall', 'entity': 'Q100', 'lat': 50, 'lng': 1,
+                'text': 'The Glass Hall is in City, beside Park. ' * 20,
+                'url': 'https://local-history.example/glass-hall',
+                'source_kind': 'osm_public_page',
+                'osm_url': 'https://www.openstreetmap.org/way/123'}
+        areas = {'City': {'title': 'City', 'entity': 'Q101', 'lat': 50.04, 'lng': 1,
+                          'text': 'City is a public settlement.', 'url': 'https://example.org/city'},
+                 'Park': {'title': 'Park', 'entity': 'Q102', 'lat': 50.01, 'lng': 1,
+                          'text': 'Park is a public space.', 'url': 'https://example.org/park'}}
+        entity = {'lastrevid': 10, 'labels': {'en': {'value': 'Glass Hall'}},
+                  'claims': {'P625': [claim({'latitude': 50, 'longitude': 1,
+                                            'globe': 'http://www.wikidata.org/entity/Q2'})],
+                             'P17': [claim({'id': 'Q200'})]}}
+        country = {'labels': {'en': {'value': 'France'}},
+                   'claims': {'P297': [claim('FR')]}}
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        source.area_page.side_effect = lambda name: areas[name]
+        source.entities.return_value = {'Q100': entity}
+        source.country.return_value = country
+        route = {'title': 'Glass Hall', 'city_title': 'City', 'local_title': 'Park',
+                 'place_type': 'museum', 'reason': 'A distinctive public demonstration.'}
+        candidate, repair = story.resolve_route(route, {'page': page}, source, [], [])
+        self.assertIsNone(repair)
+        self.assertEqual(candidate['canonical_name'], 'Glass Hall')
+        self.assertEqual(candidate['sources']['article'], page['url'])
+        self.assertEqual(candidate['sources']['osm'], page['osm_url'])
+        self.assertEqual(candidate['coordinate_check']['distance_m'], 0)
+
     def test_full_source_first_flow_saves_review_without_publication(self):
         place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
                               if p['id'] == 'atomium'))

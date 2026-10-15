@@ -49,6 +49,7 @@
     "tools/install_map_training_seed.py",
     "tools/map_clue_failure_log.py",
     "tools/map_clue_quality_model.py",
+    "tools/map_geocoding.py",
     "tools/map_launch_round.py",
     "tools/map_selector_model.py",
     "tools/map_story_pipeline.py",
