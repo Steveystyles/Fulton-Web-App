@@ -23,6 +23,8 @@ from tools import discover_map_places as legacy
 from tools import map_geocoding
 from tools import rewrite_map_clues_with_ai as rewriter
 
+MAX_STORY_COMPARISON_CANDIDATES = 4
+
 
 class _VisibleText(HTMLParser):
     def __init__(self):
@@ -596,6 +598,20 @@ def guidance_fallback(payload: dict, candidate: dict) -> dict:
     return fixed
 
 
+def clue_evidence_units(candidate: dict, story_passage: str) -> list[dict]:
+    """Show the clue writer the chosen story and map anchors, not an entire article."""
+    units = legacy.evidence_units(candidate)
+    anchor_units = [unit for unit in units if '-anchor-' in unit['id']]
+    story_terms = legacy.hook_terms(story_passage, candidate['canonical_name'])
+    ranked = sorted((unit for unit in units if unit not in anchor_units),
+                    key=lambda unit: (
+                        not (unit.get('proposal_hook_passage') or unit['id'] == 'official-hook'),
+                        -len(story_terms & legacy.hook_terms(
+                            unit['text'], candidate['canonical_name']))))
+    selected = [*ranked[:3], *anchor_units]
+    return selected
+
+
 def checked_hard_story_pivot(payload: dict, candidate: dict) -> str | None:
     """Find a stronger hard-clue passage in the same retrieved target source.
 
@@ -772,7 +788,7 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                     raise ValueError('Repeated country or place type in comparison.')
                 story_passages[candidate['id']] = route['story_passage']
                 candidates.append(candidate)
-                if len(candidates) >= legacy.MAX_COMPARISON_CANDIDATES:
+                if len(candidates) >= MAX_STORY_COMPARISON_CANDIDATES:
                     break
             except (ValueError, KeyError, TypeError) as error:
                 report['rejections'].append({'title': route['title'], 'reason': str(error)[:300]})
@@ -791,7 +807,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                        json.dumps([{'id': c['id'], 'name': c['canonical_name'], 'place_type': c['place_type'],
                                     'country': c['country_name'], 'anchors': c['anchors'],
                                     'city_sector': c['city_sector'], 'verified_story_passage': story_passages[c['id']],
-                                    'article_passages': legacy.evidence_units(c)} for c in candidates], ensure_ascii=False))
+                                    'article_passages': clue_evidence_units(c, story_passages[c['id']])}
+                                   for c in candidates], ensure_ascii=False))
         selected = provider.call_with_fallback(model_attr='generator_model', prompt=clue_prompt,
                                                schema=legacy.selection_schema())
         report['model_output'] = selected

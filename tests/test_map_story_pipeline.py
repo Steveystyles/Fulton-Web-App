@@ -523,6 +523,26 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertTrue(any(item['role'] == 'story' and 'first public demonstration' in item['text']
                             for item in items))
 
+    def test_clue_comparison_keeps_story_and_map_evidence_compact(self):
+        units = [
+            {'id': 'article-0', 'text': 'Generic introduction to Glass Hall.'},
+            {'id': 'article-1', 'text': 'The first solar railway demonstration was hosted here.',
+             'proposal_hook_passage': True},
+            {'id': 'article-2', 'text': 'Generic building description.'},
+            {'id': 'article-3', 'text': 'Generic opening hours.'},
+            {'id': 'article-anchor-0', 'text': 'Glass Hall is in Eastport.'},
+            {'id': 'local-anchor-1', 'text': 'Market Park stands nearby.'},
+        ]
+        with patch.object(story.legacy, 'evidence_units', return_value=units):
+            selected = story.clue_evidence_units(
+                {'canonical_name': 'Glass Hall'},
+                'The first solar railway demonstration was hosted here.')
+        self.assertEqual(story.MAX_STORY_COMPARISON_CANDIDATES, 4)
+        self.assertLessEqual(len(selected), 5)
+        self.assertIn('article-1', [unit['id'] for unit in selected])
+        self.assertIn('article-anchor-0', [unit['id'] for unit in selected])
+        self.assertIn('local-anchor-1', [unit['id'] for unit in selected])
+
     def test_ranked_route_rejects_invented_hook_or_anchor(self):
         article = ('The Glass Hall stands in Eastport beside Market Park. '
                    'It hosted the first public demonstration of a solar railway.')
