@@ -1287,6 +1287,21 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['status'], 'provider_paused')
         self.assertEqual(result['retry_at'], '2026-09-08T10:30:05+00:00')
 
+    def test_provider_timeout_pauses_instead_of_repeating_free_tier_requests(self):
+        failed = {'status': 'failed',
+                  'error': 'Map preview provider failed; stopped to preserve quota.',
+                  'provider_error_detail': 'Gemini request failed: The read operation timed out',
+                  'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            result = pool.maintain_until_stocked(
+                self.database, self.root/'reports', seed_catalog=None,
+                provider_factory=Mock(return_value=Mock(requests=[])), max_attempts=4,
+            )
+        self.assertEqual(result['status'], 'provider_paused')
+        self.assertEqual(result['attempted'], 1)
+        self.assertEqual(result['retry_at'], '2026-09-08T10:30:05+00:00')
+        discover.assert_called_once()
+
     def test_verifier_503_uses_verifier_retry_hint(self):
         discovery_provider = Mock(requests=[], provider_error_detail='', retry_after_seconds=None)
         verifier_provider = Mock(

@@ -1112,9 +1112,15 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         outcome['rate_limited'] = outcome['quota_limited'] or any(
             marker in error_text.casefold() for marker in ('http 429', 'resource_exhausted', 'rate limit')
         )
-        # A 503 is not a quota reset, but rapidly retrying an overloaded free-tier
-        # model wastes requests. Keep its Retry-After hint (if any) across ticks.
-        outcome['provider_unavailable'] = 'http 503' in error_text.casefold()
+        # A 503 or timed-out model request is not a quota reset, but rapidly
+        # retrying an overloaded free-tier model wastes requests. Keep any
+        # Retry-After hint across scheduler ticks; otherwise use the bounded backoff.
+        provider_error = ' '.join((str(report.get('provider_error_detail') or ''),
+                                   str(getattr(provider, 'provider_error_detail', '') or ''),
+                                   str(getattr(verifier, 'provider_error_detail', '') or ''))).casefold()
+        outcome['provider_unavailable'] = ('http 503' in error_text.casefold() or
+                                           ('gemini request failed' in provider_error and
+                                            ('timed out' in provider_error or 'timeout' in provider_error)))
         if verifier is not None:
             outcome['verifier_requests'] = verifier.requests
     outcome['failed_names'] = [item.get('title', '') for item in report.get('rejections', []) if isinstance(item, dict)]
