@@ -719,6 +719,108 @@ class AutomaticPoolTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM automatic_map_entries').fetchone()[0], 0)
 
+    def test_story_first_round_requires_separate_ready_audit_before_publication(self):
+        report = {**self.report(), 'pipeline': 'story_first'}
+        report['candidate_sha256'] = discovery.digest(report['candidate'])
+        factory = Mock(return_value=Mock(requests=[]))
+        prematurely_passed = {**self.verdict, 'ready_audit': {
+            'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 5,
+            'evidence_supported': True, 'chronology_consistent': True}}
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report), \
+             patch.object(pool, 'verify', return_value=prematurely_passed):
+            first = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                  provider_factory=factory)
+        self.assertEqual(first['status'], 'added')
+        self.assertTrue(first['pending_audit'])
+        self.assertEqual(first['ready'], 0)
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute('SELECT verification FROM automatic_map_entries').fetchone()[0])
+            self.assertNotIn('ready_audit', verification)
+            with self.assertRaisesRegex(ValueError, 'No eligible'):
+                pool.publish(conn, puzzle_date='2026-09-08')
+        audit = {'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 5,
+                 'evidence_supported': True, 'chronology_consistent': True,
+                 'reason': 'Independent completed-round audit passed.'}
+        with patch.object(pool, 'audit_ready_interest', return_value=audit):
+            second = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(second['status'], 'audited')
+        self.assertEqual(second['ready'], 1)
+
+    def test_story_first_audit_rejection_feeds_next_attempt(self):
+        report = {**self.report(), 'pipeline': 'story_first'}
+        report['candidate_sha256'] = discovery.digest(report['candidate'])
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report), \
+             patch.object(pool, 'verify', return_value=self.verdict):
+            pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                          provider_factory=factory)
+        audit = {'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 3,
+                 'evidence_supported': False, 'chronology_consistent': True,
+                 'reason': 'The clue adds a causal claim absent from its quotation.'}
+        with patch.object(pool, 'audit_ready_interest', return_value=audit):
+            result = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(result['status'], 'audited')
+        self.assertEqual(result['ready'], 0)
+        with closing(self.connect()) as conn:
+            state, verification_text = conn.execute(
+                'SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(state, 'rejected')
+            self.assertTrue(json.loads(verification_text)['hook_rejection'])
+            lessons = pool.rejected_interest_lessons(conn)
+        self.assertEqual(len(lessons), 1)
+        self.assertIn('causal claim', lessons[0]['failure_reason'])
+
+    def test_story_first_navigation_failure_allows_corrected_round_not_identical_retry(self):
+        report = {**self.report(), 'pipeline': 'story_first'}
+        report['candidate_sha256'] = discovery.digest(report['candidate'])
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report), \
+             patch.object(pool, 'verify', return_value=self.verdict):
+            pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                          provider_factory=factory)
+        audit = {'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 5,
+                 'evidence_supported': False, 'chronology_consistent': True,
+                 'reason': 'The easy map direction is unsupported; the hard story is sound.'}
+        with patch.object(pool, 'audit_ready_interest', return_value=audit):
+            pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                          provider_factory=factory)
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute('SELECT verification FROM automatic_map_entries').fetchone()[0])
+            self.assertTrue(verification['round_rejection'])
+            self.assertNotIn('hook_rejection', verification)
+            with self.assertRaisesRegex(ValueError, 'same rejected Map clue ladder'):
+                pool.add(conn, report['candidate'], report['result'], self.verdict,
+                         origin='discovery', audit_pending=True)
+            corrected = deepcopy(report['result'])
+            corrected['clue_ladder']['easy'] = (
+                'In northern Brussels, look near the Heysel district, where this landmark stands close '
+                'to Heysel/Heizel metro station.')
+            pool.add(conn, report['candidate'], corrected, self.verdict,
+                     origin='discovery', audit_pending=True)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM automatic_map_rejected_rounds').fetchone()[0], 1)
+            with self.assertRaisesRegex(ValueError, 'previously rejected Map clue ladder'):
+                pool.add(conn, report['candidate'], report['result'], self.verdict,
+                         origin='discovery', audit_pending=True)
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? WHERE id=?",
+                         (json.dumps({**self.verdict, 'editorial_rejection': True,
+                                      'round_rejection': 'another unsupported easy clue'}),
+                          report['candidate']['id']))
+            third = deepcopy(corrected)
+            third['clue_ladder']['easy'] = (
+                'In Brussels, find the landmark by the Heysel/Heizel metro station, '
+                'north of the city centre.')
+            pool.add(conn, report['candidate'], third, self.verdict,
+                     origin='discovery', audit_pending=True)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM automatic_map_rejected_rounds').fetchone()[0], 2)
+            with self.assertRaisesRegex(ValueError, 'previously rejected Map clue ladder'):
+                pool.add(conn, report['candidate'], corrected, self.verdict,
+                         origin='discovery', audit_pending=True)
+
     def test_recent_structural_failure_is_reverified_without_new_discovery(self):
         old_report = {**self.report(), 'status': 'failed'}
         report_dir = self.root / 'reports' / 'previous'

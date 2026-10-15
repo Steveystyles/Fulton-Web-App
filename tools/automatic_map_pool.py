@@ -84,6 +84,10 @@ def initialize(conn: sqlite3.Connection) -> None:
                  'place_id TEXT NOT NULL, hook_digest TEXT NOT NULL, candidate TEXT NOT NULL, '
                  'result TEXT NOT NULL, verification TEXT NOT NULL, origin TEXT NOT NULL, created_at TEXT NOT NULL, '
                  'rejected_at TEXT NOT NULL, PRIMARY KEY(place_id,hook_digest))')
+    conn.execute('CREATE TABLE IF NOT EXISTS automatic_map_rejected_rounds('
+                 'place_id TEXT NOT NULL, ladder_digest TEXT NOT NULL, candidate TEXT NOT NULL, '
+                 'result TEXT NOT NULL, verification TEXT NOT NULL, origin TEXT NOT NULL, created_at TEXT NOT NULL, '
+                 'rejected_at TEXT NOT NULL, PRIMARY KEY(place_id,ladder_digest))')
     conn.execute('CREATE TABLE IF NOT EXISTS automatic_map_runs('
                  'id TEXT PRIMARY KEY, budget_day TEXT NOT NULL, target_date TEXT NOT NULL, '
                  'started_at TEXT NOT NULL, status TEXT NOT NULL, model_requests INTEGER NOT NULL DEFAULT 0, '
@@ -238,6 +242,15 @@ def archive_rejected_hook(conn: sqlite3.Connection, place_id: str, candidate_tex
                           result_text: str, verification_text: str, origin: str,
                           created_at: str) -> None:
     result = json.loads(result_text)
+    if json.loads(verification_text).get('round_rejection'):
+        conn.execute(
+            'INSERT OR IGNORE INTO automatic_map_rejected_rounds('
+            'place_id,ladder_digest,candidate,result,verification,origin,created_at,rejected_at) '
+            'VALUES(?,?,?,?,?,?,?,?)',
+            (place_id, discovery.digest(result.get('clue_ladder')), candidate_text, result_text,
+             verification_text, origin, created_at, now().isoformat()),
+        )
+        return
     conn.execute(
         'INSERT OR IGNORE INTO automatic_map_rejected_hooks('
         'place_id,hook_digest,candidate,result,verification,origin,created_at,rejected_at) '
@@ -478,7 +491,9 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
         "SELECT candidate,result,verification,created_at AS rejected_at "
         "FROM automatic_map_entries WHERE state='rejected' AND origin='discovery' "
         "UNION ALL SELECT candidate,result,verification,rejected_at "
-        "FROM automatic_map_rejected_hooks WHERE origin='discovery') "
+        "FROM automatic_map_rejected_hooks WHERE origin='discovery' "
+        "UNION ALL SELECT candidate,result,verification,rejected_at "
+        "FROM automatic_map_rejected_rounds WHERE origin='discovery') "
         "ORDER BY rejected_at DESC LIMIT 30"
     ):
         try:
@@ -672,7 +687,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
     return verdict
 
 
-def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: dict, *, origin: str) -> None:
+def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: dict, *, origin: str,
+        audit_pending: bool = False) -> None:
     previous = conn.execute(
         "SELECT state,candidate,result,verification,created_at,origin "
         "FROM automatic_map_entries WHERE id=?", (candidate['id'],)
@@ -682,15 +698,30 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
         if prior_verification.get('operator_rejection') or (
             prior_verification.get('editorial_rejection')
             and not rejected_hook_reason(prior_verification)
+            and not prior_verification.get('round_rejection')
         ):
             raise ValueError('Editorially rejected map place requires an explicit operator review before reuse.')
         if rejected_hook_reason(prior_verification) and (
             hook_digest(json.loads(previous[2])) == hook_digest(result)
         ):
             raise ValueError('The same unsuitable Map hook cannot be reused.')
-    if conn.execute('SELECT 1 FROM automatic_map_rejected_hooks WHERE place_id=? AND hook_digest=?',
-                    (candidate['id'], hook_digest(result))).fetchone():
-        raise ValueError('A previously rejected Map hook cannot be reused.')
+        if prior_verification.get('round_rejection') and (
+            discovery.digest(json.loads(previous[2]).get('clue_ladder')) ==
+            discovery.digest(result.get('clue_ladder'))
+        ):
+            raise ValueError('The same rejected Map clue ladder cannot be reused.')
+    for old_result_text, old_verification_text in conn.execute(
+        'SELECT result,verification FROM automatic_map_rejected_hooks WHERE place_id=? AND hook_digest=?',
+        (candidate['id'], hook_digest(result)),
+    ):
+        old_result, old_verification = json.loads(old_result_text), json.loads(old_verification_text)
+        if not old_verification.get('round_rejection'):
+            raise ValueError('A previously rejected Map hook cannot be reused.')
+        if discovery.digest(old_result.get('clue_ladder')) == discovery.digest(result.get('clue_ladder')):
+            raise ValueError('A previously rejected Map clue ladder cannot be reused.')
+    if conn.execute('SELECT 1 FROM automatic_map_rejected_rounds WHERE place_id=? AND ladder_digest=?',
+                    (candidate['id'], discovery.digest(result.get('clue_ladder')))).fetchone():
+        raise ValueError('A previously rejected Map clue ladder cannot be reused.')
     # Revalidate the actual saved clue text; publication never asks a model to rewrite it.
     payload = {'place_id': candidate['id'], 'selection_reason': result['selection_reason'],
                'clues': {level: {'text': result['clue_ladder'][level], 'fact_id': level} for level in controlled.LEVELS}}
@@ -707,7 +738,10 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
         if old['id'] == candidate['id'] or daily_map_game.haversine_m(old['lat'], old['lng'], candidate['lat'], candidate['lng']) < 500:
             raise ValueError('Duplicate ready place.')
     stored = {**candidate, 'review_status': 'machine_checked' if origin == 'discovery' else 'source_reviewed'}
-    if (origin == 'discovery' and verification.get('chronology_consistent') is True
+    if audit_pending:
+        verification = {key: value for key, value in verification.items() if key != 'ready_audit'}
+        verification['source_pipeline'] = 'story_first'
+    if (origin == 'discovery' and not audit_pending and verification.get('chronology_consistent') is True
             and all(verification.get(check) is True for check in CHECKS)
             and sufficient_interest_score(verification.get('interesting_hook_score'))):
         verification = {**verification, 'ready_audit': {
@@ -937,7 +971,8 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             "SELECT state,candidate,verification FROM automatic_map_entries WHERE state IN ('ready','rejected')"
         ) if state == 'ready' or json.loads(verification).get('operator_rejection')
         or (json.loads(verification).get('editorial_rejection')
-            and not rejected_hook_reason(json.loads(verification)))]
+            and not rejected_hook_reason(json.loads(verification))
+            and not json.loads(verification).get('round_rejection'))]
         failed_names = recent_failed_names(conn, output_dir)
         route_lessons = recent_route_failure_lessons(conn, output_dir)
         feedback = editorial_corrections(conn)
@@ -990,6 +1025,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
                     verification['ready_audit'] = audited
                     if not passed:
                         verification['editorial_rejection'] = True
+                        if verification.get('source_pipeline') == 'story_first':
+                            if not sufficient_interest_score(audited['interesting_hook_score']):
+                                verification['hook_rejection'] = 'ready audit rejected a weak discovery hook'
+                            else:
+                                verification['round_rejection'] = 'ready audit rejected the complete clue ladder'
                     changed = conn.execute(
                         "UPDATE automatic_map_entries SET state=?,verification=? WHERE id=? AND state='ready'",
                         ('ready' if passed else 'rejected', json.dumps(verification), row[0]),
@@ -1034,13 +1074,16 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
                 report.get('candidate_sha256') != discovery.digest(candidate)
                 or report.get('candidate') != candidate):
             raise ValueError('Story-first candidate changed after its source and story checks.')
+        audit_pending = report.get('pipeline') == 'story_first'
         with closing(sqlite3.connect(database)) as conn:
             conn.execute('BEGIN IMMEDIATE')
             controlled.eligible_places_in_database(conn, target, [candidate])
-            add(conn, candidate, result, verdict, origin='discovery')
+            add(conn, candidate, result, verdict, origin='discovery', audit_pending=audit_pending)
+            ready_after = len(eligible(conn, target))
             conn.commit()
-        outcome.update(status='added', place=candidate['canonical_name'], ready=len(ready)+1,
-                       verification=verdict, verifier_requests=verifier.requests)
+        outcome.update(status='added', place=candidate['canonical_name'], ready=ready_after,
+                       pending_audit=audit_pending, verification=verdict,
+                       verifier_requests=verifier.requests)
     except Exception as error:
         # Do not log arbitrary transport messages containing credentials.
         outcome.update(error_type=type(error).__name__, reason='Candidate not added; inspect the private discovery report.')
