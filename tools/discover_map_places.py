@@ -543,7 +543,7 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                     quotes.append(anchor_quote['text'])
         official_text = (selected['evidence'].get('official', {}).get('text', '')
                          if level == 'hard' and 'source_ids' in item and
-                         any(units[ref].get('source') in ('unesco', 'historic_england')
+                         any(units[ref].get('source') not in (None, 'article')
                              for ref in item['source_ids']) else '')
         if any(len(q) < 30 or not any(normalized(q) in source_text for source_text in
                                      (selected['evidence']['article']['text'], official_text)) for q in quotes):

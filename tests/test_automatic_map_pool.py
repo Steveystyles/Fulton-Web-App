@@ -747,6 +747,12 @@ class AutomaticPoolTests(unittest.TestCase):
                                    provider_factory=factory)
         self.assertEqual(second['status'], 'audited')
         self.assertEqual(second['ready'], 1)
+        with closing(self.connect()) as conn:
+            published = pool.publish(conn, puzzle_date='2026-09-08')
+            self.assertEqual(published['status'], 'published')
+            self.assertEqual(conn.execute(
+                "SELECT state FROM automatic_map_entries WHERE id=?", (self.place['id'],)
+            ).fetchone()[0], 'used')
 
     def test_story_first_audit_rejection_feeds_next_attempt(self):
         report = {**self.report(), 'pipeline': 'story_first'}

@@ -11,9 +11,12 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 import http.client
+import ipaddress
 import json
 from pathlib import Path
 import re
+import socket
+from urllib.parse import urlsplit
 
 from tools import controlled_map_round as controlled
 from tools import discover_map_places as legacy
@@ -76,6 +79,90 @@ def official_html(sources, host: str, path: str) -> str:
     parser = _VisibleText()
     parser.feed(body.decode('utf-8', errors='replace'))
     return legacy.normalized(' '.join(parser.parts))
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Use the checked public DNS address while verifying TLS for the host."""
+    def __init__(self, host: str, address: str):
+        super().__init__(host, timeout=12)
+        self.address = address
+
+    def connect(self):
+        raw = socket.create_connection((self.address, 443), self.timeout, self.source_address)
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except Exception:
+            raw.close()
+            raise
+
+
+def checked_public_url(value: str) -> tuple[str, str, str]:
+    """Accept any public HTTPS domain, but no local address, odd port or redirect."""
+    if not isinstance(value, str) or len(value) > 2048 or any(ord(c) < 33 for c in value):
+        raise ValueError('Invalid public source URL.')
+    try:
+        parsed = urlsplit(value)
+        host = (parsed.hostname or '').encode('idna').decode('ascii').lower()
+        port = parsed.port
+    except (UnicodeError, ValueError) as error:
+        raise ValueError('Invalid public source host or port.') from error
+    if (parsed.scheme != 'https' or not host or parsed.username or parsed.password or
+            port not in (None, 443) or not re.fullmatch(r'[a-z0-9.-]+', host) or
+            '.' not in host or host.endswith(('.local', '.internal'))):
+        raise ValueError('Public sources require a normal HTTPS host.')
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ValueError('Public sources must use a domain name.')
+    path = parsed.path or '/'
+    if re.search(r'\.(?:pdf|jpe?g|png|gif|webp|svg|zip|gz|mp[34]|mov|avi)(?:$|[/?])', path, re.I):
+        raise ValueError('Public source is not an HTML page.')
+    answers = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    addresses = [ipaddress.ip_address(answer[4][0]) for answer in answers]
+    if not addresses or any(not address.is_global for address in addresses):
+        raise ValueError('Public source resolved to a non-public address.')
+    target = path + ('?' + parsed.query if parsed.query else '')
+    return host, target, str(addresses[0])
+
+
+def public_page(sources, url: str, target_title: str) -> dict:
+    host, path, address = checked_public_url(url)
+    sources.budget.spend('source')
+    conn = _PinnedHTTPSConnection(host, address)
+    try:
+        conn.request('GET', path, headers={'User-Agent': legacy.USER_AGENT,
+                                           'Accept': 'text/html, text/plain;q=0.5'})
+        response = conn.getresponse()
+        if response.status != 200:
+            raise RuntimeError(f'Public source returned HTTP {response.status}.')
+        content_type = str(response.getheader('Content-Type') or '').split(';', 1)[0].strip().lower()
+        if content_type not in ('text/html', 'text/plain'):
+            raise ValueError('Public source did not return readable text.')
+        body = response.read(legacy.MAX_RESPONSE_BYTES + 1)
+        if len(body) > legacy.MAX_RESPONSE_BYTES:
+            raise ValueError('Public source exceeded the size limit.')
+    finally:
+        conn.close()
+    raw = body.decode('utf-8', errors='replace')
+    if content_type == 'text/html':
+        parser = _VisibleText()
+        parser.feed(raw)
+        raw = ' '.join(parser.parts)
+    text = legacy.normalized(raw)
+    base_name = target_title.split(' (')[0]
+    if len(base_name.strip()) < 4:
+        raise ValueError('Target place name is too short to establish source identity.')
+    name = re.escape(base_name)
+    mention = re.search(name, text[:6000], re.I)
+    if not mention:
+        raise ValueError('Public source does not identify the target place.')
+    excerpt = text[max(0, mention.start() - 200):mention.start() + 16000]
+    if len(excerpt) < 400:
+        raise ValueError('Public source has too little relevant text.')
+    return {'text': excerpt, 'url': urlsplit(url)._replace(fragment='').geturl(),
+            'source_key': 'external', 'source_name': host}
 
 
 def unesco_page(sources, site_id: str) -> dict:
@@ -185,6 +272,33 @@ def nearby_options(page: dict, sources) -> list[dict]:
     return options[:4]
 
 
+def linked_public_urls(page: dict, entity: dict, sources) -> list[str]:
+    """Discover any-domain pages tied to the exact place, without model URLs."""
+    urls = [value for value in legacy.claim_values(entity, 'P856') if isinstance(value, str)]
+    data = sources.request('en.wikipedia.org', {
+        'action': 'query', 'prop': 'extlinks', 'titles': page['title'],
+        'ellimit': 50, 'elprotocol': 'https',
+    })
+    tokens = [token.casefold() for token in re.findall(r'[a-zA-Z]{4,}', page['title'])]
+    linked = []
+    pages = data.get('query', {}).get('pages', [])
+    for row in pages.values() if isinstance(pages, dict) else pages:
+        if isinstance(row, dict):
+            linked.extend(item.get('url') or item.get('*')
+                          for item in row.get('extlinks', []) if isinstance(item, dict))
+    for value in linked:
+        if isinstance(value, str) and any(token in value.casefold() for token in tokens):
+            urls.append(value)
+    unique = []
+    seen = set()
+    for value in urls:
+        if not isinstance(value, str) or value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique[:3]
+
+
 def source_targets(proposals: list[dict], sources, recent: list[dict], existing: list[dict],
                    excluded_names: list[str], report: dict) -> list[dict]:
     result = []
@@ -273,6 +387,34 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                         source_name + ' source unavailable for ' + item['title'][:80] + ': ' + str(error)[:150])
                     if 'budget exhausted' in str(error).casefold():
                         return result
+            if item.get('official'):
+                continue
+            try:
+                public_urls = linked_public_urls(item['page'], entity, sources)
+            except (ValueError, RuntimeError, KeyError, TypeError, OSError) as error:
+                report.setdefault('source_warnings', []).append(
+                    'Linked-source lookup failed for ' + item['title'][:80] + ': ' + str(error)[:150])
+                if 'budget exhausted' in str(error).casefold():
+                    return result
+                continue
+            for url in public_urls:
+                try:
+                    external = public_page(sources, url, item['title'])
+                    external_items = [p for p in passages(external) if p['role'] == 'story'][:2]
+                    if not external_items:
+                        continue
+                    wiki = item['passages']
+                    item['passages'] = [wiki[0], *[p for p in wiki if p['role'] == 'story'][:2],
+                                        *[{**p, 'id': 'o' + p['id'], 'source': external['source_name']}
+                                          for p in external_items]]
+                    item['official'] = external
+                    break
+                except (ValueError, RuntimeError, KeyError, TypeError, OSError,
+                        http.client.HTTPException) as error:
+                    report.setdefault('source_warnings', []).append(
+                        'Linked source unavailable for ' + item['title'][:80] + ': ' + str(error)[:150])
+                    if 'budget exhausted' in str(error).casefold():
+                        return result
     return result
 
 
@@ -299,7 +441,7 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
         # A chosen hook must visibly relate to its cited source paragraph.
         if len(legacy.hook_terms(hook, target['title']) & legacy.hook_terms(passage['text'], target['title'])) < 3:
             continue
-        if passage.get('source') in ('UNESCO', 'Historic England'):
+        if passage.get('source', 'Wikipedia') != 'Wikipedia':
             official = target.get('official') or {}
             if (official.get('source_name') != passage['source'] or
                     legacy.normalized(passage['text']) not in official.get('text', '')):

@@ -99,6 +99,54 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(story.nearby_options(page, source), [{'title': 'Market Park', 'distance_m': 730}])
         self.assertEqual(source.request.call_args.args[0], 'en.wikipedia.org')
 
+    def test_public_url_accepts_any_public_https_domain_but_not_internal_hosts(self):
+        public_dns = [(story.socket.AF_INET, story.socket.SOCK_STREAM, 6, '', ('93.184.216.34', 443))]
+        with patch.object(story.socket, 'getaddrinfo', return_value=public_dns):
+            self.assertEqual(story.checked_public_url('https://example.org/story?id=1'),
+                             ('example.org', '/story?id=1', '93.184.216.34'))
+        private_dns = [(story.socket.AF_INET, story.socket.SOCK_STREAM, 6, '', ('127.0.0.1', 443))]
+        with patch.object(story.socket, 'getaddrinfo', return_value=private_dns):
+            with self.assertRaisesRegex(ValueError, 'non-public'):
+                story.checked_public_url('https://example.org/story')
+        for url in ('http://example.org/story', 'https://user:pass@example.org/story',
+                    'https://example.org:8443/story', 'https://127.0.0.1/story'):
+            with self.assertRaises(ValueError):
+                story.checked_public_url(url)
+
+    def test_public_page_checks_place_identity_and_never_follows_redirects(self):
+        source = Mock()
+        response = Mock(status=200)
+        response.getheader.return_value = 'text/html; charset=utf-8'
+        response.read.return_value = (b'<nav>Menu</nav><main><h1>Glass Hall</h1><p>' +
+                                      b'The first public demonstration of a solar railway occurred here. ' * 12 +
+                                      b'</p></main>')
+        connection = Mock()
+        connection.getresponse.return_value = response
+        with patch.object(story, 'checked_public_url', return_value=('example.org', '/story', '93.184.216.34')), \
+             patch.object(story, '_PinnedHTTPSConnection', return_value=connection) as factory:
+            page = story.public_page(source, 'https://example.org/story', 'Glass Hall')
+        factory.assert_called_once_with('example.org', '93.184.216.34')
+        self.assertEqual(page['source_key'], 'external')
+        self.assertIn('solar railway', page['text'])
+        self.assertNotIn('Menu', page['text'])
+        response.status = 302
+        with patch.object(story, 'checked_public_url', return_value=('example.org', '/story', '93.184.216.34')), \
+             patch.object(story, '_PinnedHTTPSConnection', return_value=connection):
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 302'):
+                story.public_page(source, 'https://example.org/story', 'Glass Hall')
+
+    def test_linked_public_urls_uses_official_record_and_relevant_external_links(self):
+        source = Mock()
+        source.request.return_value = {'query': {'pages': [{'extlinks': [
+            {'url': 'https://museum.example/glass-hall-story'},
+            {'url': 'https://other.example/unrelated-page'},
+        ]}]}}
+        entity = {'claims': {'P856': [{'rank': 'normal', 'mainsnak': {'snaktype': 'value',
+                  'datavalue': {'value': 'https://museum.example/'}}}]}}
+        urls = story.linked_public_urls({'title': 'Glass Hall'}, entity, source)
+        self.assertEqual(urls, ['https://museum.example/', 'https://museum.example/glass-hall-story'])
+        self.assertEqual(source.request.call_args.args[0], 'en.wikipedia.org')
+
     def test_route_repair_only_substitutes_public_nearby_article(self):
         route = {'title': 'Glass Hall', 'city_title': 'Eastport', 'local_title': 'Imaginary Park'}
         target = {'nearby_options': [{'title': 'Market Park', 'distance_m': 730}]}
@@ -154,6 +202,12 @@ class StoryPipelineTests(unittest.TestCase):
         candidate, result = story.legacy.validate_selection(payload, [place])
         self.assertTrue(result['automated_pass'])
         self.assertEqual(candidate['facts']['hard']['source_ids'], ['historic_england'])
+        place['sources'].pop('historic_england')
+        place['sources']['external'] = 'https://example.org/atomium-story'
+        place['evidence']['official']['source_key'] = 'external'
+        candidate, result = story.legacy.validate_selection(payload, [place])
+        self.assertTrue(result['automated_pass'])
+        self.assertEqual(candidate['facts']['hard']['source_ids'], ['external'])
         with self.assertRaisesRegex(ValueError, 'unrelated passage'):
             story.legacy.validate_proposal_hook_alignment(
                 {'facts': {'hard': {'text': hard, 'source_ids': ['article-0']}}}, place)
@@ -311,6 +365,24 @@ class StoryPipelineTests(unittest.TestCase):
         historic.assert_called_once_with(source, '1291494')
         self.assertEqual(targets[0]['official']['source_key'], 'historic_england')
         self.assertEqual(len(report['source_warnings']), 1)
+
+    def test_target_lookup_uses_any_domain_linked_page_when_no_fixed_source_exists(self):
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        source.page.return_value = {'title': 'Glass Hall', 'entity': 'Q1', 'lat': 51, 'lng': 0,
+                                    'text': ('The Glass Hall is in Eastport beside Market Park. ' * 30)}
+        source.request.return_value = {'query': {'geosearch': []}}
+        source.entities.return_value = {'Q1': {'claims': {}}}
+        external = {'text': ('Glass Hall hosted the first demonstration of a solar railway. ' * 24),
+                    'url': 'https://unlisted-source.example/story', 'source_key': 'external',
+                    'source_name': 'unlisted-source.example'}
+        with patch.object(story, 'linked_public_urls', return_value=[external['url']]), \
+             patch.object(story, 'public_page', return_value=external) as fetch:
+            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum'}],
+                                           source, [], [], [], {'rejections': []})
+        fetch.assert_called_once_with(source, external['url'], 'Glass Hall')
+        self.assertEqual(targets[0]['official']['source_key'], 'external')
+        self.assertTrue(any(p['source'] == 'unlisted-source.example' for p in targets[0]['passages']))
 
     def test_discovery_stops_before_clue_generation_without_sourced_story(self):
         with tempfile.TemporaryDirectory() as directory:
