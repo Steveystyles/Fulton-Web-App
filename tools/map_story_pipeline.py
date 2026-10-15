@@ -593,6 +593,38 @@ def guidance_fallback(payload: dict, candidate: dict) -> dict:
     return fixed
 
 
+def checked_hard_story_pivot(payload: dict, candidate: dict) -> str | None:
+    """Find a stronger hard-clue passage in the same retrieved target source.
+
+    This is only a proposal for the normal clue validator and separate ready
+    audit. It cannot turn a model assertion into evidence or add a new source.
+    """
+    hard = payload.get('facts', {}).get('hard', {})
+    references = hard.get('source_ids')
+    if (not isinstance(references, list) or not 1 <= len(references) <= 3 or
+            any(not isinstance(ref, str) or not re.fullmatch(r'article-\d+', ref)
+                for ref in references)):
+        return None
+    text = hard.get('text')
+    if not isinstance(text, str) or len(text) > 240:
+        return None
+    terms = legacy.hook_terms(text, candidate['canonical_name'])
+    if len(terms) < 5:
+        return None
+    units = {unit['id']: unit for unit in legacy.evidence_units(candidate)}
+    if any(ref not in units or units[ref].get('source', 'article') != 'article'
+           for ref in references):
+        return None
+    ranked = sorted((units[ref]['text'] for ref in references),
+                    key=lambda quote: -len(terms & legacy.hook_terms(
+                        quote, candidate['canonical_name'])))
+    quote = ranked[0]
+    if (len(terms & legacy.hook_terms(quote, candidate['canonical_name'])) < 4 or
+            legacy.normalized(quote) not in candidate['evidence']['article']['text']):
+        return None
+    return quote
+
+
 def resolve_route(route: dict, target: dict, sources, recent: list[dict], existing: list[dict]) -> tuple[dict, str | None]:
     """Retry only a failed local map anchor using retrieved nearby-page names."""
     options = [route]
@@ -763,14 +795,32 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
             selected_candidate = next((c for c in candidates if c['id'] == selected.get('place_id')), None)
             if selected_candidate is None:
                 raise
-            repaired = guidance_fallback(selected, selected_candidate)
-            if repaired == selected:
-                raise
-            report['initial_validation_error'] = str(initial_error)[:500]
-            candidate, result = legacy.validate_selection(repaired, candidates)
-            report['guidance_fallback'] = True
-            report['model_output'] = repaired
-            selected = repaired
+            if str(initial_error) in (
+                    'Hard clue cites an unrelated passage instead of the proposed discovery hook.',
+                    'Hard clue abandoned the proposed discovery hook for an unrelated fact.'):
+                pivot = checked_hard_story_pivot(selected, selected_candidate)
+                if pivot:
+                    report['story_pivot'] = {
+                        'original_story_passage': story_passages[selected_candidate['id']],
+                        'new_story_passage': pivot,
+                        'reason': 'Hard clue chose a different retrieved target-source passage.'}
+                    selected_candidate['proposal_reason'] = selected['facts']['hard']['text']
+                    story_passages[selected_candidate['id']] = pivot
+                    try:
+                        candidate, result = legacy.validate_selection(selected, candidates)
+                    except ValueError as pivot_error:
+                        initial_error = pivot_error
+                    else:
+                        initial_error = None
+            if initial_error is not None:
+                repaired = guidance_fallback(selected, selected_candidate)
+                if repaired == selected:
+                    raise initial_error
+                report['initial_validation_error'] = str(initial_error)[:500]
+                candidate, result = legacy.validate_selection(repaired, candidates)
+                report['guidance_fallback'] = True
+                report['model_output'] = repaired
+                selected = repaired
         story_passage = story_passages[candidate['id']]
         hard = candidate['facts']['hard']
         story_terms = legacy.hook_terms(story_passage, candidate['canonical_name'])

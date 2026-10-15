@@ -337,6 +337,24 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertNotIn('400', str(fixed))
         self.assertIn('400', str(payload))
 
+    def test_hard_story_pivot_requires_a_cited_target_passage(self):
+        article = ('The Glass Hall in Eastport beside Market Park hosted the first public '
+                   'demonstration of solar rail transport, after its designers sketched '
+                   'a novel glass roof for the exhibition. ') * 5
+        candidate = {'canonical_name': 'Glass Hall', 'proposal_reason': 'A generic location fact.',
+                     'evidence': {'article': {'text': article}},
+                     'anchors': [{'name': 'Eastport'}, {'name': 'Market Park'}]}
+        hard = ('This hall hosted the first public demonstration of solar rail transport '
+                'beneath a novel glass roof.')
+        payload = {'facts': {'hard': {'text': hard, 'source_ids': ['article-0']}}}
+        quote = story.checked_hard_story_pivot(payload, candidate)
+        self.assertIn('solar rail transport', quote)
+        self.assertIsNone(story.checked_hard_story_pivot(
+            {'facts': {'hard': {'text': hard, 'source_ids': ['article-anchor-0']}}}, candidate))
+        self.assertIsNone(story.checked_hard_story_pivot(
+            {'facts': {'hard': {'text': 'An unrelated claim about a royal wedding.',
+                                'source_ids': ['article-0']}}}, candidate))
+
     def test_official_hook_can_support_hard_clue_without_wikipedia_copy(self):
         place = next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG) if p['id'] == 'atomium').copy()
         hard = place['facts']['hard']['text']
