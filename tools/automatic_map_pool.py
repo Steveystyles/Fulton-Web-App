@@ -53,6 +53,11 @@ UNSUITABLE_HOOK_PATTERNS = (
     (r'\b(?:died|killed|murder\w*|execut\w*)\b', 'victim deaths'),
     (r'\b(?:asphyxiat\w*|suffocat\w*|poison(?:ous)? gas|toxic gas|chemical weapons?)\b',
      'threatened serious harm'),
+    (r'\b(?:threat\w*|consider\w* deploying|plan\w* to deploy)\b.{0,120}'
+     r'\b(?:oxygen[- ]?(?:remov\w*|deplet\w*|displac\w*)|fire[- ]?fighting system)\b',
+     'threatened serious harm'),
+    (r'\b(?:incarcerat\w*|imprison\w*|detain\w*)\b.{0,80}'
+     r'\b(?:tribes?|civilians?|residents?|prisoners?)\b', 'victim confinement'),
     (r'\b(?:seized|captured|arrested)\b.{0,100}\b(?:truce|surrender|white flag)\b',
      'betrayal and detention'),
     (r'\b(?:apparently|allegedly|reportedly|supposedly|perhaps|possibly)\b|'
@@ -74,6 +79,10 @@ def initialize(conn: sqlite3.Connection) -> None:
                  'id TEXT PRIMARY KEY, state TEXT NOT NULL, candidate TEXT NOT NULL, result TEXT NOT NULL, '
                  'verification TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, '
                  'used_date TEXT, origin TEXT NOT NULL)')
+    conn.execute('CREATE TABLE IF NOT EXISTS automatic_map_rejected_hooks('
+                 'place_id TEXT NOT NULL, hook_digest TEXT NOT NULL, candidate TEXT NOT NULL, '
+                 'result TEXT NOT NULL, verification TEXT NOT NULL, origin TEXT NOT NULL, created_at TEXT NOT NULL, '
+                 'rejected_at TEXT NOT NULL, PRIMARY KEY(place_id,hook_digest))')
     conn.execute('CREATE TABLE IF NOT EXISTS automatic_map_runs('
                  'id TEXT PRIMARY KEY, budget_day TEXT NOT NULL, target_date TEXT NOT NULL, '
                  'started_at TEXT NOT NULL, status TEXT NOT NULL, model_requests INTEGER NOT NULL DEFAULT 0, '
@@ -217,6 +226,24 @@ def unsuitable_game_hook(result: dict) -> str | None:
 def rejected_hook_reason(verification: dict) -> str | None:
     # Preserve earlier tone rejections while allowing one shared hook rule.
     return verification.get('hook_rejection') or verification.get('tone_rejection')
+
+
+def hook_digest(result: dict) -> str:
+    hard = str(result.get('clue_ladder', {}).get('hard') or '')
+    return discovery.digest({'hard': ' '.join(hard.casefold().split())})
+
+
+def archive_rejected_hook(conn: sqlite3.Connection, place_id: str, candidate_text: str,
+                          result_text: str, verification_text: str, origin: str,
+                          created_at: str) -> None:
+    result = json.loads(result_text)
+    conn.execute(
+        'INSERT OR IGNORE INTO automatic_map_rejected_hooks('
+        'place_id,hook_digest,candidate,result,verification,origin,created_at,rejected_at) '
+        'VALUES(?,?,?,?,?,?,?,?)',
+        (place_id, hook_digest(result), candidate_text, result_text, verification_text,
+         origin, created_at, now().isoformat()),
+    )
 
 
 def quarantine_unsuitable_ready(conn: sqlite3.Connection) -> list[str]:
@@ -446,8 +473,12 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
         return []
     candidates = []
     for candidate_text, result_text, verification_text in conn.execute(
-        "SELECT candidate,result,verification FROM automatic_map_entries "
-        "WHERE state='rejected' AND origin='discovery' ORDER BY created_at DESC LIMIT 30"
+        "SELECT candidate,result,verification FROM ("
+        "SELECT candidate,result,verification,created_at AS rejected_at "
+        "FROM automatic_map_entries WHERE state='rejected' AND origin='discovery' "
+        "UNION ALL SELECT candidate,result,verification,rejected_at "
+        "FROM automatic_map_rejected_hooks WHERE origin='discovery') "
+        "ORDER BY rejected_at DESC LIMIT 30"
     ):
         try:
             candidate, result, verification = (json.loads(value) for value in
@@ -642,20 +673,23 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
 
 def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: dict, *, origin: str) -> None:
     previous = conn.execute(
-        "SELECT state,verification,result FROM automatic_map_entries WHERE id=?", (candidate['id'],)
+        "SELECT state,candidate,result,verification,created_at,origin "
+        "FROM automatic_map_entries WHERE id=?", (candidate['id'],)
     ).fetchone()
     if previous and previous[0] == 'rejected':
-        prior_verification = json.loads(previous[1])
+        prior_verification = json.loads(previous[3])
         if prior_verification.get('operator_rejection') or (
             prior_verification.get('editorial_rejection')
             and not rejected_hook_reason(prior_verification)
         ):
             raise ValueError('Editorially rejected map place requires an explicit operator review before reuse.')
         if rejected_hook_reason(prior_verification) and (
-            str(json.loads(previous[2]).get('clue_ladder', {}).get('hard') or '').strip().casefold()
-            == str(result.get('clue_ladder', {}).get('hard') or '').strip().casefold()
+            hook_digest(json.loads(previous[2])) == hook_digest(result)
         ):
             raise ValueError('The same unsuitable Map hook cannot be reused.')
+    if conn.execute('SELECT 1 FROM automatic_map_rejected_hooks WHERE place_id=? AND hook_digest=?',
+                    (candidate['id'], hook_digest(result))).fetchone():
+        raise ValueError('A previously rejected Map hook cannot be reused.')
     # Revalidate the actual saved clue text; publication never asks a model to rewrite it.
     payload = {'place_id': candidate['id'], 'selection_reason': result['selection_reason'],
                'clues': {level: {'text': result['clue_ladder'][level], 'fact_id': level} for level in controlled.LEVELS}}
@@ -682,6 +716,9 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
             'reason': 'Passed the source-evidence verifier at generation.',
         }}
     verification = {**verification, 'payload_sha256': discovery.digest({'candidate': stored, 'result': validated})}
+    if previous and previous[0] == 'rejected':
+        archive_rejected_hook(conn, candidate['id'], previous[1], previous[2], previous[3],
+                              previous[5], previous[4])
     conn.execute('INSERT INTO automatic_map_entries(id,state,candidate,result,verification,created_at,expires_at,origin) '
                  "VALUES(?,'ready',?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state='ready',candidate=excluded.candidate,"
                  'result=excluded.result,verification=excluded.verification,created_at=excluded.created_at,'
