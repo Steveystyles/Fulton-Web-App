@@ -265,10 +265,10 @@ class AutomaticPoolTests(unittest.TestCase):
 
     def test_expired_and_tampered_rounds_cannot_publish(self):
         self.queue()
-        self.clock += timedelta(days=15)
+        self.clock += timedelta(days=pool.MAX_AGE_DAYS + 1)
         with closing(self.connect()) as conn, self.assertRaisesRegex(ValueError, 'No eligible'):
-            pool.publish(conn, puzzle_date='2026-09-23')
-        self.clock -= timedelta(days=15)
+            pool.publish(conn, puzzle_date='2026-10-14')
+        self.clock -= timedelta(days=pool.MAX_AGE_DAYS + 1)
         with closing(self.connect()) as conn:
             changed = deepcopy(self.result)
             changed['clue_ladder']['hard'] = 'A changed clue that has not been through the verification step.'
@@ -728,21 +728,25 @@ class AutomaticPoolTests(unittest.TestCase):
         discover.assert_called_once()
         legacy_recovery.assert_not_called()
 
-    def test_stocking_waits_for_story_round_even_when_legacy_queue_is_full(self):
+    def test_stocking_waits_for_full_story_buffer_even_when_legacy_queue_is_full(self):
         old_row = ('old', '{}', '{}', json.dumps({'source_pipeline': 'legacy'}), 'discovery')
         story_row = ('new', '{}', '{}', json.dumps({'source_pipeline': 'story_first'}), 'discovery')
+        self.assertFalse(pool.story_first_ready([story_row] + [old_row] * pool.TARGET_READY))
+        self.assertTrue(pool.story_first_ready([story_row] * pool.TARGET_READY))
         with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
              patch.object(pool, 'maintain', side_effect=[
                  {'status': 'added', 'ready': pool.TARGET_READY},
-                 {'status': 'audited', 'ready': pool.TARGET_READY + 1}]) as maintain, \
+                 {'status': 'audited', 'ready': pool.TARGET_READY + 1},
+                 {'status': 'audited', 'ready': pool.TARGET_READY * 2}]) as maintain, \
              patch.object(pool, 'eligible', side_effect=[
                  [old_row] * pool.TARGET_READY,
-                 [story_row] + [old_row] * pool.TARGET_READY]):
+                 [story_row] + [old_row] * pool.TARGET_READY,
+                 [story_row] * pool.TARGET_READY + [old_row] * pool.TARGET_READY]):
             result = pool.maintain_until_stocked(
-                self.database, self.root/'reports', max_attempts=2)
+                self.database, self.root/'reports', max_attempts=3)
         self.assertEqual(result['status'], 'stocked')
-        self.assertEqual(result['attempted'], 2)
-        self.assertEqual(maintain.call_count, 2)
+        self.assertEqual(result['attempted'], 3)
+        self.assertEqual(maintain.call_count, 3)
 
     def test_story_round_is_preferred_to_older_legacy_fallback(self):
         places = controlled.load_catalog(controlled.DEFAULT_CATALOG)
@@ -1174,7 +1178,7 @@ class AutomaticPoolTests(unittest.TestCase):
         with patch.object(pool, 'TARGET_READY', 1):
             self.assertEqual(pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=factory)['status'], 'stocked')
         factory.assert_not_called()
-        self.clock += timedelta(days=15)
+        self.clock += timedelta(days=pool.MAX_AGE_DAYS + 1)
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(pool.maintain(self.database, self.root, seed_catalog=None)['status'], 'deferred')
         with closing(self.connect()) as conn:

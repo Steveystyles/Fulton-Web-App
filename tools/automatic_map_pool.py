@@ -30,7 +30,9 @@ TARGET_READY = 7
 REFILL_ATTEMPTS_PER_CYCLE = 4
 REFILL_CONTINUE_SECONDS = 15
 REFILL_RETRY_MINUTES = 30
-MAX_AGE_DAYS = 14
+# Seven twice-weekly rounds span roughly a month; keep a checked reserve long
+# enough to be played before considering it stale.
+MAX_AGE_DAYS = 35
 CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interesting_hook',
           'usable_map_route', 'qualifiers_preserved', 'place_type_correct', 'distinctive_hard_hook',
           'unique_easy_target')
@@ -811,7 +813,8 @@ def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:
 
 
 def story_first_ready(rows: list[tuple]) -> bool:
-    return any(json.loads(row[3]).get('source_pipeline') == 'story_first' for row in rows)
+    return sum(json.loads(row[3]).get('source_pipeline') == 'story_first'
+               for row in rows) >= TARGET_READY
 
 
 def recoverable_report(conn: sqlite3.Connection, output_dir: Path, puzzle_date: str) -> dict | None:
