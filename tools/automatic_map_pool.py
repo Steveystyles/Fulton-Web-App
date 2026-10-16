@@ -1067,7 +1067,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             return outcome
         run_dir = output_dir / budget.id
         with closing(sqlite3.connect(database)) as conn:
-            report = recoverable_report(conn, output_dir, target) or {}
+            # A failed legacy report must not fill the first story-first slot
+            # after switching engines; it did not pass the new story gate.
+            report = (recoverable_report(conn, output_dir, target) or {}
+                      if os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold() != 'story_first'
+                      else {})
         if report:
             outcome['retried_report_path'] = report['report_path']
         else:

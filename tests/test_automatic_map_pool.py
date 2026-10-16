@@ -719,12 +719,14 @@ class AutomaticPoolTests(unittest.TestCase):
         factory = Mock(return_value=Mock(requests=[]))
         with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
              patch.object(pool, 'eligible', return_value=[old_row] * pool.TARGET_READY), \
+             patch.object(pool, 'recoverable_report') as legacy_recovery, \
              patch.object(pool.map_story_pipeline, 'discover', return_value=report) as discover, \
              patch.object(pool, 'verify', return_value=self.verdict):
             result = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                    provider_factory=factory)
         self.assertEqual(result['status'], 'added')
         discover.assert_called_once()
+        legacy_recovery.assert_not_called()
 
     def test_stocking_waits_for_story_round_even_when_legacy_queue_is_full(self):
         old_row = ('old', '{}', '{}', json.dumps({'source_pipeline': 'legacy'}), 'discovery')
