@@ -147,6 +147,20 @@ test("quiz markup: four long answers are fully rendered in an equal two-column g
   });
 });
 
+test("Quiz question shows progress and keeps pressed answers visible", async () => {
+  const quiz = await sourceText("src/pages/Quiz.tsx");
+  const css = await sourceText("src/styles/index.css");
+  assert.match(quiz, /quiz-question-stage__progress/);
+  assert.match(quiz, /aria-label=\{`Question \$\{activeCard\.selectedOrder\} of/);
+  assert.match(quiz, /aria-pressed=\{choice === answerOption\.id\}/);
+  assert.match(css, /\.quiz-answer\[aria-pressed="true"\]\s*\{[^}]*translateY\(4px\)/s,
+    "selection has a physical pressed state");
+  assert.match(css, /\.quiz-question-stage\s*\{[^}]*min-height:\s*min\(610px, max\(0px, calc\(100svh - var\(--app-header-height, 4rem\) - var\(--app-nav-height, 0px\) - 5\.5rem\)\)\)/s,
+    "the question accounts for the measured header and navigation height");
+  assert.match(css, /@media \(max-width: 759px\) and \(max-height: 720px\)\s*\{[^}]*\.quiz-question-stage\s*\{\s*min-height:\s*0/s,
+    "short phones are not forced to scroll by the stage minimum height");
+});
+
 function visit(node, predicate, result = []) {
   if (predicate(node)) result.push(node);
   ts.forEachChild(node, child => { visit(child, predicate, result); });
