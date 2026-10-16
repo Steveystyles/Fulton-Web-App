@@ -204,6 +204,41 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(len(routes), 1)
         self.assertEqual(routes[0]['city_title'], 'Eastport')
 
+    def test_ranked_route_recovers_unique_damaged_source_spellings(self):
+        hook = ('Each year the community replasters the mosque during a festival, '
+                'repairing rain damage with mud prepared in pits.')
+        target = {'title': 'Great Mosque of Djenné', 'place_type': 'religious_site',
+                  'page': {'text': 'Great Mosque of Djenné stands in Djenné near '
+                                   'Old Towns of Djenné. ' + hook},
+                  'passages': [{'id': 'p27', 'text': hook, 'role': 'story',
+                                'source': 'Wikipedia'}]}
+        ranked = {'ranked': [{'title': 'Great Mosque of Djenn\x92',
+                              'passage_id': 'p27', 'hook': hook,
+                              'city_title': 'Djenn\x92',
+                              'local_title': 'Old Towns of Djenn\x92'}]}
+        routes = story.ranked_routes(ranked, [target])
+        self.assertEqual(len(routes), 1)
+        self.assertEqual((routes[0]['title'], routes[0]['city_title'],
+                          routes[0]['local_title']),
+                         ('Great Mosque of Djenné', 'Djenné', 'Old Towns of Djenné'))
+
+    def test_ranked_route_does_not_guess_ambiguous_or_unsourced_names(self):
+        hook = 'A distinctive annual festival replasters the building after rainy weather.'
+        target = {'title': 'Great Mosque of Djenné', 'place_type': 'religious_site',
+                  'page': {'text': 'Great Mosque of Djenné stands in Djenné near '
+                                   'Old Towns of Djenné. ' + hook},
+                  'passages': [{'id': 'p27', 'text': hook, 'role': 'story',
+                                'source': 'Wikipedia'}]}
+        ranked = {'ranked': [{'title': 'Great Mosque of Djenn\x92',
+                              'passage_id': 'p27', 'hook': hook,
+                              'city_title': 'Djenn\x92',
+                              'local_title': 'Old Towns of Djenn\x92'}]}
+        similar = {**target, 'title': 'Great Mosque of Djenni'}
+        self.assertEqual(story.ranked_routes(ranked, [target, similar]), [])
+        missing_area = deepcopy(ranked)
+        missing_area['ranked'][0]['local_title'] = 'Unlisted Park'
+        self.assertEqual(story.ranked_routes(missing_area, [target]), [])
+
     def test_full_source_first_flow_saves_review_without_publication(self):
         place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
                               if p['id'] == 'atomium'))

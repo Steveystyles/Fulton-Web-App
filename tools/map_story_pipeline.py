@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 import http.client
 import ipaddress
@@ -552,7 +553,10 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
     for item in ranked:
         if not isinstance(item, dict):
             continue
-        target = by_title.get(item.get('title'))
+        supplied_title = item.get('title')
+        canonical_title = (supplied_title if isinstance(supplied_title, str) and supplied_title in by_title else
+                           near_unique_name(supplied_title, list(by_title)))
+        target = by_title.get(canonical_title)
         if target is None or target['title'] in seen:
             continue
         seen.add(target['title'])
@@ -570,16 +574,62 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
             if (official.get('source_name') != passage['source'] or
                     legacy.normalized(passage['text']) not in official.get('text', '')):
                 continue
-        city = legacy.title(item.get('city_title'))
-        local = legacy.title(item.get('local_title'))
+        try:
+            city = legacy.title(item.get('city_title'))
+            local = legacy.title(item.get('local_title'))
+        except ValueError:
+            continue
         if target['page'].get('source_kind') not in ('osm_public_page', 'wikidata_public_page'):
             article = target['page']['text']
-            if not re.search(re.escape(city), article, re.I) or not re.search(re.escape(local), article, re.I):
+            city = sourced_area_spelling(city, article)
+            local = sourced_area_spelling(local, article)
+            if city is None or local is None:
                 continue
         result.append({'title': target['title'], 'place_type': target['place_type'],
                        'city_title': city, 'local_title': local, 'reason': hook,
                 'story_passage': passage['text'], 'story_source': passage.get('source', 'Wikipedia')})
     return result
+
+
+def near_unique_name(value: object, names: list[str]) -> str | None:
+    """Recover one damaged spelling only when no second known name is close."""
+    if not isinstance(value, str):
+        return None
+    if value in names:
+        return value
+    key = legacy.exclusion_key(value)
+    if len(key) < 5:
+        return None
+    distinct: dict[str, str] = {}
+    for name in names:
+        candidate_key = legacy.exclusion_key(name)
+        if abs(len(candidate_key) - len(key)) <= 2:
+            distinct.setdefault(candidate_key, name)
+    scored = sorted(((SequenceMatcher(None, key, candidate_key).ratio(), name)
+                     for candidate_key, name in distinct.items()), reverse=True)
+    if not scored:
+        return None
+    threshold = 0.90 if len(key) <= 6 else 0.94
+    if scored[0][0] < threshold or (len(scored) > 1 and scored[1][0] >= scored[0][0] - 0.05):
+        return None
+    return scored[0][1]
+
+
+def sourced_area_spelling(value: str, article: str) -> str | None:
+    """Recover a near-identical area name from the target article, never invent one."""
+    if re.search(re.escape(value), article, re.I):
+        return value
+    word_count = len(re.findall(r'\w+', value))
+    if not 1 <= word_count <= 6:
+        return None
+    words = list(re.finditer(r'\w+', article[:100_000]))
+    names = []
+    for index in range(len(words) - word_count + 1):
+        phrase = article[words[index].start():words[index + word_count - 1].end()]
+        if (len(phrase) <= 160 and phrase[0].isupper() and
+                re.fullmatch(r"[\w\s’'\-]+", phrase)):
+            names.append(phrase)
+    return near_unique_name(value, names)
 
 
 def guidance_fallback(payload: dict, candidate: dict) -> dict:
