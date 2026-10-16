@@ -640,6 +640,22 @@ class AutomaticPoolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'No eligible'):
                 pool.publish(conn, puzzle_date='2026-09-09')
 
+    def test_unsafe_old_editorial_replacement_is_negative_feedback_only(self):
+        unsafe = pool.editorial_example(
+            'A historic church', 'A misleading wartime premise.',
+            'Residents were held hostage inside this church.',
+            'The old clue overstated the venue’s historical role.')
+        self.assertEqual(unsafe['rejected_hook'], 'A misleading wartime premise.')
+        self.assertNotIn('replacement_hook', unsafe)
+        self.assertTrue(unsafe['negative_only'])
+        self.assertIn('do not imitate it', unsafe['reason'])
+        safe = pool.editorial_example(
+            'A public hall', 'A generic building detail.',
+            'A major public performance drew thousands here.', 'Make the story distinctive.')
+        self.assertEqual(safe['replacement_hook'],
+                         'A major public performance drew thousands here.')
+        self.assertNotIn('negative_only', safe)
+
     def test_published_editorial_replacement_teaches_automatic_queue(self):
         self.queue('discovery')
         with closing(self.connect()) as conn:

@@ -427,6 +427,19 @@ def audit_ready_interest_batch(rows: list[tuple], provider: discovery.DiscoveryP
     return result
 
 
+def editorial_example(place: str, old: str, new: str, reason: str) -> dict:
+    """Never teach a formerly accepted but now unsuitable hook as a good example."""
+    example = {'place': place[:100], 'rejected_hook': old[:240],
+               'replacement_hook': new[:240], 'reason': reason[:240]}
+    tone_issue = unsuitable_game_hook({'clue_ladder': {'hard': new}})
+    if tone_issue:
+        example.pop('replacement_hook')
+        example['negative_only'] = True
+        example['reason'] = (reason[:160] + ' The historical replacement is also unsuitable '
+                             'for this light Map game (' + tone_issue + '); do not imitate it.')[:400]
+    return example
+
+
 def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[dict]:
     """Use source-reviewed queue and published edits as live contrastive feedback."""
     feedback = []
@@ -444,12 +457,9 @@ def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[d
     ):
         old, new = (str(row[index] or "").strip() for index in (1, 2))
         if old and new and old != new:
-            feedback.append({
-                "place": str(row[0] or "")[:100],
-                "rejected_hook": old[:240],
-                "replacement_hook": new[:240],
-                "reason": str(row[3] or "An editor corrected this unpublished Map hook.")[:240],
-            })
+            feedback.append(editorial_example(
+                str(row[0] or ""), old, new,
+                str(row[3] or "An editor corrected this unpublished Map hook.")))
     if len(feedback) >= limit:
         return feedback
     rows = conn.execute(
@@ -471,13 +481,10 @@ def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[d
         old = str(row[2] or "").strip()
         new = str(row[3] or "").strip()
         if old and new and old != new:
-            feedback.append({
-                "place": str(row[1] or ""),
-                "rejected_hook": old[:240],
-                "replacement_hook": new[:240],
-                "reason": str(row[4] or
-                              "An editor replaced this published hook because it did not make a good Map question.")[:240],
-            })
+            feedback.append(editorial_example(
+                str(row[1] or ""), old, new,
+                str(row[4] or
+                    "An editor replaced this published hook because it did not make a good Map question.")))
         if len(feedback) >= limit:
             break
     return feedback
