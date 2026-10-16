@@ -1,6 +1,6 @@
 # Place discovery AI
 
-`tools/discover_map_places.py` proposes new places beyond the starter catalogue, retrieves evidence, selects a candidate and writes three clues. It uses the dedicated `MAP_AI_API_KEY` and the existing Gemini adapter. It never falls back to another credential or provider.
+`tools/discover_map_places.py` proposes new places beyond the starter catalogue, retrieves evidence, selects a candidate and writes three clues. It uses the dedicated `MAP_AI_API_KEY` and Gemini first. If the separately configured `AI_FALLBACK2_PROVIDER=openrouter`, both fallback model variables equal `openrouter/free`, and `AI_FALLBACK2_API_KEY` is present, it retries a Gemini 429/5xx/timeout once through that free-model route. Other errors do not switch providers; paid model names are never accepted for this Map fallback. Every provider attempt consumes the persistent request budget. The same source and editorial checks apply regardless of which model answered.
 
 This is a separate discovery and review command. The deployed daily scheduler continues using its reviewed catalogue. Discovery does not publish games, alter scores, update training feedback or enable the unrelated quiz candidate pipeline.
 

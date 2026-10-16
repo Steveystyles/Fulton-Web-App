@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import html
@@ -24,11 +25,14 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import daily_map_game
+import daily_quiz
 from tools import controlled_map_round as controlled
 from tools import preview_ai_map_round as preview
 from tools import rewrite_map_clues_with_ai as rewriter
 
-MAX_MODEL_REQUESTS = 3
+# Three generation stages, with at most one free-provider fallback per stage,
+# plus a separately budgeted verification call.
+MAX_MODEL_REQUESTS = 8
 # Twelve finite proposals can require up to ten article/identity checks each.
 # This guard exceeds that bounded work; it must not cut off later proposals.
 MAX_SOURCE_REQUESTS = 128
@@ -144,15 +148,72 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
                                          critic_model=critic_model, max_requests=MAX_MODEL_REQUESTS,
                                          timeout_sec=180)
         provider.budget = budget
+        # This is intentionally an explicit, free-only route.  Do not inherit
+        # arbitrary quiz fallbacks or an operator-supplied paid model.
+        if (os.environ.get('AI_FALLBACK2_PROVIDER', '').strip().lower() == 'openrouter'
+                and os.environ.get('AI_FALLBACK2_GENERATOR_MODEL', '').strip().lower() == 'openrouter/free'
+                and os.environ.get('AI_FALLBACK2_CRITIC_MODEL', '').strip().lower() == 'openrouter/free'):
+            fallback_key = os.environ.get('AI_FALLBACK2_API_KEY', '').strip()
+            if fallback_key:
+                fallback_config = replace(
+                    provider.clients[0].config, provider='openrouter',
+                    generator_model='openrouter/free', critic_model='openrouter/free',
+                    gemini_api_key='', compatible_api_key=fallback_key,
+                    compatible_base_url=daily_quiz.default_compatible_base_url('openrouter', ''),
+                    transient_retries=0, request_delay_sec=12.0,
+                )
+                provider.clients.append(rewriter.ProviderClient(
+                    daily_quiz.OpenAICompatibleProvider(fallback_config), fallback_config))
         return provider
 
     def request_json(self, client, *, model, prompt, schema, tools=None):
         if tools or len(prompt) > 36000:
             raise ValueError('Discovery permits no model tools and at most 36,000 prompt characters.')
         self.budget.spend('model')
-        result = client.provider._request(model, prompt, schema, max_output_tokens=4096, temperature=0.4)
-        self.requests[-1]['usage'] = dict(getattr(client.provider, 'last_usage', {}))
+        if isinstance(client.provider, daily_quiz.GeminiProvider):
+            result = client.provider._request(model, prompt, schema, max_output_tokens=4096, temperature=0.4)
+            self.requests[-1]['usage'] = dict(getattr(client.provider, 'last_usage', {}))
+        else:
+            result = client.provider._request(model, prompt, temperature=0.4)
         return result
+
+    def call_with_fallback(self, **kwargs):
+        if self.stop_reason:
+            raise RuntimeError(self.stop_reason)
+        clients = self.clients[:2]
+        for index, client in enumerate(clients):
+            if len(self.requests) >= self.max_requests:
+                self.stop_reason = 'Map discovery request budget exhausted.'
+                raise RuntimeError(self.stop_reason)
+            model = getattr(client.config, kwargs['model_attr'])
+            record = {'number': len(self.requests) + 1, 'model': model,
+                      'provider': client.provider.name, 'stage': kwargs['model_attr'],
+                      'grounded': bool(kwargs.get('tools'))}
+            self.requests.append(record)
+            try:
+                result = self.request_json(client, model=model, prompt=kwargs['prompt'],
+                                           schema=kwargs['schema'], tools=kwargs.get('tools'))
+            except Exception as error:
+                detail = str(error)
+                for secret in (client.config.gemini_api_key, client.config.compatible_api_key):
+                    if secret:
+                        detail = detail.replace(secret, '[REDACTED]')
+                record.update(status='failed', error_type=type(error).__name__,
+                              error_detail=detail[:500])
+                self.provider_error_detail = record['error_detail']
+                self.retry_after_seconds = getattr(client.provider, 'last_retry_after_seconds', None)
+                transient = any(marker in detail.casefold() for marker in
+                                ('http 429', 'http 500', 'http 502', 'http 503', 'http 504',
+                                 'timed out', 'temporarily unavailable'))
+                if index == 0 and len(clients) > 1 and transient and not kwargs.get('tools'):
+                    continue
+                self.stop_reason = 'Map discovery provider failed; stopped to preserve quota.'
+                raise RuntimeError(self.stop_reason) from None
+            record['status'] = 'completed'
+            self.provider_error_detail = ''
+            self.retry_after_seconds = None
+            return result
+        raise RuntimeError('Map discovery provider failed.')
 
 
 class WikimediaSource:
