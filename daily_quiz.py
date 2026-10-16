@@ -6041,6 +6041,31 @@ def _quiz_pool_waits_for_provider_reset(
     return available is None
 
 
+def _verified_archive_question_for_slot(
+    conn: sqlite3.Connection,
+    *,
+    cutoff: str,
+    subject: str,
+    difficulty: str,
+    blocked_questions: set[str],
+    blocked_answers: set[str],
+) -> sqlite3.Row | None:
+    candidates = conn.execute(
+        """SELECT q.* FROM daily_quiz_questions q
+           JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+           WHERE s.status = 'published' AND s.quiz_date <= ?
+             AND q.subject = ? AND q.difficulty = ?
+           ORDER BY s.quiz_date ASC, q.id ASC""",
+        (cutoff, subject, difficulty),
+    ).fetchall()
+    return next((
+        row for row in candidates
+        if verification_payload_passed(row["verification_json"])
+        and normalize_text(row["question"]) not in blocked_questions
+        and normalize_answer(row["correct_answer"]) not in blocked_answers
+    ), None)
+
+
 def _complete_quiz_pool_slots_from_archive(
     conn: sqlite3.Connection,
     job: sqlite3.Row,
@@ -6106,20 +6131,10 @@ def _complete_quiz_pool_slots_from_archive(
     for subject, difficulty in REQUIRED_SLOTS:
         if (subject, difficulty) not in missing:
             continue
-        candidates = conn.execute(
-            """SELECT q.* FROM daily_quiz_questions q
-               JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
-               WHERE s.status = 'published' AND s.quiz_date <= ?
-                 AND q.subject = ? AND q.difficulty = ?
-               ORDER BY s.quiz_date ASC, q.id ASC""",
-            (cutoff, subject, difficulty),
-        ).fetchall()
-        source = next((
-            row for row in candidates
-            if verification_payload_passed(row["verification_json"])
-            and normalize_text(row["question"]) not in blocked_questions
-            and normalize_answer(row["correct_answer"]) not in blocked_answers
-        ), None)
+        source = _verified_archive_question_for_slot(
+            conn, cutoff=cutoff, subject=subject, difficulty=difficulty,
+            blocked_questions=blocked_questions, blocked_answers=blocked_answers,
+        )
         if source is None:
             return False
         selected.append(source)
@@ -6350,6 +6365,8 @@ def publish_quiz_from_pool(
 
     selected_batch: sqlite3.Row | None = None
     selected_questions: list[sqlite3.Row] = []
+    repaired_selection: tuple[sqlite3.Row, list[sqlite3.Row]] | None = None
+    used_archive = False
     for batch in conn.execute(
         """
         SELECT * FROM daily_quiz_pool_batches
@@ -6381,15 +6398,50 @@ def publish_quiz_from_pool(
                 ("Stored pool batch failed publication revalidation.", batch["id"]),
             )
             continue
-        if any(
-            normalize_text(row["question"]) in blocked_questions
-            or normalize_answer(row["correct_answer"]) in blocked_answers
-            for row in questions
-        ):
+        seen_questions = set(blocked_questions)
+        seen_answers = set(blocked_answers)
+        reusable: list[sqlite3.Row] = []
+        colliding: list[sqlite3.Row] = []
+        for row in questions:
+            normalized_question = normalize_text(row["question"])
+            normalized_answer = normalize_answer(row["correct_answer"])
+            if normalized_question in seen_questions or normalized_answer in seen_answers:
+                colliding.append(row)
+                continue
+            reusable.append(row)
+            seen_questions.add(normalized_question)
+            seen_answers.add(normalized_answer)
+        if not colliding:
+            selected_batch = batch
+            selected_questions = list(questions)
+            break
+        if repaired_selection is not None:
             continue
-        selected_batch = batch
-        selected_questions = list(questions)
-        break
+        replacements: list[sqlite3.Row] = []
+        for row in colliding:
+            source = _verified_archive_question_for_slot(
+                conn, cutoff=cutoff, subject=row["subject"],
+                difficulty=row["difficulty"], blocked_questions=seen_questions,
+                blocked_answers=seen_answers,
+            )
+            if source is None:
+                break
+            replacements.append(source)
+            seen_questions.add(normalize_text(source["question"]))
+            seen_answers.add(normalize_answer(source["correct_answer"]))
+        if len(replacements) == len(colliding):
+            replacement_by_slot = {
+                (row["subject"], row["difficulty"]): source
+                for row, source in zip(colliding, replacements)
+            }
+            repaired_selection = (
+                batch,
+                [replacement_by_slot.get((row["subject"], row["difficulty"]), row)
+                 for row in questions],
+            )
+    if selected_batch is None and repaired_selection is not None:
+        selected_batch, selected_questions = repaired_selection
+        used_archive = True
     if selected_batch is None:
         commit_if_needed(conn)
         raise LookupError("No embargo-safe verified quiz pool batch is ready.")
@@ -6462,10 +6514,10 @@ def publish_quiz_from_pool(
             UPDATE daily_quiz_sets
             SET status = 'published', generated_at = ?, published_at = ?,
                 failure_reason = NULL, pipeline_version = 'pool-v1',
-                generation_mode = 'pool', locked_at = NULL
+                generation_mode = ?, locked_at = NULL
             WHERE id = ?
             """,
-            (stored_at, stored_at, quiz_set_id),
+            (stored_at, stored_at, "archive-assisted" if used_archive else "pool", quiz_set_id),
         )
     return quiz_status(conn, normalized_date)
 

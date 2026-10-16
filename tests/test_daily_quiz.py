@@ -3177,6 +3177,70 @@ class DailyQuizTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(tuple(batch), ("used", "2026-08-21"))
 
+    def test_ready_pool_replaces_only_embargo_collisions_from_verified_archive(self) -> None:
+        archive = daily_quiz.get_or_create_quiz_set(self.conn, "2025-01-01")
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            question = valid_question(subject, difficulty)
+            question["question"] = f"Archive {subject} {difficulty}: which answer is correct?"
+            question["correct_answer"] = f"Archive answer {subject} {difficulty}"
+            question["choices"] = [question["correct_answer"], "B", "C", "D"]
+            evidence = supporting_evidence(question)
+            daily_quiz.save_question(
+                self.conn, quiz_set_id=int(archive["id"]), question=question,
+                evidence=evidence, verification=passing_verification(evidence),
+            )
+        daily_quiz.publish_quiz(self.conn, "2025-01-01")
+
+        daily_quiz.replenish_quiz_pool(
+            self.conn, config=config(), target_ready=1, max_batch_attempts=1,
+            provider=PassingProvider("pool-repair-provider"), log=lambda _: None,
+        )
+        original = self.conn.execute(
+            "SELECT subject, difficulty, question, correct_answer FROM daily_quiz_pool_questions"
+        ).fetchall()
+        collided_slots = {("football", "easy"), ("general_knowledge", "hard")}
+        recent = daily_quiz.get_or_create_quiz_set(self.conn, "2026-10-20")
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            question = valid_question(subject, difficulty)
+            slot = (subject, difficulty)
+            if slot in collided_slots:
+                pool_row = next(row for row in original if (row["subject"], row["difficulty"]) == slot)
+                question["question"] = pool_row["question"]
+                question["correct_answer"] = pool_row["correct_answer"]
+            else:
+                question["question"] = f"Recent {subject} {difficulty}: which answer is correct?"
+                question["correct_answer"] = f"Recent answer {subject} {difficulty}"
+            question["choices"] = [question["correct_answer"], "B", "C", "D"]
+            evidence = supporting_evidence(question)
+            daily_quiz.save_question(
+                self.conn, quiz_set_id=int(recent["id"]), question=question,
+                evidence=evidence, verification=passing_verification(evidence),
+            )
+        daily_quiz.publish_quiz(self.conn, "2026-10-20")
+
+        result = daily_quiz.publish_quiz_from_pool(self.conn, "2026-10-23")
+
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["verified_questions"], 6)
+        published = self.conn.execute(
+            """SELECT q.subject, q.difficulty, q.question FROM daily_quiz_questions q
+               JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+               WHERE s.quiz_date = '2026-10-23'"""
+        ).fetchall()
+        self.assertEqual(len(published), 6)
+        for row in published:
+            slot = (row["subject"], row["difficulty"])
+            if slot in collided_slots:
+                self.assertTrue(row["question"].startswith("Archive "))
+            else:
+                self.assertEqual(row["question"], next(
+                    source["question"] for source in original
+                    if (source["subject"], source["difficulty"]) == slot
+                ))
+        self.assertEqual(self.conn.execute(
+            "SELECT generation_mode FROM daily_quiz_sets WHERE quiz_date = '2026-10-23'"
+        ).fetchone()[0], "archive-assisted")
+
     def test_exhausted_single_pool_slot_uses_verified_archive_without_replacing_new_work(self) -> None:
         source = daily_quiz.get_or_create_quiz_set(self.conn, "2025-01-01")
         job = daily_quiz._create_quiz_pool_job(self.conn)
