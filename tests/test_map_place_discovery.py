@@ -344,6 +344,8 @@ class DiscoveryTests(unittest.TestCase):
         config = provider.clients[0].config
         self.assertEqual(config.generator_model, 'gemini-3.5-flash-lite')
         self.assertEqual(config.critic_model, 'gemini-3.8-flash')
+        self.assertEqual(config.timeout_sec, 180)
+        self.assertEqual(config.transient_retries, 0)
 
     def test_evidence_is_exact_and_unsupported_numbers_are_rejected(self):
         candidate, result = discovery.validate_selection(self.payload, [self.place])

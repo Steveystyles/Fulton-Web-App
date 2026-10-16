@@ -425,6 +425,7 @@ class DeploymentScriptStaticTests(unittest.TestCase):
     def test_production_image_includes_map_clue_editor(self) -> None:
         dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
         self.assertRegex(dockerfile, r"COPY[^\n]*server\.py[^\n]*map_clue_editor\.py")
+        self.assertRegex(dockerfile, r"COPY[^\n]*map_geocoding\.py[^\n]*map_story_pipeline\.py")
 
     def test_requires_full_sha_and_reviewed_reachability_override(self) -> None:
         self.assertIn("^[0-9a-f]{40}$", self.script)

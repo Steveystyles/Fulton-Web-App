@@ -141,7 +141,8 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
         generator_model = os.environ.get('MAP_AI_MODEL', '').strip() or 'gemini-3.5-flash-lite'
         critic_model = os.environ.get('MAP_AI_CRITIC_MODEL', '').strip() or generator_model
         provider = cls.from_explicit_key(key, generator_model=generator_model,
-                                         critic_model=critic_model, max_requests=MAX_MODEL_REQUESTS)
+                                         critic_model=critic_model, max_requests=MAX_MODEL_REQUESTS,
+                                         timeout_sec=180)
         provider.budget = budget
         return provider
 
@@ -415,7 +416,7 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     coord = coordinates[0]
     lat, lng = daily_map_game.valid_coordinate(coord['latitude'], coord['longitude'])
     if daily_map_game.haversine_m(lat, lng, target['lat'], target['lng']) > 250:
-        raise ValueError('Wikipedia and Wikidata coordinates disagree by more than 250 metres.')
+        raise ValueError('Target and Wikidata coordinates disagree by more than 250 metres.')
     aliases = [target['title'], entity.get('labels', {}).get('en', {}).get('value', target['title'])]
     aliases += [a['value'] for a in entity.get('aliases', {}).get('en', [])][:15]
     names = {daily_map_game.normalized_place_name(a) for a in aliases}
@@ -442,7 +443,8 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
         raise ValueError('A search area name exposes the answer.')
     # These checks need only the already-retrieved articles and coordinates.
     # Reject weak map routes before spending two more requests on country metadata.
-    evidence_excerpt({'evidence': {'article': target}, 'anchors': anchors})
+    if target.get('source_kind') not in ('osm_public_page', 'wikidata_public_page'):
+        evidence_excerpt({'evidence': {'article': target}, 'anchors': anchors})
     countries = claim_values(entity, 'P17')
     if len(countries) != 1:
         raise ValueError('Country identity is ambiguous.')
@@ -494,10 +496,12 @@ def validate_proposal_hook_alignment(payload: dict, selected: dict) -> None:
     """Keep a supported proposal story instead of citing an unrelated easy fact."""
     hook_passages = proposal_hook_passage_indexes(selected)
     hard = payload['facts']['hard']
-    if not hook_passages or 'source_ids' not in hard:
+    official = selected.get('evidence', {}).get('official', {})
+    official_ids = {'official-hook'} if isinstance(official, dict) and official.get('hook_passage') else set()
+    if (not hook_passages and not official_ids) or 'source_ids' not in hard:
         return
     allowed_ids = {f'article-{index}' for index in hook_passages}
-    if not allowed_ids.intersection(hard['source_ids']):
+    if not (allowed_ids | official_ids).intersection(hard['source_ids']):
         raise ValueError('Hard clue cites an unrelated passage instead of the proposed discovery hook.')
     if len(hook_terms(hard['text'], selected['canonical_name']) &
            hook_terms(selected.get('proposal_reason'), selected['canonical_name'])) < 2:
@@ -515,12 +519,12 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
         item = payload['facts'][level]
         if 'source_ids' in item:
             references = item['source_ids']
-            units = {unit['id']: unit['text'] for unit in evidence_units(selected)}
+            units = {unit['id']: unit for unit in evidence_units(selected)}
             if not isinstance(references, list) or not 1 <= len(references) <= 3 or any(
                 not isinstance(ref, str) or ref not in units for ref in references
             ):
                 raise ValueError('Unknown or invalid retrieved passage reference.')
-            quotes = [units[ref] for ref in references]
+            quotes = [units[ref]['text'] for ref in references]
         else:
             # Preserve validation of earlier saved reports; current model schema uses passage IDs.
             extra = item.get('additional_quotes', [])
@@ -528,6 +532,7 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 raise ValueError('At most two additional supporting quotations are permitted.')
             quotes = [plain(item.get('quote'), 550), *[plain(q, 550) for q in extra]]
         text = plain(item.get('text'), 600)
+        added_anchor_source = None
         if level in ('medium', 'easy') and 'source_ids' in item:
             anchor_index = 0 if level == 'medium' else 1
             anchor = selected['anchors'][anchor_index]['name']
@@ -535,12 +540,23 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
                 # The target article has already established this search area. A model
                 # sometimes cites another valid passage while omitting the specific
                 # anchor passage; complete the citation, never the clue wording.
-                anchor_quote = units.get(f'article-anchor-{anchor_index}')
+                anchor_quote = (units.get(f'article-anchor-{anchor_index}') or
+                                units.get(('city-anchor-0', 'local-anchor-1')[anchor_index]))
                 if (len(quotes) < 3 and anchor_quote and
                         daily_map_game.normalized_place_name(anchor) in daily_map_game.normalized_place_name(text)):
-                    quotes.append(anchor_quote)
-        if any(len(q) < 30 or normalized(q) not in selected['evidence']['article']['text'] for q in quotes):
-            raise ValueError(f'{level} quotation is absent from the retrieved target article.')
+                    quotes.append(anchor_quote['text'])
+                    added_anchor_source = anchor_quote.get('source', 'article')
+        official_text = (selected['evidence'].get('official', {}).get('text', '')
+                         if level == 'hard' and 'source_ids' in item and
+                         any(units[ref].get('source') not in (None, 'article')
+                             for ref in item['source_ids']) else '')
+        retrieved_texts = [selected['evidence'][key]['text'] for key in ('article', 'city', 'local')
+                           if isinstance(selected['evidence'].get(key), dict)]
+        if official_text:
+            retrieved_texts.append(official_text)
+        if any(len(q) < 30 or not any(normalized(q) in source_text for source_text in retrieved_texts)
+               for q in quotes):
+            raise ValueError(f'{level} quotation is absent from a retrieved source.')
         combined = ' '.join(quotes)
         if set(re.findall(r'\d+(?:\.\d+)?', text)) - set(re.findall(r'\d+(?:\.\d+)?', combined)):
             raise ValueError(f'{level} adds a number unsupported by its quotation.')
@@ -548,7 +564,11 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
             anchor = selected['anchors'][0 if level == 'medium' else 1]['name']
             if daily_map_game.normalized_place_name(anchor) not in daily_map_game.normalized_place_name(combined):
                 raise ValueError(f'{level} quotation does not name its search area.')
-        facts[level] = {'text': text, 'source_ids': ['article'], 'supporting_quote': quotes[0],
+        source_keys = ({units[ref].get('source', 'article')
+                        for ref in item['source_ids']} if 'source_ids' in item else {'article'})
+        if added_anchor_source:
+            source_keys.add(added_anchor_source)
+        facts[level] = {'text': text, 'source_ids': sorted(source_keys), 'supporting_quote': quotes[0],
                         'supporting_quotes': quotes}
     validate_proposal_hook_alignment(payload, selected)
     # This date means retrieved, not reviewed: candidate remains outside the runtime catalogue.
@@ -587,9 +607,13 @@ def evidence_units(candidate: dict) -> list[dict]:
     chosen = {i for i, match in enumerate(matches) if match.start() < 4000}
     hook_passages = proposal_hook_passage_indexes(candidate, matches)
     chosen.update(hook_passages)
+    external_target = candidate['evidence']['article'].get('source_kind') in (
+        'osm_public_page', 'wikidata_public_page')
     for anchor in candidate['anchors']:
         hit = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
         if hit is None:
+            if external_target:
+                continue
             raise ValueError('The target article does not mention the supplied search area.')
         for i, match in enumerate(matches):
             if match.start() <= hit.start() < match.end():
@@ -601,11 +625,31 @@ def evidence_units(candidate: dict) -> list[dict]:
     # Additional metadata guides selection; validation still checks the actual text.
     for index, anchor in enumerate(candidate['anchors']):
         hit = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
+        if hit is None and external_target:
+            source_key = 'city' if index == 0 else 'local'
+            source_text = candidate['evidence'][source_key]['text']
+            source_hit = re.search(re.escape(anchor['name']), source_text, flags=re.IGNORECASE)
+            if source_hit is None:
+                raise ValueError('Checked map-area source does not name its own search area.')
+            passage = source_text[max(0, source_hit.start() - 100):source_hit.end() + 400].strip()
+            if len(passage) >= 30:
+                units.append({'id': f'{source_key}-anchor-{index}', 'text': passage,
+                              'source': source_key, 'anchor_name': anchor['name'],
+                              'clue_role': 'medium' if index == 0 else 'easy'})
+            continue
+        if hit is None:
+            raise ValueError('The target article does not mention the supplied search area.')
         passage = text[max(0, hit.start() - 250):min(len(text), hit.end() + 400)].strip()
         if len(passage) >= 30:
             units.append({'id': f'article-anchor-{index}', 'text': passage,
                           'anchor_name': anchor['name'],
                           'clue_role': 'medium' if index == 0 else 'easy'})
+    official = candidate['evidence'].get('official', {})
+    official_hook = official.get('hook_passage', '') if isinstance(official, dict) else ''
+    if official_hook and normalized(official_hook) in official.get('text', ''):
+        units.append({'id': 'official-hook', 'text': official_hook,
+                      'source': official.get('source_key', 'unesco'),
+                      'proposal_hook_passage': True, 'clue_role': 'hard'})
     return units
 
 
@@ -618,16 +662,37 @@ def review_markdown(report: dict) -> str:
         lines += ['## Selection', '', '    ' + candidate['canonical_name'], '',
                   '    ' + report['result']['selection_reason'], '',
                   f"Candidate SHA-256: `{report['candidate_sha256']}`", '']
+        if report.get('story_pivot'):
+            pivot = report['story_pivot']
+            lines += ['## Story changed during clue writing', '',
+                      'The clue writer chose a different retrieved passage. Review the change before approval.', '',
+                      'Original story passage:', '',
+                      '    ' + normalized(pivot['original_story_passage']), '',
+                      'Adopted story passage:', '',
+                      '    ' + normalized(pivot['new_story_passage']), '']
         for level in controlled.LEVELS:
             lines += [f'## {level.title()}', '', 'Clue:', '',
                       '    ' + report['result']['clue_ladder'][level], '', 'Supporting quotation:', '',
-                      *['    ' + quote for quote in candidate['facts'][level]['supporting_quotes']], '']
+                      *['    ' + quote for quote in candidate['facts'][level]['supporting_quotes']],
+                      'Evidence sources: ' + ', '.join(candidate['facts'][level]['source_ids']), '']
         lines += ['## Sources and map areas', '']
         for key, url in candidate['sources'].items():
-            # URLs are built by the source adapter, never supplied by the model.
+            # Story-first URLs can be model-suggested, but the fetcher checks
+            # public HTTPS transport and place identity before retaining them.
             lines.append(f'- [{key}]({url})')
-        lines += ['', 'Wikipedia extracts: CC BY-SA 4.0, Wikipedia contributors; '
-                  'Wikidata structured data: CC0. Sources link to the retrieved revisions.', '']
+        if report.get('pipeline') == 'story_first':
+            lines += ['', 'Story and navigation pages may have different reuse terms. '
+                      'These links record provenance, not permission to reproduce their text. '
+                      'Check the terms of each source before republication. '
+                      'Wikidata structured data: CC0.', '']
+            if 'osm' in candidate['sources']:
+                lines += ['OpenStreetMap location data: © OpenStreetMap contributors (ODbL).', '']
+            note = candidate.get('coordinate_check', {}).get('note')
+            if note:
+                lines += ['Coordinate check:', '', '    ' + normalized(note), '']
+        else:
+            lines += ['', 'Wikipedia extracts: CC BY-SA 4.0, Wikipedia contributors; '
+                      'Wikidata structured data: CC0. Sources link to the retrieved revisions.', '']
         for anchor in candidate['anchors']:
             lines.append('    ' + json.dumps(anchor, ensure_ascii=False))
     if report.get('error'):

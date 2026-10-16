@@ -35,6 +35,7 @@ COPY --chown=appuser:appuser tools/map_launch_round.py ./tools/
 COPY --chown=appuser:appuser tools/install_map_reviewed_fallbacks.py ./tools/
 COPY --chown=appuser:appuser tools/controlled_map_round.py tools/preview_ai_map_round.py ./tools/
 COPY --chown=appuser:appuser tools/discover_map_places.py ./tools/
+COPY --chown=appuser:appuser tools/map_geocoding.py tools/map_story_pipeline.py ./tools/
 COPY --chown=appuser:appuser tools/automatic_map_pool.py ./tools/
 COPY --chown=appuser:appuser deploy/map-evidence-catalog.json ./map-evidence-catalog.json
 COPY --chown=appuser:appuser deploy/map-training-seed ./map-training-seed

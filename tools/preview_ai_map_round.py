@@ -94,7 +94,9 @@ class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
 
     @classmethod
     def from_explicit_key(cls, key: str, *, generator_model: str = "", critic_model: str = "",
-                          max_requests: int = 30):
+                          max_requests: int = 30, timeout_sec: int = 60):
+        if not 1 <= timeout_sec <= 600:
+            raise ValueError("Map provider timeout must be between 1 and 600 seconds.")
         # Construct explicitly: no provider fallback or hidden retries.
         config = daily_quiz.QuizConfig(
             provider="gemini",
@@ -109,7 +111,7 @@ class PreviewGeminiProvider(rewriter.ConfiguredMapClueProvider):
             fallback_gemini_api_key="", fallback_compatible_api_key="", fallback_compatible_base_url="",
             fallback2_provider="", fallback2_generator_model="", fallback2_critic_model="",
             fallback2_gemini_api_key="", fallback2_compatible_api_key="", fallback2_compatible_base_url="",
-            timeout_sec=60, request_delay_sec=12.0, transient_retries=0,
+            timeout_sec=timeout_sec, request_delay_sec=12.0, transient_retries=0,
             max_attempts_per_slot=1, question_history_days=90,
             learning_profile_path="", internal_token="",
         )
