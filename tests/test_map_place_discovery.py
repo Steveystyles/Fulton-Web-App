@@ -60,11 +60,12 @@ class DiscoveryTests(unittest.TestCase):
         budget.spend('model')
         with self.assertRaisesRegex(ValueError, 'already attempted'):
             self.budget()
-        budget.spend('model')
-        budget.spend('model')
+        for _ in range(discovery.MAX_MODEL_REQUESTS - 1):
+            budget.spend('model')
         with self.assertRaisesRegex(ValueError, 'budget exhausted'):
             budget.spend('model')
-        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 3)
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'],
+                         discovery.MAX_MODEL_REQUESTS)
         with self.assertRaises(ValueError):
             budget.spend('source')
 
@@ -346,6 +347,58 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.critic_model, 'gemini-3.8-flash')
         self.assertEqual(config.timeout_sec, 180)
         self.assertEqual(config.transient_retries, 0)
+
+    def test_free_openrouter_only_retries_transient_gemini_failure(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            budget = self.budget()
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        self.assertEqual(len(provider.clients), 2)
+        self.assertEqual(provider.clients[1].config.compatible_base_url,
+                         'https://openrouter.ai/api/v1')
+        with patch.object(provider.clients[0].provider, '_request',
+                          side_effect=RuntimeError('Gemini request failed with HTTP 503')) as gemini, \
+             patch.object(provider.clients[1].provider, '_request',
+                          return_value={'targets': []}) as router:
+            result = provider.call_with_fallback(model_attr='generator_model',
+                                                 prompt='test', schema={})
+        self.assertEqual(result, {'targets': []})
+        gemini.assert_called_once()
+        router.assert_called_once()
+        self.assertEqual([r['status'] for r in provider.requests], ['failed', 'completed'])
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
+
+    def test_free_fallback_rejects_paid_route_and_nontransient_error(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'paid-model',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(self.budget())
+        self.assertEqual(len(provider.clients), 1)
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            second = discovery.DiscoveryProvider.from_map_env(
+                discovery.RunBudget(self.root / 'second.db', '2026-09-10'))
+        with patch.object(second.clients[0].provider, '_request',
+                          side_effect=ValueError('Invalid schema')) as gemini, \
+             patch.object(second.clients[1].provider, '_request') as router:
+            with self.assertRaises(RuntimeError):
+                second.call_with_fallback(model_attr='generator_model', prompt='test', schema={})
+        gemini.assert_called_once()
+        router.assert_not_called()
 
     def test_evidence_is_exact_and_unsupported_numbers_are_rejected(self):
         candidate, result = discovery.validate_selection(self.payload, [self.place])

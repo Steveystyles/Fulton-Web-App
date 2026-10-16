@@ -1087,7 +1087,8 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         if report['status'] != 'needs_source_review':
             raise ValueError('Discovery rejected: ' + str(report.get('error', 'no candidate'))[:400])
         verifier = factory(budget)
-        verifier.max_requests = 1
+        verifier_clients = getattr(verifier, 'clients', ())
+        verifier.max_requests = 2 if isinstance(verifier_clients, list) and len(verifier_clients) > 1 else 1
         verdict = verify(report, verifier, editorial_feedback=feedback,
                          failure_lessons=failure_lessons)
         verdict['proposal_alignment_audit'] = {
