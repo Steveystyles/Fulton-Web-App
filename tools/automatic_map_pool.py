@@ -803,7 +803,15 @@ def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:
                         (cutoff, puzzle_date, candidate['place_type'])).fetchone():
             continue
         result.append(tuple(row))
+    if os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold() == 'story_first':
+        # Preserve older checked rounds as fallbacks, but let an independently
+        # audited story-first round reach the next unpublished game first.
+        result.sort(key=lambda row: json.loads(row[3]).get('source_pipeline') != 'story_first')
     return result
+
+
+def story_first_ready(rows: list[tuple]) -> bool:
+    return any(json.loads(row[3]).get('source_pipeline') == 'story_first' for row in rows)
 
 
 def recoverable_report(conn: sqlite3.Connection, output_dir: Path, puzzle_date: str) -> dict | None:
@@ -992,7 +1000,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
               or unsupported_critical_labels(json.loads(row[1]), json.loads(row[2]))
         )][:INTEREST_AUDIT_BATCH_SIZE]
         conn.commit()
-    if len(ready) >= TARGET_READY and not pending_audits:
+    needs_story_first = (
+        os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold() == 'story_first'
+        and not story_first_ready(ready)
+    )
+    if len(ready) >= TARGET_READY and not pending_audits and not needs_story_first:
         return {'status': 'stocked', 'ready': len(ready), 'quarantined': quarantined}
     if provider_factory is None and not os.environ.get('MAP_AI_API_KEY', '').strip():
         return {'status': 'deferred', 'reason': 'MAP_AI_API_KEY is missing.', 'ready': len(ready)}
@@ -1217,7 +1229,11 @@ def maintain_until_stocked(
                       'retry_at': provider_retry_at(last.get('retry_after_seconds'))}
             save_provider_retry(database, result)
             return result
-        if int(last.get('ready', 0)) >= TARGET_READY:
+        stocked = int(last.get('ready', 0)) >= TARGET_READY
+        if stocked and os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold() == 'story_first':
+            with closing(sqlite3.connect(database)) as conn:
+                stocked = story_first_ready(eligible(conn, next_date(conn)))
+        if stocked:
             return {
                 **last,
                 'status': 'stocked',

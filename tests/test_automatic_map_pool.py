@@ -712,6 +712,57 @@ class AutomaticPoolTests(unittest.TestCase):
         story_discover.assert_called_once()
         legacy_discover.assert_not_called()
 
+    def test_full_legacy_queue_does_not_block_first_story_round(self):
+        report = {**self.report(), 'pipeline': 'story_first'}
+        report['candidate_sha256'] = discovery.digest(report['candidate'])
+        old_row = ('old', '{}', '{}', json.dumps({'source_pipeline': 'legacy'}), 'discovery')
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool, 'eligible', return_value=[old_row] * pool.TARGET_READY), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report) as discover, \
+             patch.object(pool, 'verify', return_value=self.verdict):
+            result = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(result['status'], 'added')
+        discover.assert_called_once()
+
+    def test_stocking_waits_for_story_round_even_when_legacy_queue_is_full(self):
+        old_row = ('old', '{}', '{}', json.dumps({'source_pipeline': 'legacy'}), 'discovery')
+        story_row = ('new', '{}', '{}', json.dumps({'source_pipeline': 'story_first'}), 'discovery')
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool, 'maintain', side_effect=[
+                 {'status': 'added', 'ready': pool.TARGET_READY},
+                 {'status': 'audited', 'ready': pool.TARGET_READY + 1}]) as maintain, \
+             patch.object(pool, 'eligible', side_effect=[
+                 [old_row] * pool.TARGET_READY,
+                 [story_row] + [old_row] * pool.TARGET_READY]):
+            result = pool.maintain_until_stocked(
+                self.database, self.root/'reports', max_attempts=2)
+        self.assertEqual(result['status'], 'stocked')
+        self.assertEqual(result['attempted'], 2)
+        self.assertEqual(maintain.call_count, 2)
+
+    def test_story_round_is_preferred_to_older_legacy_fallback(self):
+        places = controlled.load_catalog(controlled.DEFAULT_CATALOG)
+        second = next(place for place in places if place['id'] != self.place['id'])
+        second_payload = {
+            'place_id': second['id'], 'selection_reason': 'A source-reviewed place with progressive map clues.',
+            'clues': {key: {'text': value['text'], 'fact_id': key}
+                      for key, value in second['facts'].items()},
+        }
+        second_result = controlled.validate_result(second_payload, [second])
+        with closing(self.connect()) as conn:
+            pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
+            pool.add(conn, second, second_result,
+                     {**self.verdict, 'source_pipeline': 'story_first'}, origin='discovery')
+            conn.commit()
+            with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}):
+                ranked = pool.eligible(conn, '2026-09-08')
+            self.assertEqual(ranked[0][0], second['id'])
+            with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'legacy'}):
+                ranked = pool.eligible(conn, '2026-09-08')
+            self.assertEqual(ranked[0][0], self.place['id'])
+
     def test_story_first_report_must_match_checked_candidate_before_queueing(self):
         report = {**self.report(), 'pipeline': 'story_first',
                   'candidate_sha256': 'incorrect-digest'}
