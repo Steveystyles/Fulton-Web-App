@@ -256,6 +256,61 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertIn('independently sourced map-area names', ranking_prompt)
             self.assertNotIn('BOTH explicitly mentioned in that same target source', ranking_prompt)
 
+    def test_weak_clue_gets_one_source_bound_rewrite_for_same_place(self):
+        place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
+                              if p['id'] == 'atomium'))
+        article_text = ' '.join(fact['text'] for fact in place['facts'].values())
+        place['sources'] = {'article': place['sources']['history'],
+                            'city': place['sources']['district'], 'local': place['sources']['access']}
+        place['evidence'] = {'article': {'text': article_text}}
+        place['proposal_reason'] = place['facts']['hard']['text']
+        place['retrieved_on'] = story.legacy.date.today().isoformat()
+        place['city_sector'] = 'northern'
+        target = {'title': 'Atomium', 'place_type': place['place_type'],
+                  'page': {'title': 'Atomium', 'text': article_text},
+                  'passages': [{'id': 'p0', 'text': article_text,
+                                'role': 'story', 'source': 'Wikipedia'}],
+                  'nearby_options': []}
+        selection = {'place_id': place['id'], 'selection_reason': 'A distinctive public story.',
+                     'facts': {level: {'text': fact['text'], 'source_ids': ['article-0']}
+                               for level, fact in place['facts'].items()}}
+        weak = deepcopy(selection)
+        weak['facts']['hard']['text'] = 'This building was constructed in 1958.'
+        checked_place = deepcopy(place)
+        checked_place['facts']['hard']['supporting_quotes'] = [article_text]
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.side_effect = [
+            {'targets': [{'title': f'Target {i}', 'place_type': 'museum'} for i in range(12)]},
+            {'ranked': [{'title': 'Atomium', 'passage_id': 'p0', 'hook': place['proposal_reason'],
+                         'city_title': 'Brussels', 'local_title': 'Heysel'}]},
+            weak, selection,
+        ]
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
+        budget.finish.return_value = {'model_requests': 4, 'source_requests': 1}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets', return_value=[target]), \
+             patch.object(story.legacy, 'resolve', return_value=place), \
+             patch.object(story.legacy, 'review_markdown', return_value='review'), \
+             patch.object(story.legacy, 'validate_selection', side_effect=[
+                 ValueError('Hard clue only gives a construction fact.'),
+                 ValueError('Hard clue only gives a construction fact.'),
+                 (checked_place, {'clue_ladder': {'hard': place['facts']['hard']['text']}}),
+             ]) as validate:
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock())
+        self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
+        self.assertEqual(provider.call_with_fallback.call_count, 4)
+        self.assertEqual(validate.call_count, 3)
+        self.assertEqual(report['clue_repair']['same_place_required'], place['id'])
+        repair_prompt = provider.call_with_fallback.call_args_list[3].kwargs['prompt']
+        self.assertIn('Hard clue only gives a construction fact.', repair_prompt)
+        self.assertIn(place['proposal_reason'], repair_prompt)
+        self.assertIn('exactly the same place_id', repair_prompt)
+
     def test_story_evidence_is_bounded_before_model_call(self):
         provider = Mock()
         provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
