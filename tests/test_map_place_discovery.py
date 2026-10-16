@@ -400,6 +400,31 @@ class DiscoveryTests(unittest.TestCase):
         gemini.assert_called_once()
         router.assert_not_called()
 
+    def test_exhausted_free_router_preserves_gemini_outage_retry(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            budget = self.budget()
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        provider.clients[0].provider.last_retry_after_seconds = 600
+        with patch.object(provider.clients[0].provider, '_request',
+                          side_effect=RuntimeError('Gemini request failed with HTTP 503')) as gemini, \
+             patch.object(provider.clients[1].provider, '_request',
+                          side_effect=RuntimeError('openrouter request failed with HTTP 429: '
+                                                   'free-models-per-day')) as router:
+            with self.assertRaises(RuntimeError):
+                provider.call_with_fallback(model_attr='generator_model', prompt='test', schema={})
+        gemini.assert_called_once()
+        router.assert_called_once()
+        self.assertIn('HTTP 503', provider.provider_error_detail)
+        self.assertNotIn('free-models-per-day', provider.provider_error_detail)
+        self.assertEqual(provider.retry_after_seconds, 600)
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
+
     def test_evidence_is_exact_and_unsupported_numbers_are_rejected(self):
         candidate, result = discovery.validate_selection(self.payload, [self.place])
         self.assertEqual(candidate['review_status'], 'pending')

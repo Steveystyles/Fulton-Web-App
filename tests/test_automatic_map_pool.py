@@ -203,14 +203,14 @@ class AutomaticPoolTests(unittest.TestCase):
         for index in range(8):
             budget = pool.Budget(self.database, f'2026-10-{index+1:02d}')
             self.assertEqual(budget.attempt_number, index + 1)
-            for _ in range(discovery.MAX_MODEL_REQUESTS + 1):
+            for _ in range(discovery.MAX_MODEL_REQUESTS):
                 budget.spend('model')
             with self.assertRaisesRegex(ValueError, 'per-attempt request limit'):
                 budget.spend('model')
             budget.complete('failed', {})
         with closing(self.connect()) as conn:
             row = conn.execute('SELECT day,attempts,model_requests FROM automatic_map_usage').fetchone()
-            self.assertEqual(tuple(row), ('2026-09-08', 8, 8 * (discovery.MAX_MODEL_REQUESTS + 1)))
+            self.assertEqual(tuple(row), ('2026-09-08', 8, 8 * discovery.MAX_MODEL_REQUESTS))
         self.clock += timedelta(days=1)
         next_day = pool.Budget(self.database, '2026-12-01')
         self.assertEqual(next_day.budget_day, '2026-09-09')

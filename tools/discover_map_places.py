@@ -181,6 +181,8 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
         if self.stop_reason:
             raise RuntimeError(self.stop_reason)
         clients = self.clients[:2]
+        primary_detail = ''
+        primary_retry = None
         for index, client in enumerate(clients):
             if len(self.requests) >= self.max_requests:
                 self.stop_reason = 'Map discovery request budget exhausted.'
@@ -206,7 +208,16 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
                                 ('http 429', 'http 500', 'http 502', 'http 503', 'http 504',
                                  'timed out', 'temporarily unavailable'))
                 if index == 0 and len(clients) > 1 and transient and not kwargs.get('tools'):
+                    primary_detail = self.provider_error_detail
+                    primary_retry = self.retry_after_seconds
                     continue
+                if (index == 1 and daily_quiz.is_daily_quota_failure(detail)
+                        and primary_detail and not daily_quiz.is_daily_quota_failure(primary_detail)):
+                    # An exhausted optional free router must not postpone a
+                    # potentially recovered Gemini service until the router's
+                    # next daily reset. Retry according to the primary error.
+                    self.provider_error_detail = primary_detail
+                    self.retry_after_seconds = primary_retry
                 self.stop_reason = 'Map discovery provider failed; stopped to preserve quota.'
                 raise RuntimeError(self.stop_reason) from None
             record['status'] = 'completed'
