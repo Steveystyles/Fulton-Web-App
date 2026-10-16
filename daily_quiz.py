@@ -6041,19 +6041,20 @@ def _quiz_pool_waits_for_provider_reset(
     return available is None
 
 
-def _complete_one_quiz_pool_slot_from_archive(
+def _complete_quiz_pool_slots_from_archive(
     conn: sqlite3.Connection,
     job: sqlite3.Row,
     config: QuizConfig,
     *,
+    provider_unavailable: bool = False,
     answer_embargo_days: int = 45,
 ) -> bool:
-    """Save a nearly complete verified batch without spending more AI quota.
+    """Keep verified new work and fill missing slots from embargo-safe history.
 
-    An archive question is only considered after the sole missing slot has
-    consumed a full per-slot attempt allowance. The same evidence and answer
-    embargo rules as the normal archive fallback apply; publication rechecks
-    the embargo when the ready batch is eventually claimed.
+    Archive support is only used after exhausted slot attempts or while every
+    configured free provider is quota-paused. It cannot replace a batch with
+    no newly verified questions. Publication rechecks the embargo when the
+    ready batch is eventually claimed.
     """
     quiz_set = conn.execute(
         "SELECT * FROM daily_quiz_sets WHERE quiz_date = ?",
@@ -6068,20 +6069,21 @@ def _complete_one_quiz_pool_slot_from_archive(
     existing_slots = {(str(row["subject"]), str(row["difficulty"])) for row in existing}
     missing = set(REQUIRED_SLOTS) - existing_slots
     if (
-        len(existing) != len(REQUIRED_SLOTS) - 1
-        or len(missing) != 1
+        not 0 < len(existing) < len(REQUIRED_SLOTS)
+        or len(missing) != len(REQUIRED_SLOTS) - len(existing)
         or not existing_slots.issubset(set(REQUIRED_SLOTS))
         or any(not verification_payload_passed(row["verification_json"]) for row in existing)
     ):
         return False
-    subject, difficulty = next(iter(missing))
-    failures = conn.execute(
-        """SELECT COUNT(*) FROM daily_quiz_attempts
-           WHERE quiz_date = ? AND subject = ? AND difficulty = ? AND passed = 0""",
-        (job["work_quiz_date"], subject, difficulty),
-    ).fetchone()[0]
-    if failures < config.max_attempts_per_slot:
-        return False
+    if not provider_unavailable:
+        for subject, difficulty in missing:
+            failures = conn.execute(
+                """SELECT COUNT(*) FROM daily_quiz_attempts
+                   WHERE quiz_date = ? AND subject = ? AND difficulty = ? AND passed = 0""",
+                (job["work_quiz_date"], subject, difficulty),
+            ).fetchone()[0]
+            if failures < config.max_attempts_per_slot:
+                return False
 
     cutoff = (datetime.now(timezone.utc).date() - timedelta(days=answer_embargo_days)).isoformat()
     recent = conn.execute(
@@ -6100,34 +6102,42 @@ def _complete_one_quiz_pool_slot_from_archive(
     ).fetchall():
         blocked_questions.add(str(row["normalized_question"]))
         blocked_answers.add(str(row["normalized_answer"]))
-    candidates = conn.execute(
-        """SELECT q.* FROM daily_quiz_questions q
-           JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
-           WHERE s.status = 'published' AND s.quiz_date <= ?
-             AND q.subject = ? AND q.difficulty = ?
-           ORDER BY s.quiz_date ASC, q.id ASC""",
-        (cutoff, subject, difficulty),
-    ).fetchall()
-    source = next((
-        row for row in candidates
-        if verification_payload_passed(row["verification_json"])
-        and normalize_text(row["question"]) not in blocked_questions
-        and normalize_answer(row["correct_answer"]) not in blocked_answers
-    ), None)
-    if source is None:
-        return False
+    selected = []
+    for subject, difficulty in REQUIRED_SLOTS:
+        if (subject, difficulty) not in missing:
+            continue
+        candidates = conn.execute(
+            """SELECT q.* FROM daily_quiz_questions q
+               JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+               WHERE s.status = 'published' AND s.quiz_date <= ?
+                 AND q.subject = ? AND q.difficulty = ?
+               ORDER BY s.quiz_date ASC, q.id ASC""",
+            (cutoff, subject, difficulty),
+        ).fetchall()
+        source = next((
+            row for row in candidates
+            if verification_payload_passed(row["verification_json"])
+            and normalize_text(row["question"]) not in blocked_questions
+            and normalize_answer(row["correct_answer"]) not in blocked_answers
+        ), None)
+        if source is None:
+            return False
+        selected.append(source)
+        blocked_questions.add(normalize_text(source["question"]))
+        blocked_answers.add(normalize_answer(source["correct_answer"]))
 
-    conn.execute(
-        """INSERT INTO daily_quiz_questions (
-           quiz_set_id, subject, difficulty, question, choices_json,
-           correct_answer, explanation, interesting_reason, tags_json,
-           evidence_json, verification_json, normalized_question, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (quiz_set["id"], source["subject"], source["difficulty"], source["question"],
-         source["choices_json"], source["correct_answer"], source["explanation"],
-         source["interesting_reason"], source["tags_json"], source["evidence_json"],
-         source["verification_json"], source["normalized_question"], utc_now()),
-    )
+    for source in selected:
+        conn.execute(
+            """INSERT INTO daily_quiz_questions (
+               quiz_set_id, subject, difficulty, question, choices_json,
+               correct_answer, explanation, interesting_reason, tags_json,
+               evidence_json, verification_json, normalized_question, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (quiz_set["id"], source["subject"], source["difficulty"], source["question"],
+             source["choices_json"], source["correct_answer"], source["explanation"],
+             source["interesting_reason"], source["tags_json"], source["evidence_json"],
+             source["verification_json"], source["normalized_question"], utc_now()),
+        )
     conn.execute(
         "UPDATE daily_quiz_pool_batches SET generation_mode = 'archive-assisted' WHERE id = ?",
         (job["id"],),
@@ -6176,9 +6186,12 @@ def replenish_quiz_pool(
             job = _create_quiz_pool_job(conn)
         attempted += 1
         work_quiz_date = str(job["work_quiz_date"])
-        archive_completed = _complete_one_quiz_pool_slot_from_archive(conn, job, config)
+        archive_completed = _complete_quiz_pool_slots_from_archive(
+            conn, job, config,
+            provider_unavailable=_quiz_pool_waits_for_provider_reset(conn, config, provider, inventory),
+        )
         if archive_completed:
-            log(f"Pool batch {job['id']}: Completed the exhausted verified slot from embargo-safe archive content.")
+            log(f"Pool batch {job['id']}: Completed verified missing slots from embargo-safe archive content.")
             result = {"status": "published"}
         else:
             result = generate_daily_quiz(
