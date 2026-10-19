@@ -2547,6 +2547,7 @@ def initialize_database(conn: sqlite3.Connection) -> None:
             verification_json TEXT NOT NULL,
             normalized_question TEXT NOT NULL,
             normalized_answer TEXT NOT NULL,
+            used_quiz_date TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY (batch_id) REFERENCES daily_quiz_pool_batches(id) ON DELETE CASCADE,
             UNIQUE (batch_id, subject, difficulty)
@@ -2604,6 +2605,38 @@ def initialize_database(conn: sqlite3.Connection) -> None:
         "daily_quiz_pool_questions",
         "normalized_answer",
         "TEXT NOT NULL DEFAULT ''",
+    )
+    ensure_column(conn, "daily_quiz_pool_questions", "used_quiz_date", "TEXT")
+    # Recover actual per-question claims from legacy whole-batch publications.
+    # A repaired batch may have included archived replacements: its displaced
+    # questions must return to the ready pool, not be marked played.
+    conn.execute(
+        """UPDATE daily_quiz_pool_questions
+           SET used_quiz_date = (
+               SELECT b.used_quiz_date FROM daily_quiz_pool_batches b
+               WHERE b.id = daily_quiz_pool_questions.batch_id
+           )
+           WHERE used_quiz_date IS NULL
+             AND EXISTS (
+               SELECT 1 FROM daily_quiz_pool_batches b
+               JOIN daily_quiz_sets s ON s.quiz_date = b.used_quiz_date
+                                    AND s.status = 'published'
+               JOIN daily_quiz_questions played ON played.quiz_set_id = s.id
+               WHERE b.id = daily_quiz_pool_questions.batch_id
+                 AND b.state = 'used' AND b.used_quiz_date IS NOT NULL
+                 AND played.question = daily_quiz_pool_questions.question
+                 AND played.correct_answer = daily_quiz_pool_questions.correct_answer
+             )"""
+    )
+    conn.execute(
+        """UPDATE daily_quiz_pool_batches SET state = 'ready',
+                  used_quiz_date = NULL, used_at = NULL
+           WHERE state = 'used' AND used_quiz_date IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM daily_quiz_pool_questions q
+               WHERE q.batch_id = daily_quiz_pool_batches.id
+                 AND q.used_quiz_date IS NULL
+             )"""
     )
     conn.execute(
         """
@@ -2840,6 +2873,7 @@ def recent_questions(
         INNER JOIN daily_quiz_pool_batches AS pool_batch
             ON pool_batch.id = pool_question.batch_id
         WHERE pool_batch.state = 'ready'
+          AND pool_question.used_quiz_date IS NULL
           AND pool_question.subject = ?
           AND pool_question.created_at >= ?
         ORDER BY pool_question.created_at DESC
@@ -5809,8 +5843,22 @@ def quiz_pool_status(conn: sqlite3.Connection) -> dict[str, Any]:
         (str(circuit["blocked_until"]) for circuit in circuits),
         default=None,
     )
+    slot_counts = {
+        (str(row["subject"]), str(row["difficulty"])): int(row["count"])
+        for row in conn.execute(
+            """SELECT q.subject, q.difficulty, COUNT(*) AS count
+               FROM daily_quiz_pool_questions q
+               JOIN daily_quiz_pool_batches b ON b.id = q.batch_id
+               WHERE b.state = 'ready' AND q.used_quiz_date IS NULL
+               GROUP BY q.subject, q.difficulty"""
+        ).fetchall()
+    }
+    complete_rounds = min((slot_counts.get(slot, 0) for slot in REQUIRED_SLOTS), default=0)
     return {
-        "ready": counts.get("ready", 0),
+        "ready": complete_rounds,
+        "ready_batches": counts.get("ready", 0),
+        "available_slots": {f"{subject}/{difficulty}": slot_counts.get((subject, difficulty), 0)
+                            for subject, difficulty in REQUIRED_SLOTS},
         "generating": counts.get("generating", 0),
         "used": counts.get("used", 0),
         "failed": counts.get("failed", 0),
@@ -5964,6 +6012,7 @@ def _promote_quiz_pool_job(conn: sqlite3.Connection, job: sqlite3.Row) -> None:
             FROM daily_quiz_pool_questions AS question
             INNER JOIN daily_quiz_pool_batches AS batch ON batch.id = question.batch_id
             WHERE batch.state = 'ready'
+              AND question.used_quiz_date IS NULL
               AND (
                   question.normalized_question = ?
                   OR question.normalized_answer = ?
@@ -6123,7 +6172,7 @@ def _complete_quiz_pool_slots_from_archive(
         """SELECT q.normalized_question, q.normalized_answer
            FROM daily_quiz_pool_questions q
            JOIN daily_quiz_pool_batches b ON b.id = q.batch_id
-           WHERE b.state = 'ready'"""
+           WHERE b.state = 'ready' AND q.used_quiz_date IS NULL"""
     ).fetchall():
         blocked_questions.add(str(row["normalized_question"]))
         blocked_answers.add(str(row["normalized_answer"]))
@@ -6363,10 +6412,9 @@ def publish_quiz_from_pool(
     blocked_questions = {normalize_text(row["question"]) for row in recent_rows}
     blocked_answers = {normalize_answer(row["correct_answer"]) for row in recent_rows}
 
-    selected_batch: sqlite3.Row | None = None
-    selected_questions: list[sqlite3.Row] = []
-    repaired_selection: tuple[sqlite3.Row, list[sqlite3.Row]] | None = None
-    used_archive = False
+    candidates_by_slot: dict[tuple[str, str], list[sqlite3.Row]] = {
+        slot: [] for slot in REQUIRED_SLOTS
+    }
     for batch in conn.execute(
         """
         SELECT * FROM daily_quiz_pool_batches
@@ -6398,53 +6446,52 @@ def publish_quiz_from_pool(
                 ("Stored pool batch failed publication revalidation.", batch["id"]),
             )
             continue
-        seen_questions = set(blocked_questions)
-        seen_answers = set(blocked_answers)
-        reusable: list[sqlite3.Row] = []
-        colliding: list[sqlite3.Row] = []
         for row in questions:
-            normalized_question = normalize_text(row["question"])
-            normalized_answer = normalize_answer(row["correct_answer"])
-            if normalized_question in seen_questions or normalized_answer in seen_answers:
-                colliding.append(row)
-                continue
-            reusable.append(row)
-            seen_questions.add(normalized_question)
-            seen_answers.add(normalized_answer)
-        if not colliding:
-            selected_batch = batch
-            selected_questions = list(questions)
-            break
-        if repaired_selection is not None:
+            if row["used_quiz_date"] is None:
+                candidates_by_slot[(str(row["subject"]), str(row["difficulty"]))].append(row)
+
+    # Rank each verified question independently. A fixed date gives stable
+    # choices on retries, while each available question has an equal hash rank.
+    selected_by_slot: dict[tuple[str, str], tuple[sqlite3.Row, bool]] = {}
+    seen_questions = set(blocked_questions)
+    seen_answers = set(blocked_answers)
+    for subject, difficulty in REQUIRED_SLOTS:
+        slot = (subject, difficulty)
+        ranked = sorted(
+            candidates_by_slot[slot],
+            key=lambda row: hashlib.sha256(
+                f"{normalized_date}:{row['id']}".encode("ascii")
+            ).digest(),
+        )
+        source = next((
+            row for row in ranked
+            if normalize_text(row["question"]) not in seen_questions
+            and normalize_answer(row["correct_answer"]) not in seen_answers
+        ), None)
+        if source is None:
             continue
-        replacements: list[sqlite3.Row] = []
-        for row in colliding:
-            source = _verified_archive_question_for_slot(
-                conn, cutoff=cutoff, subject=row["subject"],
-                difficulty=row["difficulty"], blocked_questions=seen_questions,
-                blocked_answers=seen_answers,
-            )
-            if source is None:
-                break
-            replacements.append(source)
-            seen_questions.add(normalize_text(source["question"]))
-            seen_answers.add(normalize_answer(source["correct_answer"]))
-        if len(replacements) == len(colliding):
-            replacement_by_slot = {
-                (row["subject"], row["difficulty"]): source
-                for row, source in zip(colliding, replacements)
-            }
-            repaired_selection = (
-                batch,
-                [replacement_by_slot.get((row["subject"], row["difficulty"]), row)
-                 for row in questions],
-            )
-    if selected_batch is None and repaired_selection is not None:
-        selected_batch, selected_questions = repaired_selection
-        used_archive = True
-    if selected_batch is None:
+        selected_by_slot[slot] = (source, True)
+        seen_questions.add(normalize_text(source["question"]))
+        seen_answers.add(normalize_answer(source["correct_answer"]))
+    if not selected_by_slot:
         commit_if_needed(conn)
-        raise LookupError("No embargo-safe verified quiz pool batch is ready.")
+        raise LookupError("No complete set of embargo-safe verified quiz pool questions is ready.")
+    for subject, difficulty in REQUIRED_SLOTS:
+        slot = (subject, difficulty)
+        if slot in selected_by_slot:
+            continue
+        source = _verified_archive_question_for_slot(
+            conn, cutoff=cutoff, subject=subject, difficulty=difficulty,
+            blocked_questions=seen_questions, blocked_answers=seen_answers,
+        )
+        if source is None:
+            commit_if_needed(conn)
+            raise LookupError("No complete set of embargo-safe verified quiz pool questions is ready.")
+        selected_by_slot[slot] = (source, False)
+        seen_questions.add(normalize_text(source["question"]))
+        seen_answers.add(normalize_answer(source["correct_answer"]))
+    selected_questions = [selected_by_slot[slot] for slot in REQUIRED_SLOTS]
+    used_archive = any(not from_pool for _, from_pool in selected_questions)
 
     with locked_quiz_swap(
         conn, normalized_date, savepoint_name="publish_quiz_from_pool"
@@ -6454,16 +6501,20 @@ def publish_quiz_from_pool(
         ).fetchone()
         if current is not None and current["status"] == "published":
             return quiz_status(conn, normalized_date)
-        claimed = conn.execute(
-            """
-            UPDATE daily_quiz_pool_batches
-            SET state = 'used', used_quiz_date = ?, used_at = ?
-            WHERE id = ? AND state = 'ready'
-            """,
-            (normalized_date, utc_now(), selected_batch["id"]),
-        )
-        if claimed.rowcount != 1:
-            raise LookupError("Quiz pool batch was already claimed by another publisher.")
+        selected_batch_ids: set[str] = set()
+        for question, from_pool in selected_questions:
+            if not from_pool:
+                continue
+            claimed = conn.execute(
+                """UPDATE daily_quiz_pool_questions SET used_quiz_date = ?
+                   WHERE id = ? AND used_quiz_date IS NULL
+                     AND EXISTS (SELECT 1 FROM daily_quiz_pool_batches b
+                                 WHERE b.id = batch_id AND b.state = 'ready')""",
+                (normalized_date, question["id"]),
+            )
+            if claimed.rowcount != 1:
+                raise LookupError("Quiz pool question was already claimed by another publisher.")
+            selected_batch_ids.add(str(question["batch_id"]))
         if current is None:
             cursor = conn.execute(
                 """
@@ -6484,7 +6535,7 @@ def publish_quiz_from_pool(
                 "DELETE FROM daily_quiz_questions WHERE quiz_set_id = ?", (quiz_set_id,)
             )
         stored_at = utc_now()
-        for question in selected_questions:
+        for question, _from_pool in selected_questions:
             conn.execute(
                 """
                 INSERT INTO daily_quiz_questions (
@@ -6519,6 +6570,27 @@ def publish_quiz_from_pool(
             """,
             (stored_at, stored_at, "archive-assisted" if used_archive else "pool", quiz_set_id),
         )
+        for batch_id in selected_batch_ids:
+            remaining = conn.execute(
+                """SELECT COUNT(*) FROM daily_quiz_pool_questions
+                   WHERE batch_id = ? AND used_quiz_date IS NULL""",
+                (batch_id,),
+            ).fetchone()[0]
+            if remaining:
+                continue
+            used_dates = {
+                str(row[0]) for row in conn.execute(
+                    "SELECT DISTINCT used_quiz_date FROM daily_quiz_pool_questions WHERE batch_id = ?",
+                    (batch_id,),
+                ).fetchall()
+            }
+            conn.execute(
+                """UPDATE daily_quiz_pool_batches
+                   SET state = 'used', used_quiz_date = ?, used_at = ?
+                   WHERE id = ? AND state = 'ready'""",
+                (next(iter(used_dates)) if len(used_dates) == 1 else None,
+                 stored_at, batch_id),
+            )
     return quiz_status(conn, normalized_date)
 
 
