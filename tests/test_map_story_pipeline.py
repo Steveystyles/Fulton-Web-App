@@ -262,7 +262,7 @@ class StoryPipelineTests(unittest.TestCase):
         provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
         provider.requests = []
         provider.call_with_fallback.side_effect = [
-            {'targets': [{'title': f'Target {i}', 'place_type': 'museum'} for i in range(12)]},
+            {'targets': [{'title': f'Target {i}', 'place_type': 'museum'} for i in range(6)]},
             {'ranked': [{'title': 'Atomium', 'passage_id': 'p0', 'hook': place['proposal_reason'],
                          'city_title': 'Brussels', 'local_title': 'Heysel'}]},
             clue_payload,
@@ -283,13 +283,23 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertFalse(report['production_modified'])
             self.assertTrue(Path(report['report_path']).exists())
             self.assertEqual(provider.call_with_fallback.call_count, 3)
+            target_prompt = provider.call_with_fallback.call_args_list[0].kwargs['prompt']
+            self.assertIn('Do not pad the list with weak places', target_prompt)
+            self.assertIn('routine upkeep', target_prompt)
             ranking_prompt = provider.call_with_fallback.call_args_list[1].kwargs['prompt']
             self.assertIn('A generic old hook', ranking_prompt)
             self.assertIn('An unplayable old park', ranking_prompt)
             self.assertIn('A weak story was rejected', ranking_prompt)
             self.assertIn('when rejection_kind is clue_ladder', ranking_prompt)
             self.assertIn('independently sourced map-area names', ranking_prompt)
+            self.assertIn('Return ranked=[]', ranking_prompt)
+            self.assertIn('player enjoyment', ranking_prompt)
             self.assertNotIn('BOTH explicitly mentioned in that same target source', ranking_prompt)
+
+    def test_story_stage_can_decline_a_weak_batch_instead_of_forcing_a_hook(self):
+        self.assertEqual(story.target_schema()['properties']['targets']['minItems'], 0)
+        self.assertEqual(story.story_schema()['properties']['ranked']['minItems'], 0)
+        self.assertEqual(story.ranked_routes({'ranked': []}, []), [])
 
     def test_weak_clue_gets_one_source_bound_rewrite_for_same_place(self):
         place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
