@@ -299,6 +299,39 @@ class AutomaticPoolTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             self.assertEqual(pool.publish(conn, puzzle_date='2026-09-08')['status'], 'published')
 
+    def test_previous_interest_audit_is_rechecked_under_new_editorial_standard(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries').fetchone()[0])
+            verification['ready_audit'] = {
+                'version': pool.READY_AUDIT_VERSION - 1,
+                'interesting_hook_score': 5,
+                'evidence_supported': True,
+                'chronology_consistent': True,
+                'reason': 'The old critic approved this round.',
+            }
+            conn.execute('UPDATE automatic_map_entries SET verification=?',
+                         (json.dumps(verification),))
+            conn.commit()
+            self.assertEqual(pool.eligible(conn, '2026-09-09'), [])
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {
+            'interesting_hook_score': 2, 'evidence_supported': True,
+            'chronology_consistent': True,
+            'reason': 'Factual, but not an enjoyable place-discovery hook.',
+        }
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        self.assertEqual(outcome['ready'], 0)
+        with closing(self.connect()) as conn:
+            state, verification_text = conn.execute(
+                'SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(state, 'rejected')
+            self.assertEqual(json.loads(verification_text)['ready_audit']['version'],
+                             pool.READY_AUDIT_VERSION)
+
     def test_legacy_weak_round_is_rejected_and_cannot_reenter_queue(self):
         with closing(self.connect()) as conn:
             pool.add(conn, self.place, self.result,
@@ -452,7 +485,15 @@ class AutomaticPoolTests(unittest.TestCase):
              'broadcast signals, prompting the construction of this soaring tower to mount '
              'higher antennas and restore line-of-sight communication links.',
              'routine signal-engineering premise'),
+            ('At the beginning of the Axis occupation in 1941, German soldiers raised '
+             'the Nazi war flag here, which was later taken down in an act of resistance.',
+             'wartime occupation'),
+            ('After an empire fell, this site continued to be inhabited with regular pond '
+             'maintenance.', 'routine upkeep'),
+            ('It served as the main venue for the newly elected Constituent Assembly.',
+             'routine institutional history'),
             ('Its sloping roof turns an opera house into a public square.', None),
+            ('A captain had thirty men run across the deck, and the ship rolled alarmingly.', None),
             ('A Persian emperor plundered this fort and seized its famous throne.', None),
             ('An eruption buried this Roman city and preserved its streets.', None),
         )
@@ -461,6 +502,8 @@ class AutomaticPoolTests(unittest.TestCase):
                 self.assertEqual(pool.unsuitable_game_hook({'clue_ladder': {'hard': clue}}), expected)
         self.assertEqual(pool.rejected_hook_reason({'tone_rejection': 'hostage-taking'}),
                          'hostage-taking')
+        self.assertIn('specific player payoff', pool.READY_AUDIT_INSTRUCTIONS)
+        self.assertIn('Factual support', pool.READY_AUDIT_INSTRUCTIONS)
 
     def test_maintenance_quarantines_old_victim_hook_without_model_request(self):
         self.queue('discovery')

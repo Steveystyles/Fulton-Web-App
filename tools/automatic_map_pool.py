@@ -38,7 +38,7 @@ CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interest
           'unique_easy_target')
 MIN_INTEREST_SCORE = 4
 INTEREST_AUDIT_BATCH_SIZE = 4
-READY_AUDIT_VERSION = 1
+READY_AUDIT_VERSION = 2
 PROPOSAL_ALIGNMENT_AUDIT_VERSION = 1
 # These labels assert a historically consequential classification, not merely
 # descriptive colour. A model must not infer one from a related event (for
@@ -63,6 +63,11 @@ UNSUITABLE_HOOK_PATTERNS = (
      r'\b(?:tribes?|civilians?|residents?|prisoners?)\b', 'victim confinement'),
     (r'\b(?:seized|captured|arrested)\b.{0,100}\b(?:truce|surrender|white flag)\b',
      'betrayal and detention'),
+    (r'\b(?:nazi|axis occupation|war flag)\b', 'wartime occupation'),
+    (r'\b(?:routine|regular|ordinary)\s+(?:\w+\s+){0,2}maintenance\b',
+     'routine upkeep'),
+    (r'\b(?:main venue|headquarters)\b.{0,80}\b(?:constituent assembly|parliamentary committee)\b',
+     'routine institutional history'),
     (r'\b(?:apparently|allegedly|reportedly|supposedly|perhaps|possibly)\b|'
      r'\b(?:may|might) have\b|\b(?:said|believed|thought) to have\b',
      'hedged historical claim'),
@@ -369,15 +374,26 @@ READY_AUDIT_INSTRUCTIONS = (
     'claims and passages: set chronology_consistent=false if events or structures '
     'from different periods are made to seem simultaneous or causally linked. '
     'Do not infer that separate statements in one passage happened together. '
-    'Score the hard clue from 1 (generic trivia) to 5 (memorable place-defining hook); '
+    'First decide whether a non-specialist player would enjoy finding this place because of '
+    'the hard clue. Factual support, historical significance and place association do not '
+    'by themselves make a hook enjoyable. A 4 or 5 needs a concrete surprise, vivid public '
+    'experience, notable performance, ingenious use or dramatic non-victim-centred mishap '
+    'that gives the map destination a payoff. If you can only explain why a fact is true, '
+    'rather than why discovering the place is enjoyable, score at most 3. '
+    'Score the hard clue from 1 (generic trivia) to 5 (memorable, enjoyable place discovery); '
     'This is a light discovery game: victim deaths, hostages, camps, threats of '
-    'serious harm and atrocities '
+    'serious harm, atrocities and wartime occupation '
     'are not suitable as the main hook, even when historically accurate. '
     'A hedged claim (apparently, reportedly, may have) or a routine explanation '
     'for signal/antenna engineering is not a compelling hook. '
-    'a true but minor architectural detail or bare superlative is below 4. '
+    'A true but minor architectural detail, bare superlative, ordinary political meeting, '
+    'or routine upkeep is below 4. A theatre hosting an assembly, or regular pond '
+    'maintenance after an empire fell, is important history but not a playful Map hook. '
+    'By contrast, a ship visibly failing a stability demonstration, a helicopter lifting '
+    'tower sections into place, or hidden viewing through a palace facade has a clear '
+    'surprise and player payoff. Do not confuse a solemn act of resistance with light fun. '
     'When evidence is too thin, reject rather than guess. Explain the strongest '
-    'objection or why the round survives. Return JSON only.\n'
+    'objection or name the specific player payoff, separately from source support. Return JSON only.\n'
 )
 
 
