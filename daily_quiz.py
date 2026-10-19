@@ -2624,6 +2624,8 @@ def initialize_database(conn: sqlite3.Connection) -> None:
                JOIN daily_quiz_questions played ON played.quiz_set_id = s.id
                WHERE b.id = daily_quiz_pool_questions.batch_id
                  AND b.state = 'used' AND b.used_quiz_date IS NOT NULL
+                 AND played.subject = daily_quiz_pool_questions.subject
+                 AND played.difficulty = daily_quiz_pool_questions.difficulty
                  AND played.question = daily_quiz_pool_questions.question
                  AND played.correct_answer = daily_quiz_pool_questions.correct_answer
              )"""
