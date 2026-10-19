@@ -230,7 +230,7 @@ def target_schema() -> dict:
         'source_url': {'type': 'string'}, 'wikidata_id': {'type': 'string'},
     }, 'required': ['title', 'place_type', 'source_url', 'wikidata_id'], 'additionalProperties': False}
     return {'type': 'object', 'properties': {'targets': {
-        'type': 'array', 'minItems': 12, 'maxItems': 12, 'items': item,
+        'type': 'array', 'minItems': 0, 'maxItems': 12, 'items': item,
     }}, 'required': ['targets'], 'additionalProperties': False}
 
 
@@ -241,7 +241,7 @@ def story_schema() -> dict:
     }, 'required': ['title', 'passage_id', 'hook', 'city_title', 'local_title'],
             'additionalProperties': False}
     return {'type': 'object', 'properties': {'ranked': {
-        'type': 'array', 'minItems': 1, 'maxItems': 6, 'items': item,
+        'type': 'array', 'minItems': 0, 'maxItems': 6, 'items': item,
     }}, 'required': ['ranked'], 'additionalProperties': False}
 
 
@@ -546,8 +546,8 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
 def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
     by_title = {item['title']: item for item in targets}
     ranked = payload.get('ranked')
-    if not isinstance(ranked, list) or not 1 <= len(ranked) <= 6:
-        raise ValueError('Story selection must rank one to six source-backed places.')
+    if not isinstance(ranked, list) or len(ranked) > 6:
+        raise ValueError('Story selection must rank at most six source-backed places.')
     result = []
     seen = set()
     for item in ranked:
@@ -775,16 +775,20 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         recent = legacy.history(source_db, puzzle_date)
         existing = (controlled.load_catalog(catalog) if catalog else []) + (excluded_places or [])
         focus = legacy.proposal_focus(budget)
-        prompt = ('Propose exactly 12 distinct, presently existing, precisely pinnable public landmarks. '
-                  'Propose four from EACH geographic lane: ' + ', '.join(focus) + '. '
+        prompt = ('Propose up to 12 distinct, presently existing, precisely pinnable public landmarks. '
+                  'Aim for geographic variety across these lanes: ' + ', '.join(focus) + '. '
+                  'Do not pad the list with weak places to reach a count; return fewer, even zero, '
+                  'when no convincing prospect is available. Quality outranks the count. '
                   'Give each place\'s exact public name and place type, and its Wikidata Q identifier '
                   '(wikidata_id), or an empty string if unknown. Supply one public HTTPS source_url '
                   'describing its specific story, or an empty string when unknown. Choose sources for factual '
                   'quality and relevance, never because they belong to a fixed domain list. A Wikipedia article is useful but NOT '
                   'required; a verifiable Wikidata or OpenStreetMap identity with a public story page also '
                   'qualifies. Do not invent nearby '
-                  'map anchors or clues. Prefer places likely to have a surprising achievement, cultural moment, '
-                  'public use or distinctive engineering story documented by a checkable public source. Exclude stadiums, '
+                  'map anchors or clues. Propose a place only when a checkable source appears to contain a vivid, '
+                  'enjoyable place-owned discovery: a surprising achievement, public experience, performance, '
+                  'ingenious use or dramatic non-victim-centred mishap. A factual design specification, ordinary '
+                  'political meeting, routine upkeep or solemn wartime incident is not enough. Exclude stadiums, '
                   'private homes, camps, hostage incidents, atrocities and places whose only appeal is fame, age '
                   'or appearance. Put the strongest and most geographically varied prospects first, because '
                   'the bounded source review may not fit every target. Never reuse excluded or recently '
@@ -796,8 +800,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                               'failed_stories': failure_lessons or []}, ensure_ascii=False))
         proposals = provider.call_with_fallback(model_attr='generator_model', prompt=prompt, schema=target_schema())['targets']
         report['proposals'] = proposals
-        if len(proposals) != 12:
-            raise ValueError('Exactly twelve target proposals are required.')
+        if not isinstance(proposals, list) or len(proposals) > 12:
+            raise ValueError('At most twelve target proposals are allowed.')
         geocoder = map_geocoding.NominatimSource(output_dir.parent / 'map-geocode-cache.sqlite3', budget)
         targets = source_targets(proposals, sources, recent, existing, excluded_names or [], report,
                                  geocoder=geocoder)
@@ -806,6 +810,12 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         if not targets:
             raise ValueError('No proposed target had usable source evidence.')
         story_prefix = ('Rank up to six places by the strength of a specific, place-owned, engaging story. '
+                        'Return ranked=[] if no supplied story passage offers an enjoyable discovery; do not '
+                        'force a famous place through with a dry fact. Separate factual importance from player '
+                        'enjoyment: a theatre hosting an assembly, pond maintenance after an empire fell, '
+                        'solemn wartime occupation, or a tower\'s routine engineering specification is not a '
+                        'light Map hook. A vivid mishap, surprising public use, inventive performance, or '
+                        'experience a visitor can picture is stronger. '
                         'Each hook must cite one supplied source passage marked role="story"; '
                         'context passages '
                         'are for identity and geography, never a hook. Give its passage_id, '
@@ -876,7 +886,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         report['resolved_candidates'] = candidates
         if not candidates:
             raise ValueError('No source-backed story had a playable map route.')
-        clue_prompt = ('Choose the most engaging source-backed story and write hard, medium and easy Map clues. '
+        clue_prompt = ('Choose the most enjoyable source-backed place discovery and write hard, medium and easy Map clues. '
+                       'Do not substitute mere factual importance for a player payoff. '
                        'Use the cited story passage for hard; do not pivot to an unrelated fact. An official '
                        'source passage may support hard; medium and easy must cite the target source '
                        'or separate checked map-area source passages naming their anchors. Medium must name '
