@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Card } from "../components/Card";
-import { DailyJourney, secondaryClass } from "../components/DailyJourney";
+import { DailyJourney, secondaryClass, useToday } from "../components/DailyJourney";
 import { GameFeedback } from "../components/GameFeedback";
 import { api, type QuizBoard, type QuizCardAdjudication } from "../lib/api";
 
 type Mode = "daily" | "practice";
+
+export function shouldRefreshQuizBoard(mode: Mode, boardDate: string | undefined, todayDate: string | undefined, busy: boolean, refreshedDate: string | null): boolean {
+  return mode === "daily" && !!boardDate && !!todayDate && boardDate !== todayDate && !busy && refreshedDate !== todayDate;
+}
 
 export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCardId, onSelect }: {
   cards: QuizBoard["cards"];
@@ -44,6 +48,7 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
 }
 
 export function Quiz() {
+  const { data: today } = useToday();
   const [mode, setMode] = useState<Mode>("daily");
   const [board, setBoard] = useState<QuizBoard | null>(null);
   const [choice, setChoice] = useState("");
@@ -54,6 +59,7 @@ export function Quiz() {
   const [error, setError] = useState("");
   const [loadVersion, setLoadVersion] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
+  const refreshedDateRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -63,6 +69,12 @@ export function Quiz() {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [loadVersion, mode]);
+
+  useEffect(() => {
+    if (!shouldRefreshQuizBoard(mode, board?.date, today?.date, busy, refreshedDateRef.current)) return;
+    refreshedDateRef.current = today!.date;
+    setLoadVersion(value => value + 1);
+  }, [board, busy, mode, today?.date]);
 
   const activeCard = board?.cards.find(card => card.selectedOrder !== null && !card.answered);
   const remainingCards = board?.cards.filter(card => card.selectedOrder === null) ?? [];
