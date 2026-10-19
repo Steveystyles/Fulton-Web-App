@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import tempfile
@@ -3240,6 +3241,121 @@ class DailyQuizTests(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT generation_mode FROM daily_quiz_sets WHERE quiz_date = '2026-10-23'"
         ).fetchone()[0], "archive-assisted")
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE used_quiz_date IS NULL"
+        ).fetchone()[0], 2)
+        self.assertEqual(daily_quiz.quiz_pool_status(self.conn)["ready"], 0)
+
+        # Recreate the previous whole-batch bookkeeping and check that the
+        # migration restores only questions actually played on that date.
+        self.conn.execute("UPDATE daily_quiz_pool_questions SET used_quiz_date = NULL")
+        self.conn.execute(
+            """UPDATE daily_quiz_pool_batches
+               SET state = 'used', used_quiz_date = '2026-10-23'"""
+        )
+        daily_quiz.initialize_database(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE used_quiz_date = '2026-10-23'"
+        ).fetchone()[0], 4)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE used_quiz_date IS NULL"
+        ).fetchone()[0], 2)
+        self.assertEqual(self.conn.execute(
+            "SELECT state FROM daily_quiz_pool_batches"
+        ).fetchone()[0], "ready")
+
+        # Those two verified questions were never played. Once the answer
+        # embargo passes, publication draws them from the pool again.
+        replay = daily_quiz.publish_quiz_from_pool(self.conn, "2026-12-10")
+        self.assertEqual(replay["verified_questions"], 6)
+        recycled = self.conn.execute(
+            """SELECT subject, difficulty, question FROM daily_quiz_questions q
+               JOIN daily_quiz_sets s ON s.id = q.quiz_set_id
+               WHERE s.quiz_date = '2026-12-10'"""
+        ).fetchall()
+        for row in recycled:
+            if (row["subject"], row["difficulty"]) in collided_slots:
+                self.assertEqual(row["question"], next(
+                    source["question"] for source in original
+                    if (source["subject"], source["difficulty"]) ==
+                    (row["subject"], row["difficulty"])
+                ))
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE used_quiz_date IS NULL"
+        ).fetchone()[0], 0)
+
+    def test_legacy_used_pool_batches_are_not_recycled_by_migration(self) -> None:
+        daily_quiz.replenish_quiz_pool(
+            self.conn, config=config(), target_ready=1, max_batch_attempts=1,
+            provider=PassingProvider("legacy-pool-provider"), log=lambda _: None,
+        )
+        daily_quiz.publish_quiz_from_pool(self.conn, "2026-08-21")
+        self.conn.execute("UPDATE daily_quiz_pool_questions SET used_quiz_date = NULL")
+
+        daily_quiz.initialize_database(self.conn)
+
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE used_quiz_date = '2026-08-21'"
+        ).fetchone()[0], 6)
+        self.assertEqual(daily_quiz.quiz_pool_status(self.conn)["ready"], 0)
+
+    def test_pool_selects_individual_questions_across_ready_batches(self) -> None:
+        first = daily_quiz.replenish_quiz_pool(
+            self.conn, config=config(), target_ready=1, max_batch_attempts=1,
+            provider=PassingProvider("first-provider"), log=lambda _: None,
+        )
+        job = daily_quiz._create_quiz_pool_job(self.conn)
+        work = daily_quiz.get_or_create_quiz_set(self.conn, job["work_quiz_date"])
+        for subject, difficulty in daily_quiz.REQUIRED_SLOTS:
+            question = valid_question(subject, difficulty)
+            label = f"{subject} {difficulty}"
+            question["question"] = f"Which documented landmark anchors this alternative {label} example?"
+            question["correct_answer"] = f"Alternative {label} answer"
+            question["choices"] = [question["correct_answer"], "Alternative B", "Alternative C", "Alternative D"]
+            question["explanation"] = f"The alternative {label} answer matches the verified landmark."
+            question["interesting_reason"] = f"The {label} landmark has a memorable documented connection."
+            evidence = supporting_evidence(question)
+            daily_quiz.save_question(
+                self.conn, quiz_set_id=int(work["id"]), question=question,
+                evidence=evidence, verification=passing_verification(evidence),
+            )
+        daily_quiz.publish_quiz(self.conn, job["work_quiz_date"])
+        daily_quiz._promote_quiz_pool_job(self.conn, job)
+        self.assertEqual(first["ready"], 1)
+        self.assertEqual(daily_quiz.quiz_pool_status(self.conn)["ready"], 2)
+        rows = self.conn.execute(
+            "SELECT id, batch_id, subject, difficulty FROM daily_quiz_pool_questions"
+        ).fetchall()
+        # Pick a reproducible date on which independent per-slot ranks draw
+        # from both batches; no test depends on a random seed.
+        chosen_date = None
+        for day in range(21, 31):
+            candidate_date = f"2026-08-{day:02d}"
+            winners = []
+            for slot in daily_quiz.REQUIRED_SLOTS:
+                options = [row for row in rows if (row["subject"], row["difficulty"]) == slot]
+                winner = min(options, key=lambda row: hashlib.sha256(
+                    f"{candidate_date}:{row['id']}".encode("ascii")
+                ).digest())
+                winners.append(winner["batch_id"])
+            if len(set(winners)) == 2:
+                chosen_date = candidate_date
+                break
+        self.assertIsNotNone(chosen_date)
+
+        result = daily_quiz.publish_quiz_from_pool(self.conn, chosen_date)
+
+        self.assertEqual(result["verified_questions"], 6)
+        claimed = self.conn.execute(
+            "SELECT DISTINCT batch_id FROM daily_quiz_pool_questions WHERE used_quiz_date = ?",
+            (chosen_date,),
+        ).fetchall()
+        self.assertEqual(len(claimed), 2)
+        self.assertEqual(daily_quiz.quiz_pool_status(self.conn)["ready"], 1)
+        next_date = (datetime.fromisoformat(chosen_date) + timedelta(days=1)).date().isoformat()
+        next_result = daily_quiz.publish_quiz_from_pool(self.conn, next_date)
+        self.assertEqual(next_result["verified_questions"], 6)
+        self.assertEqual(daily_quiz.quiz_pool_status(self.conn)["ready"], 0)
 
     def test_exhausted_single_pool_slot_uses_verified_archive_without_replacing_new_work(self) -> None:
         source = daily_quiz.get_or_create_quiz_set(self.conn, "2025-01-01")
@@ -3644,6 +3760,9 @@ class DailyQuizTests(unittest.TestCase):
             ).fetchone()[0],
             "ready",
         )
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) FROM daily_quiz_pool_questions WHERE used_quiz_date IS NOT NULL"
+        ).fetchone()[0], 0)
         self.assertIsNone(
             self.conn.execute(
                 "SELECT 1 FROM daily_quiz_sets WHERE quiz_date = '2026-08-22'"
