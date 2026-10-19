@@ -14,6 +14,7 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 let vite;
 let DailyQuiz;
 let QuizBoardGrid;
+let shouldRefreshQuizBoard;
 let Card;
 let HelpButton;
 let MapClueEditor;
@@ -30,7 +31,7 @@ before(async () => {
     appType: "custom",
   });
   ({ DailyQuiz } = await vite.ssrLoadModule("/src/components/DailyQuiz.tsx"));
-  ({ QuizBoardGrid } = await vite.ssrLoadModule("/src/pages/Quiz.tsx"));
+  ({ QuizBoardGrid, shouldRefreshQuizBoard } = await vite.ssrLoadModule("/src/pages/Quiz.tsx"));
   ({ Card } = await vite.ssrLoadModule("/src/components/Card.tsx"));
   ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
   ({ MapClueEditor } = await vite.ssrLoadModule("/src/components/MapClueEditor.tsx"));
@@ -322,6 +323,14 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   const answerMarkup = answerButton.getText(tree);
   assert.match(answerMarkup, /className="quiz-answer saints-focus"/);
   assert.match(css, /\.quiz-answer\s*\{[^}]*overflow-wrap: anywhere/s, "full answer text remains readable");
+});
+
+test("Quiz refreshes a previous daily board on a new UK game date without interrupting a save", () => {
+  assert.equal(shouldRefreshQuizBoard("daily", "2026-10-18", "2026-10-19", false, null), true);
+  assert.equal(shouldRefreshQuizBoard("daily", "2026-10-19", "2026-10-19", false, null), false);
+  assert.equal(shouldRefreshQuizBoard("practice", "2026-10-18", "2026-10-19", false, null), false);
+  assert.equal(shouldRefreshQuizBoard("daily", "2026-10-18", "2026-10-19", true, null), false);
+  assert.equal(shouldRefreshQuizBoard("daily", "2026-10-18", "2026-10-19", false, "2026-10-19"), false);
 });
 
 test("Map opens on the game without a header strip or help row above the clue", async () => {
