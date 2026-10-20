@@ -478,6 +478,27 @@ def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[d
                 str(row[3] or "An editor corrected this unpublished Map hook.")))
     if len(feedback) >= limit:
         return feedback
+    for place, hook, reason in conn.execute(
+        "SELECT json_extract(candidate, '$.canonical_name'), "
+        "json_extract(result, '$.clue_ladder.hard'), "
+        "json_extract(verification, '$.operator_rejection.reason') "
+        "FROM (SELECT candidate,result,verification,origin FROM automatic_map_entries "
+        "WHERE state='rejected' UNION ALL "
+        "SELECT candidate,result,verification,origin FROM automatic_map_rejected_hooks) "
+        "WHERE origin='discovery' "
+        "AND json_type(verification, '$.operator_rejection')='object' "
+        "ORDER BY json_extract(verification, '$.operator_rejection.at') DESC LIMIT ?",
+        (limit,),
+    ):
+        if hook and reason:
+            feedback.append({
+                'place': str(place or '')[:100],
+                'rejected_hook': str(hook)[:240],
+                'reason': str(reason)[:240],
+                'negative_only': True,
+            })
+        if len(feedback) >= limit:
+            return feedback
     rows = conn.execute(
         """
         SELECT e.used_date, json_extract(e.candidate, '$.canonical_name') AS place,
@@ -526,12 +547,17 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
                                                (candidate_text, result_text, verification_text))
             score = verification.get('interesting_hook_score')
             audit = verification.get('ready_audit') or {}
-            if not verification.get('editorial_rejection'):
+            operator_rejection = verification.get('operator_rejection') or {}
+            if not verification.get('editorial_rejection') and not operator_rejection:
                 continue
             hook = str(result.get('clue_ladder', {}).get('hard') or '').strip()
             if not hook:
                 continue
-            if verification.get('round_rejection'):
+            if operator_rejection:
+                category = 'operator hook rejection'
+                failure_reason = ('An editor rejected this Map hook: '
+                                  + str(operator_rejection.get('reason') or 'It did not make a compelling discovery game.')[:200])
+            elif verification.get('round_rejection'):
                 category = 'clue ladder'
                 failure_reason = ('The completed clue ladder failed independent audit. '
                                   'The discovery hook may still be useful; correct the faulty clue or '
@@ -563,9 +589,9 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
                 'place': str(candidate.get('canonical_name') or '')[:100],
                 'rejection_kind': 'clue_ladder' if verification.get('round_rejection') else 'hook',
                 'attempted_clues': attempted_clues,
-                'failure_reason': failure_reason + str(audit.get('reason') or
+                'failure_reason': failure_reason + ('' if operator_rejection else str(audit.get('reason') or
                     verification.get('interest_audit_reason') or
-                    'Not a supported, memorable, place-defining discovery hook.')[:160],
+                    'Not a supported, memorable, place-defining discovery hook.')[:160]),
             }))
         except (ValueError, TypeError, AttributeError):
             continue
@@ -727,12 +753,17 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
     ).fetchone()
     if previous and previous[0] == 'rejected':
         prior_verification = json.loads(previous[3])
-        if prior_verification.get('operator_rejection') or (
+        operator_rejection = prior_verification.get('operator_rejection') or {}
+        if (operator_rejection and operator_rejection.get('scope') == 'place') or (
             prior_verification.get('editorial_rejection')
             and not rejected_hook_reason(prior_verification)
             and not prior_verification.get('round_rejection')
         ):
             raise ValueError('Editorially rejected map place requires an explicit operator review before reuse.')
+        if operator_rejection and operator_rejection.get('scope') != 'place' and (
+            hook_digest(json.loads(previous[2])) == hook_digest(result)
+        ):
+            raise ValueError('The same operator-rejected Map hook cannot be reused.')
         if rejected_hook_reason(prior_verification) and (
             hook_digest(json.loads(previous[2])) == hook_digest(result)
         ):
@@ -1012,7 +1043,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         ready = eligible(conn, target)
         exclusions = [json.loads(candidate) for state, candidate, verification in conn.execute(
             "SELECT state,candidate,verification FROM automatic_map_entries WHERE state IN ('ready','rejected')"
-        ) if state == 'ready' or json.loads(verification).get('operator_rejection')
+        ) if state == 'ready' or (json.loads(verification).get('operator_rejection') or {}).get('scope') == 'place'
         or (json.loads(verification).get('editorial_rejection')
             and not rejected_hook_reason(json.loads(verification))
             and not json.loads(verification).get('round_rejection'))]

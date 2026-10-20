@@ -1,7 +1,9 @@
 """Dry-run or retire exact unpublished Map candidates after an editorial review.
 
 Retirement is reversible: no candidate, published round, or player data is
-deleted. An online database backup is verified before any queue state changes.
+deleted. A rejected hook may be redrafted for the same place; explicitly
+rejecting a place keeps that place out of automatic discovery. An online
+database backup is verified before any queue state changes.
 """
 
 from __future__ import annotations
@@ -52,12 +54,15 @@ def review(
     targets: dict[str, str],
     *,
     reason: str,
+    scope: str = "hook",
     apply: bool = False,
     backup_root: Path | None = None,
 ) -> dict[str, Any]:
     reason = " ".join(reason.split())
     if not 12 <= len(reason) <= 300:
         raise ValueError("Provide a specific editorial reason of 12–300 characters.")
+    if scope not in {"hook", "place"}:
+        raise ValueError("Review scope must be hook or place.")
     if not database.is_file() or database.is_symlink():
         raise ValueError("The database must be an existing, regular file.")
     with closing(sqlite3.connect(database, timeout=10)) as conn:
@@ -79,7 +84,7 @@ def review(
             verification = json.loads(row[0])
             if not isinstance(verification, dict):
                 raise ValueError("The queue verification record is invalid.")
-            verification["operator_rejection"] = {"reason": reason, "at": reviewed_at}
+            verification["operator_rejection"] = {"reason": reason, "at": reviewed_at, "scope": scope}
             changed = conn.execute(
                 "UPDATE automatic_map_entries SET state = 'rejected', verification = ? "
                 "WHERE id = ? AND state = 'ready'",
@@ -96,6 +101,7 @@ def main() -> int:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--target", action="append", default=[], help="ID=exact canonical name; repeatable")
     parser.add_argument("--reason", required=True)
+    parser.add_argument("--scope", choices=("hook", "place"), default="hook")
     parser.add_argument("--apply", action="store_true", help="Retire only after a verified online backup")
     parser.add_argument("--backup-root", type=Path)
     args = parser.parse_args()
@@ -104,6 +110,7 @@ def main() -> int:
             args.database,
             parse_targets(args.target),
             reason=args.reason,
+            scope=args.scope,
             apply=args.apply,
             backup_root=args.backup_root,
         )
