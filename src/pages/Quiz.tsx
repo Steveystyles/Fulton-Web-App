@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Card } from "../components/Card";
 import { DailyJourney, secondaryClass, useToday } from "../components/DailyJourney";
+import { DialogPortal } from "../components/DialogPortal";
 import { GameFeedback } from "../components/GameFeedback";
 import { api, type QuizBoard, type QuizCardAdjudication } from "../lib/api";
 
@@ -47,23 +48,38 @@ export function QuizBoardGrid({ cards, mode = "daily", busy, locked, pendingCard
   </div>;
 }
 
+export function QuizAnswerNotice({ reveal, onDetails }: {
+  reveal: QuizCardAdjudication;
+  onDetails: () => void;
+}) {
+  return <div className="quiz-answer-notice" data-correct={reveal.correct} role="status" aria-live="polite">
+    <div className="quiz-answer-notice__copy">
+      <strong>{reveal.correct ? `Correct · +${reveal.pointsAwarded}` : "Not this time"}</strong>
+      {!reveal.correct ? <span>Answer: {reveal.correctAnswer}</span> : <span>Your pick is locked in.</span>}
+    </div>
+    <button type="button" className="quiz-answer-notice__details saints-focus" onClick={onDetails}>See why</button>
+  </div>;
+}
+
 export function Quiz() {
   const { data: today } = useToday();
   const [mode, setMode] = useState<Mode>("daily");
   const [board, setBoard] = useState<QuizBoard | null>(null);
   const [choice, setChoice] = useState("");
   const [reveal, setReveal] = useState<QuizCardAdjudication | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loadVersion, setLoadVersion] = useState(0);
   const stageRef = useRef<HTMLDivElement>(null);
+  const detailsId = useId();
   const refreshedDateRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    setLoading(true); setError(""); setReveal(null); setBoard(null); setChoice(""); setPendingCardId(null);
+    setLoading(true); setError(""); setReveal(null); setDetailsOpen(false); setBoard(null); setChoice(""); setPendingCardId(null);
     void api.quizBoard(mode).then(value => { if (active) setBoard(value); })
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : "Quiz board failed to load."); })
       .finally(() => { if (active) setLoading(false); });
@@ -101,7 +117,7 @@ export function Quiz() {
   async function selectCard(cardId: string) {
     if (busy || activeCard) return;
     setBusy(true); setPendingCardId(cardId); setError("");
-    try { setBoard(await api.selectQuizCard(mode, cardId)); setChoice(""); }
+    try { setBoard(await api.selectQuizCard(mode, cardId)); setReveal(null); setDetailsOpen(false); setChoice(""); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Card could not be selected."); }
     finally { setBusy(false); setPendingCardId(null); }
   }
@@ -111,14 +127,14 @@ export function Quiz() {
     setBusy(true); setError("");
     try {
       const response = await api.answerQuizCard(mode, activeCard.id, choice);
-      setBoard(response.board); setReveal(response.adjudication); setChoice("");
+      setBoard(response.board); setReveal(response.adjudication); setDetailsOpen(false); setChoice("");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Answer could not be saved."); }
     finally { setBusy(false); }
   }
 
   return (
     <section className="page-fade quiz-page" aria-label="Quiz">
-      {!activeCard && !reveal && board?.status !== "completed" ? <div className="quiz-mode-switch mx-auto w-full max-w-3xl" role="group" aria-label="Quiz mode">
+      {!activeCard && board?.status !== "completed" ? <div className="quiz-mode-switch mx-auto w-full max-w-3xl" role="group" aria-label="Quiz mode">
         {(["daily", "practice"] as Mode[]).map(value => (
           <button
             key={value}
@@ -149,7 +165,7 @@ export function Quiz() {
         </Card>
       ) : null}
 
-      {board && !activeCard && !reveal && board.status !== "completed" ? (
+      {board && !activeCard && board.status !== "completed" ? (
         <div ref={stageRef} tabIndex={-1} className="quiz-board mx-auto w-full max-w-3xl focus:outline-none">
           <div className="quiz-board__heading">
             <h1>{mode === "daily" ? "Quiz" : "Practice quiz"}</h1>
@@ -157,6 +173,7 @@ export function Quiz() {
               <strong>{playedCount}</strong> / {board.pickCount} played
             </span>
           </div>
+          {reveal ? <QuizAnswerNotice reveal={reveal} onDetails={() => setDetailsOpen(true)} /> : null}
           <QuizBoardGrid cards={board.cards} mode={mode} busy={busy} pendingCardId={pendingCardId} locked={false} onSelect={cardId => void selectCard(cardId)} />
           {!remainingCards.length ? (
             <Card>
@@ -212,31 +229,10 @@ export function Quiz() {
         </div>
       ) : null}
 
-      {reveal ? (
-        <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-2xl focus:outline-none">
-          <div className="quiz-result-stage" data-correct={reveal.correct}>
-            <p className="quiz-result-stage__label">
-              {reveal.correct ? `Correct · +${reveal.pointsAwarded}` : "Not this time"}
-            </p>
-            {!reveal.correct ? <p className="quiz-result-stage__answer">Correct answer: {reveal.correctAnswer}</p> : null}
-            <p className="quiz-result-stage__explanation">{reveal.explanation}</p>
-            {reveal.interestingReason && reveal.interestingReason !== reveal.explanation ? (
-              <p className="quiz-result-stage__fact"><strong>Did you know? </strong>{reveal.interestingReason}</p>
-            ) : null}
-            <button
-              type="button"
-              className="quiz-submit saints-focus"
-              onClick={() => setReveal(null)}
-            >
-              {board?.status === "completed" ? "See final score" : "Back to the board"}
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {board?.status === "completed" && !reveal ? (
+      {board?.status === "completed" ? (
         <div ref={stageRef} tabIndex={-1} className="mx-auto w-full max-w-2xl focus:outline-none">
           <div className="quiz-result-stage">
+            {reveal ? <QuizAnswerNotice reveal={reveal} onDetails={() => setDetailsOpen(true)} /> : null}
             <p className="quiz-result-stage__label">Round complete</p>
             <h2 className="quiz-result-stage__score">{board.score} / {board.maxScore}</h2>
             <p className="quiz-result-stage__explanation">
@@ -259,6 +255,20 @@ export function Quiz() {
           </div>
         </div>
       ) : null}
+
+      {detailsOpen && reveal ? <DialogPortal onClose={() => setDetailsOpen(false)}>
+        <div className="fixed inset-0 z-2000 flex items-center justify-center bg-black/65 p-3">
+          <section id={detailsId} role="dialog" aria-modal="true" aria-labelledby={`${detailsId}-title`} data-correct={reveal.correct} className="quiz-answer-details">
+            <h2 id={`${detailsId}-title`}>{reveal.correct ? `Correct · +${reveal.pointsAwarded}` : "Not this time"}</h2>
+            {!reveal.correct ? <p className="quiz-result-stage__answer">Correct answer: {reveal.correctAnswer}</p> : null}
+            <p className="quiz-result-stage__explanation">{reveal.explanation}</p>
+            {reveal.interestingReason && reveal.interestingReason !== reveal.explanation ? (
+              <p className="quiz-result-stage__fact"><strong>Did you know? </strong>{reveal.interestingReason}</p>
+            ) : null}
+            <button type="button" className="quiz-submit saints-focus" onClick={() => setDetailsOpen(false)}>Continue</button>
+          </section>
+        </div>
+      </DialogPortal> : null}
 
     </section>
   );
