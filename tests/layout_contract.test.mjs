@@ -14,6 +14,7 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 let vite;
 let DailyQuiz;
 let QuizBoardGrid;
+let QuizAnswerNotice;
 let shouldRefreshQuizBoard;
 let Card;
 let HelpButton;
@@ -31,7 +32,7 @@ before(async () => {
     appType: "custom",
   });
   ({ DailyQuiz } = await vite.ssrLoadModule("/src/components/DailyQuiz.tsx"));
-  ({ QuizBoardGrid, shouldRefreshQuizBoard } = await vite.ssrLoadModule("/src/pages/Quiz.tsx"));
+  ({ QuizBoardGrid, QuizAnswerNotice, shouldRefreshQuizBoard } = await vite.ssrLoadModule("/src/pages/Quiz.tsx"));
   ({ Card } = await vite.ssrLoadModule("/src/components/Card.tsx"));
   ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
   ({ MapClueEditor } = await vite.ssrLoadModule("/src/components/MapClueEditor.tsx"));
@@ -311,7 +312,19 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   assert.match(practice, /Which event is question 1 about\?/);
 
   const quizSource = await sourceText("src/pages/Quiz.tsx");
-  assert.match(quizSource, /board && !activeCard && !reveal && board\.status !== "completed"/, "the six-card board is hidden while a question or result is shown");
+  assert.match(quizSource, /board && !activeCard && board\.status !== "completed"/, "the six-card board stays visible after an answer");
+  assert.doesNotMatch(quizSource, /Back to the board/, "answer feedback does not trap players on a separate screen");
+  const correctNotice = renderToStaticMarkup(createElement(QuizAnswerNotice, {
+    reveal: { cardId: "card-1", correct: true, correctAnswer: "Brazil", explanation: "Reason", pointsAwarded: 1 },
+    onDetails: () => {},
+  }));
+  assert.match(correctNotice, /Correct · \+1/);
+  assert.match(correctNotice, /See why/);
+  const incorrectNotice = renderToStaticMarkup(createElement(QuizAnswerNotice, {
+    reveal: { cardId: "card-1", correct: false, correctAnswer: "Brazil", explanation: "Reason", pointsAwarded: 0 },
+    onDetails: () => {},
+  }));
+  assert.match(incorrectNotice, /Answer: Brazil/);
   assert.match(quizSource, /ref=\{stageRef\}[\s\S]*?<QuizBoardGrid/, "the board is its own focused stage");
   assert.doesNotMatch(quizSource, /Pick four\. Make them count\.|Six cards, four picks/, "the quiz starts with a compact title instead of an explainer panel");
 
