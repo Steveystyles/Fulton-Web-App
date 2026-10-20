@@ -941,6 +941,8 @@ def retryable_route_rejection(reason: str) -> bool:
                              'search area centres are too close',
                              'search area is too broad',
                              'a search area name exposes the answer',
+                             'city search area name exposes the answer',
+                             'local feature search area name exposes the answer',
                              'the target article does not mention the supplied search area.',
                              'place type was used in the last two days.',
                              'batch country or place type is repetitive.'))

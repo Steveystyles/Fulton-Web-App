@@ -511,8 +511,11 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     anchors = [{'name': anchor_name(p, proposed, target['text']), 'lat': p['lat'], 'lng': p['lng'], 'radius_m': radius, 'min_hint_count': count}
                for p, proposed, radius, count in ((city, proposal.get('city_title'), medium_radius, 1),
                                                   (local, proposal.get('local_title'), easy_radius, 2))]
-    if any(daily_map_game.mask_answer_name(a['name'], target['title']) != a['name'] for a in anchors):
-        raise ValueError('A search area name exposes the answer.')
+    answer_identity = {'canonical_name': target['title'], 'acceptable_aliases': aliases}
+    for index, anchor in enumerate(anchors):
+        if daily_map_game.clue_contains_answer(anchor['name'], answer_identity):
+            role = 'City' if index == 0 else 'Local feature'
+            raise ValueError(f'{role} search area name exposes the answer.')
     # These checks need only the already-retrieved articles and coordinates.
     # Reject weak map routes before spending two more requests on country metadata.
     if target.get('source_kind') not in ('osm_public_page', 'wikidata_public_page'):

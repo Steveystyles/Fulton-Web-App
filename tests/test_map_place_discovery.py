@@ -577,6 +577,31 @@ class DiscoveryTests(unittest.TestCase):
             discovery.resolve(proposal, source, [], [])
         source.country.assert_not_called()
 
+    def test_search_area_names_cannot_leak_answer_aliases(self):
+        source, _, pages, proposal = self.source_fixture()
+        pages['Target']['title'] = 'Pont du Gard'
+        pages['Target']['text'] = 'The Pont du Gard is near Vers-Pont-du-Gard and Park.'
+        pages['City']['title'] = 'Vers-Pont-du-Gard'
+        with self.assertRaisesRegex(ValueError, 'City search area name exposes the answer'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
+
+        source, _, pages, proposal = self.source_fixture()
+        pages['Target']['title'] = 'Pont du Gard'
+        pages['Target']['text'] = 'The Pont du Gard is in City, beside River-Pont-du-Gard.'
+        pages['Park']['title'] = 'River-Pont-du-Gard'
+        with self.assertRaisesRegex(ValueError, 'Local feature search area name exposes the answer'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
+
+        source, entity, pages, proposal = self.source_fixture()
+        entity['aliases'] = {'en': [{'value': 'Teotihuacán'}]}
+        pages['Target']['text'] = 'The Target is in San Juan Teotihuacán, beside Park.'
+        pages['City']['title'] = 'San Juan Teotihuacán'
+        with self.assertRaisesRegex(ValueError, 'City search area name exposes the answer'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
+
     def test_resolve_uses_area_batch_only_after_full_target_fetch(self):
         fixture, _, _, proposal = self.source_fixture()
         source = discovery.WikimediaSource(self.budget())
