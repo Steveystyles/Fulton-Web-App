@@ -755,7 +755,7 @@ def resolve_route(route: dict, target: dict, sources, recent: list[dict], existi
             reason = str(error).casefold()
             if 'budget exhausted' in reason or not any(marker in reason for marker in (
                     'local feature article', 'search area centres', 'does not mention the supplied search area',
-                    'target and both search areas')):
+                    'target and both search areas', 'local feature search area name exposes the answer')):
                 break
     raise first_error or ValueError('No sourced local map anchor passed verification.')
 

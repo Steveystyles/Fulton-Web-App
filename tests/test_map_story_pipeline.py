@@ -481,6 +481,11 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(replacement, 'Market Park')
         self.assertEqual(resolve.call_args_list[1].args[0]['city_title'], 'Eastport')
         self.assertEqual(resolve.call_args_list[1].args[0]['local_title'], 'Market Park')
+        with patch.object(story.legacy, 'resolve', side_effect=[ValueError('Local feature search area name exposes the answer.'),
+                                                                {'id': 'q1'}]) as resolve:
+            candidate, replacement = story.resolve_route(route, target, Mock(), [], [])
+        self.assertEqual(candidate['id'], 'q1')
+        self.assertEqual(replacement, 'Market Park')
         with patch.object(story.legacy, 'resolve', side_effect=ValueError('City article: Missing source page.')) as resolve:
             with self.assertRaisesRegex(ValueError, 'City article'):
                 story.resolve_route(route, target, Mock(), [], [])
