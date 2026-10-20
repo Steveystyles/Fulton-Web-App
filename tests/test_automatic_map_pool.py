@@ -1133,21 +1133,54 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(discover.call_args.kwargs['route_failure_lessons'], lessons)
         self.assertNotIn('Himeji Castle', discover.call_args.kwargs['excluded_names'])
 
-    def test_editorially_rejected_place_cannot_be_automatically_readmitted(self):
-        self.queue()
+    def test_operator_rejected_hook_teaches_generator_and_allows_new_hook(self):
+        self.queue('discovery')
         with closing(self.connect()) as conn:
             row = conn.execute('SELECT verification FROM automatic_map_entries WHERE id=?', (self.place['id'],)).fetchone()
             verification = json.loads(row[0])
-            verification['operator_rejection'] = {'reason': 'The place hook is not compelling.'}
+            verification['operator_rejection'] = {'reason': 'The place hook is not compelling.', 'scope': 'hook', 'at': self.clock.isoformat()}
             conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? WHERE id=?",
                          (json.dumps(verification), self.place['id']))
             conn.commit()
-            with self.assertRaisesRegex(ValueError, 'explicit operator review'):
+            feedback = pool.editorial_corrections(conn)
+            self.assertEqual(feedback[0]['rejected_hook'], self.result['clue_ladder']['hard'])
+            self.assertTrue(feedback[0]['negative_only'])
+            self.assertIn('not compelling', pool.rejected_interest_lessons(conn)[0]['failure_reason'])
+            with self.assertRaisesRegex(ValueError, 'same operator-rejected Map hook'):
                 pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
             self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries WHERE id=?',
                                           (self.place['id'],)).fetchone()[0], 'rejected')
         failed = {'status': 'failed', 'error': 'No source.', 'rejections': []}
         with patch.object(discovery, 'discover', return_value=failed) as discover:
+            pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock())
+        self.assertNotIn(self.place['id'], [place['id'] for place in discover.call_args.kwargs['excluded_places']])
+        self.assertIn(feedback[0], discover.call_args.kwargs['editorial_feedback'])
+        replacement = deepcopy(self.result)
+        replacement['clue_ladder']['hard'] = ('Built for Expo 58, this walk-in iron crystal magnifies '
+                                               'an atomic structure 165 billion times into a building.')
+        with closing(self.connect()) as conn:
+            pool.add(conn, self.place, replacement, self.verdict, origin='discovery')
+            conn.commit()
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries WHERE id=?',
+                                          (self.place['id'],)).fetchone()[0], 'ready')
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM automatic_map_rejected_hooks WHERE place_id=?',
+                                          (self.place['id'],)).fetchone()[0], 1)
+            self.assertEqual(pool.editorial_corrections(conn)[0]['rejected_hook'],
+                             self.result['clue_ladder']['hard'])
+
+    def test_operator_rejected_place_stays_excluded(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute('SELECT verification FROM automatic_map_entries WHERE id=?',
+                                                   (self.place['id'],)).fetchone()[0])
+            verification['operator_rejection'] = {'reason': 'This place itself is unsuitable for a light game.',
+                                                  'scope': 'place', 'at': self.clock.isoformat()}
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? WHERE id=?",
+                         (json.dumps(verification), self.place['id']))
+            conn.commit()
+            with self.assertRaisesRegex(ValueError, 'explicit operator review'):
+                pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
+        with patch.object(discovery, 'discover', return_value={'status': 'failed', 'error': 'No source.', 'rejections': []}) as discover:
             pool.maintain(self.database, self.root, seed_catalog=None, provider_factory=Mock())
         self.assertIn(self.place['id'], [place['id'] for place in discover.call_args.kwargs['excluded_places']])
 

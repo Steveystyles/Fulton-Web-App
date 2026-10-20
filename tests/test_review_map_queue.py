@@ -65,6 +65,20 @@ class MapQueueReviewTests(unittest.TestCase):
         self.assertEqual(by_id["q1988240"][1], "rejected")
         self.assertEqual(by_id["qused"][1], "used")
         self.assertEqual(json.loads(by_id["q940843"][2])["operator_rejection"]["reason"], reason)
+        self.assertEqual(json.loads(by_id["q940843"][2])["operator_rejection"]["scope"], "hook")
+
+    def test_place_scope_is_explicit(self):
+        result = review_map_queue.review(
+            self.database, {"q940843": "Lotus Temple"},
+            reason="This place is not suitable for a light Map game.",
+            scope="place", apply=True, backup_root=self.backups,
+        )
+        self.assertEqual(result["status"], "applied")
+        with closing(sqlite3.connect(self.database)) as conn:
+            verification = json.loads(conn.execute(
+                "SELECT verification FROM automatic_map_entries WHERE id='q940843'"
+            ).fetchone()[0])
+        self.assertEqual(verification["operator_rejection"]["scope"], "place")
 
     def test_apply_refuses_missing_backup_root_and_duplicate_targets(self):
         targets = review_map_queue.parse_targets(["q940843=Lotus Temple"])
