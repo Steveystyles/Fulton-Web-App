@@ -9,7 +9,6 @@ excluded. Retention is dry-run unless --apply is supplied explicitly.
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
 import hashlib
 import json
 import os
@@ -345,9 +344,12 @@ def create_sqlite_safety_snapshot(database: Path, snapshot_root: Path) -> Path:
     try:
         _sqlite_online_backup(source, path)
         _fsync_file(path)
-        with closing(sqlite3.connect(_readonly_sqlite_uri(path), uri=True, timeout=10)) as check:
+        check = sqlite3.connect(_readonly_sqlite_uri(path), uri=True, timeout=10)
+        try:
             if check.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise BackupError("Safety snapshot failed independent quick_check.")
+        finally:
+            check.close()
         _fsync_directory(root)
         return path
     except BaseException:
