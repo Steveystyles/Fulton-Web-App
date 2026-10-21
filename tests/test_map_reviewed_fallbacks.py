@@ -33,7 +33,12 @@ class MapReviewedFallbackTests(unittest.TestCase):
             tuple(expected_names),
         ).fetchall()
         self.assertEqual(len(rows), len(expected_names))
-        self.assertTrue(all(daily_map_game.row_passes_map_clue_quality(row) for row in rows))
+        self.assertTrue(all(
+            daily_map_game.row_passes_map_clue_quality(row, enforce_light_tone=False)
+            for row in rows
+        ))
+        canterbury = next(row for row in rows if row["canonical_name"] == "Canterbury Cathedral")
+        self.assertFalse(daily_map_game.row_passes_map_clue_quality(canterbury))
         self.assertTrue(all(daily_map_game.row_has_playable_map_guidance(row) for row in rows))
 
     def test_reviewed_fallback_install_is_idempotent(self) -> None:
@@ -45,6 +50,19 @@ class MapReviewedFallbackTests(unittest.TestCase):
         self.assertEqual(result["added"], [])
         self.assertEqual(result["updated"], [])
         self.assertEqual(len(result["existing"]), expected_count)
+
+    def test_fallback_selection_skips_legacy_victim_harm_hook(self) -> None:
+        self.conn.execute("UPDATE map_place_pool SET active = 0")
+        install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
+        self.conn.execute(
+            "UPDATE map_place_pool SET active = CASE WHEN canonical_name IN "
+            "('Canterbury Cathedral', 'Terracotta Army') THEN 1 ELSE 0 END"
+        )
+
+        selected = daily_map_game.select_daily_place(self.conn, "2026-10-28")
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected["canonical_name"], "Terracotta Army")
 
     def test_reviewed_fallback_install_repairs_existing_guidance(self) -> None:
         install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)

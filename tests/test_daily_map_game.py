@@ -1305,6 +1305,35 @@ class DailyMapGameTests(unittest.TestCase):
             critic["failure_reasons"],
         )
 
+    def test_victim_harm_is_not_a_light_map_discovery_hook(self) -> None:
+        grim_hooks = [
+            "Inside this cathedral, Thomas Becket was assassinated in 1170.",
+            "A deadly stampede on this bridge followed a collapse rumour in 1883.",
+            "This skyscraper replaced a building destroyed by an IRA bomb attack.",
+            "A tailor jumped to his death from this tower while testing a parachute.",
+        ]
+        for hook in grim_hooks:
+            with self.subTest(hook=hook):
+                self.assertTrue(daily_map_game.victim_harm_hook(hook))
+                self.assertEqual(daily_map_game.fact_interest_score(hook), 0)
+                critic = daily_map_game.local_map_clue_critique(
+                    {"canonical_name": "Sample Landmark", "acceptable_aliases": []},
+                    {
+                        "hard": hook,
+                        "medium": "Find the landmark in this European city.",
+                        "easy": "Look beside the river bridge in the city centre.",
+                        "reveal": "Sample Landmark is a public landmark.",
+                    },
+                )
+                self.assertIn(
+                    "Hard clue makes victim deaths or terror the place's discovery hook.",
+                    critic["failure_reasons"],
+                )
+        self.assertFalse(daily_map_game.victim_harm_hook(
+            "A photographer captured this cathedral's dome through Blitz smoke, "
+            "creating a striking image of resilience."
+        ))
+
     def test_place_interest_profile_accepts_public_attraction_and_skyscraper_hooks(self) -> None:
         cases = [
             (

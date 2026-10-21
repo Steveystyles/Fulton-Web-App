@@ -99,7 +99,9 @@ def install_seed(conn: sqlite3.Connection, path: Path) -> dict[str, Any]:
                 ).fetchone()
                 if (
                     current is None
-                    or not daily_map_game.row_passes_map_clue_quality(current)
+                    or not daily_map_game.row_passes_map_clue_quality(
+                        current, enforce_light_tone=False
+                    )
                     or not daily_map_game.row_has_playable_map_guidance(current)
                 ):
                     raise ValueError(
@@ -123,7 +125,9 @@ def install_seed(conn: sqlite3.Connection, path: Path) -> dict[str, Any]:
         ).fetchone()
         if (
             inserted is None
-            or not daily_map_game.row_passes_map_clue_quality(inserted)
+            or not daily_map_game.row_passes_map_clue_quality(
+                inserted, enforce_light_tone=False
+            )
             or not daily_map_game.row_has_playable_map_guidance(inserted)
         ):
             raise ValueError(

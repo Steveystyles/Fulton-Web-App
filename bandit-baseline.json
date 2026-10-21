@@ -74,28 +74,28 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 3670,
+      "line_number": 3694,
       "line_range": [
-        3670,
-        3671,
-        3672,
-        3673,
-        3674,
-        3675,
-        3676,
-        3677,
-        3678,
-        3679,
-        3680,
-        3681,
-        3682,
-        3683,
-        3684,
-        3685
+        3694,
+        3695,
+        3696,
+        3697,
+        3698,
+        3699,
+        3700,
+        3701,
+        3702,
+        3703,
+        3704,
+        3705,
+        3706,
+        3707,
+        3708,
+        3709
       ],
       "col_offset": 12,
       "end_col_offset": 8,
-      "code_sha256": "2fb66cdd8bac4fa167e519dea43577fd30dd43f94bd062e1aeb089e81f097143"
+      "code_sha256": "dc9ceb3e65a9d7b4fe96ce1d5a074eff5d9ddbae26580b00ab9cc870e9e31357"
     },
     {
       "filename": "daily_map_game.py",
@@ -105,13 +105,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4619,
+      "line_number": 4643,
       "line_range": [
-        4619
+        4643
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "b564ac76baae2c48b5f0c56970727da7151d12c129af64d6186b4b56788e19a2"
+      "code_sha256": "c3d5e505e3d572af90288bad95e0aaffb9d8e5a6fe7a9329ec4a96635f40dcda"
     },
     {
       "filename": "daily_map_game.py",
@@ -121,13 +121,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4674,
+      "line_number": 4698,
       "line_range": [
-        4674
+        4698
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "99eba3c318e608c37c78e3404745c7de5ea459a675f227ce4f69ba4a1c6def91"
+      "code_sha256": "4e6f86805a25ec0427d5a8e0a5838f75d5b6b18d5f6a8deb535ac3fb5ce4a595"
     },
     {
       "filename": "daily_quiz.py",
@@ -663,13 +663,13 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 117,
+      "line_number": 119,
       "line_range": [
-        117
+        119
       ],
       "col_offset": 14,
       "end_col_offset": 42,
-      "code_sha256": "ecfc6667c840fbe037601af065092e06ce28ce33ce0643c2acfaa6041cba0d07"
+      "code_sha256": "3edf5ab47c3757876a39723fee46ec3bb37802be46d28ac73831ba916422858c"
     },
     {
       "filename": "tools/map_launch_round.py",
