@@ -329,6 +329,37 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertIn('No concise, specific', report['rejections'][0]['reason'])
         source_targets.assert_not_called()
 
+    def test_routine_civic_proposal_stops_before_source_requests(self):
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.return_value = {
+            'targets': [{'title': 'Exhibition Hall', 'place_type': 'museum',
+                         'hook_hypothesis': 'The first federal parliament opened inside this hall in 1901.'}],
+        }
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
+        budget.finish.return_value = {'model_requests': 1, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets') as source_targets:
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock())
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('Routine civic', report['rejections'][0]['reason'])
+        source_targets.assert_not_called()
+
+    def test_story_ranking_discards_routine_civic_hook(self):
+        passage = 'The first federal parliament opened inside this exhibition hall in 1901.'
+        target = {'title': 'Exhibition Hall', 'place_type': 'museum',
+                  'page': {'text': passage, 'source_kind': 'wikidata_public_page'},
+                  'passages': [{'id': 'p0', 'text': passage, 'role': 'story',
+                                'source': 'Wikipedia'}]}
+        ranked = {'ranked': [{'title': 'Exhibition Hall', 'passage_id': 'p0',
+                              'hook': passage, 'city_title': 'Eastport',
+                              'local_title': 'Market Park'}]}
+        self.assertEqual(story.ranked_routes(ranked, [target]), [])
+
     def test_weak_clue_gets_one_source_bound_rewrite_for_same_place(self):
         place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
                               if p['id'] == 'atomium'))

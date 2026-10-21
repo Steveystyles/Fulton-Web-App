@@ -1278,6 +1278,33 @@ class DailyMapGameTests(unittest.TestCase):
         self.assertEqual(weak["persuadingFactCount"], 0)
         self.assertGreater(strong["score"], weak["score"])
 
+    def test_routine_parliament_opening_is_not_an_interest_hook(self) -> None:
+        routine = (
+            "Australia's first federal parliament opened inside this former "
+            "exhibition hall on 9 May 1901."
+        )
+        dramatic = (
+            "After parliament opened inside this former exhibition hall, "
+            "a fire destroyed its roof during a public ceremony."
+        )
+        self.assertTrue(daily_map_game.routine_civic_hook(routine))
+        self.assertEqual(daily_map_game.fact_interest_score(routine), 0)
+        self.assertFalse(daily_map_game.hard_hook_is_qualifying_recognition_hook(routine))
+        self.assertFalse(daily_map_game.routine_civic_hook(dramatic))
+        critic = daily_map_game.local_map_clue_critique(
+            {"canonical_name": "Exhibition Hall", "acceptable_aliases": []},
+            {
+                "hard": routine,
+                "medium": "This building stands in a major Australian city.",
+                "easy": "Find it beside a large public garden in the city centre.",
+                "reveal": "Exhibition Hall is a public exhibition building.",
+            },
+        )
+        self.assertIn(
+            "Hard clue relies on a routine civic opening or sitting, not a distinctive story.",
+            critic["failure_reasons"],
+        )
+
     def test_place_interest_profile_accepts_public_attraction_and_skyscraper_hooks(self) -> None:
         cases = [
             (

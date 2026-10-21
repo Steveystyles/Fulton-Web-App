@@ -553,6 +553,13 @@ MAP_HARD_HOOK_ARCHITECT_LED_RE = re.compile(
     r"\barchitect\b.{0,55}\b(?:designed?|rebuilt|reconstructed?|built|constructed?)\b",
     re.IGNORECASE,
 )
+MAP_HARD_HOOK_ROUTINE_CIVIC_RE = re.compile(
+    r"\b(?:parliament|assembly|congress|legislature|council)\b[^.!?]{0,85}"
+    r"\b(?:opened|convened|met|sat|held (?:its |the )?(?:first |inaugural )?session)\b|"
+    r"\b(?:first|inaugural)\s+(?:sitting|session|meeting)\b[^.!?]{0,85}"
+    r"\b(?:parliament|assembly|congress|legislature|council)\b",
+    re.IGNORECASE,
+)
 MAP_HARD_EVENT_PARTICIPANT_RE = re.compile(
     r"\b(?:beat|defeated|against|between|by (?:four|three|two|\d+)|"
     r"by [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:\s+(?:troops|forces|knights|players))?|"
@@ -2062,9 +2069,20 @@ def fact_hook_categories(text: object) -> set[str]:
     }
 
 
+def routine_civic_hook(text: object) -> bool:
+    """A first sitting or opening alone is not a discovery story for Map."""
+    value = str(text or "")
+    return bool(
+        MAP_HARD_HOOK_ROUTINE_CIVIC_RE.search(value)
+        and not MAP_HARD_HOOK_EVENT_ACTION_RE.search(value)
+    )
+
+
 def fact_interest_score(text: object) -> int:
     value = str(text or "").strip()
     if not value:
+        return 0
+    if routine_civic_hook(value):
         return 0
     categories = fact_hook_categories(value)
     score = 0
@@ -2619,6 +2637,8 @@ def copyedit_generated_clue_ladder(payload: dict[str, Any]) -> dict[str, str]:
 def hard_hook_specificity_score(text: object) -> int:
     value = str(text or "").strip()
     if not value or not MAP_HARD_HOOK_RECOGNITION_SIGNAL_RE.search(value):
+        return 0
+    if routine_civic_hook(value):
         return 0
     if MAP_HARD_HOOK_NONQUALIFYING_ORIGIN_RE.search(value):
         return 0
@@ -3253,6 +3273,12 @@ def local_map_clue_critique(
             "failure_reasons": [str(error)],
             "feedback_to_generator": ["Return every required clue-ladder field with non-empty text."],
         }
+
+    if routine_civic_hook(ladder["hard"]):
+        reasons.append("Hard clue relies on a routine civic opening or sitting, not a distinctive story.")
+        feedback.append(
+            "Choose a surprising place-owned event, use, or experience rather than a routine civic milestone."
+        )
 
     required_hard_hook = str(place.get("required_hard_hook") or "").strip()
     if required_hard_hook:
