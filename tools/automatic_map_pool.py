@@ -41,6 +41,7 @@ MIN_INTEREST_SCORE = 4
 INTEREST_AUDIT_BATCH_SIZE = 4
 READY_AUDIT_VERSION = 2
 PROPOSAL_ALIGNMENT_AUDIT_VERSION = 1
+MUSEUM_DESTINATION_FAILURE = 'Hard clue describes an object or event without identifying the museum destination.'
 # These labels assert a historically consequential classification, not merely
 # descriptive colour. A model must not infer one from a related event (for
 # example, hostages in a church do not prove it was a concentration camp).
@@ -236,6 +237,16 @@ def unsuitable_game_hook(result: dict) -> str | None:
                  if re.search(pattern, hard)), None)
 
 
+def missing_destination_link(candidate: dict, result: dict) -> bool:
+    """A museum's collection story must still clue the museum players will pin."""
+    if candidate.get('place_type') != 'museum':
+        return False
+    hard = str(result.get('clue_ladder', {}).get('hard') or '')
+    return not bool(re.search(
+        r'\b(?:museum|gallery|exhibit(?:ed|ion|ions)?|display(?:ed|s)?|collection|'
+        r'this (?:building|institution|hall))\b', hard, re.IGNORECASE))
+
+
 def rejected_hook_reason(verification: dict) -> str | None:
     # Preserve earlier tone rejections while allowing one shared hook rule.
     return verification.get('hook_rejection') or verification.get('tone_rejection')
@@ -323,6 +334,27 @@ def quarantine_unsuitable_ready(conn: sqlite3.Connection) -> list[str]:
         conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
                      "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
         retired.append(json.loads(candidate_text).get('canonical_name', row_id))
+    return retired
+
+
+def quarantine_unlinked_museum_ready(conn: sqlite3.Connection) -> list[str]:
+    """Return an unplayed, object-only museum round to editorial learning."""
+    retired = []
+    for row_id, candidate_text, result_text, verification_text in conn.execute(
+        "SELECT id,candidate,result,verification FROM automatic_map_entries "
+        "WHERE state='ready'"
+    ).fetchall():
+        candidate, result = json.loads(candidate_text), json.loads(result_text)
+        if not missing_destination_link(candidate, result):
+            continue
+        verification = json.loads(verification_text)
+        verification.update(
+            editorial_rejection=True,
+            round_rejection=MUSEUM_DESTINATION_FAILURE,
+        )
+        conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
+                     "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
+        retired.append(candidate.get('canonical_name', row_id))
     return retired
 
 
@@ -626,13 +658,14 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
                     clue = str(result.get('clue_ladder', {}).get(level) or '').strip()
                     if clue:
                         attempted_clues[level] = clue[:200]
+            detail = (str(verification.get('round_rejection')) if verification.get('round_rejection')
+                      else str(audit.get('reason') or verification.get('interest_audit_reason') or
+                               'Not a supported, memorable, place-defining discovery hook.'))
             candidates.append((category, {
                 'place': str(candidate.get('canonical_name') or '')[:100],
                 'rejection_kind': 'clue_ladder' if verification.get('round_rejection') else 'hook',
                 'attempted_clues': attempted_clues,
-                'failure_reason': failure_reason + ('' if operator_rejection else str(audit.get('reason') or
-                    verification.get('interest_audit_reason') or
-                    'Not a supported, memorable, place-defining discovery hook.')[:160]),
+                'failure_reason': failure_reason + ('' if operator_rejection else detail[:160]),
             }))
         except (ValueError, TypeError, AttributeError):
             continue
@@ -714,6 +747,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
            failure_lessons: list[dict] | None = None,
            rejected_hooks: list[str] | None = None) -> dict:
     candidate, result = discovery.validate_selection(report['model_output'], report['resolved_candidates'])
+    if missing_destination_link(candidate, result):
+        raise ValueError(MUSEUM_DESTINATION_FAILURE)
     tone_issue = unsuitable_game_hook(result)
     if tone_issue:
         raise ValueError('Hard clue is unsuitable for a light Map game: ' + tone_issue)
@@ -841,6 +876,8 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
     tone_issue = unsuitable_game_hook(validated)
     if tone_issue:
         raise ValueError('Hard clue is unsuitable for a light Map game: ' + tone_issue)
+    if missing_destination_link(candidate, validated):
+        raise ValueError(MUSEUM_DESTINATION_FAILURE)
     if origin == 'discovery' and unsupported_critical_labels(candidate, validated):
         raise ValueError('Consequential historical label lacks exact source support.')
     for row in conn.execute("SELECT candidate FROM automatic_map_entries WHERE state='ready'"):
@@ -891,6 +928,8 @@ def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:
         candidate = json.loads(row[1])
         verification = json.loads(row[3])
         if unsuitable_game_hook(json.loads(row[2])):
+            continue
+        if missing_destination_link(candidate, json.loads(row[2])):
             continue
         if row[4] == 'discovery' and not ready_audit_passed(verification):
             continue
@@ -1078,6 +1117,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         target = next_date(conn)
         conn.execute("UPDATE automatic_map_entries SET state='expired' WHERE state='ready' AND expires_at<=?", (now().isoformat(),))
         quarantined = quarantine_unsuitable_ready(conn)
+        quarantined += quarantine_unlinked_museum_ready(conn)
         quarantined += quarantine_unaligned_ready(conn, output_dir)
         if not conn.execute("SELECT 1 FROM automatic_map_meta WHERE key='bootstrap'").fetchone():
             if seed_catalog and seed_catalog.is_file():
@@ -1387,6 +1427,8 @@ def publish(conn: sqlite3.Connection, *, puzzle_date: str) -> dict:
         raise ValueError('Queued round has not passed the current evidence and chronology audit.')
     if unsuitable_game_hook(result):
         raise ValueError('Queued round has an unsuitable light-game hook.')
+    if missing_destination_link(candidate, result):
+        raise ValueError('Queued museum clue does not identify the destination to pin.')
     if row[4] == 'discovery' and unsupported_critical_labels(candidate, result):
         raise ValueError('Queued round contains an unsupported consequential historical label.')
     if row[4] == 'discovery' and not sufficient_interest_score(verification.get('interesting_hook_score')):

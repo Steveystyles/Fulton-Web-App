@@ -505,6 +505,42 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertIn('specific player payoff', pool.READY_AUDIT_INSTRUCTIONS)
         self.assertIn('Factual support', pool.READY_AUDIT_INSTRUCTIONS)
 
+    def test_museum_hook_must_point_to_the_destination_not_only_its_artifact(self):
+        museum = {'place_type': 'museum'}
+        ship_event = {'clue_ladder': {'hard':
+            'In 1628, thirty men ran across a warship deck and it rolled alarmingly.'}}
+        museum_story = {'clue_ladder': {'hard':
+            'The warship displayed in this museum almost rolled over during a 1628 stability test.'}}
+        building_story = {'clue_ladder': {'hard':
+            'A painting vanished from this building in a daring theft.'}}
+        self.assertTrue(pool.missing_destination_link(museum, ship_event))
+        self.assertFalse(pool.missing_destination_link(museum, museum_story))
+        self.assertFalse(pool.missing_destination_link(museum, building_story))
+        self.assertFalse(pool.missing_destination_link({'place_type': 'castle'}, ship_event))
+
+    def test_existing_unplayed_museum_round_is_returned_for_clue_repair(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            candidate_text, result_text = conn.execute(
+                'SELECT candidate,result FROM automatic_map_entries WHERE id=?',
+                (self.place['id'],)).fetchone()
+            candidate, result = json.loads(candidate_text), json.loads(result_text)
+            candidate['place_type'] = 'museum'
+            result['clue_ladder']['hard'] = (
+                'In 1628, thirty men ran across a warship deck and it rolled alarmingly.')
+            conn.execute('UPDATE automatic_map_entries SET candidate=?,result=? WHERE id=?',
+                         (json.dumps(candidate), json.dumps(result), self.place['id']))
+            self.assertEqual(pool.eligible(conn, '2026-09-08'), [])
+            conn.commit()
+        with patch.dict(os.environ, {'MAP_AI_API_KEY': ''}):
+            pool.maintain(self.database, self.root/'reports', seed_catalog=None)
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries WHERE id=?',
+                                          (self.place['id'],)).fetchone()[0], 'rejected')
+            lessons = pool.rejected_interest_lessons(conn)
+            self.assertEqual(lessons[0]['rejection_kind'], 'clue_ladder')
+            self.assertIn('museum destination', lessons[0]['failure_reason'])
+
     def test_maintenance_quarantines_old_victim_hook_without_model_request(self):
         self.queue('discovery')
         with closing(self.connect()) as conn:
