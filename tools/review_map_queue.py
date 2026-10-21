@@ -57,6 +57,7 @@ def review(
     scope: str = "hook",
     apply: bool = False,
     backup_root: Path | None = None,
+    in_container_snapshot: bool = False,
 ) -> dict[str, Any]:
     reason = " ".join(reason.split())
     if not 12 <= len(reason) <= 300:
@@ -69,10 +70,17 @@ def review(
         entries = checked_entries(conn, targets)
     if not apply:
         return {"status": "dry_run", "entries": entries}
-    if backup_root is None:
-        raise ValueError("An explicit backup root is required for an applied review.")
-    backup = backup_manager.create_backup(database.parent, backup_root, database_name=database.name)
-    backup_manager.verify_backup(backup)
+    if (backup_root is None and not in_container_snapshot) or (backup_root is not None and in_container_snapshot):
+        raise ValueError("Choose exactly one backup root or in-container safety snapshot for an applied review.")
+    if in_container_snapshot:
+        backup = backup_manager.create_sqlite_safety_snapshot(
+            database, database.parent / "qa" / "map-review-backups"
+        )
+        backup_kind = "sqlite_safety_snapshot"
+    else:
+        backup = backup_manager.create_backup(database.parent, backup_root, database_name=database.name)
+        backup_manager.verify_backup(backup)
+        backup_kind = "full_backup"
     reviewed_at = datetime.now(timezone.utc).isoformat()
     with closing(sqlite3.connect(database, timeout=10)) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -93,7 +101,8 @@ def review(
             if changed.rowcount != 1:
                 raise RuntimeError("A queued place changed during review; no changes were committed.")
         conn.commit()
-    return {"status": "applied", "entries": entries, "backup": str(backup)}
+    return {"status": "applied", "entries": entries, "backup": str(backup),
+            "backup_kind": backup_kind}
 
 
 def main() -> int:
@@ -104,6 +113,10 @@ def main() -> int:
     parser.add_argument("--scope", choices=("hook", "place"), default="hook")
     parser.add_argument("--apply", action="store_true", help="Retire only after a verified online backup")
     parser.add_argument("--backup-root", type=Path)
+    parser.add_argument(
+        "--in-container-snapshot", action="store_true",
+        help="Use a verified private SQLite snapshot under the container's persistent /app/data/qa",
+    )
     args = parser.parse_args()
     try:
         result = review(
@@ -113,6 +126,7 @@ def main() -> int:
             scope=args.scope,
             apply=args.apply,
             backup_root=args.backup_root,
+            in_container_snapshot=args.in_container_snapshot,
         )
     except (ValueError, RuntimeError, OSError, sqlite3.Error, backup_manager.BackupError) as error:
         parser.exit(1, f"Map queue review failed: {error}\n")
