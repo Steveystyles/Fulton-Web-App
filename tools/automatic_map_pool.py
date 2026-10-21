@@ -906,10 +906,14 @@ def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:
                         (cutoff, puzzle_date, candidate['place_type'])).fetchone():
             continue
         result.append(tuple(row))
-    if os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold() == 'story_first':
-        # Preserve older checked rounds as fallbacks, but let an independently
-        # audited story-first round reach the next unpublished game first.
-        result.sort(key=lambda row: json.loads(row[3]).get('source_pipeline') != 'story_first')
+    story_first = os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold() == 'story_first'
+    # The independent ready audit is comparable across both discovery paths.
+    # Prefer the strongest player hook; preserve queue age for equal scores.
+    # A story-first round wins an equal-score tie when that path is enabled.
+    result.sort(key=lambda row: (
+        -json.loads(row[3]).get('ready_audit', {}).get('interesting_hook_score', 0),
+        story_first and json.loads(row[3]).get('source_pipeline') != 'story_first',
+    ))
     return result
 
 

@@ -828,6 +828,27 @@ class AutomaticPoolTests(unittest.TestCase):
                 ranked = pool.eligible(conn, '2026-09-08')
             self.assertEqual(ranked[0][0], self.place['id'])
 
+    def test_stronger_hook_beats_older_story_first_round(self):
+        places = controlled.load_catalog(controlled.DEFAULT_CATALOG)
+        second = next(place for place in places if place['id'] != self.place['id'])
+        second_payload = {
+            'place_id': second['id'], 'selection_reason': 'A sourced landmark with progressive map clues.',
+            'clues': {key: {'text': value['text'], 'fact_id': key}
+                      for key, value in second['facts'].items()},
+        }
+        second_result = controlled.validate_result(second_payload, [second])
+        with closing(self.connect()) as conn:
+            pool.add(conn, self.place, self.result,
+                     {**self.verdict, 'interesting_hook_score': 4,
+                      'source_pipeline': 'story_first'}, origin='discovery')
+            pool.add(conn, second, second_result,
+                     {**self.verdict, 'interesting_hook_score': 5}, origin='discovery')
+            conn.commit()
+            with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}):
+                ranked = pool.eligible(conn, '2026-09-08')
+            self.assertEqual(ranked[0][0], second['id'])
+            self.assertEqual(ranked[1][0], self.place['id'])
+
     def test_story_first_report_must_match_checked_candidate_before_queueing(self):
         report = {**self.report(), 'pipeline': 'story_first',
                   'candidate_sha256': 'incorrect-digest'}
