@@ -74,10 +74,8 @@
       "issue_confidence": "MEDIUM",
       "issue_text": "Possible SQL injection vector through string-based query construction.",
       "cwe_id": 89,
-      "line_number": 3694,
+      "line_number": 3696,
       "line_range": [
-        3694,
-        3695,
         3696,
         3697,
         3698,
@@ -91,11 +89,13 @@
         3706,
         3707,
         3708,
-        3709
+        3709,
+        3710,
+        3711
       ],
       "col_offset": 12,
       "end_col_offset": 8,
-      "code_sha256": "dc9ceb3e65a9d7b4fe96ce1d5a074eff5d9ddbae26580b00ab9cc870e9e31357"
+      "code_sha256": "1ef845499275bd050d4b6fb6fb3f096f22ddf55080c61d6bef9db5518cd083e6"
     },
     {
       "filename": "daily_map_game.py",
@@ -105,13 +105,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4643,
+      "line_number": 4645,
       "line_range": [
-        4643
+        4645
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "c3d5e505e3d572af90288bad95e0aaffb9d8e5a6fe7a9329ec4a96635f40dcda"
+      "code_sha256": "1103066e86b653931a529862683189c081cc93b81c5d7ba2b58ac264eb221214"
     },
     {
       "filename": "daily_map_game.py",
@@ -121,13 +121,13 @@
       "issue_confidence": "HIGH",
       "issue_text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected.",
       "cwe_id": 22,
-      "line_number": 4698,
+      "line_number": 4700,
       "line_range": [
-        4698
+        4700
       ],
       "col_offset": 17,
       "end_col_offset": 70,
-      "code_sha256": "4e6f86805a25ec0427d5a8e0a5838f75d5b6b18d5f6a8deb535ac3fb5ce4a595"
+      "code_sha256": "a718fee6938ca4489b792f0cde1f7438b02768520984fe34cd26df00de092099"
     },
     {
       "filename": "daily_quiz.py",

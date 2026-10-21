@@ -64,6 +64,29 @@ class MapReviewedFallbackTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected["canonical_name"], "Terracotta Army")
 
+    def test_fallback_prefers_non_stadium_but_keeps_stadium_last_resort(self) -> None:
+        self.conn.execute("UPDATE map_place_pool SET active = 0")
+        install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
+        self.conn.execute(
+            "UPDATE map_place_pool SET active = CASE WHEN canonical_name IN "
+            "('Wembley Stadium', 'Terracotta Army') THEN 1 ELSE 0 END"
+        )
+        self.conn.execute(
+            "UPDATE map_place_pool SET validation_grade = 1 "
+            "WHERE canonical_name = 'Terracotta Army'"
+        )
+
+        preferred = daily_map_game.select_daily_place(self.conn, "2026-10-28")
+        self.assertIsNotNone(preferred)
+        self.assertEqual(preferred["canonical_name"], "Terracotta Army")
+
+        self.conn.execute(
+            "UPDATE map_place_pool SET active = 0 WHERE canonical_name = 'Terracotta Army'"
+        )
+        last_resort = daily_map_game.select_daily_place(self.conn, "2026-10-28")
+        self.assertIsNotNone(last_resort)
+        self.assertEqual(last_resort["canonical_name"], "Wembley Stadium")
+
     def test_reviewed_fallback_install_repairs_existing_guidance(self) -> None:
         install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
         self.conn.execute(
