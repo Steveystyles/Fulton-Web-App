@@ -67,6 +67,25 @@ class MapQueueReviewTests(unittest.TestCase):
         self.assertEqual(json.loads(by_id["q940843"][2])["operator_rejection"]["reason"], reason)
         self.assertEqual(json.loads(by_id["q940843"][2])["operator_rejection"]["scope"], "hook")
 
+    def test_in_container_snapshot_preserves_pre_review_state(self):
+        result = review_map_queue.review(
+            self.database, {"q940843": "Lotus Temple"},
+            reason="The proposed hard hook is not interesting enough for the game.",
+            apply=True, in_container_snapshot=True,
+        )
+        self.assertEqual(result["backup_kind"], "sqlite_safety_snapshot")
+        snapshot = Path(result["backup"])
+        self.assertEqual(snapshot.parent, self.data / "qa" / "map-review-backups")
+        with closing(sqlite3.connect(snapshot)) as conn:
+            self.assertEqual(conn.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            self.assertEqual(conn.execute(
+                "SELECT state FROM automatic_map_entries WHERE id='q940843'"
+            ).fetchone()[0], "ready")
+        with closing(sqlite3.connect(self.database)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT state FROM automatic_map_entries WHERE id='q940843'"
+            ).fetchone()[0], "rejected")
+
     def test_place_scope_is_explicit(self):
         result = review_map_queue.review(
             self.database, {"q940843": "Lotus Temple"},
@@ -86,6 +105,11 @@ class MapQueueReviewTests(unittest.TestCase):
             review_map_queue.review(self.database, targets, reason="The place hook is not compelling.", apply=True)
         with self.assertRaisesRegex(ValueError, "only once"):
             review_map_queue.parse_targets(["q940843=Lotus Temple", "q940843=Lotus Temple"])
+        with self.assertRaisesRegex(ValueError, "exactly one"):
+            review_map_queue.review(
+                self.database, targets, reason="The place hook is not compelling.",
+                apply=True, backup_root=self.backups, in_container_snapshot=True,
+            )
 
     def test_apply_rejects_stale_batch_without_changing_other_entry(self):
         targets = review_map_queue.parse_targets([

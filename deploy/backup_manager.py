@@ -323,6 +323,40 @@ def _sqlite_online_backup(source_path: Path, destination_path: Path) -> dict[str
     return {"quickCheck": "ok", "pageCount": page_count}
 
 
+def create_sqlite_safety_snapshot(database: Path, snapshot_root: Path) -> Path:
+    """Keep a verified pre-change database snapshot on the application's data mount.
+
+    This is for a narrow operator edit when the host cannot open SQLite on its
+    FUSE mount. It is not a substitute for the full, off-host deployment backup.
+    """
+    if _has_link_component(database) or not database.is_file():
+        raise BackupError(f"SQLite source is not a safe regular file: {database}")
+    source = database.resolve(strict=True)
+    data_root = source.parent
+    expected_root = data_root / "qa" / "map-review-backups"
+    if snapshot_root.resolve(strict=False) != expected_root:
+        raise BackupError(f"Safety snapshots must be stored in {expected_root}")
+    root = _ensure_private_directory(expected_root)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = root / f"map-review-{stamp}-{uuid.uuid4().hex[:8]}.db"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(descriptor)
+    try:
+        _sqlite_online_backup(source, path)
+        _fsync_file(path)
+        check = sqlite3.connect(_readonly_sqlite_uri(path), uri=True, timeout=10)
+        try:
+            if check.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                raise BackupError("Safety snapshot failed independent quick_check.")
+        finally:
+            check.close()
+        _fsync_directory(root)
+        return path
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def _artifact(path: Path, *, kind: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "path": path.name,
