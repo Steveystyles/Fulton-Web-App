@@ -569,7 +569,8 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
         hook = legacy.plain(item.get('hook'), 300)
         if len(hook.split()) < 7:
             continue
-        if legacy.daily_map_game.routine_civic_hook(hook):
+        if (legacy.daily_map_game.routine_civic_hook(hook)
+                or legacy.daily_map_game.victim_harm_hook(hook)):
             continue
         # A chosen hook must visibly relate to its cited source paragraph.
         if len(legacy.hook_terms(hook, target['title']) & legacy.hook_terms(passage['text'], target['title'])) < 3:
@@ -828,6 +829,12 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                 report['rejections'].append({
                     'title': str(proposal.get('title') or '')[:160],
                     'reason': 'Routine civic opening or sitting is not a distinctive Map story.',
+                })
+                continue
+            if legacy.daily_map_game.victim_harm_hook(hypothesis):
+                report['rejections'].append({
+                    'title': str(proposal.get('title') or '')[:160],
+                    'reason': 'Victim deaths or terror are not suitable Map discovery hooks.',
                 })
                 continue
             proposals_with_stories.append(proposal)

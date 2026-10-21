@@ -560,6 +560,13 @@ MAP_HARD_HOOK_ROUTINE_CIVIC_RE = re.compile(
     r"\b(?:parliament|assembly|congress|legislature|council)\b",
     re.IGNORECASE,
 )
+MAP_HARD_HOOK_VICTIM_HARM_RE = re.compile(
+    r"\b(?:assassinat\w*|murder\w*|massacr\w*|genocid\w*|suicid\w*|"
+    r"kill(?:ed|ing|s)|slain|deadly|fatal(?:ly)?|deaths?|died|perished|"
+    r"hostage\w*|concentration camps?|death camps?|holocaust|"
+    r"terrorist attack|bomb attack)\b",
+    re.IGNORECASE,
+)
 MAP_HARD_EVENT_PARTICIPANT_RE = re.compile(
     r"\b(?:beat|defeated|against|between|by (?:four|three|two|\d+)|"
     r"by [A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:\s+(?:troops|forces|knights|players))?|"
@@ -2078,11 +2085,16 @@ def routine_civic_hook(text: object) -> bool:
     )
 
 
+def victim_harm_hook(text: object) -> bool:
+    """Do not make victim deaths or terror the attraction in a light Map game."""
+    return bool(MAP_HARD_HOOK_VICTIM_HARM_RE.search(str(text or "")))
+
+
 def fact_interest_score(text: object) -> int:
     value = str(text or "").strip()
     if not value:
         return 0
-    if routine_civic_hook(value):
+    if routine_civic_hook(value) or victim_harm_hook(value):
         return 0
     categories = fact_hook_categories(value)
     score = 0
@@ -3261,6 +3273,8 @@ def generation_avoid_in_clues(place: dict[str, Any]) -> str:
 def local_map_clue_critique(
     place: dict[str, Any],
     clue_ladder: dict[str, Any],
+    *,
+    enforce_light_tone: bool = True,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     feedback: list[str] = []
@@ -3278,6 +3292,11 @@ def local_map_clue_critique(
         reasons.append("Hard clue relies on a routine civic opening or sitting, not a distinctive story.")
         feedback.append(
             "Choose a surprising place-owned event, use, or experience rather than a routine civic milestone."
+        )
+    if enforce_light_tone and victim_harm_hook(ladder["hard"]):
+        reasons.append("Hard clue makes victim deaths or terror the place's discovery hook.")
+        feedback.append(
+            "Choose a light, memorable place-owned experience, use, performance, or discovery instead."
         )
 
     required_hard_hook = str(place.get("required_hard_hook") or "").strip()
@@ -3603,7 +3622,11 @@ def clue_ladder_dict_for_row(row: sqlite3.Row) -> dict[str, str]:
     }
 
 
-def row_passes_map_clue_quality(row: sqlite3.Row) -> bool:
+def row_passes_map_clue_quality(
+    row: sqlite3.Row,
+    *,
+    enforce_light_tone: bool = True,
+) -> bool:
     try:
         if place_is_explicitly_excluded(row):
             return False
@@ -3612,6 +3635,7 @@ def row_passes_map_clue_quality(row: sqlite3.Row) -> bool:
         critic = local_map_clue_critique(
             public_place_payload(row),
             clue_ladder_dict_for_row(row),
+            enforce_light_tone=enforce_light_tone,
         )
     except (KeyError, IndexError, TypeError, ValueError):
         return False
