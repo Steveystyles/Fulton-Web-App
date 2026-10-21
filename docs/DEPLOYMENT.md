@@ -31,6 +31,12 @@ A production rollout is allowed only when all of these conditions are true:
 These invariants also apply to the first production deployment. There is no
 unsigned image, mutable-tag, or local-build exception for initial rollout.
 
+If GitHub does not schedule the normal `main` push workflow after a reviewed
+merge, an operator may run the `Build` workflow manually with the branch set
+to `main`. The manual run has the same build, secret-scan, and SAST prerequisites
+for `release-image`; do not deploy until its signed digest and revision match
+the merged commit. A manual run on any other branch cannot publish a release.
+
 ## 1. Host prerequisites and layout
 
 Install Docker Engine with the Compose plugin, Git, Python 3, `flock`, and
