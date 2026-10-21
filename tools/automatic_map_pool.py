@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 import sys
+import unicodedata
 from uuid import uuid4
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -243,6 +244,46 @@ def rejected_hook_reason(verification: dict) -> str | None:
 def hook_digest(result: dict) -> str:
     hard = str(result.get('clue_ladder', {}).get('hard') or '')
     return discovery.digest({'hard': ' '.join(hard.casefold().split())})
+
+
+STORY_STOPWORDS = discovery.HOOK_STOPWORDS | {
+    'site', 'marks', 'marking', 'first', 'main', 'near', 'inside', 'outside',
+    'before', 'after', 'also', 'into', 'over', 'under', 'across', 'became',
+}
+
+
+def same_rejected_story(first: str, second: str) -> bool:
+    """Catch close paraphrases of a rejected hook without banning the place."""
+    def terms(value: str) -> set[str]:
+        plain = ''.join(char for char in unicodedata.normalize('NFKD', value.casefold())
+                        if not unicodedata.combining(char))
+        return {word for word in re.findall(r'[a-z]{4,}', plain)
+                if word not in STORY_STOPWORDS}
+
+    left, right = terms(first), terms(second)
+    common = left & right
+    return (len(common) >= 5 and min(len(left), len(right)) >= 5
+            and len(common) / min(len(left), len(right)) >= 0.6)
+
+
+def rejected_story_hooks(conn: sqlite3.Connection, place_id: str) -> list[str]:
+    """Keep hook-level failures available even after a new round replaces them."""
+    rows = conn.execute(
+        "SELECT result,verification FROM automatic_map_entries WHERE id=? AND state='rejected' "
+        "UNION ALL SELECT result,verification FROM automatic_map_rejected_hooks WHERE place_id=?",
+        (place_id, place_id),
+    )
+    hooks = []
+    for result_text, verification_text in rows:
+        result, verification = json.loads(result_text), json.loads(verification_text)
+        operator = verification.get('operator_rejection') or {}
+        score = verification.get('interesting_hook_score')
+        if (operator and operator.get('scope') != 'place' or rejected_hook_reason(verification)
+                or type(score) is int and score < MIN_INTEREST_SCORE):
+            hard = str(result.get('clue_ladder', {}).get('hard') or '').strip()
+            if hard:
+                hooks.append(hard)
+    return hooks
 
 
 def archive_rejected_hook(conn: sqlite3.Connection, place_id: str, candidate_text: str,
@@ -670,7 +711,8 @@ def recent_failed_round_lessons(conn: sqlite3.Connection, output_dir: Path,
 
 def verify(report: dict, provider: discovery.DiscoveryProvider,
            *, editorial_feedback: list[dict] | None = None,
-           failure_lessons: list[dict] | None = None) -> dict:
+           failure_lessons: list[dict] | None = None,
+           rejected_hooks: list[str] | None = None) -> dict:
     candidate, result = discovery.validate_selection(report['model_output'], report['resolved_candidates'])
     tone_issue = unsuitable_game_hook(result)
     if tone_issue:
@@ -681,6 +723,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
                          + ', '.join(unsupported_labels))
     feedback = editorial_feedback or []
     selected_hook = str(result['clue_ladder']['hard']).strip().casefold()
+    if any(same_rejected_story(selected_hook, old) for old in rejected_hooks or []):
+        raise ValueError('Hard hook repeats an earlier rejected story for this place.')
     if any(selected_hook == str(item.get('rejected_hook') or '').strip().casefold() for item in feedback):
         raise ValueError('The hard hook repeats one that an editor rejected.')
     resolved = next(p for p in report['resolved_candidates'] if p['id'] == candidate['id'])
@@ -785,6 +829,9 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
     if conn.execute('SELECT 1 FROM automatic_map_rejected_rounds WHERE place_id=? AND ladder_digest=?',
                     (candidate['id'], discovery.digest(result.get('clue_ladder')))).fetchone():
         raise ValueError('A previously rejected Map clue ladder cannot be reused.')
+    if any(same_rejected_story(result['clue_ladder']['hard'], old)
+           for old in rejected_story_hooks(conn, candidate['id'])):
+        raise ValueError('Hard hook repeats an earlier rejected story for this place.')
     # Revalidate the actual saved clue text; publication never asks a model to rewrite it.
     payload = {'place_id': candidate['id'], 'selection_reason': result['selection_reason'],
                'clues': {level: {'text': result['clue_ladder'][level], 'fact_id': level} for level in controlled.LEVELS}}
@@ -1050,7 +1097,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         failed_names = recent_failed_names(conn, output_dir)
         route_lessons = recent_route_failure_lessons(conn, output_dir)
         feedback = editorial_corrections(conn)
-        failure_lessons = rejected_interest_lessons(conn) + recent_failed_round_lessons(conn, output_dir)
+        failure_lessons = rejected_interest_lessons(conn, limit=8) + recent_failed_round_lessons(conn, output_dir)
         pending_audits = [row for row in conn.execute(
             "SELECT id,candidate,result,verification FROM automatic_map_entries "
             "WHERE state='ready' AND origin='discovery' AND expires_at>? ORDER BY created_at,id",
@@ -1148,8 +1195,10 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         verifier = factory(budget)
         verifier_clients = getattr(verifier, 'clients', ())
         verifier.max_requests = 2 if isinstance(verifier_clients, list) and len(verifier_clients) > 1 else 1
+        with closing(sqlite3.connect(database)) as conn:
+            prior_hooks = rejected_story_hooks(conn, str(report.get('candidate', {}).get('id') or ''))
         verdict = verify(report, verifier, editorial_feedback=feedback,
-                         failure_lessons=failure_lessons)
+                         failure_lessons=failure_lessons, rejected_hooks=prior_hooks)
         verdict['proposal_alignment_audit'] = {
             'version': PROPOSAL_ALIGNMENT_AUDIT_VERSION, 'status': 'passed'}
         candidate, result = discovery.validate_selection(report['model_output'], report['resolved_candidates'])

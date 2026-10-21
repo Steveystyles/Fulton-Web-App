@@ -1156,10 +1156,11 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertNotIn(self.place['id'], [place['id'] for place in discover.call_args.kwargs['excluded_places']])
         self.assertIn(feedback[0], discover.call_args.kwargs['editorial_feedback'])
         replacement = deepcopy(self.result)
-        replacement['clue_ladder']['hard'] = ('Built for Expo 58, this walk-in iron crystal magnifies '
-                                               'an atomic structure 165 billion times into a building.')
+        replacement['clue_ladder']['hard'] = ('Visitors can dine in an upper sphere while looking '
+                                               'across Brussels from this unusual exhibition building.')
         with closing(self.connect()) as conn:
-            pool.add(conn, self.place, replacement, self.verdict, origin='discovery')
+            with patch.object(controlled, 'validate_result', return_value={**replacement, 'automated_pass': True}):
+                pool.add(conn, self.place, replacement, self.verdict, origin='discovery')
             conn.commit()
             self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries WHERE id=?',
                                           (self.place['id'],)).fetchone()[0], 'ready')
@@ -1167,6 +1168,36 @@ class AutomaticPoolTests(unittest.TestCase):
                                           (self.place['id'],)).fetchone()[0], 1)
             self.assertEqual(pool.editorial_corrections(conn)[0]['rejected_hook'],
                              self.result['clue_ladder']['hard'])
+
+    def test_rejected_story_paraphrase_is_blocked_before_another_model_audit(self):
+        old = ('This site marks where Mumtaz Mahal was first buried before moving to the main '
+               'mausoleum chamber, featuring a Persian-inspired charbagh garden.')
+        new = ('The north-western quadrant marks the site where Mumtaz Mahal was first buried '
+               'before moving to the main chamber.')
+        other = ('A team of stonecutters built a marble dome with a remarkable double-shell design.')
+        self.assertTrue(pool.same_rejected_story(old, new))
+        self.assertFalse(pool.same_rejected_story(old, other))
+        self.assertFalse(pool.same_rejected_story('A short clue.', 'Another short clue.'))
+
+        self.queue('discovery')
+        paraphrase = deepcopy(self.result)
+        paraphrase['clue_ladder']['hard'] = ('Built for Expo 58, this walk-in iron crystal magnifies '
+                                               'an atomic structure 165 billion times into a building.')
+        with closing(self.connect()) as conn:
+            verification = {**self.verdict, 'interesting_hook_score': 2,
+                            'hook_rejection': 'ready audit rejected a weak discovery hook'}
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? WHERE id=?",
+                         (json.dumps(verification), self.place['id']))
+            conn.commit()
+            history = pool.rejected_story_hooks(conn, self.place['id'])
+            self.assertEqual(history, [self.result['clue_ladder']['hard']])
+            with self.assertRaisesRegex(ValueError, 'earlier rejected story'):
+                pool.add(conn, self.place, paraphrase, self.verdict, origin='discovery')
+        provider = Mock()
+        with patch.object(discovery, 'validate_selection', return_value=(self.place, paraphrase)):
+            with self.assertRaisesRegex(ValueError, 'earlier rejected story'):
+                pool.verify(self.report(), provider, rejected_hooks=history)
+        provider.call_with_fallback.assert_not_called()
 
     def test_operator_rejected_place_stays_excluded(self):
         self.queue('discovery')
