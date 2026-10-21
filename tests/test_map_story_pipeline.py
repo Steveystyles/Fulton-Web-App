@@ -245,7 +245,9 @@ class StoryPipelineTests(unittest.TestCase):
         article_text = ' '.join(fact['text'] for fact in place['facts'].values())
         page = {'title': 'Atomium', 'text': article_text, 'entity': 'Q1', 'lat': place['lat'],
                 'lng': place['lng']}
+        hypothesis = 'Visitors can step inside a giant model of an iron crystal.'
         target = {'title': 'Atomium', 'place_type': place['place_type'], 'page': page,
+                  'hook_hypothesis': hypothesis,
                   'passages': [{'id': 'p0', 'text': article_text, 'role': 'story', 'source': 'Wikipedia'}],
                   'nearby_options': [{'title': 'Heysel', 'distance_m': 700}]}
         place['sources'] = {'article': place['sources']['history'],
@@ -262,7 +264,8 @@ class StoryPipelineTests(unittest.TestCase):
         provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
         provider.requests = []
         provider.call_with_fallback.side_effect = [
-            {'targets': [{'title': f'Target {i}', 'place_type': 'museum'} for i in range(6)]},
+            {'targets': [{'title': f'Target {i}', 'place_type': 'museum',
+                          'hook_hypothesis': hypothesis} for i in range(6)]},
             {'ranked': [{'title': 'Atomium', 'passage_id': 'p0', 'hook': place['proposal_reason'],
                          'city_title': 'Brussels', 'local_title': 'Heysel'}]},
             clue_payload,
@@ -285,8 +288,11 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertEqual(provider.call_with_fallback.call_count, 3)
             target_prompt = provider.call_with_fallback.call_args_list[0].kwargs['prompt']
             self.assertIn('Do not pad the list with weak places', target_prompt)
+            self.assertIn('hook_hypothesis', target_prompt)
             self.assertIn('routine upkeep', target_prompt)
             ranking_prompt = provider.call_with_fallback.call_args_list[1].kwargs['prompt']
+            self.assertIn(hypothesis, ranking_prompt)
+            self.assertIn('unverified lead, not evidence', ranking_prompt)
             self.assertIn('A generic old hook', ranking_prompt)
             self.assertIn('An unplayable old park', ranking_prompt)
             self.assertIn('A weak story was rejected', ranking_prompt)
@@ -298,8 +304,30 @@ class StoryPipelineTests(unittest.TestCase):
 
     def test_story_stage_can_decline_a_weak_batch_instead_of_forcing_a_hook(self):
         self.assertEqual(story.target_schema()['properties']['targets']['minItems'], 0)
+        self.assertIn('hook_hypothesis', story.target_schema()['properties']['targets']['items']['required'])
         self.assertEqual(story.story_schema()['properties']['ranked']['minItems'], 0)
         self.assertEqual(story.ranked_routes({'ranked': []}, []), [])
+
+    def test_proposal_without_a_story_stops_before_source_requests(self):
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.return_value = {
+            'targets': [{'title': 'Famous Tower', 'place_type': 'monument',
+                         'hook_hypothesis': 'It is old.'}],
+        }
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
+        budget.finish.return_value = {'model_requests': 1, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets') as source_targets:
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock())
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('specific discovery-story hypothesis', report['error'])
+        self.assertIn('No concise, specific', report['rejections'][0]['reason'])
+        source_targets.assert_not_called()
 
     def test_weak_clue_gets_one_source_bound_rewrite_for_same_place(self):
         place = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
@@ -327,7 +355,9 @@ class StoryPipelineTests(unittest.TestCase):
         provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
         provider.requests = []
         provider.call_with_fallback.side_effect = [
-            {'targets': [{'title': f'Target {i}', 'place_type': 'museum'} for i in range(12)]},
+            {'targets': [{'title': f'Target {i}', 'place_type': 'museum',
+                          'hook_hypothesis': 'A public performance here surprised early visitors.'}
+                         for i in range(12)]},
             {'ranked': [{'title': 'Atomium', 'passage_id': 'p0', 'hook': place['proposal_reason'],
                          'city_title': 'Brussels', 'local_title': 'Heysel'}]},
             weak, selection,
@@ -361,7 +391,9 @@ class StoryPipelineTests(unittest.TestCase):
         provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
         provider.requests = []
         provider.call_with_fallback.side_effect = [
-            {'targets': [{'title': f'Target {i}', 'place_type': 'museum'} for i in range(12)]},
+            {'targets': [{'title': f'Target {i}', 'place_type': 'museum',
+                          'hook_hypothesis': 'A public performance here surprised early visitors.'}
+                         for i in range(12)]},
             {'ranked': [{'title': 'Unknown', 'passage_id': 'p0', 'hook': 'No useful evidence here.',
                          'city_title': 'Nowhere', 'local_title': 'Nothing'}]},
         ]
@@ -685,9 +717,12 @@ class StoryPipelineTests(unittest.TestCase):
                                     'text': 'The Glass Hall is in Eastport. ' * 30}
         source.entities.return_value = {'Q1': {'claims': {}}}
         report = {'rejections': []}
-        targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum'}], source,
+        hypothesis = 'Visitors once watched a surprising solar railway demonstration here.'
+        targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum',
+                                         'hook_hypothesis': hypothesis}], source,
                                        [], [], [], report)
         self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]['hook_hypothesis'], hypothesis)
         source.page.assert_called_once_with('Glass Hall')
         source.country.assert_not_called()
 
@@ -764,7 +799,9 @@ class StoryPipelineTests(unittest.TestCase):
             provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='secret'))]
             provider.requests = []
             provider.call_with_fallback.side_effect = [
-                {'targets': [{'title': f'Place {i}', 'place_type': 'museum'} for i in range(12)]},
+                {'targets': [{'title': f'Place {i}', 'place_type': 'museum',
+                              'hook_hypothesis': 'A public performance here surprised early visitors.'}
+                             for i in range(12)]},
                 {'ranked': [{'title': 'Place 0', 'passage_id': 'p0', 'hook': 'Invented story with no source support.',
                              'city_title': 'Invented City', 'local_title': 'Invented Park'}]},
             ]
