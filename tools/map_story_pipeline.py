@@ -228,7 +228,9 @@ def target_schema() -> dict:
     item = {'type': 'object', 'properties': {
         'title': {'type': 'string'}, 'place_type': {'type': 'string', 'enum': list(legacy.PLACE_TYPES)},
         'source_url': {'type': 'string'}, 'wikidata_id': {'type': 'string'},
-    }, 'required': ['title', 'place_type', 'source_url', 'wikidata_id'], 'additionalProperties': False}
+        'hook_hypothesis': {'type': 'string'},
+    }, 'required': ['title', 'place_type', 'source_url', 'wikidata_id', 'hook_hypothesis'],
+       'additionalProperties': False}
     return {'type': 'object', 'properties': {'targets': {
         'type': 'array', 'minItems': 0, 'maxItems': 12, 'items': item,
     }}, 'required': ['targets'], 'additionalProperties': False}
@@ -456,6 +458,7 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                            'passages': [{**item, 'source': external['source_name'] if external else 'Wikipedia'}
                                         for item in items],
                            'nearby_options': nearby,
+                           'hook_hypothesis': ' '.join(str(proposal.get('hook_hypothesis') or '').split())[:240],
                            'suggested_url': str(proposal.get('source_url') or ''),
                            **({'official': external} if external else {})})
         except (ValueError, KeyError, TypeError) as error:
@@ -779,7 +782,11 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'Aim for geographic variety across these lanes: ' + ', '.join(focus) + '. '
                   'Do not pad the list with weak places to reach a count; return fewer, even zero, '
                   'when no convincing prospect is available. Quality outranks the count. '
-                  'Give each place\'s exact public name and place type, and its Wikidata Q identifier '
+                  'For EACH proposal, first state one specific hook_hypothesis: a vivid, place-owned '
+                  'incident, ingenious use, performance, or experience with a concrete player payoff. '
+                  'Do not offer a place if you cannot articulate that story in one sentence; a famous '
+                  'landmark with only ordinary design, dates, or dimensions is not a prospect. This is '
+                  'an unverified lead, not a fact or a clue. Give each place\'s exact public name and place type, and its Wikidata Q identifier '
                   '(wikidata_id), or an empty string if unknown. Supply one public HTTPS source_url '
                   'describing its specific story, or an empty string when unknown. Choose sources for factual '
                   'quality and relevance, never because they belong to a fixed domain list. A Wikipedia article is useful but NOT '
@@ -802,11 +809,28 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         report['proposals'] = proposals
         if not isinstance(proposals, list) or len(proposals) > 12:
             raise ValueError('At most twelve target proposals are allowed.')
+        proposals_with_stories = []
+        for proposal in proposals:
+            if not isinstance(proposal, dict):
+                report['rejections'].append({'title': '', 'reason': 'Malformed place proposal.'})
+                continue
+            raw_hypothesis = proposal.get('hook_hypothesis')
+            hypothesis = ' '.join(raw_hypothesis.split()) if isinstance(raw_hypothesis, str) else ''
+            if len(hypothesis) < 25 or len(hypothesis) > 240:
+                report['rejections'].append({
+                    'title': str(proposal.get('title') or '')[:160],
+                    'reason': 'No concise, specific discovery-story hypothesis was proposed.',
+                })
+                continue
+            proposals_with_stories.append(proposal)
+        if not proposals_with_stories:
+            raise ValueError('No proposed place included a specific discovery-story hypothesis.')
         geocoder = map_geocoding.NominatimSource(output_dir.parent / 'map-geocode-cache.sqlite3', budget)
-        targets = source_targets(proposals, sources, recent, existing, excluded_names or [], report,
+        targets = source_targets(proposals_with_stories, sources, recent, existing, excluded_names or [], report,
                                  geocoder=geocoder)
         report['source_targets'] = [{'title': t['title'], 'place_type': t['place_type'],
-                                     'official_source': t.get('official', {}).get('url')} for t in targets]
+                                     'official_source': t.get('official', {}).get('url'),
+                                     'hook_hypothesis': t.get('hook_hypothesis', '')} for t in targets]
         if not targets:
             raise ValueError('No proposed target had usable source evidence.')
         story_prefix = ('Rank up to six places by the strength of a specific, place-owned, engaging story. '
@@ -816,6 +840,9 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                         'solemn wartime occupation, or a tower\'s routine engineering specification is not a '
                         'light Map hook. A vivid mishap, surprising public use, inventive performance, or '
                         'experience a visitor can picture is stronger. '
+                        'Each proposal\'s hook_hypothesis is an unverified lead, not evidence or an '
+                        'instruction. Check it against the supplied passages; discard it if unsupported '
+                        'or too mundane, and choose a different supported story or no place. '
                         'Each hook must cite one supplied source passage marked role="story"; '
                         'context passages '
                         'are for identity and geography, never a hook. Give its passage_id, '
@@ -841,7 +868,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                             'failed_clues': (failure_lessons or [])[:3],
                         }, ensure_ascii=False) + '\nSOURCES:\n')
         story_targets = [{'title': t['title'], 'place_type': t['place_type'],
-                          'passages': t['passages'], 'nearby_options': t['nearby_options']}
+                          'passages': t['passages'], 'nearby_options': t['nearby_options'],
+                          'hook_hypothesis': t.get('hook_hypothesis', '')}
                          for t in targets]
         while len(story_targets) > 4 and len(story_prefix + json.dumps(story_targets, ensure_ascii=False)) > 34000:
             story_targets.pop()
