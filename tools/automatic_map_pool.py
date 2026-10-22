@@ -76,6 +76,12 @@ UNSUITABLE_HOOK_PATTERNS = (
     (r'\b(?:radio|television|broadcast|communication)\s+signals?\b.{0,180}'
      r'\b(?:antennas?|construction|tower|line.of.sight)\b',
      'routine signal-engineering premise'),
+    # A single source can accidentally splice a later prison sentence into an
+    # earlier battle. Do not offer that compound story as a discovery hook.
+    (r'\b(?:incarcerat\w*|imprison\w*|captive|as a prisoner)\b.{0,140}'
+     r'\b(?:shoot\w*|shot|fir(?:e|ed|ing)|fight|fought|defend\w*)\b.{0,100}'
+     r'\b(?:enemy|soldiers?|siege|sack|battle|army|attack)\b',
+     'uncorroborated captivity-combat chronology'),
 )
 
 
@@ -509,6 +515,9 @@ READY_AUDIT_INSTRUCTIONS = (
     'claims and passages: set chronology_consistent=false if events or structures '
     'from different periods are made to seem simultaneous or causally linked. '
     'Do not infer that separate statements in one passage happened together. '
+    'If one passage joins a person\'s captivity with combat, do not assume they '
+    'occurred at the same time; reject the compound claim without independently '
+    'dated support for both roles. '
     'First decide whether a non-specialist player would enjoy finding this place because of '
     'the hard clue. Factual support, historical significance and place association do not '
     'by themselves make a hook enjoyable. A 4 or 5 needs a concrete surprise, vivid public '
@@ -845,6 +854,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
               'people, or outcomes from different periods as though they happened together, even when '
               'separate passages support each fragment. Compare the dates and sequence of every cited '
               'passage; a 17th-century republic must not be said to use a tower built in the 18th century. '
+              'Do not treat a single passage that joins captivity and combat as proof '
+              'they overlapped; require independently dated support for both roles. '
               'Check country/identity against the supplied Wikidata-derived metadata. '
               'Return false for any failed check; explain briefly. Do not invent factual confidence scores.\n'
               'Editorial requirements: place_type_correct is false for a stadium disguised as engineering. '
