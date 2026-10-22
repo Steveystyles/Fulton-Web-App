@@ -556,6 +556,18 @@ class DiscoveryTests(unittest.TestCase):
         self.assertLess(distance + easy['radius_m'], medium['radius_m'])
         self.assertEqual(candidate['city_sector'], 'southern')
 
+    def test_stadium_is_allowed_when_its_source_identifies_a_stadium(self):
+        source, _, pages, proposal = self.source_fixture()
+        pages['Target']['title'] = 'Target Stadium'
+        pages['Target']['text'] = 'Target Stadium is a stadium in City, beside Park.'
+        proposal['place_type'] = 'stadium'
+        candidate = discovery.resolve(proposal, source, [], [])
+        self.assertEqual(candidate['place_type'], 'stadium')
+
+        proposal['place_type'] = 'engineering'
+        with self.assertRaisesRegex(ValueError, 'place type does not match'):
+            discovery.resolve(proposal, source, [], [])
+
     def test_city_sector_is_derived_from_checked_coordinates(self):
         self.assertEqual(discovery.broad_city_sector(50, 1, 50, 1), 'central')
         self.assertEqual(discovery.broad_city_sector(50.03, 1, 50, 1), 'northern')

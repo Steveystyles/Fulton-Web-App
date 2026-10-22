@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import daily_map_game
 from tools import install_map_reviewed_fallbacks
@@ -64,28 +65,42 @@ class MapReviewedFallbackTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         self.assertEqual(selected["canonical_name"], "Terracotta Army")
 
-    def test_fallback_prefers_non_stadium_but_keeps_stadium_last_resort(self) -> None:
+    def test_fallback_ranks_stadiums_by_story_quality_like_other_places(self) -> None:
         self.conn.execute("UPDATE map_place_pool SET active = 0")
         install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)
         self.conn.execute(
             "UPDATE map_place_pool SET active = CASE WHEN canonical_name IN "
             "('Wembley Stadium', 'Terracotta Army') THEN 1 ELSE 0 END"
         )
-        self.conn.execute(
-            "UPDATE map_place_pool SET validation_grade = 1 "
-            "WHERE canonical_name = 'Terracotta Army'"
-        )
+        def quality(row, _profile):
+            return {
+                "persuadingFactCount": 3,
+                "score": 90 if row["place_type"] == "stadium" else 50,
+                "categories": ["place-owned story"],
+                "validationGrade": 0.9,
+            }
 
-        preferred = daily_map_game.select_daily_place(self.conn, "2026-10-28")
+        with patch.object(daily_map_game, "map_place_selection_profile", side_effect=quality):
+            preferred = daily_map_game.select_daily_place(self.conn, "2026-10-28")
         self.assertIsNotNone(preferred)
+        self.assertEqual(preferred["canonical_name"], "Wembley Stadium")
+
+        def other_place_is_stronger(row, _profile):
+            result = quality(row, _profile)
+            result["score"] = 90 if row["place_type"] != "stadium" else 50
+            return result
+
+        with patch.object(daily_map_game, "map_place_selection_profile",
+                          side_effect=other_place_is_stronger):
+            preferred = daily_map_game.select_daily_place(self.conn, "2026-10-28")
         self.assertEqual(preferred["canonical_name"], "Terracotta Army")
 
         self.conn.execute(
             "UPDATE map_place_pool SET active = 0 WHERE canonical_name = 'Terracotta Army'"
         )
-        last_resort = daily_map_game.select_daily_place(self.conn, "2026-10-28")
-        self.assertIsNotNone(last_resort)
-        self.assertEqual(last_resort["canonical_name"], "Wembley Stadium")
+        only_place = daily_map_game.select_daily_place(self.conn, "2026-10-28")
+        self.assertIsNotNone(only_place)
+        self.assertEqual(only_place["canonical_name"], "Wembley Stadium")
 
     def test_reviewed_fallback_install_repairs_existing_guidance(self) -> None:
         install_map_reviewed_fallbacks.install_seed(self.conn, PACKAGE_PATH)

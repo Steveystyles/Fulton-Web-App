@@ -788,6 +788,25 @@ class StoryPipelineTests(unittest.TestCase):
         source.page.assert_called_once_with('Glass Hall')
         source.country.assert_not_called()
 
+    def test_story_lookup_accepts_a_stadium_with_a_place_owned_story(self):
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        source.page.return_value = {
+            'title': 'Example Stadium', 'entity': 'Q1', 'lat': 51, 'lng': 0,
+            'text': ('Example Stadium is a stadium in Eastport. '
+                     'It hosted a remarkable public performance. ') * 25,
+        }
+        source.entities.return_value = {'Q1': {'claims': {}}}
+        proposal = {'title': 'Example Stadium', 'place_type': 'stadium',
+                    'hook_hypothesis': 'A remarkable public performance happened here.'}
+        targets = story.source_targets([proposal], source, [], [], [], {'rejections': []})
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0]['place_type'], 'stadium')
+        proposal['place_type'] = 'engineering'
+        rejected = {'rejections': []}
+        self.assertEqual(story.source_targets([proposal], source, [], [], [], rejected), [])
+        self.assertIn('place type does not match', rejected['rejections'][0]['reason'])
+
     def test_target_lookup_adds_direct_historic_england_story_evidence(self):
         source = Mock()
         source.budget.day = '2026-10-15'

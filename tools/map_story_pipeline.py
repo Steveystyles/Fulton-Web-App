@@ -440,9 +440,12 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                                                       str(proposal.get('source_url') or ''),
                                                       str(proposal.get('wikidata_id') or ''))
             intro = page['text'][:700]
-            if re.search(r'\b(stadium|stadion|sports arena|football ground)\b', page['title'], re.I) or re.search(
-                    r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I):
-                raise ValueError('Source identifies a stadium.')
+            source_is_stadium = bool(
+                re.search(r'\b(stadium|stadion|sports arena|football ground)\b', page['title'], re.I) or
+                re.search(r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I)
+            )
+            if source_is_stadium != (kind == 'stadium'):
+                raise ValueError('Proposed stadium place type does not match the source identity.')
             if any(legacy.exclusion_key(page['title']) == legacy.exclusion_key(row.get('name', row.get('canonical_name', '')))
                    or legacy.daily_map_game.haversine_m(page['lat'], page['lng'], row['lat'], row['lng']) < 500
                    for row in [*recent, *existing]):
@@ -798,7 +801,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'map anchors or clues. Propose a place only when a checkable source appears to contain a vivid, '
                   'enjoyable place-owned discovery: a surprising achievement, public experience, performance, '
                   'ingenious use or dramatic non-victim-centred mishap. A factual design specification, ordinary '
-                  'political meeting, routine upkeep or solemn wartime incident is not enough. Exclude stadiums, '
+                  'political meeting, routine upkeep or solemn wartime incident is not enough. Stadiums are welcome '
+                  'when they have a distinctive, verifiable place-owned story, not merely a famous match. Exclude '
                   'private homes, camps, hostage incidents, atrocities and places whose only appeal is fame, age '
                   'or appearance. Put the strongest and most geographically varied prospects first, because '
                   'the bounded source review may not fit every target. Never reuse excluded or recently '
