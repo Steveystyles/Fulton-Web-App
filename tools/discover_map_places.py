@@ -525,6 +525,7 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
         raise ValueError('Target and Wikidata coordinates disagree by more than 250 metres.')
     aliases = [target['title'], entity.get('labels', {}).get('en', {}).get('value', target['title'])]
     aliases += [a['value'] for a in entity.get('aliases', {}).get('en', [])][:15]
+    aliases += source_nicknames(target['text'], target['title'])
     names = {daily_map_game.normalized_place_name(a) for a in aliases}
     for previous in [*recent, *existing]:
         previous_names = [previous.get('name', previous.get('canonical_name', ''))]
@@ -581,6 +582,26 @@ def hook_terms(value: object, place_name: str = '') -> set[str]:
     words = set(re.findall(r'[a-z]{4,}', str(value or '').casefold()))
     place_words = set(re.findall(r'[a-z]{4,}', place_name.casefold()))
     return words - HOOK_STOPWORDS - place_words
+
+
+def source_nicknames(source_text: object, canonical_name: str) -> list[str]:
+    """Extract explicitly quoted alternate names attached to the target in its source intro."""
+    if not isinstance(source_text, str) or not canonical_name:
+        return []
+    title = re.escape(canonical_name.split(' (', 1)[0])
+    pattern = re.compile(
+        rf'{title}[^.!?]{{0,80}}?\b(?:also known as|also called|nicknamed)\s+'
+        r'(?:the\s+)?["“]([^"”]{4,80})["”]', re.I,
+    )
+    aliases = []
+    for match in pattern.finditer(source_text[:3000]):
+        alias = ' '.join(match.group(1).split())
+        if (alias and daily_map_game.normalized_place_name(alias) !=
+                daily_map_game.normalized_place_name(canonical_name)):
+            aliases.append(alias)
+        if len(aliases) >= 5:
+            break
+    return aliases
 
 
 def proposal_hook_passage_indexes(candidate: dict, matches: list | None = None) -> set[int]:

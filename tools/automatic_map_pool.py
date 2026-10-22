@@ -358,25 +358,8 @@ def quarantine_unlinked_museum_ready(conn: sqlite3.Connection) -> list[str]:
     return retired
 
 
-def quarantine_unaligned_ready(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
-    """Recheck unused pre-fix rounds against their original private source reports."""
-    pending = []
-    for row in conn.execute(
-        "SELECT id,candidate,result,verification FROM automatic_map_entries "
-        "WHERE state='ready' AND origin='discovery'"
-    ):
-        verification = json.loads(row[3])
-        alignment_audit = verification.get('proposal_alignment_audit')
-        if (verification.get('operator_correction') or
-                (isinstance(alignment_audit, dict) and
-                 alignment_audit.get('version') == PROPOSAL_ALIGNMENT_AUDIT_VERSION)):
-            continue
-        candidate, result = json.loads(row[1]), json.loads(row[2])
-        if verification.get('payload_sha256') != discovery.digest({'candidate': candidate, 'result': result}):
-            continue
-        pending.append((row[0], candidate, result, verification))
-    if not pending:
-        return []
+def added_source_reports(conn: sqlite3.Connection, output_dir: Path) -> dict[tuple[str, str], dict]:
+    """Index recent, bounded discovery reports by their exact saved round."""
     root = output_dir.resolve()
     reports = {}
     cutoff = (now() - timedelta(days=MAX_AGE_DAYS)).isoformat()
@@ -400,6 +383,74 @@ def quarantine_unaligned_ready(conn: sqlite3.Connection, output_dir: Path) -> li
                     reports.setdefault(report_key, report)
         except (OSError, ValueError, TypeError, AttributeError):
             continue
+    return reports
+
+
+def quarantine_source_alias_leaks(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
+    """Return unused rounds whose source states a nickname repeated in a clue."""
+    rows = conn.execute(
+        "SELECT id,candidate,result,verification FROM automatic_map_entries "
+        "WHERE state='ready' AND origin='discovery'"
+    ).fetchall()
+    if not rows:
+        return []
+    reports = added_source_reports(conn, output_dir)
+    retired = []
+    for row_id, candidate_text, result_text, verification_text in rows:
+        candidate, result = json.loads(candidate_text), json.loads(result_text)
+        verification = json.loads(verification_text)
+        if verification.get('payload_sha256') != discovery.digest({'candidate': candidate, 'result': result}):
+            continue
+        key = (row_id, json.dumps(result.get('clue_ladder'), sort_keys=True))
+        report = reports.get(key)
+        if not report:
+            continue
+        resolved = report.get('resolved_candidates')
+        if not isinstance(resolved, list):
+            continue
+        selected = next((item for item in resolved
+                         if isinstance(item, dict) and item.get('id') == row_id), None)
+        evidence = (selected or {}).get('evidence')
+        article = evidence.get('article') if isinstance(evidence, dict) else None
+        if not isinstance(article, dict):
+            continue
+        nicknames = discovery.source_nicknames(article.get('text'), candidate['canonical_name'])
+        ladder = result.get('clue_ladder', {})
+        leaked = next((alias for alias in nicknames if any(
+            daily_map_game.clue_contains_answer(str(ladder.get(level) or ''),
+                                                {'canonical_name': alias, 'acceptable_aliases': []})
+            for level in controlled.LEVELS)), None)
+        if not leaked:
+            continue
+        verification.update(editorial_rejection=True,
+                            round_rejection='A clue reveals a source-attested alternate name for the answer.',
+                            source_alias_leak=leaked)
+        conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
+                     "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
+        retired.append(candidate['canonical_name'])
+    return retired
+
+
+def quarantine_unaligned_ready(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
+    """Recheck unused pre-fix rounds against their original private source reports."""
+    pending = []
+    for row in conn.execute(
+        "SELECT id,candidate,result,verification FROM automatic_map_entries "
+        "WHERE state='ready' AND origin='discovery'"
+    ):
+        verification = json.loads(row[3])
+        alignment_audit = verification.get('proposal_alignment_audit')
+        if (verification.get('operator_correction') or
+                (isinstance(alignment_audit, dict) and
+                 alignment_audit.get('version') == PROPOSAL_ALIGNMENT_AUDIT_VERSION)):
+            continue
+        candidate, result = json.loads(row[1]), json.loads(row[2])
+        if verification.get('payload_sha256') != discovery.digest({'candidate': candidate, 'result': result}):
+            continue
+        pending.append((row[0], candidate, result, verification))
+    if not pending:
+        return []
+    reports = added_source_reports(conn, output_dir)
     retired = []
     for row_id, candidate, result, verification in pending:
         report_key = (row_id, json.dumps(result.get('clue_ladder'), sort_keys=True))
@@ -1118,6 +1169,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         conn.execute("UPDATE automatic_map_entries SET state='expired' WHERE state='ready' AND expires_at<=?", (now().isoformat(),))
         quarantined = quarantine_unsuitable_ready(conn)
         quarantined += quarantine_unlinked_museum_ready(conn)
+        quarantined += quarantine_source_alias_leaks(conn, output_dir)
         quarantined += quarantine_unaligned_ready(conn, output_dir)
         if not conn.execute("SELECT 1 FROM automatic_map_meta WHERE key='bootstrap'").fetchone():
             if seed_catalog and seed_catalog.is_file():
