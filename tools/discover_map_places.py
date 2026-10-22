@@ -45,7 +45,7 @@ HOOK_STOPWORDS = {
 }
 MAX_RESPONSE_BYTES = 2_000_000
 PLACE_TYPES = ('castle', 'bridge', 'monument', 'museum', 'religious_site', 'historic_site',
-               'island', 'garden', 'tower', 'engineering', 'natural_landmark')
+               'island', 'garden', 'tower', 'engineering', 'natural_landmark', 'stadium')
 USER_AGENT = 'FultonsMapSelector/1.0 (https://fultons-quiz.co.uk)'
 PROPOSAL_FOCUSES = (
     ('North America', 'South America', 'Oceania'),
@@ -456,7 +456,7 @@ def selection_schema() -> dict:
 def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existing: list[dict]) -> dict:
     kind = plain(proposal.get('place_type'), 40)
     if kind not in PLACE_TYPES:
-        raise ValueError('Unsupported place type; broad regions and stadiums are excluded.')
+        raise ValueError('Unsupported place type; broad regions are excluded.')
     if any(r['type'] == kind and r['date'] >= (date.fromisoformat(sources.budget.day) - timedelta(days=2)).isoformat() for r in recent):
         raise ValueError('Place type was used in the last two days.')
     try:
@@ -465,10 +465,12 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
         raise ValueError(f'Target article: {error}') from error
     # Check source identity, not merely the model's category label.
     intro = target['text'][:700]
-    if re.search(r'\b(stadium|stadion|sports arena|football ground)\b', target['title'], re.I) or re.search(
-        r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I
-    ):
-        raise ValueError('Source identifies a stadium, which automatic discovery excludes.')
+    source_is_stadium = bool(
+        re.search(r'\b(stadium|stadion|sports arena|football ground)\b', target['title'], re.I) or
+        re.search(r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I)
+    )
+    if source_is_stadium != (kind == 'stadium'):
+        raise ValueError('Proposed stadium place type does not match the source identity.')
     if isinstance(sources, WikimediaSource):
         sources.prefetch_area_pages([proposal.get('city_title'), proposal.get('local_title')])
     try:

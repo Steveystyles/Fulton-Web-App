@@ -3659,15 +3659,13 @@ def best_quality_place(
 ) -> sqlite3.Row | None:
     if selector_profile is None:
         selector_profile = load_map_selector_profile()
-    candidates: list[tuple[tuple[int, int, int, int, int, int], sqlite3.Row]] = []
+    candidates: list[tuple[tuple[int, int, int, int, int], sqlite3.Row]] = []
     for row in rows:
         if not row_passes_map_clue_quality(row):
             continue
         profile = map_place_selection_profile(row, selector_profile)
         persuading_count = int(profile["persuadingFactCount"])
         sort_key = (
-            # Keep a stadium as a last-resort fallback, not the default Map discovery.
-            0 if str(row["place_type"] or "").strip().casefold() == "stadium" else 1,
             1 if persuading_count >= MAP_PLACE_REQUIRED_PERSUADING_FACTS else 0,
             int(profile["score"]),
             min(4, len(profile["categories"])),
