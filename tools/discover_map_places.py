@@ -137,6 +137,28 @@ class RunBudget:
 class DiscoveryProvider(preview.PreviewGeminiProvider):
     budget: RunBudget
 
+    class InvalidModelOutput(ValueError):
+        """A completed model call did not satisfy the requested response shape."""
+
+    @staticmethod
+    def response_matches_schema(value, schema: dict) -> bool:
+        """Guard the response envelope; stage validators handle individual rows."""
+        if not schema:
+            return True
+        if not isinstance(value, dict) or any(key not in value for key in schema.get('required', ())):
+            return False
+        for key, rule in schema.get('properties', {}).items():
+            if key not in value:
+                continue
+            kind = rule.get('type')
+            if kind == 'array' and not isinstance(value[key], list):
+                return False
+            if kind == 'object' and not isinstance(value[key], dict):
+                return False
+            if kind == 'string' and not isinstance(value[key], str):
+                return False
+        return True
+
     @classmethod
     def from_map_env(cls, budget: RunBudget):
         key = os.environ.get('MAP_AI_API_KEY', '').strip()
@@ -169,6 +191,13 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
     def request_json(self, client, *, model, prompt, schema, tools=None):
         if tools or len(prompt) > 36000:
             raise ValueError('Discovery permits no model tools and at most 36,000 prompt characters.')
+        if not isinstance(client.provider, daily_quiz.GeminiProvider) and schema:
+            # The free router does not reliably enforce response_format=json_object.
+            # Give its routed model the exact structure as well as the shared JSON-only instruction.
+            prompt += ('\nReturn one JSON object only, matching this schema exactly: '
+                       + json.dumps(schema, separators=(',', ':')))
+            if len(prompt) > 37000:
+                raise ValueError('Discovery fallback schema envelope exceeds 37,000 characters.')
         self.budget.spend('model')
         if isinstance(client.provider, daily_quiz.GeminiProvider):
             result = client.provider._request(model, prompt, schema, max_output_tokens=4096, temperature=0.4)
@@ -195,6 +224,8 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
             try:
                 result = self.request_json(client, model=model, prompt=kwargs['prompt'],
                                            schema=kwargs['schema'], tools=kwargs.get('tools'))
+                if not self.response_matches_schema(result, kwargs['schema']):
+                    raise self.InvalidModelOutput('Map discovery model returned an invalid response shape.')
             except Exception as error:
                 detail = str(error)
                 for secret in (client.config.gemini_api_key, client.config.compatible_api_key):
@@ -204,18 +235,19 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
                               error_detail=detail[:500])
                 self.provider_error_detail = record['error_detail']
                 self.retry_after_seconds = getattr(client.provider, 'last_retry_after_seconds', None)
-                transient = any(marker in detail.casefold() for marker in
+                transient = isinstance(error, self.InvalidModelOutput) or any(marker in detail.casefold() for marker in
                                 ('http 429', 'http 500', 'http 502', 'http 503', 'http 504',
                                  'timed out', 'temporarily unavailable'))
                 if index == 0 and len(clients) > 1 and transient and not kwargs.get('tools'):
                     primary_detail = self.provider_error_detail
                     primary_retry = self.retry_after_seconds
                     continue
-                if (index == 1 and daily_quiz.is_daily_quota_failure(detail)
-                        and primary_detail and not daily_quiz.is_daily_quota_failure(primary_detail)):
-                    # An exhausted optional free router must not postpone a
-                    # potentially recovered Gemini service until the router's
-                    # next daily reset. Retry according to the primary error.
+                if (index == 1 and primary_detail and
+                        daily_quiz.is_daily_quota_failure(primary_detail) !=
+                        daily_quiz.is_daily_quota_failure(detail)):
+                    # An unusable optional router must not erase Gemini's real
+                    # reset hint; nor can an exhausted router postpone a
+                    # potentially recovered Gemini service until its reset.
                     self.provider_error_detail = primary_detail
                     self.retry_after_seconds = primary_retry
                 self.stop_reason = 'Map discovery provider failed; stopped to preserve quota.'

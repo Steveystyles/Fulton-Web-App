@@ -373,6 +373,72 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([r['status'] for r in provider.requests], ['failed', 'completed'])
         self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
 
+    def test_free_fallback_receives_schema_and_rejects_wrong_response_shape(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            budget = self.budget()
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        schema = {'type': 'object', 'properties': {'targets': {
+            'type': 'array', 'items': {'type': 'object', 'properties': {
+                'title': {'type': 'string'}}, 'required': ['title'],
+                'additionalProperties': False}}}, 'required': ['targets'],
+            'additionalProperties': False}
+        provider.clients[0].provider.last_retry_after_seconds = 3600
+        with patch.object(provider.clients[0].provider, '_request',
+                          side_effect=RuntimeError('Gemini request failed with HTTP 429: RESOURCE_EXHAUSTED '
+                                                   'Quota exceeded for metric: generate_content_free_tier_requests')) as gemini, \
+             patch.object(provider.clients[1].provider, '_request',
+                          return_value={'candidates': []}) as router:
+            with self.assertRaisesRegex(RuntimeError, 'stopped to preserve'):
+                provider.call_with_fallback(model_attr='generator_model', prompt='Propose places.', schema=schema)
+        gemini.assert_called_once()
+        self.assertIn('"targets"', router.call_args.args[1])
+        self.assertIn('matching this schema exactly', router.call_args.args[1])
+        self.assertEqual([r['status'] for r in provider.requests], ['failed', 'failed'])
+        self.assertEqual(provider.requests[1]['error_type'], 'InvalidModelOutput')
+        self.assertIn('HTTP 429', provider.provider_error_detail)
+        self.assertEqual(provider.retry_after_seconds, 3600)
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
+
+    def test_map_response_schema_rejects_wrong_envelope(self):
+        schema = {'type': 'object', 'properties': {'targets': {
+            'type': 'array', 'items': {'type': 'object', 'properties': {
+                'title': {'type': 'string'}}, 'required': ['title'],
+                'additionalProperties': False}}}, 'required': ['targets'],
+            'additionalProperties': False}
+        match = discovery.DiscoveryProvider.response_matches_schema
+        self.assertTrue(match({'targets': [{'title': 'Wembley Stadium'}]}, schema))
+        for response in ({'candidates': []}, {'targets': 'Wembley Stadium'}, None):
+            with self.subTest(response=response):
+                self.assertFalse(match(response, schema))
+        self.assertTrue(match({'targets': [{'name': 'Wrong item to reject later'}]}, schema))
+
+    def test_malformed_free_router_text_keeps_primary_reset_hint(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(self.budget())
+        provider.clients[0].provider.last_retry_after_seconds = 7200
+        with patch.object(provider.clients[0].provider, '_request',
+                          side_effect=RuntimeError('Gemini HTTP 429 RESOURCE_EXHAUSTED '
+                                                   'generate_content_free_tier_requests')), \
+             patch.object(provider.clients[1].provider, '_request',
+                          side_effect=ValueError('openrouter returned invalid JSON: AI response is not JSON text.')):
+            with self.assertRaises(RuntimeError):
+                provider.call_with_fallback(model_attr='generator_model', prompt='test', schema={})
+        self.assertEqual(provider.retry_after_seconds, 7200)
+        self.assertIn('HTTP 429', provider.provider_error_detail)
+        self.assertEqual(provider.requests[1]['error_type'], 'ValueError')
+
     def test_free_fallback_rejects_paid_route_and_nontransient_error(self):
         with patch.dict(os.environ, {
             'MAP_AI_API_KEY': 'map-fixture',
