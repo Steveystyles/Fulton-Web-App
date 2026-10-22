@@ -748,6 +748,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(len(report['resolved_candidates']), 2)
         self.assertEqual(request.call_args_list[0].args[2]['properties']['candidates']['minItems'], discovery.PROPOSAL_COUNT)
         self.assertIn('four landmarks from EACH', request.call_args_list[0].args[1])
+        self.assertIn('Stadiums are eligible', request.call_args_list[0].args[1])
+        self.assertNotIn('No stadiums', request.call_args_list[0].args[1])
         self.assertIn('recent_bad_map_routes', request.call_args_list[0].args[1])
         self.assertIn('Himeji Castle', request.call_args_list[0].args[1])
         self.assertIn('medium="Look in Brussels, Belgium, the city that hosted this landmark during Expo 58."',
