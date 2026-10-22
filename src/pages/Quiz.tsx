@@ -109,7 +109,11 @@ export function Quiz() {
     if (!stageKey) return;
     const animationFrame = window.requestAnimationFrame(() => {
       stageRef.current?.focus({ preventScroll: true });
-      stageRef.current?.scrollIntoView({ block: "start" });
+      if (activeCard || board?.status === "completed") {
+        stageRef.current?.scrollIntoView({ block: "start" });
+      } else {
+        window.scrollTo({ top: 0, behavior: "auto" });
+      }
     });
     return () => window.cancelAnimationFrame(animationFrame);
   }, [stageKey]);

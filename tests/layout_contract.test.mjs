@@ -326,6 +326,7 @@ test("quiz board keeps six fixed, responsive choices after each answer", async (
   }));
   assert.match(incorrectNotice, /Answer: Brazil/);
   assert.match(quizSource, /ref=\{stageRef\}[\s\S]*?<QuizBoardGrid/, "the board is its own focused stage");
+  assert.match(quizSource, /if \(activeCard \|\| board\?\.status === "completed"\)[\s\S]*?scrollIntoView[\s\S]*?else \{\s*window\.scrollTo\(\{ top: 0/, "the question can scroll into view, but the board returns to the top so its mode switch stays visible");
   assert.doesNotMatch(quizSource, /Pick four\. Make them count\.|Six cards, four picks/, "the quiz starts with a compact title instead of an explainer panel");
 
   const answers = elements(tree).find(node => attribute(node, "aria-label") === "Answer choices");
