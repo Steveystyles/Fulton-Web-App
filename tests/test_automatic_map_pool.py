@@ -136,6 +136,21 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(json.loads(saved)['source_alias_leak'], 'Iron Crystal')
             self.assertIn('alternate name', pool.rejected_interest_lessons(conn)[0]['failure_reason'])
 
+    def test_unused_captivity_combat_hook_is_quarantined_without_provider(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            result = json.loads(conn.execute('SELECT result FROM automatic_map_entries').fetchone()[0])
+            result['clue_ladder']['hard'] = (
+                'An incarcerated goldsmith strolled the ramparts to shoot enemy soldiers '
+                'during a historic sack.')
+            conn.execute('UPDATE automatic_map_entries SET result=?', (json.dumps(result),))
+            conn.commit()
+            self.assertEqual(pool.quarantine_ready_without_provider(conn, self.root), ['Atomium'])
+            state, saved = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(state, 'rejected')
+            self.assertEqual(json.loads(saved)['hook_rejection'],
+                             'uncorroborated captivity-combat chronology')
+
     def test_old_aligned_map_hook_is_stamped_without_quarantining(self):
         self.queue('discovery')
         reports = self.alignment_report(aligned=True)
@@ -517,6 +532,8 @@ class AutomaticPoolTests(unittest.TestCase):
              'hedged historical claim'),
             ('Reflective skyscrapers disrupted broadcast signals, prompting construction '
              'of this tower for higher antennas.', 'routine signal-engineering premise'),
+            ('An incarcerated goldsmith once strolled these ramparts to shoot at enemy '
+             'soldiers during a historic sack.', 'uncorroborated captivity-combat chronology'),
             ('As downtown skyscrapers multiplied, their reflective surfaces disrupted '
              'broadcast signals, prompting the construction of this soaring tower to mount '
              'higher antennas and restore line-of-sight communication links.',
