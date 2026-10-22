@@ -100,6 +100,33 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(verification['hook_rejection'], 'abandoned proposed discovery hook')
             self.assertEqual(verification['proposal_alignment_audit']['status'], 'rejected')
 
+    def test_unused_round_with_source_attested_answer_nickname_returns_for_rework(self):
+        self.queue('discovery')
+        reports = self.root / 'reports'
+        reports.mkdir()
+        with closing(self.connect()) as conn:
+            row = conn.execute('SELECT candidate,result,verification FROM automatic_map_entries').fetchone()
+            candidate, result, verification = map(json.loads, row)
+            result['clue_ladder']['medium'] += ' The Iron Crystal stands here.'
+            verification['payload_sha256'] = discovery.digest({'candidate': candidate, 'result': result})
+            conn.execute('UPDATE automatic_map_entries SET result=?,verification=?',
+                         (json.dumps(result), json.dumps(verification)))
+            report_path = reports / 'saved-discovery.json'
+            report_path.write_text(json.dumps({
+                'candidate': {'id': self.place['id']}, 'result': result,
+                'resolved_candidates': [{'id': self.place['id'], 'evidence': {'article': {
+                    'text': 'The Atomium, also known as the "Iron Crystal", opened for Expo 58.'}}}],
+            }), encoding='utf-8')
+            conn.execute('INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,report_path) '
+                         'VALUES(?,?,?,?,?,?)',
+                         ('alias-run', self.clock.date().isoformat(), '2026-09-09',
+                          self.clock.isoformat(), 'added', str(report_path)))
+            self.assertEqual(pool.quarantine_source_alias_leaks(conn, reports), ['Atomium'])
+            state, saved = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(state, 'rejected')
+            self.assertEqual(json.loads(saved)['source_alias_leak'], 'Iron Crystal')
+            self.assertIn('alternate name', pool.rejected_interest_lessons(conn)[0]['failure_reason'])
+
     def test_old_aligned_map_hook_is_stamped_without_quarantining(self):
         self.queue('discovery')
         reports = self.alignment_report(aligned=True)

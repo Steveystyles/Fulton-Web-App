@@ -55,6 +55,17 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'rejected recently'):
             discovery.reject_excluded_place(['故宫'], ['故宫'])
 
+    def test_source_nicknames_add_quoted_answer_aliases_not_unrelated_names(self):
+        text = ('Hawa Mahal is a palace in Jaipur. Hawa Mahal, also known as the '
+                '"Palace of Winds", was built in 1799. City Palace, also known as '
+                '"The Royal House", stands nearby.')
+        aliases = discovery.source_nicknames(text, 'Hawa Mahal')
+        self.assertEqual(aliases, ['Palace of Winds'])
+        self.assertTrue(discovery.daily_map_game.clue_contains_answer(
+            'Look in Jaipur, where this unique palace of winds stands.',
+            {'canonical_name': 'Hawa Mahal', 'acceptable_aliases': aliases}))
+        self.assertEqual(discovery.source_nicknames(text, 'Unknown Place'), [])
+
     def test_budget_survives_restart_and_counts_attempt_before_transport(self):
         budget = self.budget()
         budget.spend('model')
