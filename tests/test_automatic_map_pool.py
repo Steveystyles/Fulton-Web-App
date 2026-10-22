@@ -121,7 +121,16 @@ class AutomaticPoolTests(unittest.TestCase):
                          'VALUES(?,?,?,?,?,?)',
                          ('alias-run', self.clock.date().isoformat(), '2026-09-09',
                           self.clock.isoformat(), 'added', str(report_path)))
-            self.assertEqual(pool.quarantine_source_alias_leaks(conn, reports), ['Atomium'])
+            conn.commit()
+        pool.save_provider_retry(self.database, {
+            'status': 'quota_paused', 'ready': 1,
+            'retry_at': (self.clock + timedelta(days=1)).isoformat(),
+        })
+        outcome = pool.maintain_until_stocked(self.database, reports, seed_catalog=None)
+        self.assertEqual(outcome['attempted'], 0)
+        self.assertEqual(outcome['quarantined'], ['Atomium'])
+        self.assertEqual(outcome['ready'], 0)
+        with closing(self.connect()) as conn:
             state, saved = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
             self.assertEqual(state, 'rejected')
             self.assertEqual(json.loads(saved)['source_alias_leak'], 'Iron Crystal')

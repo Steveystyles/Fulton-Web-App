@@ -431,6 +431,17 @@ def quarantine_source_alias_leaks(conn: sqlite3.Connection, output_dir: Path) ->
     return retired
 
 
+def quarantine_ready_without_provider(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
+    """Apply local queue safety checks even while model calls are paused."""
+    conn.execute("UPDATE automatic_map_entries SET state='expired' "
+                 "WHERE state='ready' AND expires_at<=?", (now().isoformat(),))
+    quarantined = quarantine_unsuitable_ready(conn)
+    quarantined += quarantine_unlinked_museum_ready(conn)
+    quarantined += quarantine_source_alias_leaks(conn, output_dir)
+    quarantined += quarantine_unaligned_ready(conn, output_dir)
+    return quarantined
+
+
 def quarantine_unaligned_ready(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
     """Recheck unused pre-fix rounds against their original private source reports."""
     pending = []
@@ -1166,11 +1177,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     with closing(sqlite3.connect(database)) as conn:
         initialize(conn)
         target = next_date(conn)
-        conn.execute("UPDATE automatic_map_entries SET state='expired' WHERE state='ready' AND expires_at<=?", (now().isoformat(),))
-        quarantined = quarantine_unsuitable_ready(conn)
-        quarantined += quarantine_unlinked_museum_ready(conn)
-        quarantined += quarantine_source_alias_leaks(conn, output_dir)
-        quarantined += quarantine_unaligned_ready(conn, output_dir)
+        quarantined = quarantine_ready_without_provider(conn, output_dir)
         if not conn.execute("SELECT 1 FROM automatic_map_meta WHERE key='bootstrap'").fetchone():
             if seed_catalog and seed_catalog.is_file():
                 for candidate in controlled.load_catalog(seed_catalog):
@@ -1412,7 +1419,12 @@ def maintain_until_stocked(
         raise ValueError('Automatic map maintenance needs at least one attempt.')
     pause = pending_provider_retry(database)
     if pause is not None:
-        return {**pause, 'attempted': 0}
+        with closing(sqlite3.connect(database, timeout=10)) as conn:
+            initialize(conn)
+            quarantined = quarantine_ready_without_provider(conn, output_dir)
+            ready = len(eligible(conn, next_date(conn)))
+            conn.commit()
+        return {**pause, 'ready': ready, 'quarantined': quarantined, 'attempted': 0}
     outcomes: list[dict] = []
     last: dict = {'status': 'deferred', 'ready': 0}
     for _ in range(max_attempts):
