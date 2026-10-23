@@ -39,7 +39,9 @@ class DiscoveryTests(unittest.TestCase):
     def test_map_anchor_needs_a_proper_name_not_an_unrelated_common_word(self):
         article = 'The monument stands on Liberty Island. Its supporters celebrated the liberation of slaves.'
         self.assertIsNone(discovery.named_place_mention(article, 'Liberation'))
+        self.assertIsNone(discovery.named_place_mention(article, 'liberation'))
         self.assertIsNotNone(discovery.named_place_mention(article, 'Liberty Island'))
+        self.assertEqual(discovery.anchor_name({'title': 'Liberation'}, 'liberation', article), 'Liberation')
         candidate = {'evidence': {'article': {'text': article}},
                      'anchors': [{'name': 'Liberty Island'}, {'name': 'Liberation'}]}
         with self.assertRaisesRegex(ValueError, 'does not mention the supplied search area'):
@@ -62,6 +64,9 @@ class DiscoveryTests(unittest.TestCase):
         result['clue_ladder']['easy'] = 'In western Dubai, look near Jumeirah Beach Hotel for this tower.'
         self.assertIn('component designer', discovery.generated_round_quality_issue(candidate, result))
         result['clue_ladder']['hard'] = 'Designed by Irish architect Rebecca Gernon, this helipad hosted a tennis match.'
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, result))
+        candidate['facts']['hard']['supporting_quotes'] = ['Zaha Hadid designed the museum.']
+        result['clue_ladder']['hard'] = 'Designed by Zaha Hadid, this museum contains public galleries.'
         self.assertIsNone(discovery.generated_round_quality_issue(candidate, result))
 
     def test_generated_round_rejects_common_word_anchor_in_saved_evidence(self):

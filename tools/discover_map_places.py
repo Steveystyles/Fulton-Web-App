@@ -485,6 +485,11 @@ def anchor_name(page: dict, proposed_name: str, target_text: str) -> str:
 
 def named_place_mention(text: str, name: str) -> re.Match | None:
     """A proper-name mention, not a common word embedded in unrelated prose."""
+    # A model-proposed lowercase title must not turn ordinary prose such as
+    # "the liberation of slaves" into a named map feature. Scripts without
+    # case distinctions remain eligible.
+    if any(char.islower() for char in name) and not any(char.isupper() for char in name):
+        return None
     return re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', text)
 
 
@@ -695,7 +700,7 @@ def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
             words = re.findall(r"[a-z]+(?:['’]s)?", match['subject'], re.I)
             if words:
                 subjects.append(words[-1].casefold())
-        if not subjects or attribution['object'].casefold() not in subjects:
+        if subjects and attribution['object'].casefold() not in subjects:
             return 'Hard clue attributes a component designer to the whole landmark.'
     return None
 
