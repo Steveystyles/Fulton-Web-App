@@ -151,6 +151,19 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(json.loads(saved)['hook_rejection'],
                              'uncorroborated captivity-combat chronology')
 
+    def test_unplayed_generated_meta_guidance_is_rejected_and_taught_back(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            result = json.loads(conn.execute('SELECT result FROM automatic_map_entries').fetchone()[0])
+            result['clue_ladder']['easy'] += ' This is practical map guidance.'
+            conn.execute('UPDATE automatic_map_entries SET result=?', (json.dumps(result),))
+            self.assertEqual(pool.eligible(conn, '2026-09-08'), [])
+            self.assertEqual(pool.quarantine_ready_without_provider(conn, self.root), ['Atomium'])
+            state, saved = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(state, 'rejected')
+            self.assertIn('generator-facing', json.loads(saved)['round_rejection'])
+            self.assertEqual(pool.rejected_interest_lessons(conn)[0]['rejection_kind'], 'clue_ladder')
+
     def test_old_aligned_map_hook_is_stamped_without_quarantining(self):
         self.queue('discovery')
         reports = self.alignment_report(aligned=True)

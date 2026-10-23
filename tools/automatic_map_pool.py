@@ -365,6 +365,25 @@ def quarantine_unlinked_museum_ready(conn: sqlite3.Connection) -> list[str]:
     return retired
 
 
+def quarantine_unplayable_generated_ready(conn: sqlite3.Connection) -> list[str]:
+    """Return unused generated rounds with a deterministic clue/evidence mismatch."""
+    retired = []
+    for row_id, candidate_text, result_text, verification_text in conn.execute(
+        "SELECT id,candidate,result,verification FROM automatic_map_entries "
+        "WHERE state='ready' AND origin='discovery'"
+    ).fetchall():
+        candidate, result = json.loads(candidate_text), json.loads(result_text)
+        reason = discovery.generated_round_quality_issue(candidate, result)
+        if not reason:
+            continue
+        verification = json.loads(verification_text)
+        verification.update(editorial_rejection=True, round_rejection=reason)
+        conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
+                     "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
+        retired.append(candidate.get('canonical_name', row_id))
+    return retired
+
+
 def added_source_reports(conn: sqlite3.Connection, output_dir: Path) -> dict[tuple[str, str], dict]:
     """Index recent, bounded discovery reports by their exact saved round."""
     root = output_dir.resolve()
@@ -444,6 +463,7 @@ def quarantine_ready_without_provider(conn: sqlite3.Connection, output_dir: Path
                  "WHERE state='ready' AND expires_at<=?", (now().isoformat(),))
     quarantined = quarantine_unsuitable_ready(conn)
     quarantined += quarantine_unlinked_museum_ready(conn)
+    quarantined += quarantine_unplayable_generated_ready(conn)
     quarantined += quarantine_source_alias_leaks(conn, output_dir)
     quarantined += quarantine_unaligned_ready(conn, output_dir)
     return quarantined
@@ -958,6 +978,10 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
         raise ValueError('Hard clue is unsuitable for a light Map game: ' + tone_issue)
     if missing_destination_link(candidate, validated):
         raise ValueError(MUSEUM_DESTINATION_FAILURE)
+    if origin == 'discovery':
+        quality_issue = discovery.generated_round_quality_issue(candidate, validated)
+        if quality_issue:
+            raise ValueError(quality_issue)
     if origin == 'discovery' and unsupported_critical_labels(candidate, validated):
         raise ValueError('Consequential historical label lacks exact source support.')
     for row in conn.execute("SELECT candidate FROM automatic_map_entries WHERE state='ready'"):
@@ -1010,6 +1034,8 @@ def eligible(conn: sqlite3.Connection, puzzle_date: str) -> list[tuple]:
         if unsuitable_game_hook(json.loads(row[2])):
             continue
         if missing_destination_link(candidate, json.loads(row[2])):
+            continue
+        if row[4] == 'discovery' and discovery.generated_round_quality_issue(candidate, json.loads(row[2])):
             continue
         if row[4] == 'discovery' and not ready_audit_passed(verification):
             continue
