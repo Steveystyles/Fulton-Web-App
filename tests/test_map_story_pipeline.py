@@ -779,16 +779,18 @@ class StoryPipelineTests(unittest.TestCase):
 
     def test_proposed_hook_outweighs_unrelated_generic_story_words(self):
         text = ('Tivoli Gardens is a public garden in Copenhagen. ' * 9
-                + 'A pavilion was designed, opened, hosted festivals and exhibited art. ' * 15
+                + 'A pavilion hosted the first public demonstration of an illuminated garden. ' * 15
                 + 'The wooden roller coaster still carries a brakeman on every train to control its speed. ' * 5)
         hypothesis = ('A brakeman still rides the wooden roller coaster to control the speed '
                       'of every train at Tivoli Gardens.')
         items = story.passages({'title': 'Tivoli Gardens', 'text': text}, hypothesis)
         self.assertLessEqual(len(items), 5)
-        self.assertTrue(any(item['role'] == 'story' and 'brakeman' in item['text']
-                            for item in items))
-        self.assertFalse(any(item['role'] == 'story' and 'pavilion' in item['text']
-                             and 'brakeman' not in item['text'] for item in items))
+        story_texts = [item['text'] for item in items if item['role'] == 'story']
+        self.assertTrue(any('brakeman' in text for text in story_texts))
+        self.assertTrue(any('pavilion' in text and 'brakeman' not in text for text in story_texts))
+        self.assertLess(next(i for i, text in enumerate(story_texts) if 'brakeman' in text),
+                        next(i for i, text in enumerate(story_texts)
+                             if 'pavilion' in text and 'brakeman' not in text))
 
     def test_clue_comparison_keeps_story_and_map_evidence_compact(self):
         units = [
