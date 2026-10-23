@@ -933,16 +933,21 @@ class StoryPipelineTests(unittest.TestCase):
                                     'text': ('The Glass Hall is in Eastport beside Market Park. ' * 30)}
         source.request.return_value = {'query': {'geosearch': []}}
         source.entities.return_value = {'Q1': {'claims': {}}}
-        external = {'text': ('Glass Hall hosted the first demonstration of a solar railway. ' * 24),
+        external = {'text': (('Glass Hall hosted the first demonstration of a solar railway. ' * 24)
+                             + ('An illuminated pavilion exhibited an unusual public performance. ' * 24)),
                     'url': 'https://unlisted-source.example/story', 'source_key': 'external',
                     'source_name': 'unlisted-source.example'}
         with patch.object(story, 'linked_public_urls', return_value=[external['url']]), \
              patch.object(story, 'public_page', return_value=external) as fetch:
-            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum'}],
+            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum',
+                                             'hook_hypothesis': 'Glass Hall hosted a solar railway demonstration.'}],
                                            source, [], [], [], {'rejections': []})
         fetch.assert_called_once_with(source, external['url'], 'Glass Hall')
         self.assertEqual(targets[0]['official']['source_key'], 'external')
-        self.assertTrue(any(p['source'] == 'unlisted-source.example' for p in targets[0]['passages']))
+        external_passages = [p['text'] for p in targets[0]['passages']
+                             if p['source'] == 'unlisted-source.example']
+        self.assertTrue(any('solar railway' in text for text in external_passages))
+        self.assertTrue(any('illuminated pavilion' in text for text in external_passages))
 
     def test_discovery_stops_before_clue_generation_without_sourced_story(self):
         with tempfile.TemporaryDirectory() as directory:
