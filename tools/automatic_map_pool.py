@@ -218,6 +218,7 @@ def ready_audit_input(candidate: dict, result: dict) -> dict:
     return {'place': candidate.get('canonical_name'),
             'clues': result.get('clue_ladder'),
             'source_urls': candidate.get('sources'),
+            'actor_timeline_crosscheck': candidate.get('crosscheck'),
             'supporting_passages': {
                 level: candidate.get('facts', {}).get(level, {}).get('supporting_quotes', [])
                 for level in controlled.LEVELS}}
@@ -515,6 +516,9 @@ READY_AUDIT_INSTRUCTIONS = (
     'claims and passages: set chronology_consistent=false if events or structures '
     'from different periods are made to seem simultaneous or causally linked. '
     'Do not infer that separate statements in one passage happened together. '
+    'When an actor_timeline_crosscheck is supplied, compare its event sequence '
+    'with the hard clue; it may contradict a misleading target-article passage. '
+    'Set chronology_consistent=false for a conflict or an unsupported overlap. '
     'If one passage joins a person\'s captivity with combat, do not assume they '
     'occurred at the same time; reject the compound claim without independently '
     'dated support for both roles. '
@@ -856,6 +860,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
               'passage; a 17th-century republic must not be said to use a tower built in the 18th century. '
               'Do not treat a single passage that joins captivity and combat as proof '
               'they overlapped; require independently dated support for both roles. '
+              'Compare the actor_timeline_crosscheck with the hard clue when provided; '
+              'a conflicting sequence overrides a misleading target-article sentence. '
               'Check country/identity against the supplied Wikidata-derived metadata. '
               'Return false for any failed check; explain briefly. Do not invent factual confidence scores.\n'
               'Editorial requirements: place_type_correct is false for a stadium disguised as engineering. '
@@ -876,7 +882,8 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
               + 'RECENT REJECTED ATTEMPTS:\n' + json.dumps(failure_lessons or [], ensure_ascii=False) + '\n'
               + json.dumps({'place': candidate['canonical_name'], 'country': candidate['country_name'],
                             'city': candidate['locality_name'], 'place_type': candidate['place_type'], 'aliases': candidate['acceptable_aliases'],
-                            'anchors': candidate['anchors'], 'clues': result['clue_ladder'], 'passages': units}))
+                            'anchors': candidate['anchors'], 'clues': result['clue_ladder'], 'passages': units,
+                            'actor_timeline_crosscheck': candidate.get('crosscheck')}))
     verdict = provider.call_with_fallback(model_attr='critic_model', prompt=prompt, schema=verification_schema())
     score = verdict.get('interesting_hook_score')
     if not sufficient_interest_score(score):

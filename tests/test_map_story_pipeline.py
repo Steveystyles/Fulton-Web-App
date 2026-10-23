@@ -199,10 +199,51 @@ class StoryPipelineTests(unittest.TestCase):
         ranked = {'ranked': [{'title': 'Glass Hall', 'passage_id': 'p0',
                               'hook': 'The first public demonstration of solar rail transport '
                                       'followed a novel roof design.',
-                              'city_title': 'Eastport', 'local_title': 'Market Park'}]}
+                              'city_title': 'Eastport', 'local_title': 'Market Park',
+                              'actor_article_title': 'Example Inventor',
+                              'actor_source_url': 'https://history.example/inventor'}]}
         routes = story.ranked_routes(ranked, [target])
         self.assertEqual(len(routes), 1)
         self.assertEqual(routes[0]['city_title'], 'Eastport')
+        self.assertEqual(routes[0]['actor_article_title'], 'Example Inventor')
+        self.assertEqual(routes[0]['actor_source_url'], 'https://history.example/inventor')
+
+    def test_actor_timeline_uses_a_second_article_and_bounds_passages(self):
+        source = Mock()
+        source.text_page.return_value = {
+            'title': 'Benvenuto Cellini', 'url': 'https://en.wikipedia.org/w/index.php?oldid=456',
+            'text': ('In 1527 Benvenuto Cellini defended Castel Sant\'Angelo and shot at enemy soldiers. '
+                     + 'Other career details. ' * 35
+                     + 'In 1538 Benvenuto Cellini was imprisoned in Castel Sant\'Angelo. '
+                     + 'Later career details. ' * 35),
+        }
+        route = {'title': "Castel Sant'Angelo", 'reason':
+                 'Benvenuto Cellini was incarcerated here while shooting enemy soldiers.',
+                 'story_passage': 'Benvenuto Cellini defended the fortress and was later imprisoned.',
+                 'actor_article_title': 'Benvenuto Cellini'}
+        crosscheck = story.actor_timeline_crosscheck(route, source)
+        self.assertEqual(crosscheck['article_title'], 'Benvenuto Cellini')
+        self.assertLessEqual(len(crosscheck['passages']), 4)
+        self.assertIn('1527', ' '.join(crosscheck['passages']))
+        self.assertIn('1538', ' '.join(crosscheck['passages']))
+        source.text_page.assert_called_once_with('Benvenuto Cellini')
+
+    def test_actor_timeline_prefers_a_relevant_public_source_without_wikipedia_request(self):
+        source = Mock()
+        route = {'title': "Castel Sant'Angelo", 'reason':
+                 'Benvenuto Cellini was imprisoned while shooting enemy soldiers.',
+                 'story_passage': 'Cellini defended the fortress and was later imprisoned.',
+                 'actor_article_title': 'Benvenuto Cellini',
+                 'actor_source_url': 'https://museum.example/cellini-history'}
+        external = {'text': ('Benvenuto Cellini defended Castel Sant\'Angelo in 1527. '
+                             'He returned as an imprisoned man in 1538. ') * 8,
+                    'url': route['actor_source_url'], 'source_name': 'museum.example'}
+        with patch.object(story, 'public_page', return_value=external) as fetch:
+            crosscheck = story.actor_timeline_crosscheck(route, source)
+        self.assertEqual(crosscheck['source_name'], 'museum.example')
+        self.assertIn('1538', ' '.join(crosscheck['passages']))
+        fetch.assert_called_once_with(source, route['actor_source_url'], 'Benvenuto Cellini')
+        source.text_page.assert_not_called()
 
     def test_ranked_route_recovers_unique_damaged_source_spellings(self):
         hook = ('Each year the community replasters the mosque during a festival, '
@@ -267,9 +308,16 @@ class StoryPipelineTests(unittest.TestCase):
             {'targets': [{'title': f'Target {i}', 'place_type': 'museum',
                           'hook_hypothesis': hypothesis} for i in range(6)]},
             {'ranked': [{'title': 'Atomium', 'passage_id': 'p0', 'hook': place['proposal_reason'],
-                         'city_title': 'Brussels', 'local_title': 'Heysel'}]},
+                         'city_title': 'Brussels', 'local_title': 'Heysel',
+                         'actor_article_title': 'Example Inventor'}]},
             clue_payload,
         ]
+        source = Mock()
+        source.text_page.return_value = {
+            'title': 'Example Inventor', 'url': 'https://en.wikipedia.org/w/index.php?oldid=789',
+            'text': ('The inventor built a giant model of an iron crystal at the Atomium. '
+                     'Visitors could step inside the iron crystal model. ') * 10,
+        }
         budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
         budget.finish.return_value = {'model_requests': 3, 'source_requests': 1}
         with tempfile.TemporaryDirectory() as directory, \
@@ -278,7 +326,7 @@ class StoryPipelineTests(unittest.TestCase):
              patch.object(story.legacy, 'resolve', return_value=place):
             report = story.discover(source_db=Path(directory) / 'db', catalog=None,
                                     puzzle_date='2026-10-17', output_dir=Path(directory),
-                                    budget=budget, provider=provider, sources=Mock(),
+                                    budget=budget, provider=provider, sources=source,
                                     editorial_feedback=[{'rejected_hook': 'A generic old hook'}],
                                     route_failure_lessons=[{'failed_route_reason': 'An unplayable old park'}],
                                     failure_lessons=[{'failure_reason': 'A weak story was rejected'}])
@@ -286,6 +334,9 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertFalse(report['production_modified'])
             self.assertTrue(Path(report['report_path']).exists())
             self.assertEqual(provider.call_with_fallback.call_count, 3)
+            self.assertEqual(report['candidate']['crosscheck']['article_title'], 'Example Inventor')
+            self.assertIn('actor_crosscheck', report['candidate']['sources'])
+            source.text_page.assert_called_once_with('Example Inventor')
             target_prompt = provider.call_with_fallback.call_args_list[0].kwargs['prompt']
             self.assertIn('Do not pad the list with weak places', target_prompt)
             self.assertIn('hook_hypothesis', target_prompt)
@@ -300,12 +351,15 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertIn('independently sourced map-area names', ranking_prompt)
             self.assertIn('Return ranked=[]', ranking_prompt)
             self.assertIn('player enjoyment', ranking_prompt)
+            self.assertIn('actor_article_title', ranking_prompt)
             self.assertNotIn('BOTH explicitly mentioned in that same target source', ranking_prompt)
 
     def test_story_stage_can_decline_a_weak_batch_instead_of_forcing_a_hook(self):
         self.assertEqual(story.target_schema()['properties']['targets']['minItems'], 0)
         self.assertIn('hook_hypothesis', story.target_schema()['properties']['targets']['items']['required'])
         self.assertEqual(story.story_schema()['properties']['ranked']['minItems'], 0)
+        self.assertIn('actor_article_title', story.story_schema()['properties']['ranked']['items']['properties'])
+        self.assertIn('actor_source_url', story.story_schema()['properties']['ranked']['items']['properties'])
         self.assertEqual(story.ranked_routes({'ranked': []}, []), [])
 
     def test_proposal_without_a_story_stops_before_source_requests(self):

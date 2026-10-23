@@ -21,6 +21,7 @@ if str(PROJECT_DIR) not in sys.path:
 
 import daily_map_game
 from tools import export_map_place_review_batch as review_export
+from tools import build_map_selector_profile
 from tools import map_clue_quality_model
 from tools import map_selector_model
 from tools import rewrite_map_clues_with_ai as rewriter
@@ -416,12 +417,26 @@ def selector_profile_summary(profile: dict[str, Any]) -> dict[str, Any]:
         items.sort(key=lambda item: item["adjustment"], reverse=reverse)
         return items[:8]
 
+    note_guidance = profile.get("note_guidance", [])
+    if isinstance(note_guidance, list):
+        current_stadium_guidance = next(
+            guidance for category, _tokens, guidance in build_map_selector_profile.NOTE_CATEGORY_RULES
+            if category == "needs_significant_event"
+        )
+        note_guidance = [
+            {**item, "guidance": current_stadium_guidance}
+            if isinstance(item, dict) and item.get("category") == "needs_significant_event"
+            else item
+            for item in note_guidance[:8]
+        ]
+    else:
+        note_guidance = []
     return {
         "positive_place_types": sorted_adjustments("type_adjustments", reverse=True),
         "negative_place_types": sorted_adjustments("type_adjustments", reverse=False),
         "positive_hook_categories": sorted_adjustments("category_adjustments", reverse=True),
         "negative_hook_categories": sorted_adjustments("category_adjustments", reverse=False),
-        "note_guidance": profile.get("note_guidance", [])[:8] if isinstance(profile.get("note_guidance"), list) else [],
+        "note_guidance": note_guidance,
         "clue_level_guidance": profile.get("clue_level_guidance", [])[:6] if isinstance(profile.get("clue_level_guidance"), list) else [],
         "hard_clue_review": profile.get("hard_clue_review", {}) if isinstance(profile.get("hard_clue_review"), dict) else {},
         "feedback_rows": profile.get("accepted_row_count", 0),
