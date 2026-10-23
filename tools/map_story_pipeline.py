@@ -286,7 +286,7 @@ def nearby_options(page: dict, sources) -> list[dict]:
         short = name.split(' (')[0]
         if (legacy.exclusion_key(name) == legacy.exclusion_key(page['title']) or
                 legacy.exclusion_key(name) in seen or
-                not re.search(re.escape(short), page['text'], re.I)):
+                not legacy.named_place_mention(page['text'], short)):
             continue
         seen.add(legacy.exclusion_key(name))
         options.append({'title': name, 'distance_m': round(distance)})
@@ -719,10 +719,10 @@ def guidance_fallback(payload: dict, candidate: dict) -> dict:
     sector = candidate['city_sector']
     country = candidate['country_name']
     if sector == 'central':
-        medium = f'Look in {city}, {country}, for the landmark behind this story, close to the city centre.'
+        medium = f'This landmark stands close to the centre of {city}, {country}.'
     else:
-        medium = f'Look in {city}, {country}, for the landmark behind this story, in the {sector} part of the city.'
-    easy = f'In {sector} {city}, look near {local}; the landmark described by the clues is nearby.'
+        medium = f'This landmark stands in the {sector} part of {city}, {country}.'
+    easy = f'In {sector} {city}, look near {local} for this landmark.'
     fixed['facts']['medium']['text'] = medium
     fixed['facts']['easy']['text'] = easy
     return fixed

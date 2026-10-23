@@ -36,6 +36,44 @@ class DiscoveryTests(unittest.TestCase):
         place['evidence'] = {'article': {'text': ' '.join(f['text'] for f in place['facts'].values())}}
         return place
 
+    def test_map_anchor_needs_a_proper_name_not_an_unrelated_common_word(self):
+        article = 'The monument stands on Liberty Island. Its supporters celebrated the liberation of slaves.'
+        self.assertIsNone(discovery.named_place_mention(article, 'Liberation'))
+        self.assertIsNotNone(discovery.named_place_mention(article, 'Liberty Island'))
+        candidate = {'evidence': {'article': {'text': article}},
+                     'anchors': [{'name': 'Liberty Island'}, {'name': 'Liberation'}]}
+        with self.assertRaisesRegex(ValueError, 'does not mention the supplied search area'):
+            discovery.evidence_excerpt(candidate)
+
+    def test_generated_round_rejects_meta_guidance_and_component_designer_shift(self):
+        candidate = {'anchors': [{'name': 'Dubai'}, {'name': 'Jumeirah Beach Hotel'}],
+                     'facts': {
+                         'easy': {'supporting_quotes': ['The hotel is near Jumeirah Beach Hotel.']},
+                         'hard': {'supporting_quotes': [
+                             "The hotel's helipad was designed by Irish architect Rebecca Gernon."
+                         ]},
+                     }}
+        result = {'clue_ladder': {
+            'hard': 'Designed by Irish architect Rebecca Gernon, this iconic tower has a helipad.',
+            'medium': 'This hotel stands in Dubai.',
+            'easy': 'In western Dubai, look near Jumeirah Beach Hotel as practical map guidance.',
+        }}
+        self.assertIn('generator-facing', discovery.generated_round_quality_issue(candidate, result))
+        result['clue_ladder']['easy'] = 'In western Dubai, look near Jumeirah Beach Hotel for this tower.'
+        self.assertIn('component designer', discovery.generated_round_quality_issue(candidate, result))
+        result['clue_ladder']['hard'] = 'Designed by Irish architect Rebecca Gernon, this helipad hosted a tennis match.'
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, result))
+
+    def test_generated_round_rejects_common_word_anchor_in_saved_evidence(self):
+        candidate = {'anchors': [{'name': 'New York City'}, {'name': 'Liberation'}],
+                     'facts': {'easy': {'supporting_quotes': [
+                         'A monument commemorated the liberation of slaves near New York City.'
+                     ]}}}
+        result = {'clue_ladder': {'hard': 'A statue was built for a public exhibition.',
+                                   'medium': 'It is in New York City.',
+                                   'easy': 'In western New York City, look near Liberation.'}}
+        self.assertIn('unrelated common word', discovery.generated_round_quality_issue(candidate, result))
+
     def test_proposal_focus_rotates_geographic_lanes_without_more_model_requests(self):
         self.assertGreaterEqual(discovery.MAX_SOURCE_REQUESTS, discovery.PROPOSAL_COUNT * 10)
         focuses = [
@@ -274,9 +312,9 @@ class DiscoveryTests(unittest.TestCase):
             'evidence': {
                 'article': {
                     'text': (
-                        'A' * 494
+                        'A' * 493 + ' '
                         + 'Local Park is beside the landmark. '
-                        + 'B' * 520
+                        + 'B' * 519 + ' '
                         + 'River Walk is visible nearby.'
                     )
                 }

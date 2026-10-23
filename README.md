@@ -199,7 +199,7 @@ generation enabled, and configure the server-only `MAP_AI_API_KEY` and
 today's games are already prepared. This mode takes precedence over the older
 controlled-catalogue generator.
 
-The service discovers new places, retrieves Wikipedia/Wikidata evidence and
+The service discovers new places, retrieves public source evidence and checked
 coordinates, writes three progressive clues, and performs a separate model
 verification against the retrieved passages. Local checks enforce source IDs,
 identity, coordinate agreement, map areas, clue format and repeat cooldowns.
@@ -207,18 +207,16 @@ Passing rounds enter a persistent queue automatically; no routine manual
 promotion or hand-maintained place list is required. Machine checking reduces
 errors but is not a guarantee of factual accuracy.
 
-The queue targets seven eligible rounds. One maintenance wake keeps generating
-until that target or the persisted daily request/attempt cap is reached; after a
-cap it sleeps until the next UTC budget window instead of polling the provider.
-Unused entries expire after 14 days;
-used entries cannot publish twice. Maintenance makes at most four attempts,
-12 model requests and 64 source requests per UTC day, across restarts and future
-puzzle dates. An attempt allows at most three model calls: proposals, clue
-composition and verification. Publication consumes saved, checked clues without
-another model call. Failed candidates stay out; failed names are avoided on
-subsequent attempts. Quota or source failures defer replenishment while available
-rounds remain usable. The existing reviewed reserve is an optional one-time
-bootstrap and emergency fallback, not the source of automatic discovery.
+The queue targets seven eligible rounds. A maintenance wake performs at most
+four attempts before yielding to the next scheduler tick; this is not a daily
+generation limit. Unused entries expire after 35 days; used entries cannot
+publish twice. Each attempt has its own request bounds. Provider rate or quota
+responses pause replenishment until the provider's retry time, while available
+rounds remain usable. Publication consumes saved, checked clues without another
+model call. Rejected clue ladders feed back into later attempts, while a place
+with a different valid story or route can be reconsidered. The existing reviewed
+reserve is an optional one-time bootstrap and emergency fallback, not the source
+of automatic discovery.
 
 Queue entries, evidence verdicts and request accounting live in the production
 SQLite database (`automatic_map_*` tables); private source reports are stored

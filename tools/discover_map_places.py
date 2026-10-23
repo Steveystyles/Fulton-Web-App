@@ -480,7 +480,12 @@ def anchor_name(page: dict, proposed_name: str, target_text: str) -> str:
     """Keep an article-supported short name when the source has a city suffix."""
     canonical = page['title'].split(' (')[0]
     proposed = title(proposed_name)
-    return proposed if re.search(re.escape(proposed), target_text, re.I) else canonical
+    return proposed if named_place_mention(target_text, proposed) else canonical
+
+
+def named_place_mention(text: str, name: str) -> re.Match | None:
+    """A proper-name mention, not a common word embedded in unrelated prose."""
+    return re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', text)
 
 
 def broad_city_sector(target_lat: float, target_lng: float, city_lat: float, city_lng: float) -> str:
@@ -658,6 +663,43 @@ def validate_proposal_hook_alignment(payload: dict, selected: dict) -> None:
         raise ValueError('Hard clue abandoned the proposed discovery hook for an unrelated fact.')
 
 
+def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
+    """Check source-to-clue relationships that a broad model verdict can miss."""
+    ladder = result.get('clue_ladder') or {}
+    if any(re.search(r'\b(?:as practical map guidance|map guidance|the landmark described by (?:the|these) clues)\b',
+                     str(ladder.get(level) or ''), re.I) for level in controlled.LEVELS):
+        return 'A clue repeats generator-facing guidance instead of speaking to the player.'
+
+    anchors = candidate.get('anchors') or []
+    easy_fact = candidate.get('facts', {}).get('easy', {})
+    if len(anchors) > 1 and isinstance(easy_fact, dict):
+        local_name = str(anchors[1].get('name') or '')
+        quotes = easy_fact.get('supporting_quotes') or [easy_fact.get('supporting_quote', '')]
+        if local_name and any(isinstance(quote, str) and quote for quote in quotes):
+            if not any(named_place_mention(quote, local_name) for quote in quotes if isinstance(quote, str)):
+                return 'The local map anchor appears only as an unrelated common word in its evidence.'
+
+    hard = str(ladder.get('hard') or '')
+    attribution = re.match(
+        r'^Designed by (?P<designer>[^,]{3,80}), this (?:[a-z][a-z-]*\s+){0,3}'
+        r'(?P<object>tower|hotel|building|stadium|bridge|museum|palace|cathedral|'
+        r'arena|monument|structure|venue)\b', hard, re.I,
+    )
+    if attribution:
+        facts = candidate.get('facts', {}).get('hard', {})
+        quotes = facts.get('supporting_quotes') or [facts.get('supporting_quote', '')]
+        source = ' '.join(quote for quote in quotes if isinstance(quote, str))
+        subjects = []
+        for match in re.finditer(r'(?P<subject>[^.!?]{1,120}?)\bwas designed by\s+'
+                                 + re.escape(attribution['designer']) + r'\b', source, re.I):
+            words = re.findall(r"[a-z]+(?:['’]s)?", match['subject'], re.I)
+            if words:
+                subjects.append(words[-1].casefold())
+        if not subjects or attribution['object'].casefold() not in subjects:
+            return 'Hard clue attributes a component designer to the whole landmark.'
+    return None
+
+
 def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dict]:
     selected = next((c for c in candidates if c['id'] == payload.get('place_id')), None)
     if selected is None:
@@ -734,6 +776,9 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
     result = controlled.validate_result(clue_payload, [candidate])
     if not result['automated_pass']:
         raise ValueError('; '.join(result['validation']['failure_reasons']))
+    quality_issue = generated_round_quality_issue(candidate, result)
+    if quality_issue:
+        raise ValueError(quality_issue)
     return candidate, result
 
 
@@ -742,7 +787,7 @@ def evidence_excerpt(candidate: dict) -> list[str]:
     text = candidate['evidence']['article']['text']
     passages = [text[:5000]]
     for anchor in candidate['anchors']:
-        match = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
+        match = named_place_mention(text, anchor['name'])
         if match is None:
             raise ValueError('The target article does not mention the supplied search area.')
         if match.end() > 5000:
@@ -760,7 +805,7 @@ def evidence_units(candidate: dict) -> list[dict]:
     external_target = candidate['evidence']['article'].get('source_kind') in (
         'osm_public_page', 'wikidata_public_page')
     for anchor in candidate['anchors']:
-        hit = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
+        hit = named_place_mention(text, anchor['name'])
         if hit is None:
             if external_target:
                 continue
@@ -774,7 +819,7 @@ def evidence_units(candidate: dict) -> list[dict]:
     # Keep the whole anchor in one verbatim passage even at a chunk boundary.
     # Additional metadata guides selection; validation still checks the actual text.
     for index, anchor in enumerate(candidate['anchors']):
-        hit = re.search(re.escape(anchor['name']), text, flags=re.IGNORECASE)
+        hit = named_place_mention(text, anchor['name'])
         if hit is None and external_target:
             source_key = 'city' if index == 0 else 'local'
             source_text = candidate['evidence'][source_key]['text']

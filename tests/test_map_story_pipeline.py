@@ -534,11 +534,12 @@ class StoryPipelineTests(unittest.TestCase):
         source.request.return_value = {'query': {'geosearch': [
             {'title': 'Glass Hall', 'dist': 0},
             {'title': 'Market Park', 'dist': 730},
+            {'title': 'Liberation', 'dist': 740},
             {'title': 'Unknown Museum', 'dist': 800},
             {'title': 'Far Garden', 'dist': 4900},
         ]}}
         page = {'title': 'Glass Hall', 'lat': 51.0, 'lng': 0.1,
-                'text': 'The Glass Hall is near Market Park in Eastport.'}
+                'text': 'The Glass Hall is near Market Park in Eastport. Its opening celebrated liberation.'}
         self.assertEqual(story.nearby_options(page, source), [{'title': 'Market Park', 'distance_m': 730}])
         self.assertEqual(source.request.call_args.args[0], 'en.wikipedia.org')
 
