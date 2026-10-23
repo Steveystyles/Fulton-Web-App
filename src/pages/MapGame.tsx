@@ -1025,16 +1025,21 @@ export function MapGame() {
                 </p>
               </div>
             ))}
-            {visibleClues.length > 1 ? <details className="min-w-0 text-sm"><summary className="min-h-11 cursor-pointer rounded-lg border bg-white p-2 font-bold saints-focus">Previous clues ({visibleClues.length - 1})</summary><div className="mt-2 space-y-3 rounded-xl border bg-white p-3">{visibleClues.slice(0, -1).map(clue => <div key={clue.id}><p className="font-black text-saints-red">{clue.title}</p><p className="mt-1 leading-relaxed">{clue.text}</p></div>)}</div></details> : null}
-            {nextClue ? (
-              <button
-                type="button"
-                onClick={() => void revealNextClue()}
-                disabled={revealing || submitting}
-                className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 transition hover:border-saints-red/40 saints-focus"
-              >
-                {revealing ? "Revealing clue" : `Reveal ${nextClue.title.toLowerCase()} - max ${nextClue.maxPoints} pts`}
-              </button>
+            {visibleClues.length > 1 || nextClue ? (
+              <div className="map-clue-actions" data-split={visibleClues.length > 1 && Boolean(nextClue)}>
+                {visibleClues.length > 1 ? <details className="min-w-0 text-sm"><summary className="flex min-h-11 cursor-pointer items-center rounded-lg border bg-white px-2 py-1 font-bold saints-focus">Previous clues ({visibleClues.length - 1})</summary><div className="mt-2 space-y-3 rounded-xl border bg-white p-3">{visibleClues.slice(0, -1).map(clue => <div key={clue.id}><p className="font-black text-saints-red">{clue.title}</p><p className="mt-1 leading-relaxed">{clue.text}</p></div>)}</div></details> : null}
+                {nextClue ? (
+                  <button
+                    type="button"
+                    onClick={() => void revealNextClue()}
+                    disabled={revealing || submitting}
+                    aria-label={`Reveal ${nextClue.title.toLowerCase()} - max ${nextClue.maxPoints} points`}
+                    className="flex min-h-11 min-w-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-2 py-1 text-center text-sm font-black leading-tight text-slate-700 transition hover:border-saints-red/40 saints-focus"
+                  >
+                    {revealing ? "Revealing clue" : `Reveal ${nextClue.title.toLowerCase()} · ${nextClue.maxPoints} pts max`}
+                  </button>
+                ) : null}
+              </div>
             ) : null}
           </div>
 

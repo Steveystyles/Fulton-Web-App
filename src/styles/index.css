@@ -154,6 +154,9 @@ input[type="date"] {
 }
 
 .map-play-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+.map-clue-actions { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+.map-clue-actions[data-split="true"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.map-clue-actions details[open], .map-clue-actions details[open] + button { grid-column: 1 / -1; }
 .map-stage { height: min(clamp(200px, 50svh, 520px), var(--map-fit-height, 520px)); max-height: max(200px, calc(100svh - var(--app-header-height, 4rem) - 21rem)); }
 .map-viewport[data-expanded="true"] .map-stage { height: clamp(440px, 75svh, 780px); max-height: none; }
 .map-tools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) 44px; gap: 0.375rem; }

@@ -359,6 +359,18 @@ test("Map opens on the game without a header strip or help row above the clue", 
   assert.doesNotMatch(routes, /MapGamePromo|promoReviewMode/);
 });
 
+test("Map keeps clue history and the next reveal on one compact row", async () => {
+  const mapSource = await sourceText("src/pages/MapGame.tsx");
+  const css = await stylesheet();
+  assert.match(mapSource, /className="map-clue-actions" data-split=\{visibleClues\.length > 1 && Boolean\(nextClue\)\}/);
+  assert.match(mapSource, /<details className="min-w-0 text-sm">/);
+  assert.match(mapSource, /Reveal \$\{nextClue\.title\.toLowerCase\(\)\} · \$\{nextClue\.maxPoints\} pts max/);
+  assert.ok(values(rulesFor(css, '.map-clue-actions[data-split="true"]'), "grid-template-columns")
+    .some(value => value.includes("repeat(2")));
+  assert.ok(values(rulesFor(css, '.map-clue-actions details[open]'), "grid-column")
+    .some(value => value === "1 / -1"));
+});
+
 test("Practice quiz has no redundant Back to Daily button", async () => {
   const quizSource = await sourceText("src/pages/Quiz.tsx");
   assert.doesNotMatch(quizSource, /Back to Daily/);
