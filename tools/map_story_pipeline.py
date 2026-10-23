@@ -248,8 +248,8 @@ def story_schema() -> dict:
     }}, 'required': ['ranked'], 'additionalProperties': False}
 
 
-def passages(page: dict) -> list[dict]:
-    """Small, stable excerpts; source text is evidence, never an instruction."""
+def passages(page: dict, hook_hypothesis: str = '', place_name: str = '') -> list[dict]:
+    """Small excerpts that surface the proposed story without treating it as evidence."""
     chunks = [match.group().strip() for match in re.finditer(r'.{1,420}(?:\s|$)', page['text'])]
     story_words = re.compile(r'\b(first|invented|designed|opened|hosted|performed|exhibited|'
                              r'festival|ceremony|record|experiment|discovered|created|'
@@ -259,7 +259,16 @@ def passages(page: dict) -> list[dict]:
     # Short public pages often state their best story in the opening paragraph.
     # Rank the whole excerpt; excluding its first two chunks hid those hooks.
     eligible = range(min(len(chunks), 120))
-    strongest = sorted(eligible, key=lambda i: (-len(story_words.findall(chunks[i])), i))[:3]
+    hook_terms = legacy.hook_terms(hook_hypothesis, place_name or page.get('title', ''))
+    related = sorted(
+        ((i, len(hook_terms & legacy.hook_terms(chunks[i], place_name or page.get('title', ''))))
+         for i in eligible),
+        key=lambda item: (-item[1], item[0]),
+    )
+    minimum_overlap = 2 if len(hook_terms) >= 3 else 1
+    strongest = [i for i, overlap in related if overlap >= minimum_overlap][:3]
+    if not strongest:
+        strongest = sorted(eligible, key=lambda i: (-len(story_words.findall(chunks[i])), i))[:3]
     geographical = sorted(eligible, key=lambda i: (-len(location_words.findall(chunks[i])), i))[:1]
     chosen = sorted({0, *strongest, *geographical})
     return [{'id': f'p{index}', 'text': chunks[index],
@@ -451,7 +460,8 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                    or legacy.daily_map_game.haversine_m(page['lat'], page['lng'], row['lat'], row['lng']) < 500
                    for row in [*recent, *existing]):
                 raise ValueError('Recent or existing answer.')
-            items = passages(page)
+            hypothesis = ' '.join(str(proposal.get('hook_hypothesis') or '').split())[:240]
+            items = passages(page, hypothesis, page['title'])
             if not items:
                 raise ValueError('No useful target-article passages.')
             try:
@@ -462,7 +472,7 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                            'passages': [{**item, 'source': external['source_name'] if external else 'Wikipedia'}
                                         for item in items],
                            'nearby_options': nearby,
-                           'hook_hypothesis': ' '.join(str(proposal.get('hook_hypothesis') or '').split())[:240],
+                           'hook_hypothesis': hypothesis,
                            'suggested_url': str(proposal.get('source_url') or ''),
                            **({'official': external} if external else {})})
         except (ValueError, KeyError, TypeError) as error:
@@ -502,7 +512,8 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
             for source_name, source_id, fetch in official_options:
                 try:
                     official = fetch(sources, source_id)
-                    official_items = [p for p in passages(official) if p['role'] == 'story'][:2]
+                    official_items = [p for p in passages(official, item['hook_hypothesis'], item['title'])
+                                      if p['role'] == 'story'][:2]
                     if not official_items:
                         raise ValueError('No usable discovery-story passage.')
                     wiki = item['passages']
@@ -532,7 +543,8 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
             for url in public_urls:
                 try:
                     external = public_page(sources, url, item['title'])
-                    external_items = [p for p in passages(external) if p['role'] == 'story'][:2]
+                    external_items = [p for p in passages(external, item['hook_hypothesis'], item['title'])
+                                      if p['role'] == 'story'][:2]
                     if not external_items:
                         continue
                     wiki = item['passages']
