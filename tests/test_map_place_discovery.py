@@ -158,6 +158,18 @@ class DiscoveryTests(unittest.TestCase):
         with patch.object(source, 'request', side_effect=response):
             self.assertIn('Local Park', source.page('Example')['text'])
 
+    def test_auxiliary_biography_does_not_need_a_landmark_coordinate(self):
+        source = discovery.WikimediaSource(self.budget())
+        biography = 'The artist defended a fortress in 1527. ' * 6
+        with patch.object(source, 'request', return_value={'query': {'pages': [{
+                'ns': 0, 'title': 'Example Artist', 'lastrevid': 456,
+                'pageprops': {}, 'extract': biography,
+        }]}}) as request:
+            page = source.text_page('Example Artist')
+        self.assertEqual(page['text'], discovery.normalized(biography))
+        self.assertEqual(page['url'], 'https://en.wikipedia.org/w/index.php?oldid=456')
+        self.assertNotIn('coordinates', request.call_args.args[1]['prop'])
+
     def test_area_intro_batch_saves_a_request_without_truncating_target_evidence(self):
         source = discovery.WikimediaSource(self.budget())
         def page(name, entity, text):

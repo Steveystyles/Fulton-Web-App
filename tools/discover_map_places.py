@@ -328,6 +328,26 @@ class WikimediaSource:
         self.cache[name] = result
         return result
 
+    def text_page(self, name: str) -> dict:
+        """Read an auxiliary article without requiring a landmark coordinate."""
+        name = title(name)
+        data = self.request('en.wikipedia.org', {
+            'action': 'query', 'titles': name, 'redirects': 1,
+            'prop': 'extracts|pageprops|info', 'explaintext': 1, 'exlimit': 1,
+        })
+        pages = data.get('query', {}).get('pages', [])
+        if len(pages) != 1:
+            raise ValueError('Auxiliary source title did not resolve uniquely.')
+        page = pages[0]
+        if page.get('missing') or page.get('ns') != 0 or 'disambiguation' in page.get('pageprops', {}):
+            raise ValueError('Ambiguous or missing auxiliary source page.')
+        text = normalized(page.get('extract', ''))
+        if len(text) < 150:
+            raise ValueError('Insufficient auxiliary source text.')
+        return {'title': page['title'], 'text': text[:100000],
+                'url': f"https://en.wikipedia.org/w/index.php?oldid={int(page['lastrevid'])}",
+                'revision': int(page['lastrevid'])}
+
     def prefetch_area_pages(self, names: list[str]) -> None:
         """Fetch two area intros together, without truncating the target article."""
         requested = list(dict.fromkeys(title(name) for name in names))
@@ -853,9 +873,9 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'Use different countries and varied place types. All twelve article titles must be different. '
                   'Do not repeat a landmark named in the '
                   'exclusions even under an alternate spelling or article title. No broad regions, '
-                  'private homes, demolished structures, or generic fame. Stadiums are eligible when they have '
-                  'a distinctive place-owned story and a useful map-solving route; do not overfill the batch '
-                  'with them. Prefer a memorable place-owned story or engineering idea. '
+                  'private homes, demolished structures, or generic fame. Stadiums are eligible on the same merits '
+                  'as other places: a distinctive place-owned hook and a useful map-solving route. '
+                  'Prefer a memorable place-owned story or engineering idea. '
                   'Classify stadiums as stadiums, never as engineering. Prefer source-rich landmarks with an '
                   'achievement, cultural moment, unusual design, or surprising public use; do not make camps, '
                   'hostages, threats of serious harm, victim deaths or atrocities the reason to discover a place. '

@@ -668,7 +668,7 @@
     {
       "category": "needs_significant_event",
       "count": 2,
-      "guidance": "For stadiums and venues, require a particular major final, historic match, incident, result, or record-setting moment; architecture and crowd features are not substitutes.",
+      "guidance": "For stadiums and venues, prefer a specific, memorable and verifiable hook: a match, performance, record, unusual feature or public experience can all work when genuinely tied to that venue. Generic atmosphere or capacity alone is weak; a major final is not mandatory.",
       "examples": [
         {
           "place": "Wembley Stadium",
@@ -933,7 +933,7 @@
           "happened there",
           "major event"
         ],
-        "guidance": "For stadiums and venues, require a particular major final, historic match, incident, result, or record-setting moment; architecture and crowd features are not substitutes."
+        "guidance": "For stadiums and venues, prefer a specific, memorable and verifiable hook: a match, performance, record, unusual feature or public experience can all work when genuinely tied to that venue. Generic atmosphere or capacity alone is weak; a major final is not mandatory."
       },
       {
         "category": "poor_narrowing_ladder",

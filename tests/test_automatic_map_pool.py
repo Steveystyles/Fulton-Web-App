@@ -350,6 +350,17 @@ class AutomaticPoolTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             self.assertEqual(pool.publish(conn, puzzle_date='2026-09-08')['status'], 'published')
 
+    def test_actor_timeline_reaches_ready_audit(self):
+        candidate = deepcopy(self.place)
+        candidate['crosscheck'] = {
+            'article_title': 'Example Artist', 'url': 'https://example.org/artist',
+            'passages': ['The artist defended this place in 1527.',
+                         'The artist returned as a prisoner in 1538.'],
+        }
+        self.assertEqual(pool.ready_audit_input(candidate, self.result)
+                         ['actor_timeline_crosscheck'], candidate['crosscheck'])
+        self.assertIn('conflict or an unsupported overlap', pool.READY_AUDIT_INSTRUCTIONS)
+
     def test_previous_interest_audit_is_rechecked_under_new_editorial_standard(self):
         self.queue('discovery')
         with closing(self.connect()) as conn:
@@ -719,6 +730,12 @@ class AutomaticPoolTests(unittest.TestCase):
 
     def test_independent_verifier_rejects_unsupported_or_fabricated_citations(self):
         report = self.report()
+        report['resolved_candidates'][0]['crosscheck'] = {
+            'article_title': 'Example Artist', 'url': 'https://example.org/artist',
+            'passages': ['The artist defended this place in 1527.',
+                         'The artist returned as a prisoner in 1538.'],
+        }
+        report['resolved_candidates'][0]['sources']['actor_crosscheck'] = 'https://example.org/artist'
         ids = [p['id'] for p in discovery.evidence_units(report['resolved_candidates'][0])]
         verdict = {**self.verdict, 'levels': {k: {'supported': True, 'source_ids': ids} for k in controlled.LEVELS}, 'reason': 'Supported by supplied passages.'}
         provider = Mock()
@@ -730,6 +747,7 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertIn('absence of an event', prompt)
         self.assertIn('editorial discovery hook', prompt)
         self.assertIn('chronology_consistent=false', prompt)
+        self.assertIn('The artist returned as a prisoner in 1538.', prompt)
         self.assertIn('chronology_consistent', provider.call_with_fallback.call_args.kwargs['schema']['required'])
         for change in ('unsupported', 'citation', 'uncertain', 'chronology'):
             altered = deepcopy(verdict)

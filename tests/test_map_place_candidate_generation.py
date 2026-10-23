@@ -112,7 +112,7 @@ class MapPlaceCandidateGenerationTests(unittest.TestCase):
         self.assertEqual(profile["note_category_counts"]["subjective_fact"], 1)
         self.assertEqual(profile["note_category_counts"]["repeated_fact"], 1)
         guidance = " ".join(item["guidance"] for item in profile["note_guidance"])
-        self.assertIn("major final", guidance)
+        self.assertIn("a major final is not mandatory", guidance)
         self.assertIn("subjective", guidance)
         self.assertIn("distinct", guidance)
 
@@ -142,6 +142,15 @@ class MapPlaceCandidateGenerationTests(unittest.TestCase):
         self.assertEqual(summary["note_guidance"][0]["guidance"], "Avoid subjective facts.")
         self.assertEqual(summary["clue_level_guidance"][0]["level"], "easy")
         self.assertEqual(summary["clue_level_guidance"][0]["guidance"], "Improve easy clues.")
+
+    def test_selector_profile_summary_updates_old_stadium_rule_without_losing_feedback(self) -> None:
+        summary = generator.selector_profile_summary({
+            "accepted_row_count": 3,
+            "note_guidance": [{"category": "needs_significant_event", "count": 2,
+                               "guidance": "Require a major final."}],
+        })
+        self.assertEqual(summary["note_guidance"][0]["count"], 2)
+        self.assertIn("a major final is not mandatory", summary["note_guidance"][0]["guidance"])
 
     def test_selector_profile_classifies_former_record_feedback(self) -> None:
         profile = build_map_selector_profile.build_profile(

@@ -91,7 +91,7 @@ NOTE_CATEGORY_RULES = (
     (
         "needs_significant_event",
         ("finals", "significant things", "happened there", "major event"),
-        "For stadiums and venues, require a particular major final, historic match, incident, result, or record-setting moment; architecture and crowd features are not substitutes.",
+        "For stadiums and venues, prefer a specific, memorable and verifiable hook: a match, performance, record, unusual feature or public experience can all work when genuinely tied to that venue. Generic atmosphere or capacity alone is weak; a major final is not mandatory.",
     ),
     (
         "poor_narrowing_ladder",
