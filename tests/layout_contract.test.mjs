@@ -363,12 +363,12 @@ test("Map keeps clue history and the next reveal on one compact row", async () =
   const mapSource = await sourceText("src/pages/MapGame.tsx");
   const css = await stylesheet();
   assert.match(mapSource, /className="map-clue-actions" data-split=\{visibleClues\.length > 1 && Boolean\(nextClue\)\}/);
-  assert.match(mapSource, /<details className="min-w-0 text-sm">/);
+  assert.match(mapSource, /Previous clues \(\{visibleClues\.length - 1\}\)<\/button>/);
   assert.match(mapSource, /Reveal \$\{nextClue\.title\.toLowerCase\(\)\} · \$\{nextClue\.maxPoints\} pts max/);
   assert.ok(values(rulesFor(css, '.map-clue-actions[data-split="true"]'), "grid-template-columns")
     .some(value => value.includes("repeat(2")));
-  assert.ok(values(rulesFor(css, '.map-clue-actions details[open]'), "grid-column")
-    .some(value => value === "1 / -1"));
+  assert.match(mapSource, /showPreviousClues && visibleClues\.length > 1 \? <DialogPortal/);
+  assert.match(mapSource, /role="dialog" aria-modal="true" aria-labelledby=\{previousCluesTitleId\}/);
 });
 
 test("Practice quiz has no redundant Back to Daily button", async () => {

@@ -16,10 +16,11 @@ import {
   Type,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Card } from "../components/Card";
 import { DailyJourney, useToday } from "../components/DailyJourney";
+import { DialogPortal } from "../components/DialogPortal";
 import { GameFeedback } from "../components/GameFeedback";
 import { layoutMapLabels, type LabelBox } from "../lib/mapLabels";
 import { useAuth } from "../context/AuthContext";
@@ -650,6 +651,8 @@ export function MapGame() {
   const [snapLoading, setSnapLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [revealing, setRevealing] = useState(false);
+  const [showPreviousClues, setShowPreviousClues] = useState(false);
+  const previousCluesTitleId = useId();
   const submitInFlightRef = useRef(false);
   const mapSectionRef = useRef<HTMLElement | null>(null);
   const [mapLabels, setMapLabels] = useState(() => {
@@ -1027,7 +1030,7 @@ export function MapGame() {
             ))}
             {visibleClues.length > 1 || nextClue ? (
               <div className="map-clue-actions" data-split={visibleClues.length > 1 && Boolean(nextClue)}>
-                {visibleClues.length > 1 ? <details className="min-w-0 text-sm"><summary className="flex min-h-11 cursor-pointer items-center rounded-lg border bg-white px-2 py-1 font-bold saints-focus">Previous clues ({visibleClues.length - 1})</summary><div className="mt-2 space-y-3 rounded-xl border bg-white p-3">{visibleClues.slice(0, -1).map(clue => <div key={clue.id}><p className="font-black text-saints-red">{clue.title}</p><p className="mt-1 leading-relaxed">{clue.text}</p></div>)}</div></details> : null}
+                {visibleClues.length > 1 ? <button type="button" aria-haspopup="dialog" aria-expanded={showPreviousClues} onClick={() => setShowPreviousClues(true)} className="min-h-11 min-w-0 rounded-lg border bg-white px-2 py-1 text-left text-sm font-bold saints-focus">Previous clues ({visibleClues.length - 1})</button> : null}
                 {nextClue ? (
                   <button
                     type="button"
@@ -1041,6 +1044,14 @@ export function MapGame() {
                 ) : null}
               </div>
             ) : null}
+            {showPreviousClues && visibleClues.length > 1 ? <DialogPortal onClose={() => setShowPreviousClues(false)}>
+              <div className="fixed inset-0 z-2000 flex items-center justify-center bg-black/60 p-3">
+                <section role="dialog" aria-modal="true" aria-labelledby={previousCluesTitleId} className="max-h-[calc(100dvh-1.5rem)] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 shadow-xl">
+                  <div className="flex items-center justify-between gap-3"><h2 id={previousCluesTitleId} className="text-xl font-black">Previous clues</h2><button type="button" aria-label="Close previous clues" onClick={() => setShowPreviousClues(false)} className="saints-focus flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border"><X aria-hidden="true" className="h-5 w-5" /></button></div>
+                  <div className="mt-3 space-y-3">{visibleClues.slice(0, -1).map(clue => <div key={clue.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3"><p className="text-sm font-black text-saints-red">{clue.title}</p><p className="mt-1 leading-relaxed text-slate-900">{clue.text}</p></div>)}</div>
+                </section>
+              </div>
+            </DialogPortal> : null}
           </div>
 
           <MapCanvas
