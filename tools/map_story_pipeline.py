@@ -266,11 +266,22 @@ def passages(page: dict, hook_hypothesis: str = '', place_name: str = '') -> lis
         key=lambda item: (-item[1], item[0]),
     )
     minimum_overlap = 2 if len(hook_terms) >= 3 else 1
-    strongest = [i for i, overlap in related if overlap >= minimum_overlap][:3]
-    if not strongest:
-        strongest = sorted(eligible, key=lambda i: (-len(story_words.findall(chunks[i])), i))[:3]
+    # Show the proposed story first, but keep independently promising passages:
+    # the proposal is an unverified lead and a different story may be better.
+    strongest = [i for i, overlap in related if overlap >= minimum_overlap][:2]
+    overlaps = dict(related)
+    generic = sorted(eligible, key=lambda i: (-len(story_words.findall(chunks[i])), i))
+    alternative = next((i for i in generic if i not in strongest
+                        and overlaps[i] < minimum_overlap and story_words.search(chunks[i])), None)
+    if alternative is not None:
+        strongest.append(alternative)
+    for i in generic:
+        if i not in strongest:
+            strongest.append(i)
+        if len(strongest) == 3:
+            break
     geographical = sorted(eligible, key=lambda i: (-len(location_words.findall(chunks[i])), i))[:1]
-    chosen = sorted({0, *strongest, *geographical})
+    chosen = list(dict.fromkeys([0, *strongest, *geographical]))
     return [{'id': f'p{index}', 'text': chunks[index],
              'role': 'story' if index in strongest else 'context'}
             for index in chosen if len(chunks[index]) >= 50]
@@ -513,7 +524,7 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                 try:
                     official = fetch(sources, source_id)
                     official_items = [p for p in passages(official, item['hook_hypothesis'], item['title'])
-                                      if p['role'] == 'story'][:2]
+                                      if p['role'] == 'story'][:3]
                     if not official_items:
                         raise ValueError('No usable discovery-story passage.')
                     wiki = item['passages']
@@ -544,7 +555,7 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                 try:
                     external = public_page(sources, url, item['title'])
                     external_items = [p for p in passages(external, item['hook_hypothesis'], item['title'])
-                                      if p['role'] == 'story'][:2]
+                                      if p['role'] == 'story'][:3]
                     if not external_items:
                         continue
                     wiki = item['passages']

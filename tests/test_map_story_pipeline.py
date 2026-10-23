@@ -779,16 +779,18 @@ class StoryPipelineTests(unittest.TestCase):
 
     def test_proposed_hook_outweighs_unrelated_generic_story_words(self):
         text = ('Tivoli Gardens is a public garden in Copenhagen. ' * 9
-                + 'A pavilion was designed, opened, hosted festivals and exhibited art. ' * 15
+                + 'A pavilion hosted the first public demonstration of an illuminated garden. ' * 15
                 + 'The wooden roller coaster still carries a brakeman on every train to control its speed. ' * 5)
         hypothesis = ('A brakeman still rides the wooden roller coaster to control the speed '
                       'of every train at Tivoli Gardens.')
         items = story.passages({'title': 'Tivoli Gardens', 'text': text}, hypothesis)
         self.assertLessEqual(len(items), 5)
-        self.assertTrue(any(item['role'] == 'story' and 'brakeman' in item['text']
-                            for item in items))
-        self.assertFalse(any(item['role'] == 'story' and 'pavilion' in item['text']
-                             and 'brakeman' not in item['text'] for item in items))
+        story_texts = [item['text'] for item in items if item['role'] == 'story']
+        self.assertTrue(any('brakeman' in text for text in story_texts))
+        self.assertTrue(any('pavilion' in text and 'brakeman' not in text for text in story_texts))
+        self.assertLess(next(i for i, text in enumerate(story_texts) if 'brakeman' in text),
+                        next(i for i, text in enumerate(story_texts)
+                             if 'pavilion' in text and 'brakeman' not in text))
 
     def test_clue_comparison_keeps_story_and_map_evidence_compact(self):
         units = [
@@ -931,16 +933,21 @@ class StoryPipelineTests(unittest.TestCase):
                                     'text': ('The Glass Hall is in Eastport beside Market Park. ' * 30)}
         source.request.return_value = {'query': {'geosearch': []}}
         source.entities.return_value = {'Q1': {'claims': {}}}
-        external = {'text': ('Glass Hall hosted the first demonstration of a solar railway. ' * 24),
+        external = {'text': (('Glass Hall hosted the first demonstration of a solar railway. ' * 24)
+                             + ('An illuminated pavilion exhibited an unusual public performance. ' * 24)),
                     'url': 'https://unlisted-source.example/story', 'source_key': 'external',
                     'source_name': 'unlisted-source.example'}
         with patch.object(story, 'linked_public_urls', return_value=[external['url']]), \
              patch.object(story, 'public_page', return_value=external) as fetch:
-            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum'}],
+            targets = story.source_targets([{'title': 'Glass Hall', 'place_type': 'museum',
+                                             'hook_hypothesis': 'Glass Hall hosted a solar railway demonstration.'}],
                                            source, [], [], [], {'rejections': []})
         fetch.assert_called_once_with(source, external['url'], 'Glass Hall')
         self.assertEqual(targets[0]['official']['source_key'], 'external')
-        self.assertTrue(any(p['source'] == 'unlisted-source.example' for p in targets[0]['passages']))
+        external_passages = [p['text'] for p in targets[0]['passages']
+                             if p['source'] == 'unlisted-source.example']
+        self.assertTrue(any('solar railway' in text for text in external_passages))
+        self.assertTrue(any('illuminated pavilion' in text for text in external_passages))
 
     def test_discovery_stops_before_clue_generation_without_sourced_story(self):
         with tempfile.TemporaryDirectory() as directory:
