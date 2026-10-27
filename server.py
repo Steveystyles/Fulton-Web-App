@@ -763,15 +763,11 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         next_day_map_date = daily_map_game.active_map_round_date(tomorrow_date)
         today_map = daily_map_game.puzzle_status(conn, current_map_date)
         tomorrow_map = daily_map_game.puzzle_status(conn, next_day_map_date)
-        map_clue_quality = {
-            puzzle_date: ops_map_published_clue_quality_test(conn, puzzle_date)
-            for puzzle_date in dict.fromkeys((current_map_date, next_day_map_date))
-        }
         queue_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automatic_map_entries'").fetchone()
         if queue_exists:
-            tests.append(
-                ops_map_reserve_test(conn)
-            )
+            tests.append(ops_map_reserve_test(conn))
+            tests.extend(ops_map_published_clue_quality_test(conn, puzzle_date)
+                         for puzzle_date in dict.fromkeys((current_map_date, next_day_map_date)))
         tests.append(
             {
                 "id": "quiz_pool",
@@ -845,7 +841,6 @@ def internal_ops_summary_payload() -> dict[str, Any]:
                 "detail": map_test["detail"],
             }
         )
-    tests.extend(map_clue_quality.values())
     return {
         "ok": bool(storage["ok"]),
         "generatedAt": utc_now(),
