@@ -49,7 +49,7 @@ def monitor_config(**overrides) -> ops_monitor.MonitorConfig:
 
 
 class LocalOpsSettingsSecurityTests(unittest.TestCase):
-    def test_map_alerts_only_require_wednesday_and_saturday_rounds(self) -> None:
+    def test_map_alerts_require_an_active_round_every_day(self) -> None:
         remote = {
             "quiz": {"today": {"status": "published"}, "tomorrow": {"status": "published"}},
             "map": {
@@ -58,18 +58,22 @@ class LocalOpsSettingsSecurityTests(unittest.TestCase):
             },
         }
         alerts = ops_monitor.build_alerts(remote, {"ok": True})
-        self.assertNotIn("Today map is missing.", alerts)
+        self.assertIn("Today map is missing.", alerts)
         self.assertIn("Tomorrow map is missing.", alerts)
         remote["map"]["tomorrow"]["status"] = "published"
+        remote["map"]["today"]["status"] = "published"
         self.assertTrue(ops_monitor.build_snapshot({"ok": True}, remote)["ok"])
         remote["map"]["today"] = {"date": "2026-10-07", "status": "missing"}
         self.assertIn("Today map is missing.", ops_monitor.build_alerts(remote, {"ok": True}))
 
-    def test_ssh_probe_map_checks_use_the_same_schedule(self) -> None:
+    def test_ssh_probe_checks_the_active_map_round_on_off_days(self) -> None:
         namespace = {"__name__": "remote_probe_test"}
         exec(ops_monitor.REMOTE_PROBE_SCRIPT, namespace)
         readiness = namespace["map_readiness_test"]
-        self.assertEqual(readiness("today_map", "Today map", "2026-10-02", {"status": "missing"})["status"], "pass")
+        active_date = namespace["active_map_round_date"]
+        self.assertEqual(active_date("2026-10-02"), "2026-09-30")
+        self.assertEqual(active_date("2026-10-04"), "2026-10-03")
+        self.assertEqual(readiness("today_map", "Today map", "2026-09-30", {"status": "missing"})["status"], "fail")
         self.assertEqual(readiness("tomorrow_map", "Tomorrow map", "2026-10-03", {"status": "missing"})["status"], "fail")
         self.assertEqual(readiness("today_map", "Today map", "2026-10-07", {"status": "published"})["status"], "pass")
 
