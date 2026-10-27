@@ -37,6 +37,7 @@ import base64
 import glob
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -70,6 +71,16 @@ def active_map_round_date(game_date: str) -> str:
         if candidate.weekday() in {2, 5}:
             return candidate.isoformat()
     raise ValueError("No Map round date found in the preceding week.")
+
+
+def published_map_clue_issues(rows: list[sqlite3.Row]) -> list[str]:
+    issues = []
+    destination_words = (r'\b(?:museum|gallery|exhibit(?:ed|ion|ions)?|display(?:ed|s)?|'
+                         r'collection|this (?:building|institution|hall))\b')
+    for row in rows:
+        if row['place_type'] == 'museum' and not re.search(destination_words, row['clue_text'], re.IGNORECASE):
+            issues.append(f"{row['canonical_name']}: hard clue misses the museum destination")
+    return issues
 
 
 def run_command(command: list[str], timeout: int = 12) -> dict[str, Any]:
@@ -568,11 +579,18 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
                 "SELECT COUNT(*) AS count FROM daily_map_levels WHERE puzzle_id = ?",
                 (puzzle["id"],),
             ).fetchone()["count"]
+            clue_rows = conn.execute(
+                "SELECT m.canonical_name, m.place_type, m.clue_text "
+                "FROM daily_map_levels AS l JOIN map_place_pool AS m ON m.id = l.place_id "
+                "WHERE l.puzzle_id = ?",
+                (puzzle["id"],),
+            ).fetchall()
             return {
                 "date": puzzle_date,
                 "status": puzzle["status"],
                 "acceptedLevels": accepted_levels,
                 "failureReason": puzzle["failure_reason"],
+                "qualityIssues": published_map_clue_issues(clue_rows) if puzzle["status"] == "published" else [],
             }
 
         payload["todayMap"] = map_preview(active_map_round_date(today_date))
@@ -2589,6 +2607,18 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
         map_status = str(map_preview.get("status") or "missing")
         if map_status != "published":
             alerts.append(f"{label} map is {map_status}.")
+        quality_issues = map_preview.get("qualityIssues")
+        if isinstance(quality_issues, list):
+            for issue in quality_issues:
+                if isinstance(issue, str) and issue:
+                    alerts.append(f"{label} map clue needs review: {issue}.")
+
+    tests = remote.get("tests")
+    if isinstance(tests, list):
+        for test in tests:
+            if (isinstance(test, dict) and str(test.get("id") or "").startswith("map_clue_quality_")
+                    and test.get("status") == "fail"):
+                alerts.append(f"{test.get('label', 'Map clue quality')}: {test.get('detail', 'review needed')}")
 
     return alerts
 

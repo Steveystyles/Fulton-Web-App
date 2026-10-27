@@ -65,6 +65,23 @@ class LocalOpsSettingsSecurityTests(unittest.TestCase):
         self.assertTrue(ops_monitor.build_snapshot({"ok": True}, remote)["ok"])
         remote["map"]["today"] = {"date": "2026-10-07", "status": "missing"}
         self.assertIn("Today map is missing.", ops_monitor.build_alerts(remote, {"ok": True}))
+        remote["map"]["today"] = {
+            "date": "2026-10-07", "status": "published",
+            "qualityIssues": ["Vasa Museum: hard clue misses the museum destination"],
+        }
+        self.assertIn(
+            "Today map clue needs review: Vasa Museum: hard clue misses the museum destination.",
+            ops_monitor.build_alerts(remote, {"ok": True}),
+        )
+        remote["map"]["today"]["qualityIssues"] = []
+        remote["tests"] = [{
+            "id": "map_clue_quality_2026-10-07", "label": "Map clue quality (2026-10-07)",
+            "status": "fail", "detail": "Vasa Museum: clue misses the museum destination",
+        }]
+        self.assertIn(
+            "Map clue quality (2026-10-07): Vasa Museum: clue misses the museum destination",
+            ops_monitor.build_alerts(remote, {"ok": True}),
+        )
 
     def test_ssh_probe_checks_the_active_map_round_on_off_days(self) -> None:
         namespace = {"__name__": "remote_probe_test"}
@@ -76,6 +93,11 @@ class LocalOpsSettingsSecurityTests(unittest.TestCase):
         self.assertEqual(readiness("today_map", "Today map", "2026-09-30", {"status": "missing"})["status"], "fail")
         self.assertEqual(readiness("tomorrow_map", "Tomorrow map", "2026-10-03", {"status": "missing"})["status"], "fail")
         self.assertEqual(readiness("today_map", "Today map", "2026-10-07", {"status": "published"})["status"], "pass")
+        clue_issues = namespace["published_map_clue_issues"]
+        stale = {"canonical_name": "Vasa Museum", "place_type": "museum", "clue_text": "Thirty men ran across the ship deck."}
+        self.assertIn("museum destination", clue_issues([stale])[0])
+        stale["clue_text"] = "The warship displayed at this museum rolled during a test."
+        self.assertEqual(clue_issues([stale]), [])
 
     def test_ssh_target_rejects_option_whitespace_control_and_unlisted_hosts(self) -> None:
         invalid_targets = (
