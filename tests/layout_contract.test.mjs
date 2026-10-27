@@ -20,7 +20,9 @@ let Card;
 let HelpButton;
 let MapClueEditor;
 let canApplyUpdateWithoutInterrupting;
+let shouldReloadForPendingUpdate;
 let AppRecoveryBoundary;
+let canRecoverStaleRoute;
 const originalFetch = globalThis.fetch;
 
 before(async () => {
@@ -36,8 +38,8 @@ before(async () => {
   ({ Card } = await vite.ssrLoadModule("/src/components/Card.tsx"));
   ({ HelpButton } = await vite.ssrLoadModule("/src/components/HelpButton.tsx"));
   ({ MapClueEditor } = await vite.ssrLoadModule("/src/components/MapClueEditor.tsx"));
-  ({ canApplyUpdateWithoutInterrupting } = await vite.ssrLoadModule("/src/components/AppUpdateReloader.tsx"));
-  ({ AppRecoveryBoundary } = await vite.ssrLoadModule("/src/components/AppRecoveryBoundary.tsx"));
+  ({ canApplyUpdateWithoutInterrupting, shouldReloadForPendingUpdate } = await vite.ssrLoadModule("/src/components/AppUpdateReloader.tsx"));
+  ({ AppRecoveryBoundary, canRecoverStaleRoute } = await vite.ssrLoadModule("/src/components/AppRecoveryBoundary.tsx"));
 });
 
 after(async () => {
@@ -72,6 +74,20 @@ test("new releases apply on idle screens without discarding games or form entrie
   }), false, "an open dialog must not be interrupted");
 });
 
+test("a pending release refreshes ordinary game navigation but not modified clicks", async () => {
+  const click = { button: 0, defaultPrevented: false, altKey: false, ctrlKey: false, metaKey: false, shiftKey: false };
+  assert.equal(shouldReloadForPendingUpdate(click, false), false);
+  assert.equal(shouldReloadForPendingUpdate(click, true), true);
+  for (const change of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true },
+                        { altKey: true }, { button: 1 }, { defaultPrevented: true }]) {
+    assert.equal(shouldReloadForPendingUpdate({ ...click, ...change }, true), false);
+  }
+  const gameNav = await sourceText("src/components/GameNavigation.tsx");
+  const header = await sourceText("src/components/Header.tsx");
+  assert.equal((gameNav.match(/onClick=\{event => navigateWithFreshRelease\(event,/g) || []).length, 2);
+  assert.equal((header.match(/onClick=\{event => navigateWithFreshRelease\(event,/g) || []).length, 2);
+});
+
 test("a failed lazy route offers a visible reload instead of a blank page", () => {
   const boundary = new AppRecoveryBoundary({ children: createElement("p", null, "Loaded route") });
   assert.match(renderToStaticMarkup(boundary.render()), /Loaded route/);
@@ -81,6 +97,15 @@ test("a failed lazy route offers a visible reload instead of a blank page", () =
   assert.match(html, /Couldn&#x27;t open this screen/);
   assert.match(html, /Reload page/);
   assert.doesNotMatch(html, /Missing chunk/);
+});
+
+test("a stale lazy route recovers once after navigation without reloading ordinary errors", () => {
+  const missingChunk = new TypeError("Failed to fetch dynamically imported module: /assets/Quiz-old.js");
+  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/quiz", 0, 100_000), true);
+  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/map", 0, 100_000), false);
+  assert.equal(canRecoverStaleRoute(new Error("Quiz render failed"), "/map", "/quiz", 0, 100_000), false);
+  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/quiz", 90_000, 100_000), false);
+  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/quiz", 1, 100_000), true);
 });
 
 test("help starts as a compact button with no instructions in the game layout", () => {
