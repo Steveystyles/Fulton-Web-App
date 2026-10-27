@@ -1,8 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 
 const clientVersion = import.meta.env.VITE_FULTONS_BUILD_COMMIT as string | undefined;
 const autoReloadKey = "fultons-auto-update-version";
 const idleRoutes = new Set(["/", "/today", "/scores", "/scores/history", "/leaderboard"]);
+let pendingAppUpdate = false;
+
+type NavigationClick = Pick<MouseEvent<HTMLAnchorElement>, "button" | "defaultPrevented" | "altKey" | "ctrlKey" | "metaKey" | "shiftKey">;
+
+export function shouldReloadForPendingUpdate(event: NavigationClick, updatePending = pendingAppUpdate): boolean {
+  return updatePending && !event.defaultPrevented && event.button === 0
+    && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+}
+
+/** Leaving a game is a safe point to load the new release instead of a missing lazy route. */
+export function navigateWithFreshRelease(event: MouseEvent<HTMLAnchorElement>, destination: string): void {
+  if (!shouldReloadForPendingUpdate(event)) return;
+  event.preventDefault();
+  window.location.assign(destination);
+}
 
 export function canApplyUpdateWithoutInterrupting(pathname: string, doc: Document): boolean {
   if (!idleRoutes.has(pathname.replace(/\/+$/, "") || "/")) return false;
@@ -39,6 +54,7 @@ export function AppUpdateReloader() {
           const loadedVersion = clientVersion && clientVersion !== "unknown" ? clientVersion : initialVersion.current;
           if (loadedVersion === null) initialVersion.current = version;
           else if (version !== loadedVersion) {
+            pendingAppUpdate = true;
             if (canApplyUpdateWithoutInterrupting(window.location.pathname, document)) {
               try {
                 if (window.sessionStorage.getItem(autoReloadKey) !== version) {
@@ -50,6 +66,7 @@ export function AppUpdateReloader() {
             }
             setAvailable(true);
           } else {
+            pendingAppUpdate = false;
             try { window.sessionStorage.removeItem(autoReloadKey); } catch { /* Storage may be unavailable. */ }
           }
         }

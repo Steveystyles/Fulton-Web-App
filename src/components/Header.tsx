@@ -2,6 +2,7 @@ import { House, LogOut, ShieldCheck } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { ScoresDialog } from "./ScoresDialog";
+import { navigateWithFreshRelease } from "./AppUpdateReloader";
 import type { ActivityId } from "../lib/api";
 
 const headerButtonClass =
@@ -32,6 +33,7 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
         <div className="flex shrink-0 items-center gap-1">
           {!inGame ? <NavLink
             to="/"
+            onClick={event => navigateWithFreshRelease(event, "/")}
             aria-label="Go to games"
             className={({ isActive }) => [headerButtonClass, isActive ? "bg-saints-red shadow-lg shadow-red-950/30" : "bg-white/8"].join(" ")}
           ><House aria-hidden="true" className="h-5 w-5" strokeWidth={2.3} /></NavLink> : null}
@@ -39,6 +41,7 @@ export function Header({ reviewMode = false }: { reviewMode?: boolean }) {
           {user?.role === "admin" || user?.role === "mod" ? (
             <NavLink
               to="/admin"
+              onClick={event => navigateWithFreshRelease(event, "/admin")}
               aria-label={user.role === "admin" ? "Admin" : "Players"}
               className={({ isActive }) =>
                 [
