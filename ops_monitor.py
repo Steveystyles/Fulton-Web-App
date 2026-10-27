@@ -37,6 +37,7 @@ import base64
 import glob
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -53,8 +54,6 @@ def utc_now() -> str:
 
 
 def map_readiness_test(test_id: str, label: str, game_date: str, preview: dict[str, Any]) -> dict[str, str]:
-    if date.fromisoformat(game_date).weekday() not in {2, 5}:
-        return {"id": test_id, "label": label, "status": "pass", "detail": "Not scheduled (Wednesday and Saturday only)"}
     status = str(preview.get("status") or "missing")
     return {
         "id": test_id,
@@ -62,6 +61,26 @@ def map_readiness_test(test_id: str, label: str, game_date: str, preview: dict[s
         "status": "pass" if status == "published" else "fail",
         "detail": f"{status} / accepted {preview.get('acceptedLevels', 0)}",
     }
+
+
+def active_map_round_date(game_date: str) -> str:
+    # Map remains playable daily; its answer changes on Wednesday and Saturday.
+    current = date.fromisoformat(game_date)
+    for offset in range(7):
+        candidate = current - timedelta(days=offset)
+        if candidate.weekday() in {2, 5}:
+            return candidate.isoformat()
+    raise ValueError("No Map round date found in the preceding week.")
+
+
+def published_map_clue_issues(rows: list[sqlite3.Row]) -> list[str]:
+    issues = []
+    destination_words = (r'\b(?:museum|gallery|exhibit(?:ed|ion|ions)?|display(?:ed|s)?|'
+                         r'collection|this (?:building|institution|hall))\b')
+    for row in rows:
+        if row['place_type'] == 'museum' and not re.search(destination_words, row['clue_text'], re.IGNORECASE):
+            issues.append(f"{row['canonical_name']}: hard clue misses the museum destination")
+    return issues
 
 
 def run_command(command: list[str], timeout: int = 12) -> dict[str, Any]:
@@ -560,15 +579,22 @@ def sqlite_summary(db_path: str, today_date: str, tomorrow_date: str) -> dict[st
                 "SELECT COUNT(*) AS count FROM daily_map_levels WHERE puzzle_id = ?",
                 (puzzle["id"],),
             ).fetchone()["count"]
+            clue_rows = conn.execute(
+                "SELECT m.canonical_name, m.place_type, m.clue_text "
+                "FROM daily_map_levels AS l JOIN map_place_pool AS m ON m.id = l.place_id "
+                "WHERE l.puzzle_id = ?",
+                (puzzle["id"],),
+            ).fetchall()
             return {
                 "date": puzzle_date,
                 "status": puzzle["status"],
                 "acceptedLevels": accepted_levels,
                 "failureReason": puzzle["failure_reason"],
+                "qualityIssues": published_map_clue_issues(clue_rows) if puzzle["status"] == "published" else [],
             }
 
-        payload["todayMap"] = map_preview(today_date)
-        payload["tomorrowMap"] = map_preview(tomorrow_date)
+        payload["todayMap"] = map_preview(active_map_round_date(today_date))
+        payload["tomorrowMap"] = map_preview(active_map_round_date(tomorrow_date))
     finally:
         conn.close()
     return payload
@@ -798,7 +824,7 @@ def main() -> None:
         ("today_map", "Today map", today_date, sqlite.get("todayMap") or {}),
         ("tomorrow_map", "Tomorrow map", tomorrow_date, sqlite.get("tomorrowMap") or {}),
     ):
-        tests.append(map_readiness_test(test_id, label, game_date, map_preview))
+        tests.append(map_readiness_test(test_id, label, str(map_preview.get("date") or game_date), map_preview))
 
     tomorrow_quiz = sqlite.get("tomorrowQuiz") or {}
     tomorrow_status = str(tomorrow_quiz.get("status") or "missing")
@@ -1458,13 +1484,6 @@ def london_dates() -> tuple[str, str]:
     today = now.date()
     tomorrow = today + timedelta(days=1)
     return today.isoformat(), tomorrow.isoformat()
-
-
-def map_is_scheduled(game_date: str) -> bool:
-    try:
-        return date.fromisoformat(game_date).weekday() in {2, 5}
-    except ValueError:
-        return True
 
 
 def is_retryable_ssh_error(message: str) -> bool:
@@ -2581,17 +2600,25 @@ def build_alerts(remote: dict[str, Any] | None, public_probe: dict[str, Any]) ->
         alerts.append(f"Tomorrow quiz is {quiz_status} with {accepted}/6 approved questions.")
 
     map_payload = remote.get("map") if isinstance(remote.get("map"), dict) else {}
-    today_date, tomorrow_date = london_dates()
-    for label, key, fallback_date in (("Today", "today", today_date), ("Tomorrow", "tomorrow", tomorrow_date)):
+    for label, key in (("Today", "today"), ("Tomorrow", "tomorrow")):
         map_preview = map_payload.get(key) if isinstance(map_payload, dict) else {}
         if not isinstance(map_preview, dict):
             map_preview = {}
-        game_date = str(map_preview.get("date") or fallback_date)
-        if not map_is_scheduled(game_date):
-            continue
         map_status = str(map_preview.get("status") or "missing")
         if map_status != "published":
             alerts.append(f"{label} map is {map_status}.")
+        quality_issues = map_preview.get("qualityIssues")
+        if isinstance(quality_issues, list):
+            for issue in quality_issues:
+                if isinstance(issue, str) and issue:
+                    alerts.append(f"{label} map clue needs review: {issue}.")
+
+    tests = remote.get("tests")
+    if isinstance(tests, list):
+        for test in tests:
+            if (isinstance(test, dict) and str(test.get("id") or "").startswith("map_clue_quality_")
+                    and test.get("status") == "fail"):
+                alerts.append(f"{test.get('label', 'Map clue quality')}: {test.get('detail', 'review needed')}")
 
     return alerts
 

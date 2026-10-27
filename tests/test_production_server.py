@@ -741,6 +741,31 @@ class ProductionServerHardeningTests(unittest.TestCase):
         wednesday_missing = server.ops_map_readiness_test("today_map", "2026-10-07", "Today map", {"status": "missing"})
         self.assertEqual(wednesday_missing["status"], "fail")
 
+    def test_ops_flags_published_museum_clue_without_destination(self) -> None:
+        import server
+
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("CREATE TABLE daily_map_puzzles(id INTEGER, puzzle_date TEXT, status TEXT)")
+            conn.execute("CREATE TABLE daily_map_levels(puzzle_id INTEGER, place_id INTEGER)")
+            conn.execute("CREATE TABLE map_place_pool(id INTEGER, canonical_name TEXT, place_type TEXT, clue_text TEXT)")
+            conn.execute("INSERT INTO daily_map_puzzles VALUES(1, '2026-10-28', 'published')")
+            conn.execute("INSERT INTO daily_map_levels VALUES(1, 7)")
+            conn.execute(
+                "INSERT INTO map_place_pool VALUES(7, 'Vasa Museum', 'museum', ?)",
+                ("Thirty men ran across the warship deck before its first voyage.",),
+            )
+            stale = server.ops_map_published_clue_quality_test(conn, "2026-10-28")
+            self.assertEqual(stale["status"], "fail")
+            self.assertIn("museum destination", stale["detail"])
+
+            conn.execute(
+                "UPDATE map_place_pool SET clue_text=? WHERE id=7",
+                ("The warship displayed at this museum rolled during a test before its first voyage.",),
+            )
+            corrected = server.ops_map_published_clue_quality_test(conn, "2026-10-28")
+            self.assertEqual(corrected["status"], "pass")
+
     def test_ops_map_reserve_counts_publishable_not_unreviewed_rounds(self) -> None:
         import server
 
