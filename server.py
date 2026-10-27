@@ -763,6 +763,10 @@ def internal_ops_summary_payload() -> dict[str, Any]:
         next_day_map_date = daily_map_game.active_map_round_date(tomorrow_date)
         today_map = daily_map_game.puzzle_status(conn, current_map_date)
         tomorrow_map = daily_map_game.puzzle_status(conn, next_day_map_date)
+        map_clue_quality = {
+            puzzle_date: ops_map_published_clue_quality_test(conn, puzzle_date)
+            for puzzle_date in dict.fromkeys((current_map_date, next_day_map_date))
+        }
         queue_exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automatic_map_entries'").fetchone()
         if queue_exists:
             tests.append(
@@ -841,6 +845,7 @@ def internal_ops_summary_payload() -> dict[str, Any]:
                 "detail": map_test["detail"],
             }
         )
+    tests.extend(map_clue_quality.values())
     return {
         "ok": bool(storage["ok"]),
         "generatedAt": utc_now(),
@@ -6396,6 +6401,35 @@ def ops_map_readiness_test(test_id: str, game_date: str, label: str, map_status:
         "label": label,
         "status": "pass" if status == "published" else "fail",
         "detail": f"{game_date}: {status} / accepted {map_status.get('acceptedLevels', 0)}",
+    }
+
+
+def ops_map_published_clue_quality_test(conn: sqlite3.Connection, puzzle_date: str) -> dict[str, str]:
+    """Flag published rounds that predate the current deterministic Map gates."""
+    rows = conn.execute(
+        """
+        SELECT m.canonical_name, m.place_type, m.clue_text
+        FROM daily_map_puzzles AS p
+        JOIN daily_map_levels AS l ON l.puzzle_id = p.id
+        JOIN map_place_pool AS m ON m.id = l.place_id
+        WHERE p.puzzle_date = ? AND p.status = 'published'
+        """,
+        (puzzle_date,),
+    ).fetchall()
+    issues = []
+    for row in rows:
+        candidate = {"place_type": row["place_type"]}
+        result = {"clue_ladder": {"hard": row["clue_text"]}}
+        hook_issue = automatic_map_pool.unsuitable_game_hook(result)
+        if hook_issue:
+            issues.append(f"{row['canonical_name']}: {hook_issue}")
+        if automatic_map_pool.missing_destination_link(candidate, result):
+            issues.append(f"{row['canonical_name']}: clue misses the museum destination")
+    return {
+        "id": f"map_clue_quality_{puzzle_date}",
+        "label": f"Map clue quality ({puzzle_date})",
+        "status": "fail" if issues else "pass" if rows else "warn",
+        "detail": "; ".join(issues) if issues else f"{len(rows)} published level(s) checked",
     }
 
 
