@@ -20,7 +20,8 @@ export function navigateWithFreshRelease(event: MouseEvent<HTMLAnchorElement>, d
 }
 
 export function canApplyUpdateWithoutInterrupting(pathname: string, doc: Document): boolean {
-  if (!idleRoutes.has(pathname.replace(/\/+$/, "") || "/")) return false;
+  const signInVisible = Boolean(doc.querySelector('form[data-fultons-login]'));
+  if (!idleRoutes.has(pathname.replace(/\/+$/, "") || "/") && !signInVisible) return false;
   if (doc.querySelector('dialog[open], [role="dialog"]')) return false;
   const fields = doc.querySelectorAll('input:not([type="hidden"]), textarea, select, [contenteditable="true"]');
   for (const field of fields) {

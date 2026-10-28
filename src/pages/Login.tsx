@@ -44,7 +44,7 @@ export function Login() {
             </div>
           </div>
 
-          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+          <form data-fultons-login className="mt-6 space-y-4" onSubmit={handleSubmit}>
             <label className="block">
               <span className="text-sm font-black uppercase tracking-normal text-slate-600">
                 Username

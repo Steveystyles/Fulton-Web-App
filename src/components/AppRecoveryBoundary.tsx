@@ -7,20 +7,16 @@ const routeReloadWindowMs = 60_000;
 
 export function canRecoverStaleRoute(
   error: unknown,
-  loadedPath: string,
-  currentPath: string,
   lastAttempt: number,
   now: number,
 ): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return currentPath !== loadedPath
-    && /Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk .* failed/i.test(message)
+  return /Failed to fetch dynamically imported module|Importing a module script failed|ChunkLoadError|Loading chunk .* failed/i.test(message)
     && (!Number.isFinite(lastAttempt) || now - lastAttempt > routeReloadWindowMs);
 }
 
 /** Keep a stale lazy-loaded route from turning the entire app into a blank page. */
 export class AppRecoveryBoundary extends Component<Props, State> {
-  private readonly loadedPath = typeof window === "undefined" ? "" : window.location.pathname;
   state: State = { failed: false };
 
   static getDerivedStateFromError(): State {
@@ -32,7 +28,7 @@ export class AppRecoveryBoundary extends Component<Props, State> {
     try {
       const now = Date.now();
       const lastAttempt = Number(window.sessionStorage.getItem(routeReloadKey) || 0);
-      if (!canRecoverStaleRoute(error, this.loadedPath, window.location.pathname, lastAttempt, now)) return;
+      if (!canRecoverStaleRoute(error, lastAttempt, now)) return;
       window.sessionStorage.setItem(routeReloadKey, String(now));
       window.location.reload();
     } catch { /* Without session storage, keep the visible manual reload. */ }
