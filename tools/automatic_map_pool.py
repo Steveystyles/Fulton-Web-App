@@ -308,13 +308,16 @@ def archive_rejected_hook(conn: sqlite3.Connection, place_id: str, candidate_tex
                           result_text: str, verification_text: str, origin: str,
                           created_at: str) -> None:
     result = json.loads(result_text)
-    if json.loads(verification_text).get('round_rejection'):
+    verification = json.loads(verification_text)
+    rejected_at = (verification.get('rejected_at') or
+                   (verification.get('operator_rejection') or {}).get('at') or now().isoformat())
+    if verification.get('round_rejection'):
         conn.execute(
             'INSERT OR IGNORE INTO automatic_map_rejected_rounds('
             'place_id,ladder_digest,candidate,result,verification,origin,created_at,rejected_at) '
             'VALUES(?,?,?,?,?,?,?,?)',
             (place_id, discovery.digest(result.get('clue_ladder')), candidate_text, result_text,
-             verification_text, origin, created_at, now().isoformat()),
+             verification_text, origin, created_at, rejected_at),
         )
         return
     conn.execute(
@@ -322,7 +325,7 @@ def archive_rejected_hook(conn: sqlite3.Connection, place_id: str, candidate_tex
         'place_id,hook_digest,candidate,result,verification,origin,created_at,rejected_at) '
         'VALUES(?,?,?,?,?,?,?,?)',
         (place_id, hook_digest(result), candidate_text, result_text, verification_text,
-         origin, created_at, now().isoformat()),
+         origin, created_at, rejected_at),
     )
 
 
@@ -337,7 +340,8 @@ def quarantine_unsuitable_ready(conn: sqlite3.Connection) -> list[str]:
         if not reason:
             continue
         verification = json.loads(verification_text)
-        verification.update(editorial_rejection=True, hook_rejection=reason)
+        verification.update(editorial_rejection=True, hook_rejection=reason,
+                            rejected_at=now().isoformat())
         conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
                      "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
         retired.append(json.loads(candidate_text).get('canonical_name', row_id))
@@ -358,6 +362,7 @@ def quarantine_unlinked_museum_ready(conn: sqlite3.Connection) -> list[str]:
         verification.update(
             editorial_rejection=True,
             round_rejection=MUSEUM_DESTINATION_FAILURE,
+            rejected_at=now().isoformat(),
         )
         conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
                      "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
@@ -377,7 +382,8 @@ def quarantine_unplayable_generated_ready(conn: sqlite3.Connection) -> list[str]
         if not reason:
             continue
         verification = json.loads(verification_text)
-        verification.update(editorial_rejection=True, round_rejection=reason)
+        verification.update(editorial_rejection=True, round_rejection=reason,
+                            rejected_at=now().isoformat())
         conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
                      "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
         retired.append(candidate.get('canonical_name', row_id))
@@ -450,7 +456,7 @@ def quarantine_source_alias_leaks(conn: sqlite3.Connection, output_dir: Path) ->
             continue
         verification.update(editorial_rejection=True,
                             round_rejection='A clue reveals a source-attested alternate name for the answer.',
-                            source_alias_leak=leaked)
+                            source_alias_leak=leaked, rejected_at=now().isoformat())
         conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
                      "WHERE id=? AND state='ready'", (json.dumps(verification), row_id))
         retired.append(candidate['canonical_name'])
@@ -514,6 +520,7 @@ def quarantine_unaligned_ready(conn: sqlite3.Connection, output_dir: Path) -> li
                 continue
             verification.update(editorial_rejection=True,
                                 hook_rejection='abandoned proposed discovery hook',
+                                rejected_at=now().isoformat(),
                                 proposal_alignment_audit={'version': PROPOSAL_ALIGNMENT_AUDIT_VERSION,
                                                           'status': 'rejected'})
             conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? "
@@ -702,7 +709,9 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
     candidates = []
     for candidate_text, result_text, verification_text in conn.execute(
         "SELECT candidate,result,verification FROM ("
-        "SELECT candidate,result,verification,created_at AS rejected_at "
+        "SELECT candidate,result,verification,"
+        "COALESCE(json_extract(verification, '$.rejected_at'), "
+        "json_extract(verification, '$.operator_rejection.at'), created_at) AS rejected_at "
         "FROM automatic_map_entries WHERE state='rejected' AND origin='discovery' "
         "UNION ALL SELECT candidate,result,verification,rejected_at "
         "FROM automatic_map_rejected_hooks WHERE origin='discovery' "
@@ -1297,6 +1306,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
                     verification['ready_audit'] = audited
                     if not passed:
                         verification['editorial_rejection'] = True
+                        verification['rejected_at'] = now().isoformat()
                         if verification.get('source_pipeline') == 'story_first':
                             if not sufficient_interest_score(audited['interesting_hook_score']):
                                 verification['hook_rejection'] = 'ready audit rejected a weak discovery hook'
