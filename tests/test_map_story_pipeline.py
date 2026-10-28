@@ -11,6 +11,48 @@ from tools import controlled_map_round as controlled
 
 
 class StoryPipelineTests(unittest.TestCase):
+    def test_fresh_proposals_discard_reserved_names_before_source_lookup(self):
+        report = {'rejections': []}
+        proposals = [{'title': 'Himeji Castle'}, {'title': 'New Museum'},
+                     {'title': 'New Museum'}]
+        fresh = story.fresh_proposals(proposals, [], [{'canonical_name': 'Himeji Castle'}],
+                                      [], report)
+        self.assertEqual([item['title'] for item in fresh], ['New Museum'])
+        self.assertEqual(len(report['rejections']), 2)
+
+    def test_all_reserved_proposals_get_one_fresh_regional_batch(self):
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.side_effect = [
+            {'targets': [{'title': 'Himeji Castle', 'place_type': 'castle',
+                          'hook_hypothesis': 'Visitors follow a surprising defensive maze through the gates.'}]},
+            {'targets': [{'title': 'New Museum', 'place_type': 'museum',
+                          'hook_hypothesis': 'Visitors can see a ship that dramatically failed its first sailing.'}]},
+            {'ranked': []},
+        ]
+        target = {'title': 'New Museum', 'place_type': 'museum', 'passages': [
+            {'id': 'p0', 'role': 'story', 'source': 'Public source',
+             'text': 'A ship dramatically failed its first sailing.'}],
+                  'nearby_options': []}
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
+        budget.finish.return_value = {'model_requests': 3, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets', return_value=[target]) as source_targets:
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock(),
+                                    excluded_places=[{'canonical_name': 'Himeji Castle'}])
+        self.assertEqual(len(report['proposal_attempts']), 2)
+        self.assertEqual(source_targets.call_count, 1)
+        self.assertEqual(source_targets.call_args.args[0][0]['title'], 'New Museum')
+        first_prompt = provider.call_with_fallback.call_args_list[0].kwargs['prompt']
+        second_prompt = provider.call_with_fallback.call_args_list[1].kwargs['prompt']
+        self.assertNotIn('Himeji Castle', first_prompt)
+        self.assertNotEqual(first_prompt, second_prompt)
+        self.assertIn('No story named source-backed hook', report['error'])
+
     def test_review_shows_story_pivot_and_source_specific_citations(self):
         candidate = {'canonical_name': 'Glass Hall',
                      'sources': {'article': 'https://local-history.example/glass-hall',
