@@ -83,7 +83,9 @@ class ControlledProvider(preview.PreviewGeminiProvider):
             return client.provider._request(
                 model, prompt, schema, max_output_tokens=2048, temperature=0.3,
             )
-        return client.provider._request(model, prompt, temperature=0.3)
+        return client.provider._request(
+            model, prompt, temperature=0.3, allow_reasoning_compat_retry=False,
+        )
 
     def call_with_fallback(self, **kwargs):
         if self.stop_reason:

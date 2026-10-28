@@ -1,5 +1,6 @@
 from copy import deepcopy
 from contextlib import closing
+from io import BytesIO
 import json
 import hashlib
 import os
@@ -8,6 +9,7 @@ import sqlite3
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from tools import controlled_map_round as controlled
 
@@ -237,6 +239,29 @@ class ControlledMapTests(unittest.TestCase):
                 "SELECT clue_generation_source FROM map_place_pool WHERE slug LIKE 'controlled-%'"
             ).fetchone()[0]
             self.assertEqual(source, "controlled-openrouter")
+
+    def test_controlled_free_router_does_not_hide_second_http_request(self):
+        with patch.dict(os.environ, {"MAP_AI_API_KEY": "runtime",
+                                     "AI_FALLBACK2_PROVIDER": "openrouter",
+                                     "AI_FALLBACK2_GENERATOR_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_CRITIC_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_API_KEY": "router-fixture"}, clear=True):
+            provider = controlled.ControlledProvider.from_runtime_env()
+        router = provider.clients[1]
+        mandatory = HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions", 400, "Bad Request",
+            hdrs=None, fp=BytesIO(
+                b'{"error":{"message":"Reasoning cannot be disabled."}}'
+            ),
+        )
+        with patch("daily_quiz.urlopen", side_effect=mandatory) as request, \
+             patch.object(router.provider, "_wait_for_request_slot"):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 400"):
+                provider.request_json(
+                    router, model="openrouter/free", prompt="public facts",
+                    schema=controlled.response_schema(),
+                )
+        request.assert_called_once()
 
     def test_missing_learning_profile_stops_before_api_call(self):
         provider = self.provider()
