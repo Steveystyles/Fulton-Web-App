@@ -347,6 +347,24 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             discovery.evidence_excerpt(candidate)
 
+    def test_story_route_can_cite_an_independently_sourced_nearby_anchor(self):
+        candidate = {
+            'independent_area_sources': True,
+            'anchors': [{'name': 'Eastport'}, {'name': 'Independent Museum'}],
+            'evidence': {
+                'article': {'text': 'Glass Hall in Eastport hosted a solar railway demonstration. ' * 8},
+                'city': {'text': 'Eastport is the local city and a verified map area. ' * 4},
+                'local': {'text': 'Independent Museum is a separate landmark nearby. ' * 4},
+            },
+        }
+        excerpts = discovery.evidence_excerpt(candidate)
+        self.assertIn('Independent Museum', ' '.join(excerpts))
+        units = discovery.evidence_units(candidate)
+        self.assertIn('local-anchor-1', [unit['id'] for unit in units])
+        candidate['evidence']['local']['text'] = 'An unrelated page with no matching identity. ' * 4
+        with self.assertRaisesRegex(ValueError, 'does not name its own search area'):
+            discovery.evidence_excerpt(candidate)
+
     def test_evidence_units_keep_anchor_whole_across_chunk_boundary(self):
         candidate = {
             'anchors': [{'name': 'Local Park'}, {'name': 'River Walk'}],
@@ -754,6 +772,23 @@ class DiscoveryTests(unittest.TestCase):
         source, _, pages, proposal = self.source_fixture()
         pages['Target']['text'] = 'The Target is in City, with a different nearby feature.'
         with self.assertRaisesRegex(ValueError, 'does not mention the supplied search area'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
+
+    def test_story_route_accepts_separately_sourced_local_area_only_when_named(self):
+        source, _, pages, proposal = self.source_fixture()
+        pages['Target']['text'] = 'The Target is in City and hosted a public event.'
+        pages['Park']['text'] = 'Park is a separate geotagged public landmark.'
+        proposal['_independent_area_sources'] = True
+        candidate = discovery.resolve(proposal, source, [], [])
+        self.assertTrue(candidate['independent_area_sources'])
+        self.assertIn('local-anchor-1', [unit['id'] for unit in discovery.evidence_units(candidate)])
+
+        source, _, pages, proposal = self.source_fixture()
+        pages['Target']['text'] = 'The Target is in City and hosted a public event.'
+        pages['Park']['text'] = 'An unrelated article with no matching place name.'
+        proposal['_independent_area_sources'] = True
+        with self.assertRaisesRegex(ValueError, 'does not name its own search area'):
             discovery.resolve(proposal, source, [], [])
         source.country.assert_not_called()
 
