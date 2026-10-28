@@ -1287,13 +1287,14 @@ class AutomaticPoolTests(unittest.TestCase):
             {'title': 'Bad source', 'reason': 'Missing source page.'},
             {'title': 'Unexamined place', 'reason': 'Target article: Automatic map request budget exhausted.'},
             {'title': 'Inherited failure', 'reason': 'Place was rejected recently; choose a new candidate.'},
+            {'title': 'Already queued', 'reason': 'Recent or existing answer.'},
         ]}), encoding='utf-8')
         with closing(self.connect()) as conn:
             conn.execute(
                 'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
                 'VALUES(?,?,?,?,?,?)',
                 ('run1', '2026-09-08', '2026-09-08', self.clock.isoformat(), 'failed',
-                 json.dumps({'failed_names': ['Bad source', 'Bad source', 'Unexamined place', 'Inherited failure'],
+                 json.dumps({'failed_names': ['Bad source', 'Bad source', 'Unexamined place', 'Inherited failure', 'Already queued'],
                              'report_path': str(report_path)})),
             )
             conn.commit()
