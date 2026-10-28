@@ -1044,7 +1044,10 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
             raise ValueError('No source-backed story had a playable map route.')
         clue_prompt = ('Choose the most enjoyable source-backed place discovery and write hard, medium and easy Map clues. '
                        'Do not substitute mere factual importance for a player payoff. '
-                       'Use the cited story passage for hard; do not pivot to an unrelated fact. An official '
+                       'Use the cited story passage for hard; do not pivot to an unrelated fact. '
+                       'Write hard as a declarative story, never a command to find, discover, explore or visit, '
+                       'and avoid praise words such as fascinating or stunning. Let the supported event or '
+                       'experience supply the interest. An official '
                        'source passage may support hard; medium and easy must cite the target source '
                        'or separate checked map-area source passages naming their anchors. Medium must name '
                        'the city anchor and country. Easy must start "In <city_sector> <city>," and name the local '
