@@ -99,6 +99,22 @@ class DiscoveryTests(unittest.TestCase):
             'clue_ladder': {'hard': 'A fascinating carved marble panel shows butterflies and a hooded cobra.'},
         }))
 
+    def test_medium_and_easy_clues_must_be_plain_map_hints(self):
+        candidate = {'anchors': [], 'facts': {}}
+        ladder = {
+            'hard': 'A swaying canopy walkway lets visitors explore the treetops.',
+            'medium': 'In London, United Kingdom, this garden has a canopy walkway.',
+            'easy': 'In western London, it stands near Kew Palace.',
+        }
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, {'clue_ladder': ladder}))
+        ladder['medium'] = 'Explore this renowned garden in London, United Kingdom.'
+        self.assertIn('promotional filler', discovery.generated_round_quality_issue(candidate, {'clue_ladder': ladder}))
+        ladder['medium'] = 'Cross this bridge in Prague, Czech Republic.'
+        self.assertIn('instruction', discovery.generated_round_quality_issue(candidate, {'clue_ladder': ladder}))
+        ladder['medium'] = 'In Prague, Czech Republic, this bridge crosses the Vltava.'
+        ladder['easy'] = 'In central Prague, find this stunning bridge near Old Town Bridge Tower.'
+        self.assertIn('promotional filler', discovery.generated_round_quality_issue(candidate, {'clue_ladder': ladder}))
+
     def test_proposal_focus_rotates_geographic_lanes_without_more_model_requests(self):
         self.assertGreaterEqual(discovery.MAX_SOURCE_REQUESTS, discovery.PROPOSAL_COUNT * 10)
         focuses = [

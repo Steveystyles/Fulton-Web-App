@@ -691,6 +691,14 @@ def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
     if re.search(r'\b(?:fascinating|magnificent|majestic|stunning|remarkable|'
                  r'incredible|amazing|breathtaking)\b', hard, re.I):
         return 'Hard clue uses promotional praise instead of letting its sourced story be interesting.'
+    for level in ('medium', 'easy'):
+        clue = str(ladder.get(level) or '')
+        if re.search(r'\b(?:renowned|fascinating|magnificent|majestic|stunning|remarkable|'
+                     r'incredible|amazing|breathtaking|sprawling|unique)\b', clue, re.I):
+            return f'{level.title()} clue uses promotional filler instead of precise map guidance.'
+    if re.match(r'^\s*(?:explore|visit|discover|cross|find|locate|look for|head to|'
+                r'go to|see|seek out)\b', str(ladder.get('medium') or ''), re.I):
+        return 'Medium clue opens with an instruction instead of naming the map area.'
     attribution = re.match(
         r'^Designed by (?P<designer>[^,]{3,80}), this (?:[a-z][a-z-]*\s+){0,3}'
         r'(?P<object>tower|hotel|building|stadium|bridge|museum|palace|cathedral|'
