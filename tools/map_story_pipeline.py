@@ -885,10 +885,23 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         recent = legacy.history(source_db, puzzle_date)
         existing = (controlled.load_catalog(catalog) if catalog else []) + (excluded_places or [])
         focus = legacy.proposal_focus(budget)
+        # Discovery is lead generation, not the final editorial decision. Give
+        # it short hook-level lessons; full failed clue sets belong in the later
+        # ranking and writing stages, where they cannot suppress brainstorming.
+        editorial_rules = list(dict.fromkeys(
+            str(item.get('reason') or '')[:180] for item in editorial_feedback or []
+            if isinstance(item, dict) and item.get('reason')))[:5]
+        hook_lessons = list(dict.fromkeys(
+            str(item.get('failure_reason') or '')[:180] for item in failure_lessons or []
+            if isinstance(item, dict) and item.get('rejection_kind') == 'hook'
+            and item.get('failure_reason')))[:5]
         prompt = ('Propose up to 12 distinct, presently existing, precisely pinnable public landmarks. '
-                  'Aim for geographic variety across these lanes: ' + ', '.join(focus) + '. '
-                  'Do not pad the list with weak places to reach a count; return fewer, even zero, '
-                  'when no convincing prospect is available. Quality outranks the count. '
+                  'Use these regions as inspiration, not restrictions: ' + ', '.join(focus) + '. '
+                  'This stage finds leads; source retrieval and independent editors decide what is usable. '
+                  'Try several different plausible story leads instead of stopping after one familiar place. '
+                  'Do not return an empty list merely because you have not opened the source or cannot yet '
+                  'prove a lead; later stages will check every claim. Do not pad the list with weak places '
+                  'whose only appeal is fame, age, dimensions or ordinary architecture. '
                   'For EACH proposal, first state one specific hook_hypothesis: a vivid, place-owned '
                   'incident, ingenious use, performance, or experience with a concrete player payoff. '
                   'Do not offer a place if you cannot articulate that story in one sentence; a famous '
@@ -898,8 +911,9 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'describing its specific story, or an empty string when unknown. Choose sources for factual '
                   'quality and relevance, never because they belong to a fixed domain list. A Wikipedia article is useful but NOT '
                   'required; a verifiable Wikidata or OpenStreetMap identity with a public story page also '
-                  'qualifies. Do not invent nearby '
-                  'map anchors or clues. Propose a place only when a checkable source appears to contain a vivid, '
+                  'qualifies. Never fabricate a URL; an empty source_url is acceptable for a plausible lead. '
+                  'Do not invent nearby '
+                  'map anchors or clues. Look for places with a checkable, vivid, '
                   'enjoyable place-owned discovery: a surprising achievement, public experience, performance, '
                   'ingenious use or dramatic non-victim-centred mishap. A factual design specification, ordinary '
                   'political meeting, routine upkeep or solemn wartime incident is not enough. Stadiums are welcome: '
@@ -912,8 +926,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   json.dumps({'recent': [r['name'] for r in recent][-100:],
                               'catalogue': [p['canonical_name'] for p in existing],
                               'excluded': (excluded_names or [])[:80],
-                              'editorial_feedback': editorial_feedback or [],
-                              'failed_stories': failure_lessons or []}, ensure_ascii=False))
+                              'editorial_rules': editorial_rules,
+                              'past_hook_failure_rules': hook_lessons}, ensure_ascii=False))
         proposals = provider.call_with_fallback(model_attr='generator_model', prompt=prompt, schema=target_schema())['targets']
         report['proposals'] = proposals
         if not isinstance(proposals, list) or len(proposals) > 12:
