@@ -342,6 +342,7 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertIn('Do not return an empty list merely', target_prompt)
             self.assertIn('hook_hypothesis', target_prompt)
             self.assertIn('routine upkeep', target_prompt)
+            self.assertIn('exact pinnable place', target_prompt)
             self.assertNotIn('A generic old hook', target_prompt)
             self.assertNotIn('A weak story was rejected', target_prompt)
             ranking_prompt = provider.call_with_fallback.call_args_list[1].kwargs['prompt']
@@ -354,8 +355,11 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertIn('independently sourced map-area names', ranking_prompt)
             self.assertIn('Return ranked=[]', ranking_prompt)
             self.assertIn('player enjoyment', ranking_prompt)
+            self.assertIn('separately pinnable', ranking_prompt)
             self.assertIn('actor_article_title', ranking_prompt)
             self.assertNotIn('BOTH explicitly mentioned in that same target source', ranking_prompt)
+            clue_prompt = provider.call_with_fallback.call_args_list[2].kwargs['prompt']
+            self.assertIn('exact place to pin', clue_prompt)
 
     def test_story_stage_can_decline_a_weak_batch_instead_of_forcing_a_hook(self):
         self.assertEqual(story.target_schema()['properties']['targets']['minItems'], 0)
@@ -891,6 +895,22 @@ class StoryPipelineTests(unittest.TestCase):
         rejected = {'rejections': []}
         self.assertEqual(story.source_targets([proposal], source, [], [], [], rejected), [])
         self.assertIn('place type does not match', rejected['rejections'][0]['reason'])
+
+    def test_lake_cannot_borrow_an_island_type_and_church_story(self):
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        source.page.return_value = {
+            'title': 'Lake Bled', 'entity': 'Q1', 'lat': 46.36, 'lng': 14.09,
+            'text': ('Lake Bled is a lake in Slovenia. A church on Bled Island hosts '
+                     'weddings where a groom carries his bride up the steps. ') * 15,
+        }
+        proposal = {'title': 'Lake Bled', 'place_type': 'island',
+                    'hook_hypothesis': 'Grooms carry brides up church steps on Bled Island.'}
+        report = {'rejections': []}
+        targets = story.source_targets([proposal], source, [], [], [], report)
+        self.assertEqual(targets, [])
+        self.assertIn('not the lake target', report['rejections'][0]['reason'])
+        source.entities.assert_not_called()
 
     def test_target_lookup_adds_direct_historic_england_story_evidence(self):
         source = Mock()
