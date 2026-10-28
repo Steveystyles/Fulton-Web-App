@@ -685,6 +685,8 @@ def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
                 return 'The local map anchor appears only as an unrelated common word in its evidence.'
 
     hard = str(ladder.get('hard') or '')
+    if re.match(r'^\s*(?:find|look for|head to|go to|visit|search for)\b', hard, re.I):
+        return 'Hard clue gives map-navigation instructions instead of a discovery hook.'
     attribution = re.match(
         r'^Designed by (?P<designer>[^,]{3,80}), this (?:[a-z][a-z-]*\s+){0,3}'
         r'(?P<object>tower|hotel|building|stadium|bridge|museum|palace|cathedral|'

@@ -164,6 +164,24 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertIn('generator-facing', json.loads(saved)['round_rejection'])
             self.assertEqual(pool.rejected_interest_lessons(conn)[0]['rejection_kind'], 'clue_ladder')
 
+    def test_unplayed_hard_navigation_is_rejected_but_place_can_return(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            result = json.loads(conn.execute('SELECT result FROM automatic_map_entries').fetchone()[0])
+            result['clue_ladder']['hard'] = (
+                'Find the Sheesh Mahal and Sukh Niwas where winds over a water cascade cool the fort.'
+            )
+            conn.execute('UPDATE automatic_map_entries SET result=?', (json.dumps(result),))
+            self.assertEqual(pool.eligible(conn, '2026-09-08'), [])
+            self.assertEqual(pool.quarantine_ready_without_provider(conn, self.root), ['Atomium'])
+            state, saved = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(state, 'rejected')
+            self.assertIn('map-navigation instructions', json.loads(saved)['round_rejection'])
+            self.assertEqual(pool.rejected_interest_lessons(conn)[0]['rejection_kind'], 'clue_ladder')
+            pool.add(conn, self.place, self.result, self.verdict,
+                     origin='discovery', audit_pending=True)
+            self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
+
     def test_old_aligned_map_hook_is_stamped_without_quarantining(self):
         self.queue('discovery')
         reports = self.alignment_report(aligned=True)
