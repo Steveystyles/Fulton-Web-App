@@ -85,6 +85,8 @@ class DiscoveryTests(unittest.TestCase):
             'Find the Sheesh Mahal and Sukh Niwas where winds over a water cascade cool the fort.',
             'Look for the glass palace beside a water cascade.',
             'Visit the fort to see its inventive cooling system.',
+            'Discover a fascinating carved marble panel near the mirror palace.',
+            'Explore the palace to see its decorative panels.',
         ):
             with self.subTest(hard=hard):
                 self.assertIn('map-navigation instructions', discovery.generated_round_quality_issue(
@@ -92,6 +94,9 @@ class DiscoveryTests(unittest.TestCase):
                 ))
         self.assertIsNone(discovery.generated_round_quality_issue(candidate, {
             'clue_ladder': {'hard': 'Winds over a water cascade once cooled this Rajput residence.'},
+        }))
+        self.assertIn('promotional praise', discovery.generated_round_quality_issue(candidate, {
+            'clue_ladder': {'hard': 'A fascinating carved marble panel shows butterflies and a hooded cobra.'},
         }))
 
     def test_proposal_focus_rotates_geographic_lanes_without_more_model_requests(self):
