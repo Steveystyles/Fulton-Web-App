@@ -858,6 +858,18 @@ class StoryPipelineTests(unittest.TestCase):
         source.page.assert_called_once_with('Glass Hall')
         source.country.assert_not_called()
 
+    def test_target_lookup_skips_known_name_before_spending_source_requests(self):
+        source = Mock()
+        source.budget.day = '2026-10-15'
+        proposal = {'title': 'St. Pauls Cathedral', 'place_type': 'religious_site',
+                    'hook_hypothesis': 'A vivid public event took place at this landmark.'}
+        existing = [{'canonical_name': 'St Pauls Cathedral', 'lat': 51.5, 'lng': -0.1}]
+        report = {'rejections': []}
+        self.assertEqual(story.source_targets([proposal], source, [], existing, [], report), [])
+        self.assertEqual(report['rejections'][0]['reason'], 'Recent or existing answer.')
+        source.page.assert_not_called()
+        source.request.assert_not_called()
+
     def test_story_lookup_accepts_a_stadium_with_a_place_owned_story(self):
         source = Mock()
         source.budget.day = '2026-10-15'

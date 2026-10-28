@@ -447,6 +447,12 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
             kind = legacy.plain(proposal.get('place_type'), 40)
             if kind not in legacy.PLACE_TYPES:
                 raise ValueError('Unsupported place type.')
+            # The proposal model sometimes repeats names from the supplied
+            # reserve/history. Reject exact known names before a source lookup;
+            # canonical-title and coordinate checks below still catch aliases.
+            if any(key == legacy.exclusion_key(row.get('name', row.get('canonical_name', '')))
+                   for row in [*recent, *existing]):
+                raise ValueError('Recent or existing answer.')
             if any(row['type'] == kind and row['date'] >=
                    (legacy.date.fromisoformat(sources.budget.day) - legacy.timedelta(days=2)).isoformat()
                    for row in recent):

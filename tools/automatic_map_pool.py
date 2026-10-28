@@ -1151,6 +1151,7 @@ def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]
                                 and (
                                     'budget exhausted' in str(item.get('reason', '')).casefold()
                                     or str(item.get('reason', '')).casefold().startswith('place was rejected recently')
+                                    or str(item.get('reason', '')).casefold() == 'recent or existing answer.'
                                     or retryable_route_rejection(str(item.get('reason', '')))
                                 )
                             }
