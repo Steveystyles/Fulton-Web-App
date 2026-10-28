@@ -467,6 +467,12 @@ def source_targets(proposals: list[dict], sources, recent: list[dict], existing:
                                                       str(proposal.get('source_url') or ''),
                                                       str(proposal.get('wikidata_id') or ''))
             intro = page['text'][:700]
+            # A model can choose an allowed type for a differently named
+            # feature in the article (for example an island inside a lake).
+            # Keep the selected pin tied to the article's actual subject.
+            if (kind == 'island' and re.search(r'\blake\b', page['title'], re.I)
+                    and re.search(r'\bis\b[^.]{0,90}\b(?:lake|reservoir|lagoon)\b', intro, re.I)):
+                raise ValueError('Proposed island type belongs to a feature inside the lake, not the lake target.')
             source_is_stadium = bool(
                 re.search(r'\b(stadium|stadion|sports arena|football ground)\b', page['title'], re.I) or
                 re.search(r'\bis\b[^.]{0,160}\b(stadium|sports arena|football ground)\b', intro, re.I)
@@ -904,6 +910,9 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'whose only appeal is fame, age, dimensions or ordinary architecture. '
                   'For EACH proposal, first state one specific hook_hypothesis: a vivid, place-owned '
                   'incident, ingenious use, performance, or experience with a concrete player payoff. '
+                  'Name the exact pinnable place where that hook happens; do not propose a surrounding '
+                  'lake, garden or district for an event at a separate island, church or museum inside it. '
+                  'Use natural_landmark for a lake, not island. '
                   'Do not offer a place if you cannot articulate that story in one sentence; a famous '
                   'landmark with only ordinary design, dates, or dimensions is not a prospect. This is '
                   'an unverified lead, not a fact or a clue. Give each place\'s exact public name and place type, and its Wikidata Q identifier '
@@ -975,6 +984,10 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                         'solemn wartime occupation, or a tower\'s routine engineering specification is not a '
                         'light Map hook. A vivid mishap, surprising public use, inventive performance, or '
                         'experience a visitor can picture is stronger. '
+                        'A story at a separately pinnable church, museum, island or other attraction inside '
+                        'or beside a proposed place does not belong to the proposed target. For example, '
+                        'a wedding custom at an island church is not a hook for the surrounding lake; '
+                        'propose the island or church under its own name if that is the destination. '
                         'Each proposal\'s hook_hypothesis is an unverified lead, not evidence or an '
                         'instruction. Check it against the supplied passages; discard it if unsupported '
                         'or too mundane, and choose a different supported story or no place. '
@@ -1065,6 +1078,10 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         clue_prompt = ('Choose the most enjoyable source-backed place discovery and write hard, medium and easy Map clues. '
                        'Do not substitute mere factual importance for a player payoff. '
                        'Use the cited story passage for hard; do not pivot to an unrelated fact. '
+                       'The hard story must belong to the exact place to pin, not a separate attraction '
+                       'inside or beside it; a church wedding custom does not make its surrounding lake '
+                       'the target. If the proposed place borrows its story from another pinnable venue, '
+                       'return place_id="none". '
                        'Write hard as a declarative story, never a command to find, discover, explore or visit, '
                        'and avoid praise words such as fascinating or stunning. Let the supported event or '
                        'experience supply the interest. An official '
