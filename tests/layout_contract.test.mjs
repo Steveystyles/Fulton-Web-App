@@ -51,7 +51,7 @@ function classesFrom(tag) {
   return new Set((tag.match(/\bclass="([^"]*)"/)?.[1] ?? "").split(/\s+/));
 }
 
-test("new releases apply on idle screens without discarding games or form entries", () => {
+test("new releases apply on idle screens without discarding games or form entries", async () => {
   const emptyPage = {
     activeElement: null,
     querySelector: () => null,
@@ -62,7 +62,16 @@ test("new releases apply on idle screens without discarding games or form entrie
   for (const path of ["/wordle", "/quiz", "/map", "/account", "/admin", "/ops"]) {
     assert.equal(canApplyUpdateWithoutInterrupting(path, emptyPage), false, path);
   }
+  const signInPage = {
+    ...emptyPage,
+    querySelector: selector => selector === 'form[data-fultons-login]' ? {} : null,
+  };
+  assert.equal(canApplyUpdateWithoutInterrupting("/quiz", signInPage), true,
+    "an untouched sign-in screen can safely refresh before opening a game");
   const username = { value: "admin", isContentEditable: false };
+  assert.equal(canApplyUpdateWithoutInterrupting("/quiz", {
+    ...signInPage, querySelectorAll: () => [username],
+  }), false, "a filled sign-in field must survive an update");
   assert.equal(canApplyUpdateWithoutInterrupting("/", {
     ...emptyPage, querySelectorAll: () => [username],
   }), false, "a filled login field must survive an update");
@@ -72,6 +81,7 @@ test("new releases apply on idle screens without discarding games or form entrie
   assert.equal(canApplyUpdateWithoutInterrupting("/", {
     ...emptyPage, querySelector: () => ({}),
   }), false, "an open dialog must not be interrupted");
+  assert.match(await sourceText("src/pages/Login.tsx"), /<form data-fultons-login/);
 });
 
 test("a pending release refreshes ordinary game navigation but not modified clicks", async () => {
@@ -99,13 +109,12 @@ test("a failed lazy route offers a visible reload instead of a blank page", () =
   assert.doesNotMatch(html, /Missing chunk/);
 });
 
-test("a stale lazy route recovers once after navigation without reloading ordinary errors", () => {
+test("a stale lazy route recovers once after navigation or sign-in without reloading ordinary errors", () => {
   const missingChunk = new TypeError("Failed to fetch dynamically imported module: /assets/Quiz-old.js");
-  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/quiz", 0, 100_000), true);
-  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/map", 0, 100_000), false);
-  assert.equal(canRecoverStaleRoute(new Error("Quiz render failed"), "/map", "/quiz", 0, 100_000), false);
-  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/quiz", 90_000, 100_000), false);
-  assert.equal(canRecoverStaleRoute(missingChunk, "/map", "/quiz", 1, 100_000), true);
+  assert.equal(canRecoverStaleRoute(missingChunk, 0, 100_000), true);
+  assert.equal(canRecoverStaleRoute(missingChunk, 90_000, 100_000), false);
+  assert.equal(canRecoverStaleRoute(missingChunk, 1, 100_000), true);
+  assert.equal(canRecoverStaleRoute(new Error("Quiz render failed"), 0, 100_000), false);
 });
 
 test("help starts as a compact button with no instructions in the game layout", () => {
