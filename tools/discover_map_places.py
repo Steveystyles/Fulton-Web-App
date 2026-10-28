@@ -584,7 +584,9 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     # These checks need only the already-retrieved articles and coordinates.
     # Reject weak map routes before spending two more requests on country metadata.
     if target.get('source_kind') not in ('osm_public_page', 'wikidata_public_page'):
-        evidence_excerpt({'evidence': {'article': target}, 'anchors': anchors})
+        evidence_excerpt({'evidence': {'article': target, 'city': city, 'local': local},
+                          'anchors': anchors,
+                          'independent_area_sources': bool(proposal.get('_independent_area_sources'))})
     countries = claim_values(entity, 'P17')
     if len(countries) != 1:
         raise ValueError('Country identity is ambiguous.')
@@ -603,6 +605,7 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
             'sources': {'article': target['url'], 'city': city['url'], 'local': local['url'],
                         'coordinates': f"https://www.wikidata.org/wiki/{target['entity']}?oldid={int(entity['lastrevid'])}"},
             'retrieved_on': date.today().isoformat(), 'evidence': {'article': target, 'city': city, 'local': local},
+            **({'independent_area_sources': True} if proposal.get('_independent_area_sources') else {}),
             'coordinate_check': {'distance_m': round(daily_map_game.haversine_m(lat, lng, target['lat'], target['lng'])),
                                  'note': 'Cross-dataset consistency, not independent survey verification.'}}
 
@@ -802,13 +805,21 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
 
 
 def evidence_excerpt(candidate: dict) -> list[str]:
-    """Bound model input while retaining actual passages naming the two search areas."""
+    """Bound source evidence while retaining passages naming the map anchors."""
     text = candidate['evidence']['article']['text']
     passages = [text[:5000]]
-    for anchor in candidate['anchors']:
+    for index, anchor in enumerate(candidate['anchors']):
         match = named_place_mention(text, anchor['name'])
         if match is None:
-            raise ValueError('The target article does not mention the supplied search area.')
+            if not candidate.get('independent_area_sources'):
+                raise ValueError('The target article does not mention the supplied search area.')
+            source_key = 'city' if index == 0 else 'local'
+            source_text = candidate['evidence'][source_key]['text']
+            source_match = named_place_mention(source_text, anchor['name'])
+            if source_match is None:
+                raise ValueError('Checked map-area source does not name its own search area.')
+            passages.append(source_text[max(0, source_match.start() - 250):source_match.end() + 750])
+            continue
         if match.end() > 5000:
             passages.append(text[max(0, match.start() - 500):match.end() + 1000])
     return passages
@@ -821,12 +832,13 @@ def evidence_units(candidate: dict) -> list[dict]:
     chosen = {i for i, match in enumerate(matches) if match.start() < 4000}
     hook_passages = proposal_hook_passage_indexes(candidate, matches)
     chosen.update(hook_passages)
-    external_target = candidate['evidence']['article'].get('source_kind') in (
-        'osm_public_page', 'wikidata_public_page')
+    independent_areas = (candidate.get('independent_area_sources') or
+                         candidate['evidence']['article'].get('source_kind') in (
+                             'osm_public_page', 'wikidata_public_page'))
     for anchor in candidate['anchors']:
         hit = named_place_mention(text, anchor['name'])
         if hit is None:
-            if external_target:
+            if independent_areas:
                 continue
             raise ValueError('The target article does not mention the supplied search area.')
         for i, match in enumerate(matches):
@@ -839,10 +851,10 @@ def evidence_units(candidate: dict) -> list[dict]:
     # Additional metadata guides selection; validation still checks the actual text.
     for index, anchor in enumerate(candidate['anchors']):
         hit = named_place_mention(text, anchor['name'])
-        if hit is None and external_target:
+        if hit is None and independent_areas:
             source_key = 'city' if index == 0 else 'local'
             source_text = candidate['evidence'][source_key]['text']
-            source_hit = re.search(re.escape(anchor['name']), source_text, flags=re.IGNORECASE)
+            source_hit = named_place_mention(source_text, anchor['name'])
             if source_hit is None:
                 raise ValueError('Checked map-area source does not name its own search area.')
             passage = source_text[max(0, source_hit.start() - 100):source_hit.end() + 400].strip()

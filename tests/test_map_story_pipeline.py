@@ -394,7 +394,7 @@ class StoryPipelineTests(unittest.TestCase):
             self.assertIn('An unplayable old park', ranking_prompt)
             self.assertIn('A weak story was rejected', ranking_prompt)
             self.assertIn('when rejection_kind is clue_ladder', ranking_prompt)
-            self.assertIn('independently sourced map-area names', ranking_prompt)
+            self.assertIn('independently geotagged nearby_options', ranking_prompt)
             self.assertIn('Return ranked=[]', ranking_prompt)
             self.assertIn('player enjoyment', ranking_prompt)
             self.assertIn('separately pinnable', ranking_prompt)
@@ -578,7 +578,7 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertLess(report['story_target_count'], 12)
         self.assertLessEqual(len(provider.call_with_fallback.call_args_list[1].kwargs['prompt']), 36000)
 
-    def test_nearby_options_are_from_api_and_named_in_target_article(self):
+    def test_nearby_options_are_independently_geotagged_not_article_mentions(self):
         source = Mock()
         source.request.return_value = {'query': {'geosearch': [
             {'title': 'Glass Hall', 'dist': 0},
@@ -589,7 +589,11 @@ class StoryPipelineTests(unittest.TestCase):
         ]}}
         page = {'title': 'Glass Hall', 'lat': 51.0, 'lng': 0.1,
                 'text': 'The Glass Hall is near Market Park in Eastport. Its opening celebrated liberation.'}
-        self.assertEqual(story.nearby_options(page, source), [{'title': 'Market Park', 'distance_m': 730}])
+        self.assertEqual(story.nearby_options(page, source), [
+            {'title': 'Market Park', 'distance_m': 730},
+            {'title': 'Liberation', 'distance_m': 740},
+            {'title': 'Unknown Museum', 'distance_m': 800},
+        ])
         self.assertEqual(source.request.call_args.args[0], 'en.wikipedia.org')
 
     def test_public_url_accepts_any_public_https_domain_but_not_internal_hosts(self):
@@ -688,6 +692,19 @@ class StoryPipelineTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'City article'):
                 story.resolve_route(route, target, Mock(), [], [])
         resolve.assert_called_once()
+
+    def test_route_never_resolves_the_answer_as_its_own_local_anchor(self):
+        route = {'title': 'Tivoli Gardens', 'city_title': 'Copenhagen',
+                 'local_title': 'Tivoli Gardens'}
+        target = {'title': 'Tivoli Gardens',
+                  'nearby_options': [{'title': 'Copenhagen City Hall', 'distance_m': 800}]}
+        with patch.object(story.legacy, 'resolve', return_value={'id': 'q1'}) as resolve:
+            candidate, replacement = story.resolve_route(route, target, Mock(), [], [])
+        self.assertEqual(candidate['id'], 'q1')
+        self.assertEqual(replacement, 'Copenhagen City Hall')
+        resolve.assert_called_once()
+        self.assertEqual(resolve.call_args.args[0]['local_title'], 'Copenhagen City Hall')
+        self.assertTrue(resolve.call_args.args[0]['_independent_area_sources'])
 
     def test_guidance_fallback_uses_only_checked_anchors_not_an_address(self):
         payload = {'facts': {'hard': {'text': 'A sourced story.'},
@@ -871,6 +888,10 @@ class StoryPipelineTests(unittest.TestCase):
                 'city_title': 'Eastport', 'local_title': 'Market Park'}
         self.assertEqual(len(story.ranked_routes({'ranked': [item]}, targets)), 1)
         self.assertEqual(story.ranked_routes({'ranked': [{**item, 'local_title': 'Fake Park'}]}, targets), [])
+        targets[0]['nearby_options'] = [{'title': 'Independent Museum', 'distance_m': 850}]
+        independent = story.ranked_routes(
+            {'ranked': [{**item, 'local_title': 'Independent Museum'}]}, targets)
+        self.assertEqual(independent[0]['local_title'], 'Independent Museum')
         self.assertEqual(story.ranked_routes({'ranked': [{**item, 'passage_id': 'fake'}]}, targets), [])
         self.assertEqual(story.ranked_routes({'ranked': [{**item, 'hook': 'An unrelated miraculous rescue happened here.'}]}, targets), [])
         targets[0]['passages'][0]['role'] = 'context'

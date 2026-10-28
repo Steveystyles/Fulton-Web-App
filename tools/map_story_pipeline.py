@@ -288,7 +288,7 @@ def passages(page: dict, hook_hypothesis: str = '', place_name: str = '') -> lis
 
 
 def nearby_options(page: dict, sources) -> list[dict]:
-    """Find map-anchor names from geotagged articles, never model invention."""
+    """Find independently geotagged map anchors, never model-invented names."""
     data = sources.request('en.wikipedia.org', {
         'action': 'query', 'list': 'geosearch',
         'gscoord': f"{page['lat']}|{page['lng']}", 'gsradius': 4000,
@@ -303,10 +303,8 @@ def nearby_options(page: dict, sources) -> list[dict]:
         distance = row.get('dist')
         if not isinstance(distance, (int, float)) or not 100 < distance < 4000:
             continue
-        short = name.split(' (')[0]
         if (legacy.exclusion_key(name) == legacy.exclusion_key(page['title']) or
-                legacy.exclusion_key(name) in seen or
-                not legacy.named_place_mention(page['text'], short)):
+                legacy.exclusion_key(name) in seen):
             continue
         seen.add(legacy.exclusion_key(name))
         options.append({'title': name, 'distance_m': round(distance)})
@@ -649,7 +647,12 @@ def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
         if target['page'].get('source_kind') not in ('osm_public_page', 'wikidata_public_page'):
             article = target['page']['text']
             city = sourced_area_spelling(city, article)
-            local = sourced_area_spelling(local, article)
+            # The target's article need not mention a separate, geotagged
+            # neighbour. Its own source page and coordinates are checked by
+            # resolve(); only a name from our source lookup may bypass mention.
+            local = sourced_area_spelling(local, article) or next(
+                (option['title'] for option in target.get('nearby_options', [])
+                 if legacy.exclusion_key(option['title']) == legacy.exclusion_key(local)), None)
             if city is None or local is None:
                 continue
         actor = item.get('actor_article_title', '')
@@ -865,10 +868,13 @@ def checked_hard_story_pivot(payload: dict, candidate: dict) -> str | None:
 
 def resolve_route(route: dict, target: dict, sources, recent: list[dict], existing: list[dict]) -> tuple[dict, str | None]:
     """Retry only a failed local map anchor using retrieved nearby-page names."""
-    options = [route]
+    answer_key = legacy.exclusion_key(target.get('title', ''))
+    options = [] if legacy.exclusion_key(route['local_title']) == answer_key else [route]
     for item in target.get('nearby_options', []):
         name = item['title']
-        if name != route['local_title']:
+        if (legacy.exclusion_key(name) != answer_key and
+                all(legacy.exclusion_key(option['local_title']) != legacy.exclusion_key(name)
+                    for option in options)):
             options.append({**route, 'local_title': name})
         if len(options) >= 4:
             break
@@ -879,14 +885,17 @@ def resolve_route(route: dict, target: dict, sources, recent: list[dict], existi
             checked_sources = (_TargetPageSource(sources, page)
                                if page.get('source_kind') in ('osm_public_page', 'wikidata_public_page')
                                else sources)
-            candidate = legacy.resolve(option, checked_sources, recent, existing)
+            candidate = legacy.resolve({**option, '_independent_area_sources': True},
+                                       checked_sources, recent, existing)
             if page.get('source_kind') == 'osm_public_page':
                 candidate['sources']['osm'] = page['osm_url']
                 candidate['coordinate_check']['note'] = 'OSM and Wikidata coordinates cross-checked.'
             elif page.get('source_kind') == 'wikidata_public_page':
                 candidate['coordinate_check']['note'] = (
                     'Wikidata coordinates used; the external story page confirms the place name, not its position.')
-            return candidate, (option['local_title'] if index else None)
+            return candidate, (option['local_title']
+                               if legacy.exclusion_key(option['local_title']) !=
+                               legacy.exclusion_key(route['local_title']) else None)
         except ValueError as error:
             if first_error is None:
                 first_error = error
@@ -1045,13 +1054,14 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                         'context passages '
                         'are for identity and geography, never a hook. Give its passage_id, '
                         'a faithful hook sentence, and a real city plus distinct nearby named feature. '
-                        'For Wikipedia targets both area names must occur in the target article. For external '
-                        'story pages they may instead be independently sourced map-area names; the code will '
-                        'check their pages, coordinates and distances before accepting the route. '
+                        'For Wikipedia targets the city must occur in the target article. The local feature '
+                        'may be mentioned there or be one of the independently geotagged nearby_options. '
+                        'For external story pages both map areas may be independently sourced. The code '
+                        'checks their separate pages, coordinates and distances before accepting the route. '
                         'The local feature must be a '
                         'district, park, harbour, or separate landmark, not part of the answer. Prefer one of '
-                        'the geotagged nearby_options: they are genuinely near the target and named in the target '
-                        'source, though their own source pages and map suitability still require checks. These are route '
+                        'the geotagged nearby_options: they are reported near the target, though their own '
+                        'source pages, distinct identity and map suitability still require checks. These are route '
                         'hypotheses; coordinates will be checked in code. Do not choose ordinary dates, materials, '
                         'bare superlatives, procurement details, routine signal coverage, danger to victims, '
                         'camps, or atrocities. If an interesting premise is hedged or unsupported, skip it. '
