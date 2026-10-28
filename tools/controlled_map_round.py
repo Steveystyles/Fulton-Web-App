@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -21,6 +22,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 import daily_map_game
+import daily_quiz
 from tools import generate_ai_daily_map_round as generator
 from tools import preview_ai_map_round as preview
 from tools import rewrite_map_clues_with_ai as rewriter
@@ -33,22 +35,94 @@ MAX_PROMPT_CHARS = 16000
 
 
 class ControlledProvider(preview.PreviewGeminiProvider):
+    @staticmethod
+    def gemini_unavailable(error: Exception) -> bool:
+        detail = str(error).casefold()
+        return any(marker in detail for marker in (
+            "http 429", "http 500", "http 502", "http 503", "http 504",
+            "timed out", "timeout", "temporarily unavailable", "connection",
+            "socket", "urlopen error",
+        ))
+
     @classmethod
     def from_runtime_env(cls):
         key = os.environ.get("MAP_AI_API_KEY", "").strip()
         if not key:
             raise ValueError("MAP_AI_API_KEY is required for controlled production generation.")
         model = os.environ.get("MAP_AI_MODEL", "").strip() or "gemini-3.5-flash-lite"
-        return cls.from_explicit_key(key, generator_model=model, max_requests=1)
+        free_router = (
+            os.environ.get("AI_FALLBACK2_PROVIDER", "").strip().lower() == "openrouter"
+            and os.environ.get("AI_FALLBACK2_GENERATOR_MODEL", "").strip().lower() == "openrouter/free"
+            and os.environ.get("AI_FALLBACK2_CRITIC_MODEL", "").strip().lower() == "openrouter/free"
+            and bool(os.environ.get("AI_FALLBACK2_API_KEY", "").strip())
+        )
+        provider = cls.from_explicit_key(key, generator_model=model,
+                                         max_requests=2 if free_router else 1)
+        if free_router:
+            router_config = replace(
+                provider.clients[0].config, provider="openrouter",
+                generator_model="openrouter/free", critic_model="openrouter/free",
+                gemini_api_key="", compatible_api_key=os.environ["AI_FALLBACK2_API_KEY"].strip(),
+                compatible_base_url="https://openrouter.ai/api/v1",
+                transient_retries=0,
+            )
+            provider.clients.append(rewriter.ProviderClient(
+                daily_quiz.OpenAICompatibleProvider(router_config), router_config,
+            ))
+        return provider
 
     def request_json(self, client, *, model, prompt, schema, tools=None):
         if tools:
             raise ValueError("Controlled generation does not permit model tools.")
+        if not isinstance(client.provider, daily_quiz.GeminiProvider):
+            prompt += ("\nReturn one JSON object only, matching this schema exactly: "
+                       + json.dumps(schema, separators=(",", ":")))
         if len(prompt) > MAX_PROMPT_CHARS:
             raise ValueError("Evidence exceeds the controlled prompt budget.")
+        if isinstance(client.provider, daily_quiz.GeminiProvider):
+            return client.provider._request(
+                model, prompt, schema, max_output_tokens=2048, temperature=0.3,
+            )
         return client.provider._request(
-            model, prompt, schema, max_output_tokens=2048, temperature=0.3,
+            model, prompt, temperature=0.3, allow_reasoning_compat_retry=False,
         )
+
+    def call_with_fallback(self, **kwargs):
+        if self.stop_reason:
+            raise RuntimeError(self.stop_reason)
+        for index, client in enumerate(self.clients):
+            if len(self.requests) >= self.max_requests:
+                self.stop_reason = "Controlled Map request budget exhausted."
+                raise RuntimeError(self.stop_reason)
+            model = getattr(client.config, kwargs["model_attr"])
+            record = {"number": len(self.requests) + 1, "model": model,
+                      "provider": client.provider.name, "stage": kwargs["model_attr"],
+                      "grounded": bool(kwargs.get("tools"))}
+            self.requests.append(record)
+            self.last_provider_name = client.provider.name
+            try:
+                result = self.request_json(
+                    client, model=model, prompt=kwargs["prompt"], schema=kwargs["schema"],
+                    tools=kwargs.get("tools"),
+                )
+            except Exception as error:
+                detail = str(error)
+                for secret in (client.config.gemini_api_key, client.config.compatible_api_key):
+                    if secret:
+                        detail = detail.replace(secret, "[REDACTED]")
+                record.update(status="failed", error_type=type(error).__name__,
+                              error_detail=detail[:500])
+                self.provider_error_detail = record["error_detail"]
+                self.retry_after_seconds = getattr(client.provider, "last_retry_after_seconds", None)
+                if index == 0 and len(self.clients) > 1 and not kwargs.get("tools") and self.gemini_unavailable(error):
+                    continue
+                self.stop_reason = "Controlled Map provider failed."
+                raise RuntimeError(self.stop_reason) from None
+            record["status"] = "completed"
+            self.provider_error_detail = ""
+            self.retry_after_seconds = None
+            return result
+        raise RuntimeError("Controlled Map provider failed.")
 
 
 def load_catalog(path: Path) -> list[dict[str, Any]]:
@@ -142,9 +216,9 @@ def eligible_places_in_database(conn: sqlite3.Connection, puzzle_date: str, plac
 
 def generate_and_publish(conn: sqlite3.Connection, *, puzzle_date: str, provider: ControlledProvider,
                          catalog: Path = DEFAULT_CATALOG) -> dict[str, Any]:
-    """Run one bounded request and publish through the existing game transaction."""
-    if provider.max_requests != 1:
-        raise ValueError("Controlled generation requires a one-request provider.")
+    """Run one request per free provider and publish through the game transaction."""
+    if provider.max_requests != len(provider.clients) or not 1 <= provider.max_requests <= 2:
+        raise ValueError("Controlled generation allows one request per configured provider.")
     if not daily_map_game.map_learning_profile_hash():
         raise ValueError("Install the bundled map learning profile before production generation.")
     places = eligible_places_in_database(conn, puzzle_date, load_catalog(catalog))
@@ -153,9 +227,14 @@ def generate_and_publish(conn: sqlite3.Connection, *, puzzle_date: str, provider
     if not result["automated_pass"]:
         raise ValueError("; ".join(result["validation"]["failure_reasons"]))
     place = next(p for p in places if p["id"] == result["catalogue_id"])
-    publication = publish_validated_round(conn, puzzle_date=puzzle_date, place=place, result=result)
+    publication = publish_validated_round(
+        conn, puzzle_date=puzzle_date, place=place, result=result,
+        provider_name=f"controlled-{provider.last_provider_name}",
+    )
     return {**result, "publish_result": publication, "request_count": len(provider.requests),
-            "usage": getattr(provider.clients[0].provider, "last_usage", {})}
+            "usage": getattr(next(client.provider for client in provider.clients
+                                  if client.provider.name == provider.last_provider_name),
+                             "last_usage", {})}
 
 
 def publish_validated_round(conn: sqlite3.Connection, *, puzzle_date: str, place: dict,
@@ -279,10 +358,11 @@ def validate_result(payload: dict[str, Any], places: list[dict[str, Any]]) -> di
 
 def run(*, source_db: Path, catalog: Path, puzzle_date: str, output_dir: Path, provider: ControlledProvider) -> dict[str, Any]:
     report: dict[str, Any] = {"status": "failed", "mode": "controlled_preview", "puzzle_date": puzzle_date,
-                              "production_modified": False, "human_review": "pending", "max_requests": 1}
+                              "production_modified": False, "human_review": "pending",
+                              "max_requests": provider.max_requests}
     try:
-        if provider.max_requests != 1:
-            raise ValueError("Controlled generation requires a one-request provider.")
+        if provider.max_requests != len(provider.clients) or not 1 <= provider.max_requests <= 2:
+            raise ValueError("Controlled generation allows one request per configured provider.")
         places = eligible_places(source_db, puzzle_date, load_catalog(catalog))
         report["eligible_places"] = [p["id"] for p in places]
         report["catalogue_sha256"] = hashlib.sha256(catalog.read_bytes()).hexdigest()
@@ -292,10 +372,17 @@ def run(*, source_db: Path, catalog: Path, puzzle_date: str, output_dir: Path, p
         result = validate_result(payload, places)
         report.update(result=result, status="ready_for_review" if result["automated_pass"] else "rejected")
     except (ValueError, RuntimeError, OSError, KeyError, TypeError) as error:
-        report["error"] = str(error).replace(provider.clients[0].config.gemini_api_key, "[REDACTED]")[:800]
+        detail = str(error)
+        for client in provider.clients:
+            for secret in (client.config.gemini_api_key, client.config.compatible_api_key):
+                if secret:
+                    detail = detail.replace(secret, "[REDACTED]")
+        report["error"] = detail[:800]
     report["requests"] = provider.requests
     report["request_count"] = len(provider.requests)
-    report["usage"] = getattr(provider.clients[0].provider, "last_usage", {})
+    report["usage"] = getattr(next(client.provider for client in provider.clients
+                                   if client.provider.name == provider.last_provider_name),
+                              "last_usage", {})
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = output_dir / f"controlled-map-{stamp}-{uuid4().hex[:8]}.json"
