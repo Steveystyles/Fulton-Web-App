@@ -156,7 +156,7 @@ class ControlledMapTests(unittest.TestCase):
             self.assertEqual(request.call_count, 1)
             self.assertNotIn("dev-fixture", json.dumps(report))
 
-    def test_runtime_requires_dedicated_key_and_never_uses_dev_or_fallback(self):
+    def test_runtime_requires_dedicated_key_and_does_not_inherit_quiz_fallback(self):
         with patch.dict(os.environ, {"GEMINI_API_KEY_DEV": "dev", "GEMINI_API_KEY": "other"}, clear=True):
             with self.assertRaisesRegex(ValueError, "MAP_AI_API_KEY"):
                 controlled.ControlledProvider.from_runtime_env()
@@ -165,6 +165,78 @@ class ControlledMapTests(unittest.TestCase):
             self.assertEqual(provider.max_requests, 1)
             self.assertEqual(provider.clients[0].config.generator_model, "explicit-model")
             self.assertEqual(provider.clients[0].config.fallback_provider, "")
+
+    def test_runtime_adds_only_configured_free_openrouter_fallback(self):
+        env = {"MAP_AI_API_KEY": "runtime", "AI_FALLBACK2_PROVIDER": "openrouter",
+               "AI_FALLBACK2_GENERATOR_MODEL": "openrouter/free",
+               "AI_FALLBACK2_CRITIC_MODEL": "openrouter/free",
+               "AI_FALLBACK2_API_KEY": "router-fixture"}
+        with patch.dict(os.environ, env, clear=True):
+            provider = controlled.ControlledProvider.from_runtime_env()
+        self.assertEqual(provider.max_requests, 2)
+        self.assertEqual([client.provider.name for client in provider.clients], ["gemini", "openrouter"])
+        self.assertEqual(provider.clients[1].config.generator_model, "openrouter/free")
+        self.assertEqual(provider.clients[1].config.compatible_base_url, "https://openrouter.ai/api/v1")
+        with patch.dict(os.environ, {**env, "AI_FALLBACK2_GENERATOR_MODEL": "paid-model"}, clear=True):
+            paid = controlled.ControlledProvider.from_runtime_env()
+        self.assertEqual(paid.max_requests, 1)
+        self.assertEqual(len(paid.clients), 1)
+
+    def test_runtime_falls_back_once_only_when_gemini_unavailable(self):
+        with patch.dict(os.environ, {"MAP_AI_API_KEY": "runtime",
+                                     "AI_FALLBACK2_PROVIDER": "openrouter",
+                                     "AI_FALLBACK2_GENERATOR_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_CRITIC_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_API_KEY": "router-fixture"}, clear=True):
+            provider = controlled.ControlledProvider.from_runtime_env()
+        with patch.object(provider, "request_json", side_effect=[
+            RuntimeError("Gemini request failed with HTTP 503"), self.payload,
+        ]) as request:
+            result = provider.call_with_fallback(
+                model_attr="generator_model", prompt="public source facts", schema=controlled.response_schema(),
+            )
+        self.assertEqual(result, self.payload)
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual([item["status"] for item in provider.requests], ["failed", "completed"])
+        self.assertEqual(provider.last_provider_name, "openrouter")
+
+        with patch.dict(os.environ, {"MAP_AI_API_KEY": "runtime",
+                                     "AI_FALLBACK2_PROVIDER": "openrouter",
+                                     "AI_FALLBACK2_GENERATOR_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_CRITIC_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_API_KEY": "router-fixture"}, clear=True):
+            provider = controlled.ControlledProvider.from_runtime_env()
+        with patch.object(provider, "request_json", side_effect=ValueError("Invalid source facts")) as request:
+            with self.assertRaisesRegex(RuntimeError, "provider failed"):
+                provider.call_with_fallback(
+                    model_attr="generator_model", prompt="public source facts", schema=controlled.response_schema(),
+                )
+        request.assert_called_once()
+        self.assertEqual(len(provider.requests), 1)
+
+    def test_free_fallback_publishes_with_openrouter_provenance(self):
+        with patch.dict(os.environ, {"MAP_AI_API_KEY": "runtime",
+                                     "AI_FALLBACK2_PROVIDER": "openrouter",
+                                     "AI_FALLBACK2_GENERATOR_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_CRITIC_MODEL": "openrouter/free",
+                                     "AI_FALLBACK2_API_KEY": "router-fixture"}, clear=True):
+            provider = controlled.ControlledProvider.from_runtime_env()
+        with closing(sqlite3.connect(":memory:")) as conn:
+            conn.row_factory = sqlite3.Row
+            controlled.daily_map_game.initialize_database(conn)
+            conn.commit()
+            with patch.object(provider, "request_json", side_effect=[
+                RuntimeError("Gemini request failed with HTTP 503"), self.payload,
+            ]):
+                result = controlled.generate_and_publish(
+                    conn, puzzle_date="2026-09-20", provider=provider,
+                )
+            self.assertEqual(result["publish_result"]["status"], "published")
+            self.assertEqual(result["request_count"], 2)
+            source = conn.execute(
+                "SELECT clue_generation_source FROM map_place_pool WHERE slug LIKE 'controlled-%'"
+            ).fetchone()[0]
+            self.assertEqual(source, "controlled-openrouter")
 
     def test_missing_learning_profile_stops_before_api_call(self):
         provider = self.provider()
