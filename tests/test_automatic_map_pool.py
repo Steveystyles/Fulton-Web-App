@@ -182,6 +182,41 @@ class AutomaticPoolTests(unittest.TestCase):
                      origin='discovery', audit_pending=True)
             self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
 
+    def test_newly_rejected_old_round_is_first_feedback_not_buried_by_creation_date(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            result = deepcopy(self.result)
+            result['clue_ladder']['hard'] = 'Find the palace by following the nearby garden wall.'
+            conn.execute('UPDATE automatic_map_entries SET created_at=?,result=?',
+                         ((self.clock - timedelta(days=7)).isoformat(), json.dumps(result)))
+            self.assertEqual(pool.quarantine_unplayable_generated_ready(conn), ['Atomium'])
+            rejected_at = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?',
+                (self.place['id'],),
+            ).fetchone()[0])['rejected_at']
+            self.assertEqual(rejected_at, self.clock.isoformat())
+
+            other = {**self.place, 'canonical_name': 'Older rejected place'}
+            other_verification = {'editorial_rejection': True,
+                                  'round_rejection': 'An earlier weak clue ladder.'}
+            conn.execute(
+                'INSERT INTO automatic_map_entries(id,state,candidate,result,verification,created_at,expires_at,origin) '
+                'VALUES(?,?,?,?,?,?,?,?)',
+                ('other-place', 'rejected', json.dumps(other), json.dumps(self.result),
+                 json.dumps(other_verification), (self.clock - timedelta(days=1)).isoformat(),
+                 (self.clock + timedelta(days=1)).isoformat(), 'discovery'),
+            )
+            self.assertEqual(pool.rejected_interest_lessons(conn, limit=1)[0]['place'], 'Atomium')
+
+            self.clock += timedelta(days=2)
+            pool.add(conn, self.place, self.result, self.verdict,
+                     origin='discovery', audit_pending=True)
+            archived_at = conn.execute(
+                'SELECT rejected_at FROM automatic_map_rejected_rounds WHERE place_id=?',
+                (self.place['id'],),
+            ).fetchone()[0]
+            self.assertEqual(archived_at, rejected_at)
+
     def test_old_aligned_map_hook_is_stamped_without_quarantining(self):
         self.queue('discovery')
         reports = self.alignment_report(aligned=True)
