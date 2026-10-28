@@ -79,6 +79,21 @@ class DiscoveryTests(unittest.TestCase):
                                    'easy': 'In western New York City, look near Liberation.'}}
         self.assertIn('unrelated common word', discovery.generated_round_quality_issue(candidate, result))
 
+    def test_hard_clue_must_be_a_discovery_hook_not_an_instruction(self):
+        candidate = {'anchors': [], 'facts': {}}
+        for hard in (
+            'Find the Sheesh Mahal and Sukh Niwas where winds over a water cascade cool the fort.',
+            'Look for the glass palace beside a water cascade.',
+            'Visit the fort to see its inventive cooling system.',
+        ):
+            with self.subTest(hard=hard):
+                self.assertIn('map-navigation instructions', discovery.generated_round_quality_issue(
+                    candidate, {'clue_ladder': {'hard': hard}},
+                ))
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, {
+            'clue_ladder': {'hard': 'Winds over a water cascade once cooled this Rajput residence.'},
+        }))
+
     def test_proposal_focus_rotates_geographic_lanes_without_more_model_requests(self):
         self.assertGreaterEqual(discovery.MAX_SOURCE_REQUESTS, discovery.PROPOSAL_COUNT * 10)
         focuses = [
