@@ -182,6 +182,19 @@ class AutomaticPoolTests(unittest.TestCase):
                      origin='discovery', audit_pending=True)
             self.assertEqual(conn.execute('SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
 
+    def test_unplayed_promotional_map_hint_is_rejected_as_clue_ladder(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            result = json.loads(conn.execute('SELECT result FROM automatic_map_entries').fetchone()[0])
+            result['clue_ladder']['easy'] += ' Explore this stunning destination.'
+            conn.execute('UPDATE automatic_map_entries SET result=?', (json.dumps(result),))
+            self.assertEqual(pool.eligible(conn, '2026-09-08'), [])
+            self.assertEqual(pool.quarantine_ready_without_provider(conn, self.root), ['Atomium'])
+            state, saved = conn.execute('SELECT state,verification FROM automatic_map_entries').fetchone()
+            self.assertEqual(state, 'rejected')
+            self.assertIn('promotional filler', json.loads(saved)['round_rejection'])
+            self.assertEqual(pool.rejected_interest_lessons(conn)[0]['rejection_kind'], 'clue_ladder')
+
     def test_newly_rejected_old_round_is_first_feedback_not_buried_by_creation_date(self):
         self.queue('discovery')
         with closing(self.connect()) as conn:
