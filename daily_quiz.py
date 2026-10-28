@@ -1010,8 +1010,7 @@ class OpenAICompatibleProvider:
         model: str,
         prompt: str,
         *,
-        temperature: float = 0.5,
-        allow_reasoning_compat_retry: bool = True,
+        temperature: float = 0.5, allow_reasoning_compat_retry: bool = True,
     ) -> dict[str, Any]:
         headers = {
             "Accept-Encoding": "identity",
@@ -1087,8 +1086,7 @@ class OpenAICompatibleProvider:
                     if (
                         status_code == 400
                         and "reasoning" in payload
-                        and not reasoning_compat_retry
-                        and allow_reasoning_compat_retry
+                        and not reasoning_compat_retry and allow_reasoning_compat_retry
                         and "reasoning" in detail.casefold()
                         and "cannot be disabled" in detail.casefold()
                     ):
