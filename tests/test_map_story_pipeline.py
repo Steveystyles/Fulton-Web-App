@@ -339,8 +339,11 @@ class StoryPipelineTests(unittest.TestCase):
             source.text_page.assert_called_once_with('Example Inventor')
             target_prompt = provider.call_with_fallback.call_args_list[0].kwargs['prompt']
             self.assertIn('Do not pad the list with weak places', target_prompt)
+            self.assertIn('Do not return an empty list merely', target_prompt)
             self.assertIn('hook_hypothesis', target_prompt)
             self.assertIn('routine upkeep', target_prompt)
+            self.assertNotIn('A generic old hook', target_prompt)
+            self.assertNotIn('A weak story was rejected', target_prompt)
             ranking_prompt = provider.call_with_fallback.call_args_list[1].kwargs['prompt']
             self.assertIn(hypothesis, ranking_prompt)
             self.assertIn('unverified lead, not evidence', ranking_prompt)
