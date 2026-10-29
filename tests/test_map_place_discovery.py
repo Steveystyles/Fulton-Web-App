@@ -79,6 +79,30 @@ class DiscoveryTests(unittest.TestCase):
                                    'easy': 'In western New York City, look near Liberation.'}}
         self.assertIn('unrelated common word', discovery.generated_round_quality_issue(candidate, result))
 
+    def test_easy_clue_cannot_restate_a_disproved_claim_from_its_source(self):
+        quote = (
+            'Ruins of blackened marble across the river in the Mehtab Bagh seemed to support '
+            'the argument, but were proven false after excavations found discoloured white stones. '
+            'The garden lies across the Yamuna from the mausoleum.'
+        )
+        candidate = {
+            'canonical_name': 'Taj Mahal',
+            'anchors': [{'name': 'Agra'}, {'name': 'Mehtab Bagh'}],
+            'facts': {'easy': {'supporting_quotes': [quote]}},
+        }
+        result = {'clue_ladder': {
+            'hard': 'The minarets angle outward from the tomb.',
+            'medium': 'A marble mausoleum stands in Agra, India.',
+            'easy': ('In eastern Agra, ruins of blackened marble across the river '
+                     'in the Mehtab Bagh demonstrated a dark reflection of the white mausoleum.'),
+        }}
+        self.assertIn('source passage says was disproved',
+                      discovery.generated_round_quality_issue(candidate, result))
+        result['clue_ladder']['easy'] = (
+            'In eastern Agra, the mausoleum stands across the Yamuna from Mehtab Bagh.'
+        )
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, result))
+
     def test_hard_clue_must_be_a_discovery_hook_not_an_instruction(self):
         candidate = {'anchors': [], 'facts': {}}
         for hard in (
