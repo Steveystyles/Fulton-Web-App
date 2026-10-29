@@ -2459,6 +2459,15 @@ class DailyMapGameTests(unittest.TestCase):
             )
         )
 
+        self.assertFalse(daily_map_game.hard_clue_reveals_target_token(
+            "This tower survived because its radio antenna became useful.",
+            {"canonical_name": "Eiffel Tower", "acceptable_aliases": []},
+        ))
+        self.assertFalse(daily_map_game.hard_clue_reveals_target_token(
+            "Inside this cave, visitors ride a boat beneath a living ceiling of lights.",
+            {"canonical_name": "Waitomo Glowworm Cave", "acceptable_aliases": []},
+        ))
+
     def test_learning_profile_can_supply_a_complete_gold_ladder_without_making_it_a_template(
         self,
     ) -> None:

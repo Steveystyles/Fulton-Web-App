@@ -99,6 +99,18 @@ class DiscoveryTests(unittest.TestCase):
             'clue_ladder': {'hard': 'A fascinating carved marble panel shows butterflies and a hooded cobra.'},
         }))
 
+    def test_generated_hard_clue_cannot_leak_a_distinctive_answer_word(self):
+        candidate = {'canonical_name': 'Waitomo Glowworm Cave',
+                     'acceptable_aliases': [], 'anchors': [], 'facts': {}}
+        leaked = {'clue_ladder': {'hard': (
+            'Visitors take a boat through the Waitomo Stream where tiny glowworms '
+            'create a sky of living lights.')}}
+        self.assertIn('distinctive word', discovery.generated_round_quality_issue(candidate, leaked))
+        safe = {'clue_ladder': {'hard': (
+            'Visitors take a boat along an underground stream where tiny glowworms '
+            'create a sky of living lights.')}}
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, safe))
+
     def test_medium_and_easy_clues_must_be_plain_map_hints(self):
         candidate = {'anchors': [], 'facts': {}}
         ladder = {

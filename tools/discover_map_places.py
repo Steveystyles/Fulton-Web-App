@@ -692,6 +692,8 @@ def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
                 return 'The local map anchor appears only as an unrelated common word in its evidence.'
 
     hard = str(ladder.get('hard') or '')
+    if daily_map_game.hard_clue_reveals_target_token(hard, candidate):
+        return 'Hard clue reveals a distinctive word from the target name.'
     if re.match(r'^\s*(?:find|look for|head to|go to|visit|search for|discover|explore|'
                 r'locate|seek out|see|witness|step into|step inside|cross)\b', hard, re.I):
         return 'Hard clue gives map-navigation instructions instead of a discovery hook.'
