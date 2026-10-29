@@ -111,6 +111,31 @@ class DiscoveryTests(unittest.TestCase):
             'create a sky of living lights.')}}
         self.assertIsNone(discovery.generated_round_quality_issue(candidate, safe))
 
+    def test_direct_compass_claim_must_match_local_anchor_coordinates(self):
+        candidate = {
+            'canonical_name': 'Hassan Tower', 'lat': 34.0241, 'lng': -6.82272,
+            'anchors': [
+                {'name': 'Rabat', 'lat': 34.02111, 'lng': -6.84138},
+                {'name': 'Royal Theatre of Rabat', 'lat': 34.02580556, 'lng': -6.81519444},
+            ],
+            'facts': {},
+        }
+        result = {'clue_ladder': {
+            'hard': 'Ramps rather than stairs let a rider ascend this unfinished structure.',
+            'medium': 'An unfinished monument stands in Rabat, Morocco.',
+            'easy': ('In eastern Rabat, the landmark stands directly south across the river area '
+                     'from the Royal Theatre of Rabat.'),
+        }}
+        self.assertIn('direct compass direction',
+                      discovery.generated_round_quality_issue(candidate, result))
+        result['clue_ladder']['easy'] = ('In eastern Rabat, the landmark stands directly west '
+                                         'of the Royal Theatre of Rabat.')
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, result))
+        result['clue_ladder']['easy'] = ('In eastern Rabat, the landmark stands directly east '
+                                         'of the Royal Theatre of Rabat.')
+        self.assertIn('direct compass direction',
+                      discovery.generated_round_quality_issue(candidate, result))
+
     def test_medium_and_easy_clues_must_be_plain_map_hints(self):
         candidate = {'anchors': [], 'facts': {}}
         ladder = {
