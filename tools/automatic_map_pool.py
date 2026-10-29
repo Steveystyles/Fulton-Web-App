@@ -1424,7 +1424,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         if verifier is not None:
             outcome['verifier_requests'] = verifier.requests
     outcome['failed_names'] = [item.get('title', '') for item in report.get('rejections', []) if isinstance(item, dict)]
-    if outcome['status'] != 'added' and report.get('candidate'):
+    if outcome['status'] != 'added' and report.get('candidate') and report.get('pipeline') != 'story_first':
         outcome['failed_names'].append(report['candidate']['canonical_name'])
     # A source-resolved place is not a bad place merely because the clue model
     # returned invalid wording. Only a fully assembled candidate that failed

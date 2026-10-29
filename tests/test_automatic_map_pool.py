@@ -957,6 +957,18 @@ class AutomaticPoolTests(unittest.TestCase):
         story_discover.assert_called_once()
         legacy_discover.assert_not_called()
 
+    def test_failed_clue_verification_does_not_blacklist_source_backed_place(self):
+        report = {**self.report(), 'pipeline': 'story_first'}
+        report['candidate_sha256'] = discovery.digest(report['candidate'])
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report), \
+             patch.object(pool, 'verify', side_effect=ValueError('Hard clue lost its sourced hook.')):
+            result = pool.maintain(self.database, self.root / 'reports', seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['failed_names'], [])
+
     def test_full_legacy_queue_does_not_block_first_story_round(self):
         report = {**self.report(), 'pipeline': 'story_first'}
         report['candidate_sha256'] = discovery.digest(report['candidate'])
