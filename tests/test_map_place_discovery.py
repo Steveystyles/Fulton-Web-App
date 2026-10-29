@@ -827,6 +827,36 @@ class DiscoveryTests(unittest.TestCase):
             discovery.resolve(proposal, source, [], [])
         source.country.assert_not_called()
 
+    def test_local_anchor_source_must_place_it_outside_the_answer(self):
+        self.assertTrue(discovery.local_anchor_is_inside_target(
+            'The Moti Masjid is a mosque inside the Red Fort complex in Old Delhi.',
+            ['Red Fort'],
+        ))
+        self.assertTrue(discovery.local_anchor_is_inside_target(
+            'Shila Devi Temple is a temple located inside the Amer Fort in Jaipur.',
+            ['Amber Fort', 'Amer Fort'],
+        ))
+        self.assertFalse(discovery.local_anchor_is_inside_target(
+            'Tower Hill is an open space outside the Tower of London.',
+            ['Tower of London'],
+        ))
+        source, _, pages, proposal = self.source_fixture()
+        pages['Park']['text'] = 'Park is a small garden inside the Target complex in City.'
+        with self.assertRaisesRegex(ValueError, 'inside the answer'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
+
+        source, entity, pages, proposal = self.source_fixture()
+        entity['aliases'] = {'en': [{'value': 'Amer Fort'}]}
+        pages['Park']['text'] = 'Park is a temple located inside the Amer Fort in City.'
+        with self.assertRaisesRegex(ValueError, 'inside the answer'):
+            discovery.resolve(proposal, source, [], [])
+        source.country.assert_not_called()
+
+        source, _, pages, proposal = self.source_fixture()
+        pages['Park']['text'] = 'Park is beside the Target, outside its walls in City.'
+        self.assertEqual(discovery.resolve(proposal, source, [], [])['anchors'][1]['name'], 'Park')
+
     def test_story_route_accepts_separately_sourced_local_area_only_when_named(self):
         source, _, pages, proposal = self.source_fixture()
         pages['Target']['text'] = 'The Target is in City and hosted a public event.'

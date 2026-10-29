@@ -515,6 +515,22 @@ def selection_schema() -> dict:
         'required': ['place_id', 'selection_reason', 'facts'], 'additionalProperties': False}
 
 
+def local_anchor_is_inside_target(local_text: str, target_names: list[str]) -> bool:
+    """Reject an anchor whose own source says it is part of the answer."""
+    lead = local_text[:1500]
+    for name in target_names:
+        if not isinstance(name, str) or len(name.strip()) < 6:
+            continue
+        target = re.escape(name.strip())
+        if re.search(r'\b(?:inside|within)\s+(?:the\s+)?' + target +
+                     r'\b(?:\s+(?:complex|grounds|premises|walls))?', lead, re.I):
+            return True
+        if re.search(r'\b(?:inside|within)\s+(?:the\s+)?(?:complex|grounds|premises|walls)\s+of\s+'
+                     r'(?:the\s+)?' + target + r'\b', lead, re.I):
+            return True
+    return False
+
+
 def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existing: list[dict]) -> dict:
     kind = plain(proposal.get('place_type'), 40)
     if kind not in PLACE_TYPES:
@@ -556,6 +572,8 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     aliases = [target['title'], entity.get('labels', {}).get('en', {}).get('value', target['title'])]
     aliases += [a['value'] for a in entity.get('aliases', {}).get('en', [])][:15]
     aliases += source_nicknames(target['text'], target['title'])
+    if local_anchor_is_inside_target(local['text'], aliases):
+        raise ValueError('Local feature is inside the answer, not an external map anchor.')
     names = {daily_map_game.normalized_place_name(a) for a in aliases}
     for previous in [*recent, *existing]:
         previous_names = [previous.get('name', previous.get('canonical_name', ''))]
