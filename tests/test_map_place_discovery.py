@@ -126,15 +126,30 @@ class DiscoveryTests(unittest.TestCase):
             'easy': ('In eastern Rabat, the landmark stands directly south across the river area '
                      'from the Royal Theatre of Rabat.'),
         }}
-        self.assertIn('direct compass direction',
+        self.assertIn('compass direction',
                       discovery.generated_round_quality_issue(candidate, result))
         result['clue_ladder']['easy'] = ('In eastern Rabat, the landmark stands directly west '
                                          'of the Royal Theatre of Rabat.')
         self.assertIsNone(discovery.generated_round_quality_issue(candidate, result))
         result['clue_ladder']['easy'] = ('In eastern Rabat, the landmark stands directly east '
                                          'of the Royal Theatre of Rabat.')
-        self.assertIn('direct compass direction',
+        self.assertIn('compass direction',
                       discovery.generated_round_quality_issue(candidate, result))
+
+        candidate['canonical_name'] = 'Guinigi Tower'
+        candidate['lat'], candidate['lng'] = 43.84371, 10.50701
+        candidate['anchors'] = [
+            {'name': 'Lucca', 'lat': 43.84166667, 'lng': 10.50277778},
+            {'name': 'Lucca Cathedral', 'lat': 43.84069444, 'lng': 10.50583333},
+        ]
+        result['clue_ladder']['hard'] = 'Holm oaks grow from the rooftop of this medieval tower.'
+        result['clue_ladder']['easy'] = ('In central Lucca, this landmark stands northwest '
+                                         'of Lucca Cathedral.')
+        self.assertIn('compass direction',
+                      discovery.generated_round_quality_issue(candidate, result))
+        result['clue_ladder']['easy'] = ('In central Lucca, this landmark stands north '
+                                         'of Lucca Cathedral.')
+        self.assertIsNone(discovery.generated_round_quality_issue(candidate, result))
 
     def test_medium_and_easy_clues_must_be_plain_map_hints(self):
         candidate = {'anchors': [], 'facts': {}}
