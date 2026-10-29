@@ -566,7 +566,11 @@ def resolve(proposal: dict, sources: WikimediaSource, recent: list[dict], existi
     # Build nested circles from retrieved coordinates, never model geometry.
     local_distance = daily_map_game.haversine_m(lat, lng, local['lat'], local['lng'])
     city_distance = daily_map_game.haversine_m(lat, lng, city['lat'], city['lng'])
-    if not 100 < local_distance < 4000 or not 300 < city_distance < 20000:
+    # A city centre can legitimately coincide with a central landmark. The
+    # story-first route has independent source identities for both anchors;
+    # a minimum city-centre offset adds no useful safety in that case.
+    city_minimum = 0 if proposal.get('_independent_area_sources') else 300
+    if not 100 < local_distance < 4000 or not city_minimum <= city_distance < 20000:
         raise ValueError('Search area centres are too close to the answer or too far away.')
     easy_radius = math.ceil(max(750, local_distance + 350))
     between = daily_map_game.haversine_m(city['lat'], city['lng'], local['lat'], local['lng'])

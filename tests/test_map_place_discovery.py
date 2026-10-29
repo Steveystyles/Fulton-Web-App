@@ -792,6 +792,15 @@ class DiscoveryTests(unittest.TestCase):
             discovery.resolve(proposal, source, [], [])
         source.country.assert_not_called()
 
+    def test_story_route_accepts_a_central_city_landmark(self):
+        source, _, pages, proposal = self.source_fixture()
+        pages['City']['lat'] = pages['Target']['lat'] + 0.0025
+        with self.assertRaisesRegex(ValueError, 'Search area centres'):
+            discovery.resolve(proposal, source, [], [])
+        proposal['_independent_area_sources'] = True
+        candidate = discovery.resolve(proposal, source, [], [])
+        self.assertEqual(candidate['anchors'][0]['name'], 'City')
+
     def test_search_area_names_cannot_leak_answer_aliases(self):
         source, _, pages, proposal = self.source_fixture()
         pages['Target']['title'] = 'Pont du Gard'
