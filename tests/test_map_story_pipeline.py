@@ -11,6 +11,62 @@ from tools import controlled_map_round as controlled
 
 
 class StoryPipelineTests(unittest.TestCase):
+    def test_resume_writes_clues_for_untried_card_without_new_source_discovery(self):
+        first = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
+                              if p['id'] == 'atomium'))
+        second = deepcopy(first)
+        second['id'] = 'second-venue'
+        second['canonical_name'] = 'Second Venue'
+        first['city_sector'] = second['city_sector'] = 'northern'
+        second['facts']['hard']['supporting_quotes'] = [second['facts']['hard']['text']]
+        previous = {
+            'candidate_cards': [
+                {'candidate': first, 'story_passage': first['facts']['hard']['text']},
+                {'candidate': second, 'story_passage': second['facts']['hard']['text']},
+            ],
+            'attempted_candidate_ids': [first['id']],
+        }
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.return_value = {'place_id': second['id']}
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=2)
+        budget.finish.return_value = {'model_requests': 1, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story, 'clue_evidence_units', return_value=[
+                 {'id': 'article-0', 'text': second['facts']['hard']['text']}]), \
+             patch.object(story.legacy, 'validate_selection', return_value=(
+                 second, {'selection_reason': 'A place-owned hook.', 'clue_ladder': {}})), \
+             patch.object(story.legacy, 'review_markdown', return_value='review'):
+            report = story.resume(previous=previous, puzzle_date='2026-10-17',
+                                  output_dir=Path(directory), budget=budget,
+                                  provider=provider)
+        self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
+        self.assertEqual(report['candidate']['id'], second['id'])
+        self.assertEqual(report['attempted_candidate_ids'], [first['id'], second['id']])
+        self.assertNotIn('Atomium', provider.call_with_fallback.call_args.kwargs['prompt'])
+
+    def test_resume_keeps_card_untried_when_provider_is_unavailable(self):
+        candidate = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
+                                  if p['id'] == 'atomium'))
+        candidate['city_sector'] = 'northern'
+        previous = {'candidate_cards': [{'candidate': candidate,
+                                        'story_passage': candidate['facts']['hard']['text']}],
+                    'attempted_candidate_ids': []}
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.side_effect = RuntimeError('Provider unavailable')
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=2)
+        budget.finish.return_value = {'model_requests': 1, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'review_markdown', return_value='review'):
+            report = story.resume(previous=previous, puzzle_date='2026-10-17',
+                                  output_dir=Path(directory), budget=budget,
+                                  provider=provider)
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(report['attempted_candidate_ids'], [])
+
     def test_playable_places_in_same_country_can_reach_final_comparison(self):
         first = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
                               if p['id'] == 'atomium'))
@@ -66,6 +122,9 @@ class StoryPipelineTests(unittest.TestCase):
                                     budget=budget, provider=provider, sources=Mock())
         self.assertEqual([item['canonical_name'] for item in report['resolved_candidates']],
                          ['Atomium', 'Other Belgian Hall'])
+        self.assertEqual([card['candidate']['canonical_name'] for card in report['candidate_cards']],
+                         ['Atomium', 'Other Belgian Hall'])
+        self.assertTrue(all(card['story_passage'] for card in report['candidate_cards']))
         self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
         final_prompt = provider.call_with_fallback.call_args_list[2].kwargs['prompt']
         self.assertIn('"id": "atomium"', final_prompt)

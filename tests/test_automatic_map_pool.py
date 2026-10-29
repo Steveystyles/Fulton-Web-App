@@ -969,6 +969,94 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(result['failed_names'], [])
 
+    def test_story_first_run_reuses_untried_checked_place_before_fresh_discovery(self):
+        first = self.report()
+        second = deepcopy(first['resolved_candidates'][0])
+        second['id'] = 'second-venue'
+        second['canonical_name'] = 'Second Venue'
+        saved = {**first, 'pipeline': 'story_first',
+                 'candidate_cards': [
+                     {'candidate': first['resolved_candidates'][0], 'story_passage': 'First sourced hook.'},
+                     {'candidate': second, 'story_passage': 'Second sourced hook.'}],
+                 'attempted_candidate_ids': [first['candidate']['id']]}
+        report_dir = self.root / 'reports' / 'previous-run'
+        report_dir.mkdir(parents=True)
+        path = report_dir / 'discovery.json'
+        path.write_text(json.dumps(saved), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('previous-run', self.clock.date().isoformat(), '2026-09-09',
+                 self.clock.isoformat(), 'failed', json.dumps({'report_path': str(path)})))
+            conn.commit()
+        resumed = {**self.report(), 'pipeline': 'story_first'}
+        resumed['candidate_sha256'] = discovery.digest(resumed['candidate'])
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'resume', return_value=resumed) as resume, \
+             patch.object(pool.map_story_pipeline, 'discover') as discover, \
+             patch.object(pool, 'verify', return_value=self.verdict):
+            result = pool.maintain(self.database, self.root / 'reports', seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(result['status'], 'added')
+        self.assertEqual(resume.call_args.kwargs['previous']['attempted_candidate_ids'],
+                         [first['candidate']['id']])
+        discover.assert_not_called()
+
+    def test_recovery_skips_a_place_already_in_the_queue(self):
+        self.queue('discovery')
+        first = deepcopy(self.place)
+        second = deepcopy(first)
+        second['id'] = 'second-venue'
+        second['canonical_name'] = 'Second Venue'
+        report_dir = self.root / 'reports' / 'saved'
+        report_dir.mkdir(parents=True)
+        path = report_dir / 'discovery.json'
+        path.write_text(json.dumps({
+            'pipeline': 'story_first', 'candidate_cards': [
+                {'candidate': first, 'story_passage': 'First sourced hook.'},
+                {'candidate': second, 'story_passage': 'Second sourced hook.'}],
+            'attempted_candidate_ids': []}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('saved', self.clock.date().isoformat(), '2026-09-09', self.clock.isoformat(),
+                 'failed', json.dumps({'report_path': str(path)})))
+            conn.commit()
+            recovered = pool.recoverable_story_batch(conn, self.root / 'reports')
+        self.assertEqual(recovered['attempted_candidate_ids'], [first['id']])
+
+    def test_exhausted_resumed_batch_does_not_reopen_its_parent(self):
+        first = deepcopy(self.place)
+        second = deepcopy(first)
+        second['id'] = 'second-venue'
+        cards = [{'candidate': first, 'story_passage': 'First sourced hook.'},
+                 {'candidate': second, 'story_passage': 'Second sourced hook.'}]
+        report_root = self.root / 'reports'
+        report_root.mkdir()
+        parent_path = report_root / 'parent.json'
+        child_path = report_root / 'child.json'
+        parent_path.write_text(json.dumps({
+            'pipeline': 'story_first', 'candidate_cards': cards,
+            'attempted_candidate_ids': [first['id']]}), encoding='utf-8')
+        child_path.write_text(json.dumps({
+            'pipeline': 'story_first', 'candidate_cards': cards,
+            'attempted_candidate_ids': [first['id'], second['id']],
+            'resumed_from': str(parent_path)}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            for run_id, path, started in (
+                ('parent', parent_path, self.clock),
+                ('child', child_path, self.clock + timedelta(minutes=1))):
+                conn.execute(
+                    'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                    'VALUES(?,?,?,?,?,?)',
+                    (run_id, self.clock.date().isoformat(), '2026-09-09',
+                     started.isoformat(), 'failed', json.dumps({'report_path': str(path)})))
+            conn.commit()
+            self.assertIsNone(pool.recoverable_story_batch(conn, report_root))
+
     def test_full_legacy_queue_does_not_block_first_story_round(self):
         report = {**self.report(), 'pipeline': 'story_first'}
         report['candidate_sha256'] = discovery.digest(report['candidate'])
