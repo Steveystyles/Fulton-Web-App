@@ -694,9 +694,18 @@ def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
     easy = str(ladder.get('easy') or '')
     if len(anchors) > 1 and isinstance(anchors[1], dict):
         local_name = str(anchors[1].get('name') or '')
-        for match in re.finditer(r'\bdirectly\s+(north|south|east|west)\b', easy, re.I):
-            # A direct direction explicitly relative to the named local anchor can
-            # be checked against the same coordinates used to build the map route.
+        directions = {
+            'north': (1.0, 0.0), 'northeast': (1.0, 1.0),
+            'east': (0.0, 1.0), 'southeast': (-1.0, 1.0),
+            'south': (-1.0, 0.0), 'southwest': (-1.0, -1.0),
+            'west': (0.0, -1.0), 'northwest': (1.0, -1.0),
+        }
+        compass_pattern = (r'\b(?P<directly>directly\s+)?(?P<direction>'
+                           r'north[\s-]?east|north[\s-]?west|south[\s-]?east|south[\s-]?west|'
+                           r'north|south|east|west)\b')
+        for match in re.finditer(compass_pattern, easy, re.I):
+            # Check a direction relative to the named local anchor against the
+            # same coordinates used to construct the player's map route.
             if not local_name or not re.search(
                 r'\b(?:of|from)\s+(?:the\s+)?' + re.escape(local_name) + r'\b',
                 easy[match.end():], re.I,
@@ -709,13 +718,13 @@ def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
                 continue
             north_km = (target_lat - anchor_lat) * 111.32
             east_km = (target_lng - anchor_lng) * 111.32 * math.cos(math.radians(anchor_lat))
-            direction = match.group(1).casefold()
-            forward, sideways = ((north_km, east_km) if direction == 'north' else
-                                 (-north_km, east_km) if direction == 'south' else
-                                 (east_km, north_km) if direction == 'east' else
-                                 (-east_km, north_km))
-            if forward <= 0 or abs(sideways) > forward * 0.5:
-                return 'Easy clue direct compass direction contradicts the target and local anchor coordinates.'
+            direction = re.sub(r'[\s-]+', '', match.group('direction').casefold())
+            unit_north, unit_east = directions[direction]
+            forward = north_km * unit_north + east_km * unit_east
+            sideways = abs(north_km * unit_east - east_km * unit_north)
+            tolerance = math.tan(math.radians(20 if match.group('directly') else 30))
+            if forward <= 0 or sideways > forward * tolerance:
+                return 'Easy clue compass direction contradicts the target and local anchor coordinates.'
 
     hard = str(ladder.get('hard') or '')
     if daily_map_game.hard_clue_reveals_target_token(hard, candidate):
@@ -1083,7 +1092,7 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   'a practical relationship to the target. Do not waste easy words on history or ownership. '
                   'The easy clue MUST start "In <coordinate_derived_city_sector> <city anchor>," before the local '
                   'feature; use the supplied sector exactly. The sector comes from checked coordinates, not a quotation. '
-                  'If describing the target as directly north, south, east, or west of the local anchor, '
+                  'For any compass direction relative to the local anchor, including diagonal directions, '
                   'check the two coordinate pairs first; otherwise use a less precise relationship. '
                   'Cite passage IDs to support the local relationship. Source passages '
                   'may include the answer; your text must not include the answer or its aliases. The article '
