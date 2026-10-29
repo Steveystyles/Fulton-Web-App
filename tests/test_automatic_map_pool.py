@@ -838,6 +838,15 @@ class AutomaticPoolTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 pool.verify(report, provider)
 
+    def test_verifier_marks_wrong_place_type_as_place_rejection(self):
+        report = self.report()
+        verdict = {**self.verdict, 'place_type_correct': False,
+                   'reason': 'The source identifies a lake, not an island.'}
+        provider = Mock()
+        provider.call_with_fallback.return_value = verdict
+        with self.assertRaises(pool.PlaceIdentityRejection):
+            pool.verify(report, provider)
+
     def test_publication_requires_legacy_reaudit_and_rejects_failed_chronology(self):
         legacy = {key: True for key in pool.CHECKS}
         legacy['interesting_hook_score'] = 5
@@ -969,15 +978,28 @@ class AutomaticPoolTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed')
         self.assertEqual(result['failed_names'], [])
 
+    def test_wrong_place_identity_is_excluded_from_fresh_proposals(self):
+        report = {**self.report(), 'pipeline': 'story_first'}
+        report['candidate_sha256'] = discovery.digest(report['candidate'])
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=report), \
+             patch.object(pool, 'verify', side_effect=pool.PlaceIdentityRejection('Wrong place type.')):
+            result = pool.maintain(self.database, self.root / 'reports', seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(result['failed_names'], [report['candidate']['canonical_name']])
+
     def test_story_first_run_reuses_untried_checked_place_before_fresh_discovery(self):
         first = self.report()
         second = deepcopy(first['resolved_candidates'][0])
         second['id'] = 'second-venue'
         second['canonical_name'] = 'Second Venue'
         saved = {**first, 'pipeline': 'story_first',
+                 'resolved_candidates': [first['resolved_candidates'][0], second],
                  'candidate_cards': [
-                     {'candidate': first['resolved_candidates'][0], 'story_passage': 'First sourced hook.'},
-                     {'candidate': second, 'story_passage': 'Second sourced hook.'}],
+                     {'candidate_id': first['candidate']['id'], 'story_passage': 'First sourced hook.'},
+                     {'candidate_id': second['id'], 'story_passage': 'Second sourced hook.'}],
                  'attempted_candidate_ids': [first['candidate']['id']]}
         report_dir = self.root / 'reports' / 'previous-run'
         report_dir.mkdir(parents=True)
@@ -1014,9 +1036,10 @@ class AutomaticPoolTests(unittest.TestCase):
         report_dir.mkdir(parents=True)
         path = report_dir / 'discovery.json'
         path.write_text(json.dumps({
-            'pipeline': 'story_first', 'candidate_cards': [
-                {'candidate': first, 'story_passage': 'First sourced hook.'},
-                {'candidate': second, 'story_passage': 'Second sourced hook.'}],
+            'pipeline': 'story_first', 'resolved_candidates': [first, second],
+            'candidate_cards': [
+                {'candidate_id': first['id'], 'story_passage': 'First sourced hook.'},
+                {'candidate_id': second['id'], 'story_passage': 'Second sourced hook.'}],
             'attempted_candidate_ids': []}), encoding='utf-8')
         with closing(self.connect()) as conn:
             conn.execute(
@@ -1032,17 +1055,19 @@ class AutomaticPoolTests(unittest.TestCase):
         first = deepcopy(self.place)
         second = deepcopy(first)
         second['id'] = 'second-venue'
-        cards = [{'candidate': first, 'story_passage': 'First sourced hook.'},
-                 {'candidate': second, 'story_passage': 'Second sourced hook.'}]
+        cards = [{'candidate_id': first['id'], 'story_passage': 'First sourced hook.'},
+                 {'candidate_id': second['id'], 'story_passage': 'Second sourced hook.'}]
         report_root = self.root / 'reports'
         report_root.mkdir()
         parent_path = report_root / 'parent.json'
         child_path = report_root / 'child.json'
         parent_path.write_text(json.dumps({
-            'pipeline': 'story_first', 'candidate_cards': cards,
+            'pipeline': 'story_first', 'resolved_candidates': [first, second],
+            'candidate_cards': cards,
             'attempted_candidate_ids': [first['id']]}), encoding='utf-8')
         child_path.write_text(json.dumps({
-            'pipeline': 'story_first', 'candidate_cards': cards,
+            'pipeline': 'story_first', 'resolved_candidates': [first, second],
+            'candidate_cards': cards,
             'attempted_candidate_ids': [first['id'], second['id']],
             'resumed_from': str(parent_path)}), encoding='utf-8')
         with closing(self.connect()) as conn:
@@ -1056,6 +1081,52 @@ class AutomaticPoolTests(unittest.TestCase):
                      started.isoformat(), 'failed', json.dumps({'report_path': str(path)})))
             conn.commit()
             self.assertIsNone(pool.recoverable_story_batch(conn, report_root))
+
+    def test_verifier_outage_keeps_selected_story_card_available(self):
+        candidate = deepcopy(self.place)
+        report_root = self.root / 'reports'
+        report_root.mkdir()
+        path = report_root / 'verifier-outage.json'
+        path.write_text(json.dumps({
+            'pipeline': 'story_first', 'status': 'needs_source_review',
+            'resolved_candidates': [candidate],
+            'candidate_cards': [{'candidate_id': candidate['id'],
+                                 'story_passage': 'A checked place-owned story.'}],
+            'attempted_candidate_ids': [candidate['id']],
+            'model_output': {'place_id': candidate['id']}}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('outage', self.clock.date().isoformat(), '2026-09-09',
+                 self.clock.isoformat(), 'failed',
+                 json.dumps({'report_path': str(path), 'provider_unavailable': True})))
+            conn.commit()
+            recovered = pool.recoverable_story_batch(conn, report_root)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered['attempted_candidate_ids'], [])
+
+    def test_large_checked_batch_remains_recoverable(self):
+        candidate = deepcopy(self.place)
+        candidate['evidence'] = {'article': {'text': 'A' * 2_100_000}}
+        report_root = self.root / 'reports'
+        report_root.mkdir()
+        path = report_root / 'large.json'
+        path.write_text(json.dumps({
+            'pipeline': 'story_first', 'resolved_candidates': [candidate],
+            'candidate_cards': [{'candidate_id': candidate['id'],
+                                 'story_passage': 'A checked place-owned story.'}],
+            'attempted_candidate_ids': []}), encoding='utf-8')
+        self.assertGreater(path.stat().st_size, 2_000_000)
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('large', self.clock.date().isoformat(), '2026-09-09',
+                 self.clock.isoformat(), 'failed', json.dumps({'report_path': str(path)})))
+            conn.commit()
+            recovered = pool.recoverable_story_batch(conn, report_root)
+        self.assertIsNotNone(recovered)
 
     def test_full_legacy_queue_does_not_block_first_story_round(self):
         report = {**self.report(), 'pipeline': 'story_first'}

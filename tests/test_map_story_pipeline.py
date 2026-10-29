@@ -20,9 +20,10 @@ class StoryPipelineTests(unittest.TestCase):
         first['city_sector'] = second['city_sector'] = 'northern'
         second['facts']['hard']['supporting_quotes'] = [second['facts']['hard']['text']]
         previous = {
+            'resolved_candidates': [first, second],
             'candidate_cards': [
-                {'candidate': first, 'story_passage': first['facts']['hard']['text']},
-                {'candidate': second, 'story_passage': second['facts']['hard']['text']},
+                {'candidate_id': first['id'], 'story_passage': first['facts']['hard']['text']},
+                {'candidate_id': second['id'], 'story_passage': second['facts']['hard']['text']},
             ],
             'attempted_candidate_ids': [first['id']],
         }
@@ -50,8 +51,9 @@ class StoryPipelineTests(unittest.TestCase):
         candidate = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
                                   if p['id'] == 'atomium'))
         candidate['city_sector'] = 'northern'
-        previous = {'candidate_cards': [{'candidate': candidate,
-                                        'story_passage': candidate['facts']['hard']['text']}],
+        previous = {'resolved_candidates': [candidate],
+                    'candidate_cards': [{'candidate_id': candidate['id'],
+                                         'story_passage': candidate['facts']['hard']['text']}],
                     'attempted_candidate_ids': []}
         provider = Mock()
         provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
@@ -122,8 +124,9 @@ class StoryPipelineTests(unittest.TestCase):
                                     budget=budget, provider=provider, sources=Mock())
         self.assertEqual([item['canonical_name'] for item in report['resolved_candidates']],
                          ['Atomium', 'Other Belgian Hall'])
-        self.assertEqual([card['candidate']['canonical_name'] for card in report['candidate_cards']],
-                         ['Atomium', 'Other Belgian Hall'])
+        self.assertEqual([card['candidate_id'] for card in report['candidate_cards']],
+                         ['atomium', 'other-belgian-hall'])
+        self.assertTrue(all('candidate' not in card for card in report['candidate_cards']))
         self.assertTrue(all(card['story_passage'] for card in report['candidate_cards']))
         self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
         final_prompt = provider.call_with_fallback.call_args_list[2].kwargs['prompt']

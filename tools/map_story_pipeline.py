@@ -932,15 +932,16 @@ def resume(*, previous: dict, puzzle_date: str, output_dir: Path, budget, provid
               'status': 'failed', 'human_review': 'pending', 'production_modified': False,
               'rejections': [], 'created_at': datetime.now(timezone.utc).isoformat(),
               'candidate_cards': previous['candidate_cards'],
+              'resolved_candidates': previous['resolved_candidates'],
               'attempted_candidate_ids': list(previous.get('attempted_candidate_ids', [])),
               'resumed_from': previous.get('report_path')}
     try:
         attempted = set(report['attempted_candidate_ids'])
         card = next(item for item in report['candidate_cards']
-                    if item['candidate']['id'] not in attempted)
-        candidate = card['candidate']
+                    if item['candidate_id'] not in attempted)
+        candidate = next(item for item in report['resolved_candidates']
+                         if item['id'] == card['candidate_id'])
         story_passage = card['story_passage']
-        report['resolved_candidates'] = [candidate]
         context = {'id': candidate['id'], 'name': candidate['canonical_name'],
                    'place_type': candidate['place_type'], 'country': candidate['country_name'],
                    'anchors': candidate['anchors'], 'city_sector': candidate['city_sector'],
@@ -1216,7 +1217,7 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                 report['rejections'].append({'title': route['title'], 'reason': str(error)[:300]})
         report['resolved_candidates'] = candidates
         report['candidate_cards'] = [
-            {'candidate': candidate, 'story_passage': story_passages[candidate['id']]}
+            {'candidate_id': candidate['id'], 'story_passage': story_passages[candidate['id']]}
             for candidate in candidates
         ]
         if not candidates:

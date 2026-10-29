@@ -37,6 +37,12 @@ MAX_AGE_DAYS = 35
 CHECKS = ('identity_correct', 'locations_supported', 'no_answer_leak', 'interesting_hook',
           'usable_map_route', 'qualifiers_preserved', 'place_type_correct', 'distinctive_hard_hook',
           'unique_easy_target')
+
+
+class PlaceIdentityRejection(ValueError):
+    """The checked target itself is not the place or type the sources describe."""
+
+
 MIN_INTEREST_SCORE = 4
 INTEREST_AUDIT_BATCH_SIZE = 4
 READY_AUDIT_VERSION = 2
@@ -931,6 +937,9 @@ def verify(report: dict, provider: discovery.DiscoveryProvider,
                             'anchors': candidate['anchors'], 'clues': result['clue_ladder'], 'passages': units,
                             'actor_timeline_crosscheck': candidate.get('crosscheck')}))
     verdict = provider.call_with_fallback(model_attr='critic_model', prompt=prompt, schema=verification_schema())
+    if verdict.get('identity_correct') is not True or verdict.get('place_type_correct') is not True:
+        raise PlaceIdentityRejection('Evidence verifier rejected place identity or type: '
+                                     + str(verdict.get('reason', 'failed identity check'))[:400])
     score = verdict.get('interesting_hook_score')
     if not sufficient_interest_score(score):
         raise ValueError('Evidence verifier found the hard hook insufficiently interesting.')
@@ -1155,7 +1164,7 @@ def recoverable_story_batch(conn: sqlite3.Connection, output_dir: Path) -> dict 
             if not isinstance(report_name, str):
                 continue
             path = Path(report_name).resolve(strict=True)
-            if not path.is_relative_to(root) or path.suffix != '.json' or path.stat().st_size > 2_000_000:
+            if not path.is_relative_to(root) or path.suffix != '.json' or path.stat().st_size > 8_000_000:
                 continue
             report = json.loads(path.read_text(encoding='utf-8'))
             parent = report.get('resumed_from')
@@ -1164,21 +1173,30 @@ def recoverable_story_batch(conn: sqlite3.Connection, output_dir: Path) -> dict 
             if str(path) in superseded:
                 continue
             cards = report.get('candidate_cards')
-            if report.get('pipeline') != 'story_first' or not isinstance(cards, list):
+            resolved = report.get('resolved_candidates')
+            if (report.get('pipeline') != 'story_first' or not isinstance(cards, list)
+                    or not isinstance(resolved, list)):
                 continue
+            resolved_ids = {item.get('id') for item in resolved if isinstance(item, dict)}
             attempted = report.get('attempted_candidate_ids', [])
             if not isinstance(attempted, list) or not all(isinstance(item, str) for item in attempted):
                 continue
             attempted = list(dict.fromkeys(attempted))
-            selected = report.get('model_output', {}).get('place_id')
-            if isinstance(selected, str) and selected not in attempted:
-                attempted.append(selected)
+            model_output = report.get('model_output')
+            selected = model_output.get('place_id') if isinstance(model_output, dict) else None
+            retry_selected = any(detail.get(key) is True for key in (
+                'provider_unavailable', 'rate_limited', 'quota_limited'))
+            if isinstance(selected, str):
+                if retry_selected:
+                    attempted = [item for item in attempted if item != selected]
+                elif selected not in attempted:
+                    attempted.append(selected)
             for card in cards:
-                if not isinstance(card, dict) or not isinstance(card.get('candidate'), dict):
+                if not isinstance(card, dict):
                     continue
-                candidate = card['candidate']
-                place_id = candidate.get('id')
+                place_id = card.get('candidate_id')
                 if (not isinstance(place_id, str) or not place_id
+                        or place_id not in resolved_ids
                         or place_id in attempted
                         or not isinstance(card.get('story_passage'), str)
                         or not card['story_passage'].strip()):
@@ -1481,7 +1499,9 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         if verifier is not None:
             outcome['verifier_requests'] = verifier.requests
     outcome['failed_names'] = [item.get('title', '') for item in report.get('rejections', []) if isinstance(item, dict)]
-    if outcome['status'] != 'added' and report.get('candidate') and report.get('pipeline') != 'story_first':
+    if (outcome['status'] != 'added' and report.get('candidate')
+            and (report.get('pipeline') != 'story_first'
+                 or outcome.get('error_type') == 'PlaceIdentityRejection')):
         outcome['failed_names'].append(report['candidate']['canonical_name'])
     # Story-first discovery records source/place rejections separately. A
     # failed clue or verifier decision must not blacklist its checked place.
