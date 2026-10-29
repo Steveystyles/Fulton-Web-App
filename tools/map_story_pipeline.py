@@ -292,7 +292,7 @@ def nearby_options(page: dict, sources) -> list[dict]:
     data = sources.request('en.wikipedia.org', {
         'action': 'query', 'list': 'geosearch',
         'gscoord': f"{page['lat']}|{page['lng']}", 'gsradius': 4000,
-        'gslimit': 50, 'gsnamespace': 0,
+        'gslimit': 200, 'gsnamespace': 0,
     })
     options = []
     seen = set()
@@ -308,6 +308,21 @@ def nearby_options(page: dict, sources) -> list[dict]:
             continue
         seen.add(legacy.exclusion_key(name))
         options.append({'title': name, 'distance_m': round(distance)})
+    # Geosearch is nearest-first, so the first results for a large attraction
+    # are often its own rides, rooms or buildings. A readable map feature a
+    # short walk away makes a better clue; this only ranks, never excludes,
+    # independently sourced names. Resolve() checks the actual place and pin.
+    answer_key = legacy.exclusion_key(page['title'])
+    map_feature = re.compile(
+        r'\b(?:city hall|town hall|square|station|park|gardens?|museum|bridge|palace|'
+        r'theat(?:re|er)|library|harbou?r|market|cathedral|church|district|quarter|'
+        r'monument|fort|gate)\b', re.I)
+    options.sort(key=lambda item: (
+        answer_key in legacy.exclusion_key(item['title']),
+        not bool(map_feature.search(item['title'])),
+        bool(re.search(r'\d', item['title'])),
+        abs(item['distance_m'] - 500),
+        item['distance_m'], item['title']))
     return options[:4]
 
 
@@ -902,7 +917,8 @@ def resolve_route(route: dict, target: dict, sources, recent: list[dict], existi
             reason = str(error).casefold()
             if 'budget exhausted' in reason or not any(marker in reason for marker in (
                     'local feature article', 'search area centres', 'does not mention the supplied search area',
-                    'target and both search areas', 'local feature search area name exposes the answer')):
+                    'target and both search areas', 'local feature search area name exposes the answer',
+                    'checked map-area source does not name its own search area')):
                 break
     raise first_error or ValueError('No sourced local map anchor passed verification.')
 

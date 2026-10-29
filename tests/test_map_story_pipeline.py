@@ -582,8 +582,10 @@ class StoryPipelineTests(unittest.TestCase):
         source = Mock()
         source.request.return_value = {'query': {'geosearch': [
             {'title': 'Glass Hall', 'dist': 0},
+            {'title': 'Inner Room (Glass Hall)', 'dist': 120},
             {'title': 'Market Park', 'dist': 730},
             {'title': 'Liberation', 'dist': 740},
+            {'title': 'External Hall', 'dist': 760},
             {'title': 'Unknown Museum', 'dist': 800},
             {'title': 'Far Garden', 'dist': 4900},
         ]}}
@@ -591,10 +593,12 @@ class StoryPipelineTests(unittest.TestCase):
                 'text': 'The Glass Hall is near Market Park in Eastport. Its opening celebrated liberation.'}
         self.assertEqual(story.nearby_options(page, source), [
             {'title': 'Market Park', 'distance_m': 730},
-            {'title': 'Liberation', 'distance_m': 740},
             {'title': 'Unknown Museum', 'distance_m': 800},
+            {'title': 'Liberation', 'distance_m': 740},
+            {'title': 'External Hall', 'distance_m': 760},
         ])
         self.assertEqual(source.request.call_args.args[0], 'en.wikipedia.org')
+        self.assertEqual(source.request.call_args.args[1]['gslimit'], 200)
 
     def test_public_url_accepts_any_public_https_domain_but_not_internal_hosts(self):
         public_dns = [(story.socket.AF_INET, story.socket.SOCK_STREAM, 6, '', ('93.184.216.34', 443))]
@@ -685,6 +689,11 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(resolve.call_args_list[1].args[0]['local_title'], 'Market Park')
         with patch.object(story.legacy, 'resolve', side_effect=[ValueError('Local feature search area name exposes the answer.'),
                                                                 {'id': 'q1'}]) as resolve:
+            candidate, replacement = story.resolve_route(route, target, Mock(), [], [])
+        self.assertEqual(candidate['id'], 'q1')
+        self.assertEqual(replacement, 'Market Park')
+        with patch.object(story.legacy, 'resolve', side_effect=[ValueError(
+                'Checked map-area source does not name its own search area.'), {'id': 'q1'}]) as resolve:
             candidate, replacement = story.resolve_route(route, target, Mock(), [], [])
         self.assertEqual(candidate['id'], 'q1')
         self.assertEqual(replacement, 'Market Park')
