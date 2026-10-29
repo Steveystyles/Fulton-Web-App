@@ -1,9 +1,10 @@
 """Dry-run or retire exact unpublished Map candidates after an editorial review.
 
 Retirement is reversible: no candidate, published round, or player data is
-deleted. A rejected hook may be redrafted for the same place; explicitly
-rejecting a place keeps that place out of automatic discovery. An online
-database backup is verified before any queue state changes.
+deleted. A rejected clue ladder may be redrafted with the same good place and
+story; rejecting a hook requires a new story; rejecting a place keeps that
+place out of automatic discovery. An online database backup is verified before
+any queue state changes.
 """
 
 from __future__ import annotations
@@ -34,17 +35,24 @@ def parse_targets(values: list[str]) -> dict[str, str]:
     return targets
 
 
-def checked_entries(conn: sqlite3.Connection, targets: dict[str, str]) -> list[dict[str, str]]:
+def checked_entries(conn: sqlite3.Connection, targets: dict[str, str], *,
+                    reclassify_round: bool = False, reason: str = "") -> list[dict[str, str]]:
     entries: list[dict[str, str]] = []
     for candidate_id, expected_name in targets.items():
         row = conn.execute(
-            "SELECT state, candidate FROM automatic_map_entries WHERE id = ?", (candidate_id,)
+            "SELECT state, candidate, verification FROM automatic_map_entries WHERE id = ?", (candidate_id,)
         ).fetchone()
-        if row is None or row[0] != "ready":
-            raise ValueError(f"{candidate_id} is not an unpublished ready candidate.")
+        expected_state = "rejected" if reclassify_round else "ready"
+        if row is None or row[0] != expected_state:
+            raise ValueError(f"{candidate_id} is not an unpublished {expected_state} candidate.")
         candidate = json.loads(row[1])
         if not isinstance(candidate, dict) or candidate.get("canonical_name") != expected_name:
             raise ValueError(f"{candidate_id} no longer matches the expected place name.")
+        if reclassify_round:
+            verification = json.loads(row[2])
+            operator = verification.get("operator_rejection") or {}
+            if operator.get("scope") != "hook" or operator.get("reason") != reason:
+                raise ValueError(f"{candidate_id} is not a hook rejection with the exact expected reason.")
         entries.append({"id": candidate_id, "name": expected_name})
     return entries
 
@@ -58,16 +66,19 @@ def review(
     apply: bool = False,
     backup_root: Path | None = None,
     in_container_snapshot: bool = False,
+    reclassify_round: bool = False,
 ) -> dict[str, Any]:
     reason = " ".join(reason.split())
     if not 12 <= len(reason) <= 300:
         raise ValueError("Provide a specific editorial reason of 12–300 characters.")
-    if scope not in {"hook", "place"}:
-        raise ValueError("Review scope must be hook or place.")
+    if scope not in {"hook", "round", "place"}:
+        raise ValueError("Review scope must be hook, round, or place.")
+    if reclassify_round and scope != "round":
+        raise ValueError("Reclassifying a rejected review requires round scope.")
     if not database.is_file() or database.is_symlink():
         raise ValueError("The database must be an existing, regular file.")
     with closing(sqlite3.connect(database, timeout=10)) as conn:
-        entries = checked_entries(conn, targets)
+        entries = checked_entries(conn, targets, reclassify_round=reclassify_round, reason=reason)
     if not apply:
         return {"status": "dry_run", "entries": entries}
     if (backup_root is None and not in_container_snapshot) or (backup_root is not None and in_container_snapshot):
@@ -84,7 +95,7 @@ def review(
     reviewed_at = datetime.now(timezone.utc).isoformat()
     with closing(sqlite3.connect(database, timeout=10)) as conn:
         conn.execute("BEGIN IMMEDIATE")
-        entries = checked_entries(conn, targets)
+        entries = checked_entries(conn, targets, reclassify_round=reclassify_round, reason=reason)
         for entry in entries:
             row = conn.execute(
                 "SELECT verification FROM automatic_map_entries WHERE id = ?", (entry["id"],)
@@ -92,11 +103,21 @@ def review(
             verification = json.loads(row[0])
             if not isinstance(verification, dict):
                 raise ValueError("The queue verification record is invalid.")
-            verification["operator_rejection"] = {"reason": reason, "at": reviewed_at, "scope": scope}
+            if reclassify_round:
+                verification["operator_rejection"]["scope"] = "round"
+                rejection_at = verification["operator_rejection"]["at"]
+            else:
+                verification["operator_rejection"] = {"reason": reason, "at": reviewed_at, "scope": scope}
+                rejection_at = reviewed_at
+            if scope == "round":
+                verification["editorial_rejection"] = True
+                verification["round_rejection"] = reason
+                verification["rejected_at"] = rejection_at
             changed = conn.execute(
                 "UPDATE automatic_map_entries SET state = 'rejected', verification = ? "
-                "WHERE id = ? AND state = 'ready'",
-                (json.dumps(verification, sort_keys=True), entry["id"]),
+                "WHERE id = ? AND state = ?",
+                (json.dumps(verification, sort_keys=True), entry["id"],
+                 "rejected" if reclassify_round else "ready"),
             )
             if changed.rowcount != 1:
                 raise RuntimeError("A queued place changed during review; no changes were committed.")
@@ -110,7 +131,9 @@ def main() -> int:
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--target", action="append", default=[], help="ID=exact canonical name; repeatable")
     parser.add_argument("--reason", required=True)
-    parser.add_argument("--scope", choices=("hook", "place"), default="hook")
+    parser.add_argument("--scope", choices=("hook", "round", "place"), default="hook")
+    parser.add_argument("--reclassify-round", action="store_true",
+                        help="Correct an existing rejected hook to a round rejection; exact reason must match")
     parser.add_argument("--apply", action="store_true", help="Retire only after a verified online backup")
     parser.add_argument("--backup-root", type=Path)
     parser.add_argument(
@@ -127,6 +150,7 @@ def main() -> int:
             apply=args.apply,
             backup_root=args.backup_root,
             in_container_snapshot=args.in_container_snapshot,
+            reclassify_round=args.reclassify_round,
         )
     except (ValueError, RuntimeError, OSError, sqlite3.Error, backup_manager.BackupError) as error:
         parser.exit(1, f"Map queue review failed: {error}\n")
