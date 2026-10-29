@@ -710,6 +710,24 @@ def generated_round_quality_issue(candidate: dict, result: dict) -> str | None:
                 return 'The local map anchor appears only as an unrelated common word in its evidence.'
 
     easy = str(ladder.get('easy') or '')
+    if isinstance(easy_fact, dict) and not re.search(
+        r'\b(?:myth|legend|false|disproven|disproved|debunked|discredited|refuted)\b', easy, re.I,
+    ):
+        target_name = str(candidate.get('canonical_name') or '')
+        local_name = (str(anchors[1].get('name') or '')
+                      if len(anchors) > 1 and isinstance(anchors[1], dict) else '')
+        clue_terms = hook_terms(easy, target_name) - hook_terms(local_name)
+        quotes = easy_fact.get('supporting_quotes') or [easy_fact.get('supporting_quote', '')]
+        for quote in quotes:
+            if not isinstance(quote, str):
+                continue
+            for sentence in re.split(r'(?<=[.!?])\s+', quote):
+                if (re.search(r'\b(?:proved|proven|shown|found|determined)\s+'
+                              r'(?:to\s+be\s+)?false\b|\b(?:debunked|disproved|discredited|refuted)\b',
+                              sentence, re.I)
+                        and len(clue_terms & (hook_terms(sentence, target_name)
+                                              - hook_terms(local_name))) >= 3):
+                    return 'Easy clue repeats a claim that its own source passage says was disproved.'
     if len(anchors) > 1 and isinstance(anchors[1], dict):
         local_name = str(anchors[1].get('name') or '')
         directions = {
