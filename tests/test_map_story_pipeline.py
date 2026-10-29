@@ -11,6 +11,66 @@ from tools import controlled_map_round as controlled
 
 
 class StoryPipelineTests(unittest.TestCase):
+    def test_playable_places_in_same_country_can_reach_final_comparison(self):
+        first = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
+                              if p['id'] == 'atomium'))
+        second = deepcopy(first)
+        second['id'] = 'other-belgian-hall'
+        second['canonical_name'] = 'Other Belgian Hall'
+        second['lat'] += 0.03
+        first['proposal_reason'] = first['facts']['hard']['text']
+        second['proposal_reason'] = second['facts']['hard']['text']
+        for candidate in (first, second):
+            candidate['city_sector'] = 'northern'
+            candidate['evidence'] = {'article': {'text': candidate['proposal_reason']}}
+            candidate['facts']['hard']['supporting_quotes'] = [candidate['proposal_reason']]
+        targets = []
+        ranked = []
+        for candidate in (first, second):
+            name = candidate['canonical_name']
+            passage = (f'{name} is in Brussels near Heysel. '
+                       + candidate['proposal_reason'])
+            targets.append({'title': name, 'place_type': candidate['place_type'],
+                            'page': {'title': name, 'text': passage},
+                            'passages': [{'id': 'p0', 'role': 'story', 'source': 'Wikipedia',
+                                          'text': passage}], 'nearby_options': []})
+            ranked.append({'title': name, 'passage_id': 'p0',
+                           'hook': candidate['proposal_reason'],
+                           'city_title': 'Brussels', 'local_title': 'Heysel'})
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.side_effect = [
+            {'targets': [{'title': t['title'], 'place_type': t['place_type'],
+                          'hook_hypothesis': 'Visitors explore a giant iron-crystal building.'}
+                         for t in targets]},
+            {'ranked': ranked},
+            {'place_id': first['id']},
+        ]
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
+        budget.finish.return_value = {'model_requests': 3, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets', return_value=targets), \
+             patch.object(story, 'resolve_route', side_effect=[(first, None), (second, None)]), \
+             patch.object(story, 'clue_evidence_units', return_value=[
+                 {'id': 'article-0', 'text': first['proposal_reason']}]), \
+             patch.object(story.legacy, 'validate_selection', return_value=(
+                 first, {'selection_reason': 'This is the strongest sourced story.',
+                         'clue_ladder': {'hard': first['proposal_reason'],
+                                         'medium': 'Brussels contains this unusual building.',
+                                         'easy': 'Look north near Heysel.'}})), \
+             patch.object(story.legacy, 'review_markdown', return_value='review'):
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock())
+        self.assertEqual([item['canonical_name'] for item in report['resolved_candidates']],
+                         ['Atomium', 'Other Belgian Hall'])
+        self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
+        final_prompt = provider.call_with_fallback.call_args_list[2].kwargs['prompt']
+        self.assertIn('"id": "atomium"', final_prompt)
+        self.assertIn('"id": "other-belgian-hall"', final_prompt)
+
     def test_fresh_proposals_discard_reserved_names_before_source_lookup(self):
         report = {'rejections': []}
         proposals = [{'title': 'Himeji Castle'}, {'title': 'New Museum'},

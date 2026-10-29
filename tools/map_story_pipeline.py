@@ -1136,9 +1136,6 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                         'hook_passage': route['story_passage'] if route['story_source'] == official['source_name'] else ''}
                 legacy.reject_excluded_place([candidate['canonical_name'], *candidate['acceptable_aliases']],
                                              excluded_names or [])
-                if any(c['country_code'] == candidate['country_code'] or c['place_type'] == candidate['place_type']
-                       for c in candidates):
-                    raise ValueError('Repeated country or place type in comparison.')
                 story_passages[candidate['id']] = route['story_passage']
                 candidates.append(candidate)
                 if len(candidates) >= MAX_STORY_COMPARISON_CANDIDATES:
