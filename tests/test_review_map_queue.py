@@ -99,6 +99,44 @@ class MapQueueReviewTests(unittest.TestCase):
             ).fetchone()[0])
         self.assertEqual(verification["operator_rejection"]["scope"], "place")
 
+    def test_round_scope_records_a_reusable_clue_ladder_failure(self):
+        reason = "The local anchor is inside the answer, making the route unplayable."
+        review_map_queue.review(
+            self.database, {"q940843": "Lotus Temple"}, reason=reason,
+            scope="round", apply=True, backup_root=self.backups,
+        )
+        with closing(sqlite3.connect(self.database)) as conn:
+            verification = json.loads(conn.execute(
+                "SELECT verification FROM automatic_map_entries WHERE id='q940843'"
+            ).fetchone()[0])
+        self.assertEqual(verification["operator_rejection"]["scope"], "round")
+        self.assertEqual(verification["round_rejection"], reason)
+        self.assertTrue(verification["editorial_rejection"])
+
+    def test_reclassify_round_requires_exact_prior_reason_and_preserves_timestamp(self):
+        reason = "The local anchor is inside the answer, making the route unplayable."
+        with closing(sqlite3.connect(self.database)) as conn:
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? WHERE id='q940843'",
+                         (json.dumps({"operator_rejection": {"scope": "hook", "reason": reason,
+                                                               "at": "2026-10-03T12:00:00+00:00"}}),))
+            conn.commit()
+        with self.assertRaisesRegex(ValueError, "exact expected reason"):
+            review_map_queue.review(self.database, {"q940843": "Lotus Temple"},
+                                    reason="A different historical reason is not allowed.",
+                                    scope="round", reclassify_round=True)
+        result = review_map_queue.review(
+            self.database, {"q940843": "Lotus Temple"}, reason=reason,
+            scope="round", reclassify_round=True, apply=True, backup_root=self.backups,
+        )
+        self.assertEqual(result["status"], "applied")
+        with closing(sqlite3.connect(self.database)) as conn:
+            verification = json.loads(conn.execute(
+                "SELECT verification FROM automatic_map_entries WHERE id='q940843'"
+            ).fetchone()[0])
+        self.assertEqual(verification["operator_rejection"]["at"], "2026-10-03T12:00:00+00:00")
+        self.assertEqual(verification["rejected_at"], "2026-10-03T12:00:00+00:00")
+        self.assertEqual(verification["round_rejection"], reason)
+
     def test_apply_refuses_missing_backup_root_and_duplicate_targets(self):
         targets = review_map_queue.parse_targets(["q940843=Lotus Temple"])
         with self.assertRaisesRegex(ValueError, "backup root"):

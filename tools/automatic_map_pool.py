@@ -296,7 +296,7 @@ def rejected_story_hooks(conn: sqlite3.Connection, place_id: str) -> list[str]:
         result, verification = json.loads(result_text), json.loads(verification_text)
         operator = verification.get('operator_rejection') or {}
         score = verification.get('interesting_hook_score')
-        if (operator and operator.get('scope') != 'place' or rejected_hook_reason(verification)
+        if (operator and operator.get('scope') == 'hook' or rejected_hook_reason(verification)
                 or type(score) is int and score < MIN_INTEREST_SCORE):
             hard = str(result.get('clue_ladder', {}).get('hard') or '').strip()
             if hard:
@@ -663,7 +663,7 @@ def editorial_corrections(conn: sqlite3.Connection, *, limit: int = 8) -> list[d
         "WHERE state='rejected' UNION ALL "
         "SELECT candidate,result,verification,origin FROM automatic_map_rejected_hooks) "
         "WHERE origin='discovery' "
-        "AND json_type(verification, '$.operator_rejection')='object' "
+        "AND json_extract(verification, '$.operator_rejection.scope')='hook' "
         "ORDER BY json_extract(verification, '$.operator_rejection.at') DESC LIMIT ?",
         (limit,),
     ):
@@ -732,7 +732,17 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
             hook = str(result.get('clue_ladder', {}).get('hard') or '').strip()
             if not hook:
                 continue
-            if operator_rejection:
+            operator_scope = operator_rejection.get('scope')
+            if operator_scope == 'round':
+                category = 'operator round rejection'
+                failure_reason = ('An editor rejected this Map clue ladder or route; the place and '
+                                  'supported discovery hook may be reused with corrected guidance: '
+                                  + str(operator_rejection.get('reason') or 'The route was not playable.')[:200])
+            elif operator_scope == 'place':
+                category = 'operator place rejection'
+                failure_reason = ('An editor rejected this Map place: '
+                                  + str(operator_rejection.get('reason') or 'The place is unsuitable.')[:200])
+            elif operator_rejection:
                 category = 'operator hook rejection'
                 failure_reason = ('An editor rejected this Map hook: '
                                   + str(operator_rejection.get('reason') or 'It did not make a compelling discovery game.')[:200])
@@ -757,7 +767,7 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
             else:
                 continue
             attempted_clues = {'hard': hook[:200]}
-            if (verification.get('round_rejection') or
+            if (operator_scope == 'round' or verification.get('round_rejection') or
                     audit.get('evidence_supported') is False or
                     audit.get('chronology_consistent') is False):
                 for level in ('medium', 'easy'):
@@ -769,7 +779,9 @@ def rejected_interest_lessons(conn: sqlite3.Connection, *, limit: int = 3) -> li
                                'Not a supported, memorable, place-defining discovery hook.'))
             candidates.append((category, {
                 'place': str(candidate.get('canonical_name') or '')[:100],
-                'rejection_kind': 'clue_ladder' if verification.get('round_rejection') else 'hook',
+                'rejection_kind': ('clue_ladder' if operator_scope == 'round' or
+                                   verification.get('round_rejection') else
+                                   'place' if operator_scope == 'place' else 'hook'),
                 'attempted_clues': attempted_clues,
                 'failure_reason': failure_reason + ('' if operator_rejection else detail[:160]),
             }))
@@ -953,7 +965,7 @@ def add(conn: sqlite3.Connection, candidate: dict, result: dict, verification: d
             and not prior_verification.get('round_rejection')
         ):
             raise ValueError('Editorially rejected map place requires an explicit operator review before reuse.')
-        if operator_rejection and operator_rejection.get('scope') != 'place' and (
+        if operator_rejection and operator_rejection.get('scope') == 'hook' and (
             hook_digest(json.loads(previous[2])) == hook_digest(result)
         ):
             raise ValueError('The same operator-rejected Map hook cannot be reused.')

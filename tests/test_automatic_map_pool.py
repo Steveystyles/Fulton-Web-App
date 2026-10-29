@@ -1377,6 +1377,41 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertEqual(pool.editorial_corrections(conn)[0]['rejected_hook'],
                              self.result['clue_ladder']['hard'])
 
+    def test_operator_rejected_round_reuses_good_hook_with_corrected_route(self):
+        self.queue('discovery')
+        reason = 'The local anchor is inside the answer, so the route cannot guide a player.'
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?',
+                (self.place['id'],)).fetchone()[0])
+            verification.update(editorial_rejection=True, round_rejection=reason,
+                                rejected_at=self.clock.isoformat())
+            verification['operator_rejection'] = {
+                'reason': reason, 'scope': 'round', 'at': self.clock.isoformat(),
+            }
+            conn.execute("UPDATE automatic_map_entries SET state='rejected',verification=? WHERE id=?",
+                         (json.dumps(verification), self.place['id']))
+            conn.commit()
+            self.assertEqual(pool.rejected_story_hooks(conn, self.place['id']), [])
+            self.assertEqual(pool.editorial_corrections(conn), [])
+            lesson = pool.rejected_interest_lessons(conn)[0]
+            self.assertEqual(lesson['rejection_kind'], 'clue_ladder')
+            self.assertIn(reason, lesson['failure_reason'])
+            with self.assertRaisesRegex(ValueError, 'same rejected Map clue ladder'):
+                pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
+            replacement = deepcopy(self.result)
+            replacement['clue_ladder']['easy'] = ('Find this distinctive landmark using a corrected '
+                                                  'outside approach from the nearby public square.')
+            with patch.object(controlled, 'validate_result', return_value={**replacement, 'automated_pass': True}):
+                pool.add(conn, self.place, replacement, self.verdict, origin='discovery')
+            conn.commit()
+            self.assertEqual(conn.execute(
+                'SELECT COUNT(*) FROM automatic_map_rejected_rounds WHERE place_id=?',
+                (self.place['id'],)).fetchone()[0], 1)
+            self.assertEqual(conn.execute(
+                'SELECT COUNT(*) FROM automatic_map_rejected_hooks WHERE place_id=?',
+                (self.place['id'],)).fetchone()[0], 0)
+
     def test_rejected_story_paraphrase_is_blocked_before_another_model_audit(self):
         old = ('This site marks where Mumtaz Mahal was first buried before moving to the main '
                'mausoleum chamber, featuring a Persian-inspired charbagh garden.')
