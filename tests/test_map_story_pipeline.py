@@ -697,6 +697,11 @@ class StoryPipelineTests(unittest.TestCase):
             candidate, replacement = story.resolve_route(route, target, Mock(), [], [])
         self.assertEqual(candidate['id'], 'q1')
         self.assertEqual(replacement, 'Market Park')
+        with patch.object(story.legacy, 'resolve', side_effect=[ValueError(
+                'Local feature is inside the answer, not an external map anchor.'), {'id': 'q1'}]) as resolve:
+            candidate, replacement = story.resolve_route(route, target, Mock(), [], [])
+        self.assertEqual(candidate['id'], 'q1')
+        self.assertEqual(replacement, 'Market Park')
         with patch.object(story.legacy, 'resolve', side_effect=ValueError('City article: Missing source page.')) as resolve:
             with self.assertRaisesRegex(ValueError, 'City article'):
                 story.resolve_route(route, target, Mock(), [], [])
