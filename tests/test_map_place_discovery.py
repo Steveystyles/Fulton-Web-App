@@ -569,6 +569,98 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([r['status'] for r in provider.requests], ['failed', 'completed'])
         self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
 
+    def test_independent_free_critic_uses_router_without_self_review(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            budget = self.budget()
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        schema = {'type': 'object', 'properties': {'weak': {'type': 'array'}},
+                  'required': ['weak']}
+        with patch.object(provider.clients[0].provider, '_request') as gemini, \
+             patch.object(provider.clients[1].provider, '_request',
+                          return_value={'weak': ['well']}) as router:
+            result = provider.call_independent_free_critic(
+                prompt='Compare these Map hooks.', schema=schema)
+        self.assertEqual(result, {'weak': ['well']})
+        gemini.assert_not_called()
+        router.assert_called_once()
+        self.assertEqual(provider.requests[-1]['provider'], 'openrouter')
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 1)
+
+    def test_router_cannot_review_its_own_ready_audit(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(self.budget())
+        with patch.object(provider.clients[0].provider, '_request',
+                          side_effect=RuntimeError('Gemini request failed with HTTP 503')), \
+             patch.object(provider.clients[1].provider, '_request',
+                          return_value={'interesting_hook_score': 5}) as router:
+            provider.call_with_fallback(model_attr='critic_model', prompt='Review source evidence.',
+                                        schema={'type': 'object', 'required': ['interesting_hook_score']})
+            with self.assertRaisesRegex(RuntimeError, 'Independent'):
+                provider.call_independent_free_critic(prompt='Judge player interest.', schema={})
+        router.assert_called_once()
+
+    def test_comparative_interest_review_prefers_distinct_free_gemini_key(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'GEMINI_API_KEY': 'separate-free-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            budget = self.budget()
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        self.assertNotEqual(provider.interest_client.config.gemini_api_key,
+                            provider.clients[0].config.gemini_api_key)
+        with patch.object(provider.clients[0].provider, '_request') as primary, \
+             patch.object(provider.clients[1].provider, '_request') as router, \
+             patch.object(provider.interest_client.provider, '_request',
+                          return_value={'best': ['cave'], 'weak': []}) as second_project:
+            result = provider.call_independent_free_critic(
+                prompt='Compare Map hooks.', schema={'type': 'object',
+                                                      'required': ['best', 'weak']})
+        self.assertEqual(result, {'best': ['cave'], 'weak': []})
+        primary.assert_not_called()
+        router.assert_not_called()
+        second_project.assert_called_once()
+        self.assertEqual(provider.requests[-1]['provider'], 'gemini')
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 1)
+
+    def test_comparative_interest_review_uses_free_router_after_second_key_outage(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture',
+            'GEMINI_API_KEY': 'separate-free-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            budget = self.budget()
+            provider = discovery.DiscoveryProvider.from_map_env(budget)
+        with patch.object(provider.interest_client.provider, '_request',
+                          side_effect=RuntimeError('Gemini request failed with HTTP 503')), \
+             patch.object(provider.clients[1].provider, '_request',
+                          return_value={'best': ['cave'], 'weak': []}):
+            self.assertEqual(provider.call_independent_free_critic(
+                prompt='Compare Map hooks.', schema={'type': 'object',
+                                                     'required': ['best', 'weak']}),
+                {'best': ['cave'], 'weak': []})
+        self.assertEqual([item['status'] for item in provider.requests],
+                         ['failed', 'completed'])
+        self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
+
     def test_free_fallback_receives_schema_and_rejects_wrong_response_shape(self):
         with patch.dict(os.environ, {
             'MAP_AI_API_KEY': 'map-fixture',
