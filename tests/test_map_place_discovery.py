@@ -661,6 +661,41 @@ class DiscoveryTests(unittest.TestCase):
                          ['failed', 'completed'])
         self.assertEqual(budget.finish('failed', self.root / 'report.json')['model_requests'], 2)
 
+    def test_router_cannot_review_a_router_generated_hook_from_prior_run(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture', 'GEMINI_API_KEY': 'separate-free-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(self.budget())
+        with patch.object(provider.interest_client.provider, '_request',
+                          return_value={'best': [], 'weak': []}) as second_project, \
+             patch.object(provider.clients[1].provider, '_request') as router:
+            provider.call_independent_free_critic(
+                prompt='Judge saved hook.', schema={}, excluded_providers={'openrouter'})
+        second_project.assert_called_once()
+        router.assert_not_called()
+
+    def test_broken_second_key_falls_back_to_free_router(self):
+        with patch.dict(os.environ, {
+            'MAP_AI_API_KEY': 'map-fixture', 'GEMINI_API_KEY': 'separate-free-fixture',
+            'AI_FALLBACK2_PROVIDER': 'openrouter',
+            'AI_FALLBACK2_GENERATOR_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_CRITIC_MODEL': 'openrouter/free',
+            'AI_FALLBACK2_API_KEY': 'router-fixture',
+        }, clear=True):
+            provider = discovery.DiscoveryProvider.from_map_env(self.budget())
+        with patch.object(provider.interest_client.provider, '_request',
+                          side_effect=RuntimeError('Gemini request failed with HTTP 403')) as second_project, \
+             patch.object(provider.clients[1].provider, '_request',
+                          return_value={'best': [], 'weak': []}) as router:
+            self.assertEqual(provider.call_independent_free_critic(
+                prompt='Judge saved hook.', schema={}), {'best': [], 'weak': []})
+        second_project.assert_called_once()
+        router.assert_called_once()
+
     def test_free_fallback_receives_schema_and_rejects_wrong_response_shape(self):
         with patch.dict(os.environ, {
             'MAP_AI_API_KEY': 'map-fixture',

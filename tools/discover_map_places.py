@@ -269,7 +269,8 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
             return result
         raise RuntimeError('Map discovery provider failed.')
 
-    def call_independent_free_critic(self, *, prompt: str, schema: dict) -> dict:
+    def call_independent_free_critic(self, *, prompt: str, schema: dict,
+                                     excluded_providers: set[str] | frozenset[str] = frozenset()) -> dict:
         """Compare hooks using a separate free key, then the free router."""
         if self.stop_reason:
             raise RuntimeError(self.stop_reason)
@@ -277,9 +278,11 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
                               if record.get('stage') == 'critic_model'
                               and record.get('status') == 'completed'), None)
         clients = []
-        if getattr(self, 'interest_client', None) is not None:
+        if (getattr(self, 'interest_client', None) is not None
+                and 'gemini' not in excluded_providers):
             clients.append(self.interest_client)
         if (len(self.clients) > 1 and self.clients[1].config.critic_model == 'openrouter/free'
+                and 'openrouter' not in excluded_providers
                 and not (latest_review and latest_review.get('provider') == 'openrouter')):
             clients.append(self.clients[1])
         if not clients:
@@ -313,7 +316,9 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
                 self.retry_after_seconds = getattr(client.provider, 'last_retry_after_seconds', None)
                 transient = isinstance(error, self.InvalidModelOutput) or any(
                     marker in detail.casefold() for marker in
-                    ('http 429', 'http 500', 'http 502', 'http 503', 'http 504', 'timed out'))
+                    ('http 401', 'http 403', 'http 404', 'http 429', 'http 500',
+                     'http 502', 'http 503', 'http 504', 'timed out',
+                     'permission_denied', 'unauthenticated', 'model not found'))
                 if index + 1 < len(clients) and transient:
                     continue
                 self.stop_reason = 'Independent free Map interest reviewer failed.'
