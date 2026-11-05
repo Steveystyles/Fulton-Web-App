@@ -56,6 +56,25 @@ class AutomaticPoolTests(unittest.TestCase):
             pool.add(conn, self.place, self.result, self.verdict, origin=origin)
             conn.commit()
 
+    def approve_queued_discovery_for_downstream_test(self, conn):
+        """A checked fixture for tests of publication/ranking rather than review."""
+        for entry_id, verification_text in conn.execute(
+                "SELECT id,verification FROM automatic_map_entries WHERE state='ready' AND origin='discovery'"):
+            verification = json.loads(verification_text)
+            verification['ready_audit'] = {
+                'version': pool.READY_AUDIT_VERSION,
+                'interesting_hook_score': verification['interesting_hook_score'],
+                'evidence_supported': True, 'chronology_consistent': True,
+                'reason': 'Test fixture: evidence reviewed.',
+                'independent_interest': {
+                    'version': pool.INDEPENDENT_INTEREST_VERSION,
+                    'engaging': True, 'tier': 'best',
+                    'reason': 'Test fixture: player payoff reviewed.',
+                },
+            }
+            conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                         (json.dumps(verification), entry_id))
+
     def alignment_report(self, *, aligned=False):
         report_root = self.root / 'reports'
         report_root.mkdir(exist_ok=True)
@@ -370,7 +389,7 @@ class AutomaticPoolTests(unittest.TestCase):
                              discovery.MAX_SOURCE_REQUESTS)
 
     def test_publication_and_queue_consumption_are_atomic_and_preserve_caller_work(self):
-        self.queue('discovery')
+        self.queue('bootstrap')
         with closing(self.connect()) as conn:
             conn.execute('CREATE TABLE caller_work(value TEXT)')
             conn.execute("INSERT INTO caller_work VALUES('keep')")
@@ -418,6 +437,10 @@ class AutomaticPoolTests(unittest.TestCase):
         provider.call_with_fallback.return_value = {
             'interesting_hook_score': 5, 'evidence_supported': True,
             'chronology_consistent': True, 'reason': 'A striking scientific idea.',
+        }
+        provider.call_independent_free_critic.return_value = {
+            'best': [self.place['id']], 'weak': [],
+            'reason': 'A striking scientific idea with a clear payoff.',
         }
         outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                 provider_factory=lambda _budget: provider)
@@ -526,6 +549,10 @@ class AutomaticPoolTests(unittest.TestCase):
             {'id': self.place['id'], 'interesting_hook_score': 5, 'evidence_supported': True,
              'chronology_consistent': True, 'reason': 'Memorable discovery.'},
         ]}
+        provider.call_independent_free_critic.return_value = {
+            'best': [self.place['id']], 'weak': [],
+            'reason': 'An enjoyable place-owned discovery.',
+        }
         outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                 provider_factory=lambda _budget: provider)
         self.assertEqual(outcome['status'], 'audited')
@@ -542,6 +569,145 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertTrue(rows[second['id']][1]['editorial_rejection'])
             self.assertEqual(conn.execute('SELECT attempts FROM automatic_map_usage').fetchone()[0], 1)
 
+    def test_independent_interest_review_rejects_weak_hook_and_keeps_strong_one(self):
+        second = self.queue_two_legacy_rounds()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {'audits': [
+            {'id': self.place['id'], 'interesting_hook_score': 5,
+             'evidence_supported': True, 'chronology_consistent': True,
+             'reason': 'Both are sourced.'},
+            {'id': second['id'], 'interesting_hook_score': 5,
+             'evidence_supported': True, 'chronology_consistent': True,
+             'reason': 'Both are sourced.'},
+        ]}
+        provider.call_independent_free_critic.return_value = {
+            'best': [second['id']], 'weak': [self.place['id']],
+            'reason': 'Only a dimension and an engineering specification, unlike the visitor experience.',
+        }
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        self.assertEqual(outcome['ready'], 1)
+        with closing(self.connect()) as conn:
+            rows = {row[0]: (row[1], json.loads(row[2])) for row in conn.execute(
+                'SELECT id,state,verification FROM automatic_map_entries')}
+            self.assertEqual(rows[self.place['id']][0], 'rejected')
+            self.assertEqual(rows[second['id']][0], 'ready')
+            self.assertEqual(rows[self.place['id']][1]['ready_audit']['independent_interest']['engaging'], False)
+            self.assertEqual(rows[second['id']][1]['ready_audit']['independent_interest']['engaging'], True)
+            self.assertEqual(pool.eligible(conn, '2026-09-09')[0][0], second['id'])
+            lesson = pool.rejected_interest_lessons(conn)[0]
+            self.assertEqual(lesson['rejection_kind'], 'hook')
+            self.assertIn('engineering specification', lesson['failure_reason'])
+
+    def test_fresh_pending_hook_compares_with_ready_peer_and_updates_both_tiers(self):
+        second = self.queue_two_legacy_rounds()
+        with closing(self.connect()) as conn:
+            for entry_id, verification_text in conn.execute(
+                    'SELECT id,verification FROM automatic_map_entries'):
+                verification = json.loads(verification_text)
+                verification['interesting_hook_score'] = 5
+                verification['generation_provider'] = 'gemini'
+                conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                             (json.dumps(verification), entry_id))
+            self.approve_queued_discovery_for_downstream_test(conn)
+            second_verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?', (second['id'],)
+            ).fetchone()[0])
+            second_verification.pop('ready_audit')
+            conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                         (json.dumps(second_verification), second['id']))
+            conn.commit()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {
+            'interesting_hook_score': 5, 'evidence_supported': True,
+            'chronology_consistent': True, 'reason': 'Supported.',
+        }
+        provider.call_independent_free_critic.return_value = {
+            'best': [second['id']], 'weak': [],
+            'reason': 'The new hook is more engaging than its ready peer.',
+        }
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        prompt = provider.call_independent_free_critic.call_args.kwargs['prompt']
+        self.assertIn(self.place['canonical_name'], prompt)
+        self.assertIn(second['canonical_name'], prompt)
+        self.assertEqual(provider.call_independent_free_critic.call_args.kwargs
+                         ['excluded_providers'], set())
+        with closing(self.connect()) as conn:
+            tiers = {entry_id: json.loads(verification)['ready_audit']['independent_interest']['tier']
+                     for entry_id, verification in conn.execute(
+                         'SELECT id,verification FROM automatic_map_entries')}
+            self.assertEqual(tiers[self.place['id']], 'middle')
+            self.assertEqual(tiers[second['id']], 'best')
+
+    def test_router_origin_peer_cannot_block_fallback_for_fresh_gemini_hook(self):
+        second = self.queue_two_legacy_rounds()
+        with closing(self.connect()) as conn:
+            second_verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?', (second['id'],)
+            ).fetchone()[0])
+            second_verification['interesting_hook_score'] = 5
+            conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                         (json.dumps(second_verification), second['id']))
+            first_verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?', (self.place['id'],)
+            ).fetchone()[0])
+            first_verification['interesting_hook_score'] = 5
+            first_verification['generation_provider'] = 'openrouter'
+            conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                         (json.dumps(first_verification), self.place['id']))
+            self.approve_queued_discovery_for_downstream_test(conn)
+            second_verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?', (second['id'],)
+            ).fetchone()[0])
+            second_verification.pop('ready_audit')
+            second_verification['generation_provider'] = 'gemini'
+            conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                         (json.dumps(second_verification), second['id']))
+            conn.commit()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {
+            'interesting_hook_score': 5, 'evidence_supported': True,
+            'chronology_consistent': True, 'reason': 'Supported.',
+        }
+        provider.call_independent_free_critic.return_value = {
+            'best': [second['id']], 'weak': [], 'reason': 'Playable discovery.',
+        }
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        call = provider.call_independent_free_critic.call_args.kwargs
+        self.assertEqual(call['excluded_providers'], set())
+        self.assertNotIn(self.place['canonical_name'], call['prompt'])
+        self.assertIn(second['canonical_name'], call['prompt'])
+
+    def test_saved_generation_provider_comes_from_selected_clue_request(self):
+        report = {'requests': [
+            {'stage': 'generator_model', 'provider': 'gemini', 'status': 'completed'},
+            {'stage': 'critic_model', 'provider': 'openrouter', 'status': 'completed'},
+            {'stage': 'generator_model', 'provider': 'openrouter', 'status': 'completed'},
+        ]}
+        self.assertEqual(pool.generation_provider_from_report(report), 'openrouter')
+        self.assertEqual(pool.generation_provider_from_report({}), 'unknown')
+
+    def test_old_self_scored_ready_audit_cannot_be_published(self):
+        self.queue('discovery')
+        with closing(self.connect()) as conn:
+            verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries').fetchone()[0])
+            verification['ready_audit'] = {
+                'version': pool.READY_AUDIT_VERSION - 1,
+                'interesting_hook_score': 5, 'evidence_supported': True,
+                'chronology_consistent': True, 'reason': 'Old self-review passed.',
+            }
+            conn.execute('UPDATE automatic_map_entries SET verification=?',
+                         (json.dumps(verification),))
+            self.assertEqual(pool.eligible(conn, '2026-09-09'), [])
+            with self.assertRaisesRegex(ValueError, 'No eligible'):
+                pool.publish(conn, puzzle_date='2026-09-09')
+
     def test_full_legacy_queue_still_audits_and_rejects_unsupported_history(self):
         second = self.queue_two_legacy_rounds()
         with patch.object(pool, 'TARGET_READY', 1):
@@ -554,6 +720,10 @@ class AutomaticPoolTests(unittest.TestCase):
                  'evidence_supported': True, 'chronology_consistent': True,
                  'reason': 'Supported and memorable.'},
             ]}
+            provider.call_independent_free_critic.return_value = {
+                'best': [second['id']], 'weak': [],
+                'reason': 'A distinct player payoff at the destination.',
+            }
             outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                     provider_factory=lambda _budget: provider)
         self.assertEqual(outcome['status'], 'audited')
@@ -860,6 +1030,10 @@ class AutomaticPoolTests(unittest.TestCase):
             'interesting_hook_score': 5, 'evidence_supported': True,
             'chronology_consistent': True, 'reason': 'Supported.',
         }
+        provider.call_independent_free_critic.return_value = {
+            'best': [self.place['id']], 'weak': [],
+            'reason': 'A strong destination payoff.',
+        }
         self.assertEqual(pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                        provider_factory=lambda _budget: provider)['status'], 'audited')
         with closing(self.connect()) as conn:
@@ -897,6 +1071,7 @@ class AutomaticPoolTests(unittest.TestCase):
     def test_published_editorial_replacement_teaches_automatic_queue(self):
         self.queue('discovery')
         with closing(self.connect()) as conn:
+            self.approve_queued_discovery_for_downstream_test(conn)
             pool.publish(conn, puzzle_date='2026-09-08')
             conn.execute(
                 "UPDATE map_place_pool SET clue_text=?,clue_generation_source='admin-edit' "
@@ -951,6 +1126,7 @@ class AutomaticPoolTests(unittest.TestCase):
             row = conn.execute('SELECT candidate,origin FROM automatic_map_entries').fetchone()
             self.assertEqual(json.loads(row[0])['review_status'], 'machine_checked')
             self.assertEqual(row[1], 'discovery')
+            self.approve_queued_discovery_for_downstream_test(conn)
             self.assertEqual(pool.publish(conn, puzzle_date='2026-09-08')['status'], 'published')
 
     def test_story_first_pipeline_can_be_selected_without_changing_default(self):
@@ -1177,6 +1353,7 @@ class AutomaticPoolTests(unittest.TestCase):
             pool.add(conn, self.place, self.result, self.verdict, origin='discovery')
             pool.add(conn, second, second_result,
                      {**self.verdict, 'source_pipeline': 'story_first'}, origin='discovery')
+            self.approve_queued_discovery_for_downstream_test(conn)
             conn.commit()
             with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}):
                 ranked = pool.eligible(conn, '2026-09-08')
@@ -1200,11 +1377,41 @@ class AutomaticPoolTests(unittest.TestCase):
                       'source_pipeline': 'story_first'}, origin='discovery')
             pool.add(conn, second, second_result,
                      {**self.verdict, 'interesting_hook_score': 5}, origin='discovery')
+            self.approve_queued_discovery_for_downstream_test(conn)
             conn.commit()
             with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}):
                 ranked = pool.eligible(conn, '2026-09-08')
             self.assertEqual(ranked[0][0], second['id'])
             self.assertEqual(ranked[1][0], self.place['id'])
+
+    def test_comparative_best_hook_beats_higher_self_score_middle_hook(self):
+        places = controlled.load_catalog(controlled.DEFAULT_CATALOG)
+        second = next(place for place in places if place['id'] != self.place['id'])
+        second_payload = {
+            'place_id': second['id'], 'selection_reason': 'A sourced place with playable map clues.',
+            'clues': {key: {'text': value['text'], 'fact_id': key}
+                      for key, value in second['facts'].items()},
+        }
+        second_result = controlled.validate_result(second_payload, [second])
+        with closing(self.connect()) as conn:
+            pool.add(conn, self.place, self.result,
+                     {**self.verdict, 'interesting_hook_score': 5}, origin='discovery')
+            pool.add(conn, second, second_result,
+                     {**self.verdict, 'interesting_hook_score': 4}, origin='discovery')
+            self.approve_queued_discovery_for_downstream_test(conn)
+            first_verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?',
+                (self.place['id'],)).fetchone()[0])
+            first_verification['ready_audit']['independent_interest']['tier'] = 'middle'
+            conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                         (json.dumps(first_verification), self.place['id']))
+            second_verification = json.loads(conn.execute(
+                'SELECT verification FROM automatic_map_entries WHERE id=?',
+                (second['id'],)).fetchone()[0])
+            second_verification['ready_audit']['independent_interest']['tier'] = 'best'
+            conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                         (json.dumps(second_verification), second['id']))
+            self.assertEqual(pool.eligible(conn, '2026-09-08')[0][0], second['id'])
 
     def test_story_first_report_must_match_checked_candidate_before_queueing(self):
         report = {**self.report(), 'pipeline': 'story_first',
@@ -1223,6 +1430,8 @@ class AutomaticPoolTests(unittest.TestCase):
     def test_story_first_round_requires_separate_ready_audit_before_publication(self):
         report = {**self.report(), 'pipeline': 'story_first'}
         report['candidate_sha256'] = discovery.digest(report['candidate'])
+        report['requests'] = [{'stage': 'generator_model', 'provider': 'openrouter',
+                               'status': 'completed'}]
         factory = Mock(return_value=Mock(requests=[]))
         prematurely_passed = {**self.verdict, 'ready_audit': {
             'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 5,
@@ -1238,12 +1447,18 @@ class AutomaticPoolTests(unittest.TestCase):
         with closing(self.connect()) as conn:
             verification = json.loads(conn.execute('SELECT verification FROM automatic_map_entries').fetchone()[0])
             self.assertNotIn('ready_audit', verification)
+            self.assertEqual(verification['generation_provider'], 'openrouter')
             with self.assertRaisesRegex(ValueError, 'No eligible'):
                 pool.publish(conn, puzzle_date='2026-09-08')
         audit = {'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 5,
                  'evidence_supported': True, 'chronology_consistent': True,
-                 'reason': 'Independent completed-round audit passed.'}
-        with patch.object(pool, 'audit_ready_interest', return_value=audit):
+                 'reason': 'Independent completed-round audit passed.',
+                 'independent_interest': {
+                     'version': pool.INDEPENDENT_INTEREST_VERSION, 'engaging': True,
+                     'tier': 'best',
+                     'reason': 'The place has a vivid discovery payoff.',
+                 }}
+        with patch.object(pool, 'audit_ready_interest', return_value=(audit, {})):
             second = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                    provider_factory=factory)
         self.assertEqual(second['status'], 'audited')
@@ -1267,7 +1482,7 @@ class AutomaticPoolTests(unittest.TestCase):
         audit = {'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 3,
                  'evidence_supported': False, 'chronology_consistent': True,
                  'reason': 'The clue adds a causal claim absent from its quotation.'}
-        with patch.object(pool, 'audit_ready_interest', return_value=audit):
+        with patch.object(pool, 'audit_ready_interest', return_value=(audit, {})):
             result = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                                    provider_factory=factory)
         self.assertEqual(result['status'], 'audited')
@@ -1293,7 +1508,7 @@ class AutomaticPoolTests(unittest.TestCase):
         audit = {'version': pool.READY_AUDIT_VERSION, 'interesting_hook_score': 5,
                  'evidence_supported': False, 'chronology_consistent': True,
                  'reason': 'The easy map direction is unsupported; the hard story is sound.'}
-        with patch.object(pool, 'audit_ready_interest', return_value=audit):
+        with patch.object(pool, 'audit_ready_interest', return_value=(audit, {})):
             pool.maintain(self.database, self.root/'reports', seed_catalog=None,
                           provider_factory=factory)
         with closing(self.connect()) as conn:
@@ -1876,6 +2091,37 @@ class AutomaticPoolTests(unittest.TestCase):
             resumed = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
         self.assertEqual(resumed['status'], 'stocked')
         maintain.assert_called_once()
+
+    def test_broken_optional_interest_key_pauses_then_retries_saved_candidate(self):
+        self.queue('discovery')
+        provider = Mock(requests=[], provider_error_detail='', retry_after_seconds=None)
+        provider.call_with_fallback.return_value = {
+            'interesting_hook_score': 5, 'evidence_supported': True,
+            'chronology_consistent': True, 'reason': 'Source-supported.',
+        }
+
+        def interest_review(**_kwargs):
+            if provider.call_independent_free_critic.call_count == 1:
+                provider.provider_error_detail = 'Gemini request failed with HTTP 403: PERMISSION_DENIED'
+                raise RuntimeError('Independent free Map interest reviewer failed.')
+            provider.provider_error_detail = ''
+            return {'best': [self.place['id']], 'weak': [], 'reason': 'Memorable hook.'}
+
+        provider.call_independent_free_critic.side_effect = interest_review
+        first = pool.maintain_until_stocked(
+            self.database, self.root/'reports', seed_catalog=None,
+            provider_factory=lambda _budget: provider, max_attempts=4)
+        self.assertEqual(first['status'], 'provider_paused')
+        self.assertEqual(first['attempted'], 1)
+        with closing(self.connect()) as conn:
+            self.assertEqual(conn.execute(
+                'SELECT state FROM automatic_map_entries').fetchone()[0], 'ready')
+        self.clock += timedelta(hours=1)
+        second = pool.maintain_until_stocked(
+            self.database, self.root/'reports', seed_catalog=None,
+            provider_factory=lambda _budget: provider, max_attempts=1)
+        self.assertEqual(second['ready'], 1)
+        self.assertEqual(provider.call_independent_free_critic.call_count, 2)
 
     def test_provider_503_without_retry_hint_uses_bounded_backoff(self):
         failed = {'status': 'failed', 'error': 'Gemini request failed with HTTP 503: UNAVAILABLE',

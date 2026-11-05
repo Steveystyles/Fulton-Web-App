@@ -170,6 +170,17 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
                                          critic_model=critic_model, max_requests=MAX_MODEL_REQUESTS,
                                          timeout_sec=180)
         provider.budget = budget
+        # A separate free key can supply a comparative interest review even
+        # when the Map generation key is busy. Keep it out of generation.
+        interest_key = os.environ.get('GEMINI_API_KEY', '').strip()
+        provider.interest_client = None
+        if interest_key and interest_key != key:
+            interest_config = replace(
+                provider.clients[0].config, gemini_api_key=interest_key,
+                generator_model='gemini-3.5-flash-lite', critic_model='gemini-3.5-flash-lite',
+            )
+            provider.interest_client = rewriter.ProviderClient(
+                daily_quiz.GeminiProvider(interest_config), interest_config)
         # This is intentionally an explicit, free-only route.  Do not inherit
         # arbitrary quiz fallbacks or an operator-supplied paid model.
         if (os.environ.get('AI_FALLBACK2_PROVIDER', '').strip().lower() == 'openrouter'
@@ -257,6 +268,66 @@ class DiscoveryProvider(preview.PreviewGeminiProvider):
             self.retry_after_seconds = None
             return result
         raise RuntimeError('Map discovery provider failed.')
+
+    def call_independent_free_critic(self, *, prompt: str, schema: dict,
+                                     excluded_providers: set[str] | frozenset[str] = frozenset()) -> dict:
+        """Compare hooks using a separate free key, then the free router."""
+        if self.stop_reason:
+            raise RuntimeError(self.stop_reason)
+        latest_review = next((record for record in reversed(self.requests)
+                              if record.get('stage') == 'critic_model'
+                              and record.get('status') == 'completed'), None)
+        clients = []
+        if (getattr(self, 'interest_client', None) is not None
+                and 'gemini' not in excluded_providers):
+            clients.append(self.interest_client)
+        if (len(self.clients) > 1 and self.clients[1].config.critic_model == 'openrouter/free'
+                and 'openrouter' not in excluded_providers
+                and not (latest_review and latest_review.get('provider') == 'openrouter')):
+            clients.append(self.clients[1])
+        if not clients:
+            primary_failure = next((record for record in reversed(self.requests)
+                                    if record.get('stage') == 'critic_model'
+                                    and record.get('status') == 'failed'), None)
+            if primary_failure:
+                self.provider_error_detail = primary_failure.get('error_detail', '')
+            raise RuntimeError('Independent free Map interest reviewer is unavailable.')
+        for index, client in enumerate(clients):
+            if len(self.requests) >= self.max_requests:
+                self.stop_reason = 'Map discovery request budget exhausted.'
+                raise RuntimeError(self.stop_reason)
+            record = {'number': len(self.requests) + 1, 'model': client.config.critic_model,
+                      'provider': client.provider.name, 'stage': 'independent_interest',
+                      'grounded': False}
+            self.requests.append(record)
+            try:
+                result = self.request_json(client, model=client.config.critic_model,
+                                           prompt=prompt, schema=schema)
+                if not self.response_matches_schema(result, schema):
+                    raise self.InvalidModelOutput('Independent interest reviewer returned an invalid response shape.')
+            except Exception as error:
+                detail = str(error)
+                for secret in (client.config.gemini_api_key, client.config.compatible_api_key):
+                    if secret:
+                        detail = detail.replace(secret, '[REDACTED]')
+                record.update(status='failed', error_type=type(error).__name__,
+                              error_detail=detail[:500])
+                self.provider_error_detail = record['error_detail']
+                self.retry_after_seconds = getattr(client.provider, 'last_retry_after_seconds', None)
+                transient = isinstance(error, self.InvalidModelOutput) or any(
+                    marker in detail.casefold() for marker in
+                    ('http 401', 'http 403', 'http 404', 'http 429', 'http 500',
+                     'http 502', 'http 503', 'http 504', 'timed out',
+                     'permission_denied', 'unauthenticated', 'model not found'))
+                if index + 1 < len(clients) and transient:
+                    continue
+                self.stop_reason = 'Independent free Map interest reviewer failed.'
+                raise RuntimeError(self.stop_reason) from None
+            record['status'] = 'completed'
+            self.provider_error_detail = ''
+            self.retry_after_seconds = None
+            return result
+        raise RuntimeError('Independent free Map interest reviewer failed.')
 
 
 class WikimediaSource:
