@@ -11,6 +11,91 @@ from tools import controlled_map_round as controlled
 
 
 class StoryPipelineTests(unittest.TestCase):
+    def test_story_ranker_outage_preserves_checked_places_for_retry(self):
+        target = {'title': 'Glass Hall', 'place_type': 'museum',
+                  'page': {'title': 'Glass Hall', 'text': 'A public solar railway demonstration.',
+                           'lat': 51.5, 'lng': -0.12},
+                  'passages': [{'id': 'p0', 'role': 'story', 'source': 'Public source',
+                                'text': 'Glass Hall hosted a public solar railway demonstration.'}],
+                  'nearby_options': [], 'hook_hypothesis': 'A public solar railway demonstration.'}
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.side_effect = [
+            {'targets': [{'title': 'Glass Hall', 'place_type': 'museum',
+                          'hook_hypothesis': target['hook_hypothesis']}]},
+            RuntimeError('Provider unavailable'),
+        ]
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=1)
+        budget.finish.return_value = {'model_requests': 2, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets', return_value=[target]):
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock())
+        self.assertEqual(report['status'], 'failed')
+        self.assertEqual(report['source_backed_targets'], [target])
+
+    def test_saved_source_places_resume_without_new_leads_or_source_lookup(self):
+        target = {'title': 'Glass Hall', 'place_type': 'museum',
+                  'page': {'title': 'Glass Hall', 'text': 'A public solar railway demonstration.',
+                           'lat': 51.5, 'lng': -0.12},
+                  'passages': [{'id': 'p0', 'role': 'story', 'source': 'Public source',
+                                'text': 'Glass Hall hosted a public solar railway demonstration.'}],
+                  'nearby_options': [], 'hook_hypothesis': 'A public solar railway demonstration.'}
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.return_value = {'ranked': []}
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=2)
+        budget.finish.return_value = {'model_requests': 1, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]), \
+             patch.object(story, 'source_targets') as source_targets:
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock(),
+                                    source_backed_targets=[target],
+                                    resumed_sources_from='saved-report.json')
+        self.assertEqual(report['source_backed_targets'], [target])
+        self.assertEqual(report['resumed_sources_from'], 'saved-report.json')
+        self.assertEqual(report['story_target_count'], 1)
+        self.assertEqual(provider.call_with_fallback.call_count, 1)
+        source_targets.assert_not_called()
+
+    def test_saved_source_place_is_not_reused_after_it_enters_reserve(self):
+        target = {'title': 'Glass Hall', 'place_type': 'museum',
+                  'page': {'title': 'Glass Hall', 'text': 'A public event.',
+                           'lat': 51.5, 'lng': -0.12},
+                  'passages': [{'id': 'p0', 'role': 'story', 'text': 'A public event.'}]}
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=2)
+        budget.finish.return_value = {'model_requests': 0, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story.legacy, 'history', return_value=[]):
+            report = story.discover(source_db=Path(directory) / 'db', catalog=None,
+                                    puzzle_date='2026-10-17', output_dir=Path(directory),
+                                    budget=budget, provider=provider, sources=Mock(),
+                                    source_backed_targets=[target],
+                                    excluded_places=[{'canonical_name': 'Glass Hall',
+                                                      'lat': 51.5, 'lng': -0.12}])
+        self.assertEqual(report['status'], 'failed')
+        self.assertIn('No proposed target had usable source evidence', report['error'])
+        provider.call_with_fallback.assert_not_called()
+
+    def test_saved_source_place_rechecks_recent_place_type(self):
+        target = {'title': 'Glass Hall', 'place_type': 'museum',
+                  'page': {'title': 'Glass Hall', 'lat': 51.5, 'lng': -0.12}}
+        recent = [{'name': 'Other Museum', 'type': 'museum', 'date': '2026-10-14',
+                   'lat': 48.8, 'lng': 2.3}]
+        report = {'rejections': []}
+        self.assertEqual(story.available_saved_targets(
+            [target], recent, [], [], report, '2026-10-15'), [])
+        self.assertIn('place type', report['rejections'][0]['reason'].lower())
+
     def test_resume_writes_clues_for_untried_card_without_new_source_discovery(self):
         first = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
                               if p['id'] == 'atomium'))

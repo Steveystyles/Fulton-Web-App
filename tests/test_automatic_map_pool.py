@@ -1260,6 +1260,86 @@ class AutomaticPoolTests(unittest.TestCase):
                          [first['candidate']['id']])
         discover.assert_not_called()
 
+    def test_story_ranker_outage_reuses_sourced_places_before_new_discovery(self):
+        report_root = self.root / 'reports'
+        report_root.mkdir()
+        path = report_root / 'provider-outage.json'
+        target = {'title': 'Glass Hall', 'place_type': 'museum',
+                  'page': {'title': 'Glass Hall', 'lat': 51.5, 'lng': -0.12,
+                           'text': 'Glass Hall hosted a public solar railway demonstration.'},
+                  'passages': [{'id': 'p0', 'role': 'story',
+                                'text': 'A public solar railway demonstration.'}]}
+        path.write_text(json.dumps({'pipeline': 'story_first', 'status': 'failed',
+                                    'source_backed_targets': [target]}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('source-outage', self.clock.date().isoformat(), '2026-09-09',
+                 self.clock.isoformat(), 'failed',
+                 json.dumps({'report_path': str(path), 'provider_unavailable': True})))
+            conn.commit()
+        ready_report = {**self.report(), 'pipeline': 'story_first'}
+        ready_report['candidate_sha256'] = discovery.digest(ready_report['candidate'])
+        factory = Mock(return_value=Mock(requests=[]))
+        with patch.dict(os.environ, {'MAP_DISCOVERY_PIPELINE': 'story_first'}), \
+             patch.object(pool.map_story_pipeline, 'discover', return_value=ready_report) as discover, \
+             patch.object(pool, 'verify', return_value=self.verdict):
+            result = pool.maintain(self.database, report_root, seed_catalog=None,
+                                   provider_factory=factory)
+        self.assertEqual(result['status'], 'added')
+        self.assertEqual(discover.call_args.kwargs['source_backed_targets'], [target])
+        self.assertEqual(discover.call_args.kwargs['resumed_sources_from'], str(path))
+
+    def test_resumed_source_report_does_not_reopen_its_parent(self):
+        report_root = self.root / 'reports'
+        report_root.mkdir()
+        parent = report_root / 'parent.json'
+        child = report_root / 'child.json'
+        target = {'title': 'Glass Hall', 'place_type': 'museum',
+                  'page': {'title': 'Glass Hall', 'lat': 51.5, 'lng': -0.12},
+                  'passages': [{'id': 'p0', 'role': 'story', 'text': 'An unusual public event.'}]}
+        parent.write_text(json.dumps({'pipeline': 'story_first', 'status': 'failed',
+                                      'source_backed_targets': [target]}), encoding='utf-8')
+        child.write_text(json.dumps({'pipeline': 'story_first', 'status': 'failed',
+                                     'source_backed_targets': [target],
+                                     'resumed_sources_from': str(parent)}), encoding='utf-8')
+        with closing(self.connect()) as conn:
+            for run_id, path, started in (
+                ('parent', parent, self.clock),
+                ('child', child, self.clock + timedelta(minutes=1))):
+                conn.execute(
+                    'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                    'VALUES(?,?,?,?,?,?)',
+                    (run_id, self.clock.date().isoformat(), '2026-09-09',
+                     started.isoformat(), 'failed',
+                     json.dumps({'report_path': str(path), 'provider_unavailable': True})))
+            conn.commit()
+            recovered = pool.recoverable_source_batch(conn, report_root)
+        self.assertEqual(recovered['report_path'], str(child))
+
+    def test_source_report_survives_full_provider_retry_window(self):
+        report_root = self.root / 'reports'
+        report_root.mkdir()
+        path = report_root / 'retry-after.json'
+        path.write_text(json.dumps({
+            'pipeline': 'story_first', 'status': 'failed',
+            'source_backed_targets': [{'title': 'Glass Hall', 'place_type': 'museum',
+                                       'page': {'title': 'Glass Hall'}, 'passages': []}]
+        }), encoding='utf-8')
+        started = self.clock
+        with closing(self.connect()) as conn:
+            conn.execute(
+                'INSERT INTO automatic_map_runs(id,budget_day,target_date,started_at,status,detail) '
+                'VALUES(?,?,?,?,?,?)',
+                ('retry-after', started.date().isoformat(), '2026-09-09',
+                 started.isoformat(), 'failed',
+                 json.dumps({'report_path': str(path), 'provider_unavailable': True})))
+            conn.commit()
+            self.clock = started + timedelta(days=2, seconds=6)
+            recovered = pool.recoverable_source_batch(conn, report_root)
+        self.assertEqual(recovered['report_path'], str(path))
+
     def test_recovery_skips_a_place_already_in_the_queue(self):
         self.queue('discovery')
         first = deepcopy(self.place)
@@ -2149,6 +2229,20 @@ class AutomaticPoolTests(unittest.TestCase):
             resumed = pool.maintain_until_stocked(self.database, self.root, seed_catalog=None)
         self.assertEqual(resumed['status'], 'stocked')
         maintain.assert_called_once()
+
+    def test_provider_502_pauses_so_checked_places_can_resume(self):
+        failed = {'status': 'failed',
+                  'error': 'Map discovery provider failed; stopped to preserve quota.',
+                  'provider_error_detail': 'Gemini request failed with HTTP 502: BAD_GATEWAY',
+                  'rejections': []}
+        with patch.object(discovery, 'discover', return_value=failed) as discover:
+            result = pool.maintain_until_stocked(
+                self.database, self.root/'reports', seed_catalog=None,
+                provider_factory=Mock(return_value=Mock(requests=[])), max_attempts=4,
+            )
+        self.assertEqual(result['status'], 'provider_paused')
+        self.assertTrue(result['provider_unavailable'])
+        discover.assert_called_once()
 
     def test_broken_optional_interest_key_pauses_then_retries_saved_candidate(self):
         self.queue('discovery')
