@@ -69,6 +69,45 @@ class StoryPipelineTests(unittest.TestCase):
         self.assertEqual(report['status'], 'failed')
         self.assertEqual(report['attempted_candidate_ids'], [])
 
+    def test_resume_repairs_invalid_clues_for_the_same_checked_card(self):
+        candidate = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
+                                  if p['id'] == 'atomium'))
+        candidate['city_sector'] = 'northern'
+        candidate['facts']['hard']['supporting_quotes'] = [candidate['facts']['hard']['text']]
+        previous = {'resolved_candidates': [candidate],
+                    'candidate_cards': [{'candidate_id': candidate['id'],
+                                         'story_passage': candidate['facts']['hard']['text']}],
+                    'attempted_candidate_ids': []}
+        bad = {'place_id': candidate['id'],
+               'facts': {level: {'text': fact['text']}
+                         for level, fact in candidate['facts'].items()}}
+        repaired = deepcopy(bad)
+        repaired['facts']['hard']['text'] = 'Repaired clue.'
+        provider = Mock()
+        provider.clients = [SimpleNamespace(config=SimpleNamespace(gemini_api_key='test-key'))]
+        provider.requests = []
+        provider.call_with_fallback.side_effect = [bad, repaired]
+        budget = Mock(day='2026-10-15', budget_day='2026-10-15', attempt_number=2)
+        budget.finish.return_value = {'model_requests': 2, 'source_requests': 0}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(story, 'clue_evidence_units', return_value=[
+                 {'id': 'article-0', 'text': candidate['facts']['hard']['text']}]), \
+             patch.object(story.legacy, 'validate_selection', side_effect=[
+                 ValueError('Unknown or invalid retrieved passage reference.'),
+                 ValueError('Unknown or invalid retrieved passage reference.'),
+                 (candidate, {'selection_reason': 'A place-owned hook.', 'clue_ladder': {}}),
+             ]) as validate, \
+             patch.object(story.legacy, 'review_markdown', return_value='review'):
+            report = story.resume(previous=previous, puzzle_date='2026-10-17',
+                                  output_dir=Path(directory), budget=budget,
+                                  provider=provider)
+        self.assertEqual(report['status'], 'needs_source_review', report.get('error'))
+        self.assertEqual(provider.call_with_fallback.call_count, 2)
+        self.assertEqual(validate.call_count, 3)
+        self.assertEqual(report['clue_repair']['same_place_required'], candidate['id'])
+        self.assertIn('Unknown or invalid retrieved passage reference.',
+                      provider.call_with_fallback.call_args_list[1].kwargs['prompt'])
+
     def test_playable_places_in_same_country_can_reach_final_comparison(self):
         first = deepcopy(next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
                               if p['id'] == 'atomium'))

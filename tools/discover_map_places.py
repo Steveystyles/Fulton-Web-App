@@ -881,11 +881,18 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
         item = payload['facts'][level]
         if 'source_ids' in item:
             references = item['source_ids']
+            if isinstance(references, list):
+                # Model output sometimes pads an otherwise exact passage ID.
+                # Only trim its edges; the resulting ID must still be present
+                # in the retrieved evidence for this candidate.
+                references = [ref.strip() if isinstance(ref, str) else ref
+                              for ref in references]
             units = {unit['id']: unit for unit in evidence_units(selected)}
             if not isinstance(references, list) or not 1 <= len(references) <= 3 or any(
                 not isinstance(ref, str) or ref not in units for ref in references
             ):
                 raise ValueError('Unknown or invalid retrieved passage reference.')
+            item = {**item, 'source_ids': references}
             quotes = [units[ref]['text'] for ref in references]
         else:
             # Preserve validation of earlier saved reports; current model schema uses passage IDs.
