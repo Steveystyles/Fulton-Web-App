@@ -757,7 +757,9 @@ def validate_proposal_hook_alignment(payload: dict, selected: dict) -> None:
     if (not hook_passages and not official_ids) or 'source_ids' not in hard:
         return
     allowed_ids = {f'article-{index}' for index in hook_passages}
-    if not (allowed_ids | official_ids).intersection(hard['source_ids']):
+    # validate_selection already checked these IDs against retrieved units;
+    # use the same outer-whitespace normalization for hook alignment.
+    if not (allowed_ids | official_ids).intersection(ref.strip() for ref in hard['source_ids']):
         raise ValueError('Hard clue cites an unrelated passage instead of the proposed discovery hook.')
     if len(hook_terms(hard['text'], selected['canonical_name']) &
            hook_terms(selected.get('proposal_reason'), selected['canonical_name'])) < 2:

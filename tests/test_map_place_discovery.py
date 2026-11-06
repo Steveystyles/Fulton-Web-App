@@ -500,6 +500,10 @@ class DiscoveryTests(unittest.TestCase):
         }
         discovery.validate_selection(aligned, [self.place])
 
+        padded = deepcopy(aligned)
+        padded['facts']['hard']['source_ids'] = [' ' + hook_id + ' ']
+        discovery.validate_selection(padded, [self.place])
+
         unrelated = deepcopy(aligned)
         unrelated['facts']['hard'] = {
             'text': 'An unrelated archive describes a temporary exhibition in this district.',
