@@ -569,6 +569,64 @@ class AutomaticPoolTests(unittest.TestCase):
             self.assertTrue(rows[second['id']][1]['editorial_rejection'])
             self.assertEqual(conn.execute('SELECT attempts FROM automatic_map_usage').fetchone()[0], 1)
 
+    def test_later_backlog_batch_recompares_earlier_approved_hook(self):
+        second = self.queue_two_legacy_rounds()
+        third = next(p for p in controlled.load_catalog(controlled.DEFAULT_CATALOG)
+                     if p['id'] == 'eiffel-tower')
+        third_payload = {'place_id': third['id'], 'selection_reason': 'A sourced landmark.',
+                         'clues': {k: {'text': v['text'], 'fact_id': k}
+                                   for k, v in third['facts'].items()}}
+        third_result = controlled.validate_result(third_payload, [third])
+        with closing(self.connect()) as conn:
+            pool.add(conn, third, third_result, {k: True for k in pool.CHECKS},
+                     origin='discovery')
+            for entry_id, verification_text in conn.execute(
+                    'SELECT id,verification FROM automatic_map_entries'):
+                verification = json.loads(verification_text)
+                verification['interesting_hook_score'] = 5
+                verification['generation_provider'] = 'gemini'
+                conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                             (json.dumps(verification), entry_id))
+            self.approve_queued_discovery_for_downstream_test(conn)
+            for entry_id in (second['id'], third['id']):
+                verification = json.loads(conn.execute(
+                    'SELECT verification FROM automatic_map_entries WHERE id=?',
+                    (entry_id,)).fetchone()[0])
+                verification.pop('ready_audit')
+                conn.execute('UPDATE automatic_map_entries SET verification=? WHERE id=?',
+                             (json.dumps(verification), entry_id))
+            conn.commit()
+        provider = Mock(requests=[])
+        provider.call_with_fallback.return_value = {'audits': [
+            {'id': second['id'], 'interesting_hook_score': 5,
+             'evidence_supported': True, 'chronology_consistent': True,
+             'reason': 'Supported.'},
+            {'id': third['id'], 'interesting_hook_score': 5,
+             'evidence_supported': True, 'chronology_consistent': True,
+             'reason': 'Supported.'},
+        ]}
+        provider.call_independent_free_critic.return_value = {
+            'best': [third['id']], 'weak': [second['id']],
+            'reason': 'One new hook is a dull specification; the other is a lively place discovery.',
+        }
+        outcome = pool.maintain(self.database, self.root/'reports', seed_catalog=None,
+                                provider_factory=lambda _budget: provider)
+        self.assertEqual(outcome['status'], 'audited')
+        prompt = provider.call_independent_free_critic.call_args.kwargs['prompt']
+        self.assertIn(self.place['canonical_name'], prompt)
+        self.assertIn(second['canonical_name'], prompt)
+        self.assertIn(third['canonical_name'], prompt)
+        with closing(self.connect()) as conn:
+            rows = {entry_id: (state, json.loads(verification))
+                    for entry_id, state, verification in conn.execute(
+                        'SELECT id,state,verification FROM automatic_map_entries')}
+            self.assertEqual(rows[self.place['id']][1]['ready_audit']
+                             ['independent_interest']['tier'], 'middle')
+            self.assertEqual(rows[second['id']][0], 'rejected')
+            self.assertEqual(rows[third['id']][1]['ready_audit']
+                             ['independent_interest']['tier'], 'best')
+            self.assertEqual(pool.eligible(conn, '2026-09-09')[0][0], third['id'])
+
     def test_independent_interest_review_rejects_weak_hook_and_keeps_strong_one(self):
         second = self.queue_two_legacy_rounds()
         provider = Mock(requests=[])

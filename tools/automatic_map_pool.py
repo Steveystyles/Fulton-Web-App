@@ -706,7 +706,8 @@ def audit_ready_interest(candidate: dict, result: dict, provider: discovery.Disc
 
 def audit_ready_interest_batch(rows: list[tuple], provider: discovery.DiscoveryProvider,
                                editorial_feedback: list[dict], *,
-                               excluded_providers: set[str] | None = None) -> dict[str, dict]:
+                               comparison_peers: list[tuple[str, dict, dict]] | None = None,
+                               excluded_providers: set[str] | None = None) -> tuple[dict[str, dict], dict[str, dict]]:
     """Assess a small legacy backlog in one request, without accepting partial results."""
     proposals = [{'id': row[0], **ready_audit_input(json.loads(row[1]), json.loads(row[2]))}
                  for row in rows]
@@ -729,12 +730,14 @@ def audit_ready_interest_batch(rows: list[tuple], provider: discovery.DiscoveryP
                  and result[row[0]]['chronology_consistent']
                  and sufficient_interest_score(result[row[0]]['interesting_hook_score'])]
     independent = independent_interest_reviews(
-        qualified, provider, editorial_feedback, excluded_providers=excluded_providers)
-    for entry_id, review in independent.items():
+        [*qualified, *(comparison_peers or [])] if qualified else [],
+        provider, editorial_feedback, excluded_providers=excluded_providers)
+    for entry_id, _, _ in qualified:
+        review = independent.pop(entry_id)
         result[entry_id]['independent_interest'] = review
         if not review['engaging']:
             result[entry_id]['reason'] = review['reason']
-    return result
+    return result, independent
 
 
 def editorial_example(place: str, old: str, new: str, reason: str) -> dict:
@@ -1483,31 +1486,31 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
     try:
         provider = factory(budget)
         if pending_audits:
-            comparison_rows = []
-            comparison_reviews = {}
+            pending_ids = {row[0] for row in pending_audits}
+            all_gemini = all(json.loads(row[3]).get('generation_provider') == 'gemini'
+                             for row in pending_audits)
+            # Compare later backlog batches against already approved hooks too;
+            # otherwise each batch crowns its own "best" in isolation. A
+            # peer with unknown/router provenance must not disable the free
+            # router for a batch of Gemini-written hooks.
+            comparison_rows = [peer for peer in ready
+                               if peer[4] == 'discovery' and peer[0] not in pending_ids
+                               and (not all_gemini or
+                                    json.loads(peer[3]).get('generation_provider') == 'gemini')][:3]
+            peer_items = [(peer[0], json.loads(peer[1]), json.loads(peer[2]))
+                          for peer in comparison_rows]
+            forbidden = excluded_interest_providers(
+                [json.loads(item[3]) for item in [*pending_audits, *comparison_rows]])
             if len(pending_audits) == 1:
                 row = pending_audits[0]
-                pending_origin = json.loads(row[3]).get('generation_provider')
-                # A ready peer is optional. Do not let its unknown/router
-                # provenance disable the free router for a Gemini-written
-                # fresh hook when the separate Gemini reviewer is down.
-                comparison_rows = [peer for peer in ready
-                                   if peer[4] == 'discovery' and peer[0] != row[0]
-                                   and (pending_origin != 'gemini' or
-                                        json.loads(peer[3]).get('generation_provider') == 'gemini')][:3]
-                peer_items = [(peer[0], json.loads(peer[1]), json.loads(peer[2]))
-                              for peer in comparison_rows]
-                forbidden = excluded_interest_providers(
-                    [json.loads(item[3]) for item in [row, *comparison_rows]])
                 audited, comparison_reviews = audit_ready_interest(
                     json.loads(row[1]), json.loads(row[2]), provider, feedback,
                     comparison_peers=peer_items, excluded_providers=forbidden)
                 audits = {row[0]: audited}
             else:
-                audits = audit_ready_interest_batch(
+                audits, comparison_reviews = audit_ready_interest_batch(
                     pending_audits, provider, feedback,
-                    excluded_providers=excluded_interest_providers(
-                        [json.loads(item[3]) for item in pending_audits]))
+                    comparison_peers=peer_items, excluded_providers=forbidden)
             places = []
             with closing(sqlite3.connect(database)) as conn:
                 conn.execute('BEGIN IMMEDIATE')
