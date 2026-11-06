@@ -620,6 +620,39 @@ def fresh_proposals(proposals: list[dict], recent: list[dict], existing: list[di
     return fresh
 
 
+def available_saved_targets(targets: list[dict], recent: list[dict], existing: list[dict],
+                            excluded_names: list[str], report: dict, budget_day: str) -> list[dict]:
+    """Recheck stale source snapshots against places reserved since the outage."""
+    rows = [*recent, *existing]
+    unavailable = {legacy.exclusion_key(name) for name in excluded_names}
+    unavailable.update(legacy.exclusion_key(str(row.get('name', row.get('canonical_name', ''))))
+                       for row in rows)
+    available = []
+    for target in targets:
+        page = target.get('page') or {}
+        title = str(page.get('title') or target.get('title') or '')
+        key = legacy.exclusion_key(title)
+        lat, lng = page.get('lat'), page.get('lng')
+        near_used = (isinstance(lat, (int, float)) and isinstance(lng, (int, float))
+                     and any(isinstance(row.get('lat'), (int, float))
+                             and isinstance(row.get('lng'), (int, float))
+                             and legacy.daily_map_game.haversine_m(
+                                 lat, lng, row['lat'], row['lng']) < 500 for row in rows))
+        if not key or key in unavailable or near_used:
+            report['rejections'].append({'title': title[:160],
+                                         'reason': 'Saved place entered the Map reserve or history.'})
+            continue
+        if any(row.get('type') == target.get('place_type')
+               and row.get('date', '') >= (legacy.date.fromisoformat(budget_day)
+                                          - legacy.timedelta(days=2)).isoformat()
+               for row in recent):
+            report['rejections'].append({'title': title[:160],
+                                         'reason': 'Saved place type was used in the last two days.'})
+            continue
+        available.append(target)
+    return available
+
+
 def ranked_routes(payload: dict, targets: list[dict]) -> list[dict]:
     by_title = {item['title']: item for item in targets}
     ranked = payload.get('ranked')
@@ -1064,7 +1097,9 @@ def resume(*, previous: dict, puzzle_date: str, output_dir: Path, budget, provid
 def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_dir: Path,
              budget, provider, sources, excluded_places: list[dict] | None = None,
              excluded_names: list[str] | None = None, route_failure_lessons: list[dict] | None = None,
-             editorial_feedback: list[dict] | None = None, failure_lessons: list[dict] | None = None) -> dict:
+             editorial_feedback: list[dict] | None = None, failure_lessons: list[dict] | None = None,
+             source_backed_targets: list[dict] | None = None,
+             resumed_sources_from: str | None = None) -> dict:
     report = {'version': 2, 'pipeline': 'story_first', 'puzzle_date': puzzle_date, 'status': 'failed',
               'human_review': 'pending', 'production_modified': False, 'rejections': [],
               'max_model_requests': legacy.MAX_MODEL_REQUESTS,
@@ -1122,9 +1157,17 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
                   # enforces exclusions before any source request instead.
                   json.dumps({'editorial_rules': editorial_rules,
                               'past_hook_failure_rules': hook_lessons}, ensure_ascii=False))
-        targets = []
+        if source_backed_targets is not None and (
+                not isinstance(source_backed_targets, list)
+                or not all(isinstance(item, dict) for item in source_backed_targets)):
+            raise ValueError('Saved source-backed Map places are invalid.')
+        targets = (available_saved_targets(deepcopy(source_backed_targets), recent, existing,
+                                           excluded_names or [], report, budget.day)
+                   if source_backed_targets is not None else [])
+        if source_backed_targets is not None:
+            report['resumed_sources_from'] = resumed_sources_from
         report['proposal_attempts'] = []
-        for attempt in range(2):
+        for attempt in range(0 if source_backed_targets is not None else 2):
             if attempt:
                 # A fresh regional lane is used only when the preceding batch
                 # offered no available target, leaving the ordinary three-stage
@@ -1237,6 +1280,9 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
             story_targets.pop()
         targets = targets[:len(story_targets)]
         report['story_target_count'] = len(targets)
+        # If the next model request fails, the checked public evidence survives
+        # and the scheduler can resume ranking without proposing/fetching again.
+        report['source_backed_targets'] = deepcopy(targets)
         story_prompt = story_prefix + json.dumps(story_targets, ensure_ascii=False)
         if len(story_prompt) > 36000:
             raise ValueError('Bounded story evidence exceeds the model input limit.')

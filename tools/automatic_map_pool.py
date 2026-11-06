@@ -1326,6 +1326,47 @@ def recoverable_story_batch(conn: sqlite3.Connection, output_dir: Path) -> dict 
     return None
 
 
+def recoverable_source_batch(conn: sqlite3.Connection, output_dir: Path) -> dict | None:
+    """Resume ranking source-checked places after an interrupted model call."""
+    root = output_dir.resolve()
+    # The provider can legitimately request 48 hours plus the scheduler's
+    # five-second safety margin, so a two-day cutoff loses valid snapshots.
+    cutoff = (now() - timedelta(days=3)).isoformat()
+    superseded: set[str] = set()
+    for status, detail_text in conn.execute(
+        "SELECT status,detail FROM automatic_map_runs WHERE status IN ('added','failed') "
+        'AND started_at>? ORDER BY started_at DESC LIMIT 40', (cutoff,)
+    ):
+        try:
+            detail = json.loads(detail_text or '{}')
+            report_name = detail.get('report_path')
+            if not isinstance(report_name, str):
+                continue
+            path = Path(report_name).resolve(strict=True)
+            if not path.is_relative_to(root) or path.suffix != '.json' or path.stat().st_size > 8_000_000:
+                continue
+            report = json.loads(path.read_text(encoding='utf-8'))
+            parent = report.get('resumed_sources_from')
+            if isinstance(parent, str):
+                superseded.add(parent)
+            if str(path) in superseded or status != 'failed' or report.get('status') != 'failed':
+                continue
+            if not any(detail.get(key) is True for key in (
+                    'provider_unavailable', 'rate_limited', 'quota_limited')):
+                continue
+            targets = report.get('source_backed_targets')
+            if (report.get('pipeline') != 'story_first' or report.get('story_selection') is not None
+                    or not isinstance(targets, list) or not 1 <= len(targets) <= 12
+                    or not all(isinstance(item, dict) and isinstance(item.get('title'), str)
+                               and isinstance(item.get('page'), dict)
+                               and isinstance(item.get('passages'), list) for item in targets)):
+                continue
+            return {**report, 'report_path': str(path)}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return None
+
+
 def recent_failed_names(conn: sqlite3.Connection, output_dir: Path) -> list[str]:
     """Exclude bad places, but allow a good place to retry with better map anchors."""
     root = output_dir.resolve()
@@ -1579,6 +1620,8 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             # after switching engines; it did not pass the new story gate.
             story_mode = os.environ.get('MAP_DISCOVERY_PIPELINE', 'legacy').strip().casefold() == 'story_first'
             previous_story = recoverable_story_batch(conn, output_dir) if story_mode else None
+            previous_sources = (recoverable_source_batch(conn, output_dir)
+                                if story_mode and not previous_story else None)
             report = (recoverable_report(conn, output_dir, target) or {}) if not story_mode else {}
         if previous_story:
             report = map_story_pipeline.resume(previous=previous_story, puzzle_date=target,
@@ -1591,11 +1634,15 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
             if engine_name not in ('legacy', 'story_first'):
                 raise ValueError('Unsupported Map discovery pipeline.')
             engine = map_story_pipeline if engine_name == 'story_first' else discovery
+            resumed = ({'source_backed_targets': previous_sources['source_backed_targets'],
+                        'resumed_sources_from': previous_sources['report_path']}
+                       if previous_sources else {})
             report = engine.discover(source_db=database, catalog=None, puzzle_date=target, output_dir=run_dir,
                                      budget=budget, provider=provider, sources=discovery.WikimediaSource(budget),
                                      excluded_places=exclusions, excluded_names=failed_names,
                                      route_failure_lessons=route_lessons,
-                                     editorial_feedback=feedback, failure_lessons=failure_lessons)
+                                     editorial_feedback=feedback, failure_lessons=failure_lessons,
+                                     **resumed)
         if report['status'] != 'needs_source_review':
             raise ValueError('Discovery rejected: ' + str(report.get('error', 'no candidate'))[:400])
         verifier = factory(budget)
@@ -1644,7 +1691,7 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         outcome['rate_limited'] = outcome['quota_limited'] or any(
             marker in error_text.casefold() for marker in ('http 429', 'resource_exhausted', 'rate limit')
         )
-        # A 503 or timed-out model request is not a quota reset, but rapidly
+        # A transient model outage is not a quota reset, but rapidly
         # retrying an overloaded free-tier model wastes requests. Keep any
         # Retry-After hint across scheduler ticks; otherwise use the bounded backoff.
         provider_error = ' '.join((str(report.get('provider_error_detail') or ''),
@@ -1653,10 +1700,11 @@ def maintain(database: Path, output_dir: Path, *, seed_catalog: Path | None = co
         outcome['provider_unavailable'] = (
             any(marker in provider_error for marker in
                 ('http 401', 'http 403', 'http 404', 'permission_denied',
-                 'unauthenticated', 'model not found'))
+                 'unauthenticated', 'model not found', 'http 500', 'http 502',
+                 'http 503', 'http 504', 'temporarily unavailable', 'timed out',
+                 'timeout'))
             or 'http 503' in error_text.casefold()
-            or ('gemini request failed' in provider_error and
-                ('timed out' in provider_error or 'timeout' in provider_error)))
+        )
         if verifier is not None:
             outcome['verifier_requests'] = verifier.requests
     outcome['failed_names'] = [item.get('title', '') for item in report.get('rejections', []) if isinstance(item, dict)]
