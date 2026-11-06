@@ -757,7 +757,9 @@ def validate_proposal_hook_alignment(payload: dict, selected: dict) -> None:
     if (not hook_passages and not official_ids) or 'source_ids' not in hard:
         return
     allowed_ids = {f'article-{index}' for index in hook_passages}
-    if not (allowed_ids | official_ids).intersection(hard['source_ids']):
+    # validate_selection already checked these IDs against retrieved units;
+    # use the same outer-whitespace normalization for hook alignment.
+    if not (allowed_ids | official_ids).intersection(ref.strip() for ref in hard['source_ids']):
         raise ValueError('Hard clue cites an unrelated passage instead of the proposed discovery hook.')
     if len(hook_terms(hard['text'], selected['canonical_name']) &
            hook_terms(selected.get('proposal_reason'), selected['canonical_name'])) < 2:
@@ -881,11 +883,18 @@ def validate_selection(payload: dict, candidates: list[dict]) -> tuple[dict, dic
         item = payload['facts'][level]
         if 'source_ids' in item:
             references = item['source_ids']
+            if isinstance(references, list):
+                # Model output sometimes pads an otherwise exact passage ID.
+                # Only trim its edges; the resulting ID must still be present
+                # in the retrieved evidence for this candidate.
+                references = [ref.strip() if isinstance(ref, str) else ref
+                              for ref in references]
             units = {unit['id']: unit for unit in evidence_units(selected)}
             if not isinstance(references, list) or not 1 <= len(references) <= 3 or any(
                 not isinstance(ref, str) or ref not in units for ref in references
             ):
                 raise ValueError('Unknown or invalid retrieved passage reference.')
+            item = {**item, 'source_ids': references}
             quotes = [units[ref]['text'] for ref in references]
         else:
             # Preserve validation of earlier saved reports; current model schema uses passage IDs.

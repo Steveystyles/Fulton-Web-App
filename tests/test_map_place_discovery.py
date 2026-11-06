@@ -500,6 +500,10 @@ class DiscoveryTests(unittest.TestCase):
         }
         discovery.validate_selection(aligned, [self.place])
 
+        padded = deepcopy(aligned)
+        padded['facts']['hard']['source_ids'] = [' ' + hook_id + ' ']
+        discovery.validate_selection(padded, [self.place])
+
         unrelated = deepcopy(aligned)
         unrelated['facts']['hard'] = {
             'text': 'An unrelated archive describes a temporary exhibition in this district.',
@@ -834,6 +838,22 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result['clue_ladder']['hard'], payload['facts']['hard']['text'])
         self.assertEqual(candidate['facts']['hard']['supporting_quotes'], [unit['text'] for unit in units])
         payload['facts']['hard']['source_ids'] = ['invented-passage']
+        with self.assertRaisesRegex(ValueError, 'passage reference'):
+            discovery.validate_selection(payload, [self.place])
+
+    def test_passage_ids_ignore_only_outer_whitespace(self):
+        units = discovery.evidence_units(self.place)
+        payload = {'place_id': self.place['id'], 'selection_reason': self.payload['selection_reason'],
+                   'facts': {level: {'text': fact['text'],
+                                    'source_ids': [' ' + unit['id'] + ' ' for unit in units]}
+                             for level, fact in self.place['facts'].items()}}
+        original_ids = list(payload['facts']['hard']['source_ids'])
+        candidate, result = discovery.validate_selection(payload, [self.place])
+        self.assertTrue(result['automated_pass'])
+        self.assertEqual(candidate['facts']['hard']['supporting_quotes'],
+                         [unit['text'] for unit in units])
+        self.assertEqual(payload['facts']['hard']['source_ids'], original_ids)
+        payload['facts']['hard']['source_ids'] = ['invented-passage ']
         with self.assertRaisesRegex(ValueError, 'passage reference'):
             discovery.validate_selection(payload, [self.place])
 

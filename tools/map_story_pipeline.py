@@ -881,6 +881,67 @@ def checked_hard_story_pivot(payload: dict, candidate: dict) -> str | None:
     return quote
 
 
+def validate_clues_with_repair(selected: dict, candidates: list[dict],
+                               story_passages: dict[str, str], provider,
+                               report: dict) -> tuple[dict, dict, dict]:
+    """Give fresh and resumed story cards the same bounded clue repair path."""
+    try:
+        candidate, result = legacy.validate_selection(selected, candidates)
+    except ValueError as initial_error:
+        selected_candidate = next((c for c in candidates if c['id'] == selected.get('place_id')), None)
+        if selected_candidate is None:
+            raise
+        if str(initial_error) in (
+                'Hard clue cites an unrelated passage instead of the proposed discovery hook.',
+                'Hard clue abandoned the proposed discovery hook for an unrelated fact.'):
+            pivot = checked_hard_story_pivot(selected, selected_candidate)
+            if pivot:
+                report['story_pivot'] = {
+                    'original_story_passage': story_passages[selected_candidate['id']],
+                    'new_story_passage': pivot,
+                    'reason': 'Hard clue chose a different retrieved target-source passage.'}
+                selected_candidate['proposal_reason'] = selected['facts']['hard']['text']
+                story_passages[selected_candidate['id']] = pivot
+                try:
+                    candidate, result = legacy.validate_selection(selected, candidates)
+                except ValueError as pivot_error:
+                    initial_error = pivot_error
+                else:
+                    initial_error = None
+        if initial_error is not None:
+            repaired = guidance_fallback(selected, selected_candidate)
+            report['initial_validation_error'] = str(initial_error)[:500]
+            if repaired != selected:
+                try:
+                    candidate, result = legacy.validate_selection(repaired, candidates)
+                except ValueError as guidance_error:
+                    initial_error = guidance_error
+                else:
+                    report['guidance_fallback'] = True
+                    report['model_output'] = repaired
+                    selected = repaired
+                    initial_error = None
+        if initial_error is not None:
+            # Keep transport and independent-verification capacity for this
+            # run; an invalid saved clue is not grounds to discard its place.
+            if len(provider.requests) > legacy.MAX_MODEL_REQUESTS - 4:
+                raise initial_error
+            repair_prompt = clue_repair_prompt(
+                selected_candidate, story_passages[selected_candidate['id']],
+                selected, initial_error)
+            corrected = provider.call_with_fallback(
+                model_attr='generator_model', prompt=repair_prompt,
+                schema=legacy.selection_schema())
+            report['clue_repair'] = {'validator_feedback': str(initial_error)[:500],
+                                     'same_place_required': selected_candidate['id']}
+            report['model_output'] = corrected
+            if not isinstance(corrected, dict) or corrected.get('place_id') != selected_candidate['id']:
+                raise ValueError('Clue repair changed the selected place.')
+            candidate, result = legacy.validate_selection(corrected, candidates)
+            selected = corrected
+    return candidate, result, selected
+
+
 def resolve_route(route: dict, target: dict, sources, recent: list[dict], existing: list[dict]) -> tuple[dict, str | None]:
     """Retry only a failed local map anchor using retrieved nearby-page names."""
     answer_key = legacy.exclusion_key(target.get('title', ''))
@@ -968,7 +1029,10 @@ def resume(*, previous: dict, puzzle_date: str, output_dir: Path, budget, provid
             raise ValueError('Saved clue writer returned an invalid response.')
         if selected.get('place_id') != candidate['id']:
             raise ValueError('Saved clue writer did not select the assigned place.')
-        candidate, result = legacy.validate_selection(selected, [candidate])
+        story_passages = {candidate['id']: story_passage}
+        candidate, result, selected = validate_clues_with_repair(
+            selected, [candidate], story_passages, provider, report)
+        story_passage = story_passages[candidate['id']]
         hard = candidate['facts']['hard']
         story_terms = legacy.hook_terms(story_passage, candidate['canonical_name'])
         cited_terms = legacy.hook_terms(' '.join(hard['supporting_quotes']), candidate['canonical_name'])
@@ -1253,60 +1317,8 @@ def discover(*, source_db: Path, catalog: Path | None, puzzle_date: str, output_
         selected = provider.call_with_fallback(model_attr='generator_model', prompt=clue_prompt,
                                                schema=legacy.selection_schema())
         report['model_output'] = selected
-        try:
-            candidate, result = legacy.validate_selection(selected, candidates)
-        except ValueError as initial_error:
-            selected_candidate = next((c for c in candidates if c['id'] == selected.get('place_id')), None)
-            if selected_candidate is None:
-                raise
-            if str(initial_error) in (
-                    'Hard clue cites an unrelated passage instead of the proposed discovery hook.',
-                    'Hard clue abandoned the proposed discovery hook for an unrelated fact.'):
-                pivot = checked_hard_story_pivot(selected, selected_candidate)
-                if pivot:
-                    report['story_pivot'] = {
-                        'original_story_passage': story_passages[selected_candidate['id']],
-                        'new_story_passage': pivot,
-                        'reason': 'Hard clue chose a different retrieved target-source passage.'}
-                    selected_candidate['proposal_reason'] = selected['facts']['hard']['text']
-                    story_passages[selected_candidate['id']] = pivot
-                    try:
-                        candidate, result = legacy.validate_selection(selected, candidates)
-                    except ValueError as pivot_error:
-                        initial_error = pivot_error
-                    else:
-                        initial_error = None
-            if initial_error is not None:
-                repaired = guidance_fallback(selected, selected_candidate)
-                report['initial_validation_error'] = str(initial_error)[:500]
-                if repaired != selected:
-                    try:
-                        candidate, result = legacy.validate_selection(repaired, candidates)
-                    except ValueError as guidance_error:
-                        initial_error = guidance_error
-                    else:
-                        report['guidance_fallback'] = True
-                        report['model_output'] = repaired
-                        selected = repaired
-                        initial_error = None
-            if initial_error is not None:
-                # Reserve up to two transport attempts for this repair and two
-                # for the independent verification after discovery succeeds.
-                if len(provider.requests) > legacy.MAX_MODEL_REQUESTS - 4:
-                    raise initial_error
-                repair_prompt = clue_repair_prompt(
-                    selected_candidate, story_passages[selected_candidate['id']],
-                    selected, initial_error)
-                corrected = provider.call_with_fallback(
-                    model_attr='generator_model', prompt=repair_prompt,
-                    schema=legacy.selection_schema())
-                report['clue_repair'] = {'validator_feedback': str(initial_error)[:500],
-                                         'same_place_required': selected_candidate['id']}
-                report['model_output'] = corrected
-                if corrected.get('place_id') != selected_candidate['id']:
-                    raise ValueError('Clue repair changed the selected place.')
-                candidate, result = legacy.validate_selection(corrected, candidates)
-                selected = corrected
+        candidate, result, selected = validate_clues_with_repair(
+            selected, candidates, story_passages, provider, report)
         story_passage = story_passages[candidate['id']]
         hard = candidate['facts']['hard']
         story_terms = legacy.hook_terms(story_passage, candidate['canonical_name'])
